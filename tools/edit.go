@@ -81,12 +81,26 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	logger := getLogger(ctx)
 
+	tc := core.GetToolContext(ctx)
+	projectDir := tc.ProjectDir
+	sessionDir := tc.SessionDir
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
+	if sessionDir == "" {
+		sessionDir = projectDir
+	}
+
+	resolvedPath, scope := ResolveTargetPath(filePath, projectDir, sessionDir)
+
 	logger.Info("editing file",
-		"path", filePath,
+		"input_path", filePath,
+		"resolved_path", resolvedPath,
+		"scope", scope,
 	)
 
 	// Security check
-	if err := ValidateFileSafety(filePath); err != nil {
+	if err := ValidateFileSafety(resolvedPath); err != nil {
 		return nil, err
 	}
 
@@ -111,7 +125,7 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	// Staleness check
 	if lastReadTimeStr != "" {
-		info, err := os.Stat(filePath)
+		info, err := os.Stat(resolvedPath)
 		if err == nil {
 			lastReadTime, parseErr := time.Parse(time.RFC3339, lastReadTimeStr)
 			if parseErr == nil && info.ModTime().After(lastReadTime) {
@@ -120,7 +134,7 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 		}
 	}
 
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +158,10 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 		updatedContent = strings.Replace(fileContent, oldStr, newStr, 1)
 	}
 
-	err = os.WriteFile(filePath, []byte(updatedContent), 0644)
+	err = os.WriteFile(resolvedPath, []byte(updatedContent), 0644)
 	if err != nil {
 		return nil, err
 	}
 
-	return fmt.Sprintf("File %s updated successfully.", filePath), nil
+	return fmt.Sprintf("File %s updated successfully. [scope: %s]", resolvedPath, scope), nil
 }

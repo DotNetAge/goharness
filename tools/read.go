@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"strings"
 
 	"github.com/DotNetAge/goreact/core"
@@ -78,27 +79,48 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		return nil, err
 	}
 
-	if err := ValidateFileSafety(path); err != nil {
+	logger := getLogger(ctx)
+
+	tc := core.GetToolContext(ctx)
+	projectDir := tc.ProjectDir
+	sessionDir := tc.SessionDir
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
+	if sessionDir == "" {
+		sessionDir = projectDir
+	}
+
+	resolvedPath, scope := ResolveTargetPath(path, projectDir, sessionDir)
+
+	logger.Info("reading file",
+		"input_path", path,
+		"resolved_path", resolvedPath,
+		"scope", scope,
+	)
+
+	if err := ValidateFileSafety(resolvedPath); err != nil {
 		return nil, err
 	}
 
 	// Pre-read: check file exists, size, and type via fs.FS
-	cleanPath := strings.TrimLeft(path, "/")
+	cleanPath := strings.TrimLeft(resolvedPath, "/")
 	info, err := fs.Stat(core.OS, cleanPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("file does not exist: %s", path)
+			return nil, fmt.Errorf("file does not exist: %s", resolvedPath)
 		}
 		return nil, fmt.Errorf("failed to stat file: %w", err)
 	}
 	if info.IsDir() {
-		return nil, fmt.Errorf("path is a directory, not a file: %s", path)
+		return nil, fmt.Errorf("path is a directory, not a file: %s", resolvedPath)
 	}
 	if r.limits.MaxSizeBytes > 0 && info.Size() > r.limits.MaxSizeBytes {
 		return map[string]any{
-			"success":    false,
-			"path":       path,
-			"size_bytes": info.Size(),
+			"success":     false,
+			"path":        resolvedPath,
+			"scope":       scope,
+			"size_bytes":  info.Size(),
 			"error": fmt.Sprintf(
 				"file too large (%.2f KB), maximum allowed is %d KB. "+
 					"Use offset and limit parameters to read specific sections, "+
@@ -108,7 +130,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	}
 
 	// Read file content via fs.FS
-	data, err := core.ReadFileFromFS(core.OS, path)
+	data, err := core.ReadFileFromFS(core.OS, resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -158,7 +180,8 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 
 	result := map[string]any{
 		"success":     true,
-		"path":        path,
+		"path":        resolvedPath,
+		"scope":       scope,
 		"size_bytes":  info.Size(),
 		"lines_read":  linesRead,
 		"total_lines": totalLines,
