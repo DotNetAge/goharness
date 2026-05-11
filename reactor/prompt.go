@@ -207,29 +207,62 @@ Technical terms and code identifiers should keep their original form.`, language
 }
 
 // BuildEnvironmentInfo returns the runtime environment description.
+// This is a convenience wrapper that calls BuildEnvironmentInfoParams with os.Getwd() as project dir.
+// Application layers (like MindX) should prefer BuildEnvironmentInfoParams for full control.
 func BuildEnvironmentInfo(sessionID string, sessionDir string) string {
 	cwd, _ := os.Getwd()
+	return BuildEnvironmentInfoParams(EnvironmentInfoParams{
+		ProjectDir: cwd,
+		SessionDir: sessionDir,
+		SessionID:  sessionID,
+	})
+}
+
+// EnvironmentInfoParams holds parameters for building environment information.
+// This allows application layers (e.g., MindX) to inject their own directory semantics
+// without GoReact hardcoding any specific directory meaning.
+type EnvironmentInfoParams struct {
+	HomeDir    string // Layer 1: User home directory (e.g., ~/.mindx)
+	ProjectDir string // Layer 2: Project working directory (captured at session start)
+	SessionDir string // Layer 3: Session sandbox directory
+	SessionID  string
+}
+
+// BuildEnvironmentInfoParams builds environment info with explicit parameters.
+// This is the recommended method for application layers that have custom directory semantics.
+func BuildEnvironmentInfoParams(params EnvironmentInfoParams) string {
 	platform := runtime.GOOS
 	osVersion := runtime.GOARCH
 	shell, _ := os.LookupEnv("SHELL")
 
+	homeDir := params.HomeDir
+	if homeDir == "" {
+		homeDir, _ = os.UserHomeDir()
+	}
+
+	projectDir := params.ProjectDir
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
+
 	return fmt.Sprintf(`## Environment
 You have been invoked in the following environment:
-- Primary working directory: %s
-- Platform: %s
-- OS version: %s
+- Home Directory: %s
+- Project Working Directory: %s
+- Session Sandbox Directory: %s
+- Platform: %s/%s
 - Shell: %s
 - Session ID: %s
-- Pwd: %s
-- App name: %s
-- App version: %s
+- App Name: %s
+- App Version: %s
 %s`,
-		cwd,
+		homeDir,
+		projectDir,
+		params.SessionDir,
 		platform,
 		osVersion,
 		shell,
-		sessionID,
-		sessionDir,
+		params.SessionID,
 		core.SYSTEM_INFO_NAME,
 		core.SYSTEM_INFO_VERSION,
 		core.SYSTEM_INFO_USERS)

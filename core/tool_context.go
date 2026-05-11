@@ -16,6 +16,11 @@ type ToolContext struct {
 	FileStore   FileStore
 	SessionID   string
 	Logger      Logger // Unified logging interface, injected from Agent/ReActor
+
+	// Directory hints (optional, set by application layer like MindX)
+	// When empty, tools fall back to os.Getwd() for backward compatibility.
+	ProjectDir string // Layer 2: Project working directory
+	SessionDir string // Layer 3: Session sandbox directory
 }
 
 // WithToolContext injects a ToolContext into the given context.

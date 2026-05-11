@@ -109,3 +109,40 @@ func ToFloat64(v any) (float64, bool) {
 		return 0, false
 	}
 }
+
+// PathScope represents the resolved scope of a file path.
+type PathScope string
+
+const (
+	PathScopeProject PathScope = "project" // Resolves to project working directory
+	PathScopeSession PathScope = "session" // Resolves to session sandbox directory
+)
+
+const sessionPathPrefix = "session:"
+
+// ResolveTargetPath resolves a file path with optional session: prefix.
+// This provides minimal syntax sugar for explicit directory selection.
+//
+// Behavior:
+//   - "session:filename" → resolves to <sessionDir>/filename (scope: session)
+//   - "relative/path"  → resolves to <projectDir>/relative/path (scope: project)
+//   - "/absolute/path" → returns as-is (scope: empty)
+//
+// This is intentionally simple - no heuristic inference.
+// Directory semantics should be guided via System Prompt (Agent Native approach).
+func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath string, scope PathScope) {
+	if inputPath == "" {
+		return "", PathScopeProject
+	}
+
+	if filepath.IsAbs(inputPath) {
+		return inputPath, ""
+	}
+
+	if strings.HasPrefix(inputPath, sessionPathPrefix) {
+		filename := strings.TrimPrefix(inputPath, sessionPathPrefix)
+		return filepath.Join(sessionDir, filename), PathScopeSession
+	}
+
+	return filepath.Join(projectDir, inputPath), PathScopeProject
+}

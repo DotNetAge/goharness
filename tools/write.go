@@ -58,18 +58,33 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 
 	logger := getLogger(ctx)
 
+	// Resolve path with optional session: prefix support
+	tc := core.GetToolContext(ctx)
+	projectDir := tc.ProjectDir
+	sessionDir := tc.SessionDir
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
+	if sessionDir == "" {
+		sessionDir = projectDir
+	}
+
+	resolvedPath, scope := ResolveTargetPath(path, projectDir, sessionDir)
+
 	logger.Info("writing file",
-		"path", path,
+		"input_path", path,
+		"resolved_path", resolvedPath,
+		"scope", scope,
 		"content_len", len(content),
 	)
 
-	// Security check
-	if err := ValidateFileSafety(path); err != nil {
+	// Security check on resolved path
+	if err := ValidateFileSafety(resolvedPath); err != nil {
 		return nil, err
 	}
 
 	// Ensure the parent directory exists
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -87,13 +102,13 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	var file *os.File
 	if appendMode {
 		// Append mode
-		file, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		file, err = os.OpenFile(resolvedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file for appending: %w", err)
 		}
 	} else {
 		// Overwrite mode
-		file, err = os.Create(path)
+		file, err = os.Create(resolvedPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create file: %w", err)
 		}
@@ -107,14 +122,15 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	}
 
 	// Get file info
-	info, err := os.Stat(path)
+	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat file: %w", err)
 	}
 
 	return map[string]any{
 		"success": true,
-		"path":    path,
+		"path":    resolvedPath,
+		"scope":   scope,
 		"mode": func() string {
 			if appendMode {
 				return "append"
