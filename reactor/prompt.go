@@ -25,6 +25,11 @@ type Prompt struct {
 	ToneAndStyle        string // Tone and style guidelines
 	SystemReminders     string // System-level reminders
 
+	// AddonSections — application-specific sections injected after environment info.
+	// Set by application layers (e.g., MindX) via Prompt.AddonSections field.
+	// Used for domain-specific guidance like directory semantics, workspace rules, etc.
+	AddonSections []string
+
 	// Dynamic sections — after DYNAMIC_BOUNDARY, can change per session
 	OutputEfficiency string // How to communicate with the user (prose style)
 	Language         string // Response language instruction
@@ -48,7 +53,12 @@ func NewDefaultPrompt(name, role, description, introduction string) *Prompt {
 // ToSectionedMessages renders the Prompt into an ordered slice of SystemMessage.
 // Static sections come first (KV Cache anchor), followed by the dynamic boundary,
 // followed by dynamic sections.
-func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string) []gochatcore.Message {
+//
+// addonSections: optional application-specific system message sections injected
+// after the environment info section. This allows application layers (e.g., MindX)
+// to inject domain-specific guidance (like directory semantics) without modifying
+// the framework's prompt structure.
+func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, addonSections ...string) []gochatcore.Message {
 	var msgs []gochatcore.Message
 
 	// ===== Static sections (KV cache anchor) =====
@@ -96,6 +106,16 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string) []goch
 
 	// Section 9: Environment info
 	msgs = append(msgs, gochatcore.NewSystemMessage(BuildEnvironmentInfo(sessionID, sessionDir)))
+
+	// Section 9.5: Application-specific addons (injected by application layer)
+	// Merge Prompt's built-in AddonSections with any runtime-provided addons
+	allAddons := append([]string(nil), p.AddonSections...)
+	allAddons = append(allAddons, addonSections...)
+	for _, addon := range allAddons {
+		if addon != "" {
+			msgs = append(msgs, gochatcore.NewSystemMessage(addon))
+		}
+	}
 
 	// Section 10: System reminders
 	sysReminders := p.SystemReminders
