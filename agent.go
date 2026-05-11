@@ -464,6 +464,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 		p := reactor.NewDefaultPrompt(config.Name, config.Role, config.Description, config.Introduction)
 		p.ExecutionGuidelines = reactor.BuildExecutionGuidelines()
 		p.ToolUsage = reactor.BuildToolUsageGuidelines()
+		p.AgentCoordination = reactor.BuildAgentCoordinationGuidance()
 		p.ToneAndStyle = reactor.BuildToneAndStyle()
 		p.SystemReminders = reactor.BuildSystemReminders()
 		p.OutputEfficiency = reactor.BuildOutputEfficiency()

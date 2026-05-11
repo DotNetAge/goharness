@@ -38,7 +38,7 @@ const DynamicBoundary = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 // NewDefaultPrompt creates a Prompt with default built-in content.
 func NewDefaultPrompt(name, role, description, introduction string) *Prompt {
 	return &Prompt{
-		Identity: fmt.Sprintf("You are an %s.\n- Name: %s\n- Description: %s\n\n%s",
+		Identity: fmt.Sprintf("You are an %s.\n- Name: %s\n- Responsibility: %s\n\n%s",
 			role, name, description, introduction),
 		Rules:        DefaultBehavioralRules(),
 		OutputFormat: BuildOutputFormat(),
@@ -262,11 +262,11 @@ func BuildSkillsCatalog(skills []*core.Skill) string {
 	sb.WriteString("## Available Skills\n")
 	sb.WriteString("When your existing tools cannot fully address the user's request, check whether one of the following specialized skills covers the domain. If a skill matches, use the Skill tool to load its instructions, which will guide you through domain-specific workflows and expose additional tools.\n\n")
 	for _, s := range skills {
-		sb.WriteString(fmt.Sprintf("- %s", s.Name))
+		fmt.Fprintf(&sb, "- %s", s.Name)
 		if s.Description != "" {
-			sb.WriteString(fmt.Sprintf(": %s", s.Description))
+			fmt.Fprintf(&sb, ": %s", s.Description)
 		}
-		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "\n")
 	}
 	return sb.String()
 }
