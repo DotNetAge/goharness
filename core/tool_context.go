@@ -19,7 +19,7 @@ type ToolContext struct {
 
 	// Directory hints (optional, set by application layer like MindX)
 	// When empty, tools fall back to os.Getwd() for backward compatibility.
-	ProjectDir string // Layer 2: Project working directory
+	ProjectDir string // Layer 2: Project directory (captured at session start)
 	SessionDir string // Layer 3: Session sandbox directory
 }
 

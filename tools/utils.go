@@ -52,17 +52,17 @@ func ValidateFileSafety(path string) error {
 		realPath = absPath
 	}
 
-	// Step 4: Resolve the working directory's real path (also resolving symlinks)
+	// Step 4: Resolve the project directory's real path (also resolving symlinks)
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
+		return fmt.Errorf("failed to get project directory: %w", err)
 	}
 	realCwd, err := filepath.EvalSymlinks(cwd)
 	if err != nil {
 		realCwd = cwd
 	}
 
-	// Step 5: Ensure the real path is anchored within the current working directory
+	// Step 5: Ensure the real path is anchored within the project directory
 	if !strings.HasPrefix(realPath, realCwd+string(filepath.Separator)) && realPath != realCwd {
 		return fmt.Errorf("access denied: path %q resolves to %q which is outside the workspace %q", path, realPath, realCwd)
 	}
@@ -114,7 +114,7 @@ func ToFloat64(v any) (float64, bool) {
 type PathScope string
 
 const (
-	PathScopeProject PathScope = "project" // Resolves to project working directory
+	PathScopeProject PathScope = "project" // Resolves to project directory
 	PathScopeSession PathScope = "session" // Resolves to session sandbox directory
 )
 

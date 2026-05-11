@@ -91,7 +91,7 @@ func (t *BashTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "Bash",
 		Description: "Execute shell commands and return their output. Use dedicated tools instead of bash when available.",
-		Prompt: `Executes a given bash command and returns its output. The working directory persists between commands, but shell state does not.
+		Prompt: `Executes a given bash command and returns its output. The project directory persists between commands, but shell state does not.
 
 IMPORTANT: Avoid using this tool to run cat, head, tail, sed, awk, or echo commands. Instead, use dedicated tools:
 - File search: Use Glob (NOT find or ls)
@@ -105,7 +105,7 @@ Dedicated tools provide a better user experience and make it easier to review to
 # Instructions
 - If your command will create new directories or files, first use Ls to verify the parent directory exists.
 - Always quote file paths that contain spaces with double quotes.
-- Try to maintain your current working directory by using absolute paths.
+- Try to maintain your current project directory by using absolute paths.
 - When issuing multiple commands:
   - If independent and can run in parallel, make multiple tool calls in one message.
   - If dependent, use && to chain them.

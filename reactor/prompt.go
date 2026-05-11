@@ -243,7 +243,7 @@ func BuildEnvironmentInfo(sessionID string, sessionDir string) string {
 // without GoReact hardcoding any specific directory meaning.
 type EnvironmentInfoParams struct {
 	HomeDir    string // Layer 1: User home directory (e.g., ~/.mindx)
-	ProjectDir string // Layer 2: Project working directory (captured at session start)
+	ProjectDir string // Layer 2: Project directory (captured at session start)
 	SessionDir string // Layer 3: Session sandbox directory
 	SessionID  string
 }

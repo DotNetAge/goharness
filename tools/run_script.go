@@ -625,7 +625,7 @@ Usage:
 			{
 				Name:        "working_dir",
 				Type:        "string",
-				Description: "Working directory for script execution. Defaults to the current directory. Usually the {base_dir} of the active skill.",
+				Description: "Execution directory for script execution. Defaults to the project directory. Can be set to the skill's base_dir or session directory depending on context.",
 				Required:    false,
 			},
 			{

@@ -192,7 +192,7 @@ func (t *PowerShellTool) buildDescription() string {
 
 	sb.WriteString("## Execution behavior\n")
 	sb.WriteString("- Commands run via " + b + "PowerShell -Command" + b + "\n")
-	sb.WriteString("- Working directory is the current working directory\n")
+	sb.WriteString("- Project directory is the current directory\n")
 	sb.WriteString("- Output captures stdout and stderr\n")
 	sb.WriteString("- Non-zero exit codes are reported as failures\n")
 	sb.WriteString("- For destructive commands (e.g., " + b + "Remove-Item" + b + " with wildcard, " + b + "Set-ExecutionPolicy" + b + "),\n")
