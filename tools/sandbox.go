@@ -23,7 +23,12 @@ type SandboxConfig struct {
 	AllowNetwork bool
 	TempDir      string
 	CustomPolicy string
-	mu           sync.RWMutex
+
+	// Directory Context (Agent Native Design: 4-Layer Architecture)
+	ProjectDir string // Layer 2: Project working directory (always non-empty)
+	SessionDir string // Layer 3: Session sandbox directory (optional, enables session isolation)
+
+	mu sync.RWMutex
 }
 
 func (c *SandboxConfig) GetEnabled() bool {
@@ -58,6 +63,24 @@ func (c *SandboxConfig) GetCustomPolicy() string {
 	return c.CustomPolicy
 }
 
+func (c *SandboxConfig) GetProjectDir() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ProjectDir
+}
+
+func (c *SandboxConfig) GetSessionDir() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SessionDir
+}
+
+func (c *SandboxConfig) HasSessionIsolation() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SessionDir != ""
+}
+
 func (c *SandboxConfig) Update(fn func(cfg *SandboxConfig)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -74,15 +97,43 @@ func NewSandboxConfig(enabled bool, profile SandboxProfile, allowedPaths []strin
 	}
 }
 
-func DefaultSandboxConfig() *SandboxConfig {
-	cwd, _ := os.Getwd()
+// NewSandboxConfigWithDirs creates a SandboxConfig with full directory context.
+// This is the recommended constructor for Agent Native design.
+//
+// Parameters:
+//   - projectDir: Layer 2 directory (required, must be non-empty)
+//   - sessionDir: Layer 3 directory (optional, enables session isolation when non-empty)
+//
+// Behavior:
+//   - When sessionDir is provided: TempDir = ${sessionDir}/tmp, AllowedPaths includes both dirs
+//   - When sessionDir is empty: TempDir falls back to system temp, only projectDir in AllowedPaths
+func NewSandboxConfigWithDirs(projectDir, sessionDir string) *SandboxConfig {
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
+
+	tempDir := filepath.Join(os.TempDir(), "goreact-sandbox")
+	allowedPaths := []string{projectDir}
+
+	if sessionDir != "" {
+		tempDir = filepath.Join(sessionDir, "tmp")
+		allowedPaths = append(allowedPaths, sessionDir)
+	}
+
 	return &SandboxConfig{
 		Enabled:      true,
 		Profile:      ProfileWorkspace,
-		AllowedPaths: []string{cwd},
+		AllowedPaths: allowedPaths,
 		AllowNetwork: true,
-		TempDir:      filepath.Join(os.TempDir(), "goreact-sandbox"),
+		TempDir:      tempDir,
+		ProjectDir:   projectDir,
+		SessionDir:   sessionDir,
 	}
+}
+
+func DefaultSandboxConfig() *SandboxConfig {
+	cwd, _ := os.Getwd()
+	return NewSandboxConfigWithDirs(cwd, "")
 }
 
 func UnrestrictedSandboxConfig() *SandboxConfig {
@@ -97,13 +148,11 @@ func RestrictedSandboxConfig(allowedPaths ...string) *SandboxConfig {
 	if len(allowedPaths) == 0 {
 		allowedPaths = []string{cwd}
 	}
-	return &SandboxConfig{
-		Enabled:      true,
-		Profile:      ProfileSandbox,
-		AllowedPaths: allowedPaths,
-		AllowNetwork: false,
-		TempDir:      filepath.Join(os.TempDir(), "goreact-sandbox"),
-	}
+	cfg := NewSandboxConfigWithDirs(cwd, "")
+	cfg.Profile = ProfileSandbox
+	cfg.AllowNetwork = false
+	cfg.AllowedPaths = allowedPaths
+	return cfg
 }
 
 type SandboxApplier func(cmd *exec.Cmd, config *SandboxConfig) *exec.Cmd

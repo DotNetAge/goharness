@@ -3,6 +3,7 @@ package goreact
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -76,6 +77,9 @@ type Agent struct {
 	lastResult   *Result
 	sessionStore core.SessionStore
 
+	// Sandbox management (Agent Native Design: 4-Layer Architecture)
+	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
+
 	interruptMu sync.Mutex
 	cancelFunc  context.CancelFunc
 	isRunning   bool
@@ -144,6 +148,13 @@ type agentSetup struct {
 	agentRegistry tools.AgentDefinitionRegistry
 	runtimeDir    *core.RuntimeDirectory
 	modelRegistry core.ModelRegistry
+
+	// Directory context (Design-time safety: guaranteed to be set)
+	projectDir string // Layer 2: Working directory at Agent creation time
+	sessionDir string // Layer 3: Session sandbox directory (from SessionStore or explicit)
+
+	// Sandbox configuration
+	sessionBaseDir string // Layer 3 base: Parent dir for session directories (enables SESSION_DIR-based isolation)
 }
 
 // AgentOption configures an Agent during creation via NewAgent.
@@ -276,6 +287,74 @@ func WithRuntimeDirectory(dir *core.RuntimeDirectory) AgentOption {
 func WithModelRegistry(reg core.ModelRegistry) AgentOption {
 	return func(s *agentSetup) {
 		s.modelRegistry = reg
+	}
+}
+
+// WithProjectDir sets the project working directory for this Agent.
+// This is critical for tool execution (edit/read/write tools need to know where to operate).
+//
+// Design-time safety guarantee:
+//   - If NOT provided, defaults to os.Getwd() at Agent creation time
+//   - The value is automatically injected into ToolContext for all tool calls
+//   - LLM will always have access to this directory in its system prompt
+//   - Prevents runtime failures caused by missing directory context
+//
+// Usage:
+//
+//	agent, err := goreact.NewAgent(
+//	    goreact.WithConfig(cfg),
+//	    goreact.WithProjectDir("/Users/you/project"),  // Explicit
+//	)
+//	// OR rely on default (os.Getwd()):
+//	agent, err := goreact.NewAgent(goreact.WithConfig(cfg))
+func WithProjectDir(dir string) AgentOption {
+	return func(s *agentSetup) {
+		s.projectDir = dir
+	}
+}
+
+// WithSessionDir sets the session sandbox directory for this Agent.
+// This provides isolation for session-specific files (temp files, drafts, etc.).
+//
+// When to use:
+//   - When you have an existing Session and want to bind the Agent to it
+//   - When SessionStore is available but you want to override the default resolution
+//
+// Design-time safety:
+//   - If NOT provided and SessionStore exists, may be auto-resolved on first Call
+//   - If provided, takes precedence over auto-resolution
+//   - The value is injected into ToolContext.SessionDir for all tool calls
+func WithSessionDir(dir string) AgentOption {
+	return func(s *agentSetup) {
+		s.sessionDir = dir
+	}
+}
+
+// WithSessionBaseDir sets the base directory for session-scoped sandbox isolation.
+// This enables Agent Native sandbox design where each session gets its own
+// directory under this base path (Layer 3 of 4-Layer Architecture).
+//
+// When provided:
+//   - Each session gets: ${sessionBaseDir}/${sessionID}/
+//   - TempDir is automatically set to: ${sessionBaseDir}/${sessionID}/tmp
+//   - AllowedPaths includes both PROJECT_DIR and SESSION_DIR
+//   - Session cleanup removes the entire session directory
+//
+// When NOT provided:
+//   - Falls back to system temp directory (/tmp/goreact-sandbox/)
+//   - No session-level directory isolation (backward compatible)
+//
+// Example (MindX integration):
+//
+//	sessionBaseDir := filepath.Join(homeDir, ".mindx", "sessions")
+//	agent, err := goreact.NewAgent(
+//	    goreact.WithConfig(cfg),
+//	    goreact.WithProjectDir(projectDir),
+//	    goreact.WithSessionBaseDir(sessionBaseDir),  // ← Enables full isolation
+//	)
+func WithSessionBaseDir(dir string) AgentOption {
+	return func(s *agentSetup) {
+		s.sessionBaseDir = dir
 	}
 }
 
@@ -412,6 +491,16 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 		setup.model = DefaultModel()
 	}
 
+	// Design-time safety: Ensure ProjectDir is always set
+	// This prevents runtime failures where LLM lacks directory context
+	if setup.projectDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			cwd = "." // Fallback to current directory
+		}
+		setup.projectDir = cwd
+	}
+
 	config := setup.config
 	model := setup.model
 
@@ -451,6 +540,20 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	if setup.ruleRegistry != nil {
 		reactorOpts = append(reactorOpts, reactor.WithRuleRegistry(setup.ruleRegistry))
 	}
+
+	// Design-time safety: Always inject ProjectDir to Reactor (guaranteed non-empty after defaults)
+	reactorOpts = append(reactorOpts, reactor.WithProjectDir(setup.projectDir))
+
+	// Inject SessionDir if explicitly provided (Layer 3 safety)
+	if setup.sessionDir != "" {
+		reactorOpts = append(reactorOpts, reactor.WithSessionDir(setup.sessionDir))
+	}
+
+	// Initialize SessionSandboxManager (Agent Native Design: 4-Layer Architecture)
+	// This creates a sandbox manager that provides session-scoped isolation
+	// when sessionBaseDir is provided, otherwise falls back to system temp.
+	sandboxMgr := tools.NewSessionSandboxManager(setup.projectDir, setup.sessionBaseDir)
+	reactorOpts = append(reactorOpts, reactor.WithSessionSandboxManager(sandboxMgr))
 
 	// Build ReactorConfig from ModelConfig — align all generation parameters
 	reactorConfig := buildReactorConfig(model, config.Introduction)

@@ -87,7 +87,7 @@ func TestSandboxConfigUpdate(t *testing.T) {
 }
 
 func TestSessionSandboxManager(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 	if mgr == nil {
 		t.Fatal("failed to create session sandbox manager")
 	}
@@ -116,7 +116,7 @@ func TestSessionSandboxManager(t *testing.T) {
 }
 
 func TestSessionSandboxManagerUpdate(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 	sessionID := "test-session-2"
 
 	mgr.UpdateConfig(sessionID, func(cfg *SandboxConfig) {
@@ -130,7 +130,7 @@ func TestSessionSandboxManagerUpdate(t *testing.T) {
 }
 
 func TestSessionSandboxManagerCleanup(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 	sessionID := "test-session-3"
 
 	mgr.SetConfig(sessionID, &SandboxConfig{
@@ -182,7 +182,7 @@ func TestApplySandboxDisabled(t *testing.T) {
 
 func TestGenerateSessionTempDir(t *testing.T) {
 	sessionID := "test-session"
-	tempDir := GenerateSessionTempDir(sessionID)
+	tempDir := GenerateSessionTempDir(sessionID, "")
 
 	expectedSuffix := filepath.Join("goreact-sandbox", sessionID)
 	if !strings.HasSuffix(tempDir, expectedSuffix) {
@@ -281,7 +281,7 @@ func TestBashToolWithSandbox(t *testing.T) {
 }
 
 func TestBashToolWithSessionSandbox(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 	tool := NewBashToolWithSessionSandbox(mgr)
 	bashTool, ok := tool.(*BashTool)
 	if !ok {
@@ -313,7 +313,7 @@ func TestRunScriptToolWithSandbox(t *testing.T) {
 }
 
 func TestRunScriptToolWithSessionSandbox(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 	tool := NewRunScriptToolWithSessionSandbox(mgr)
 	runScriptTool, ok := tool.(*RunScript)
 	if !ok {
@@ -345,7 +345,7 @@ func TestPowerShellToolWithSandbox(t *testing.T) {
 }
 
 func TestPowerShellToolWithSessionSandbox(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 	tool := NewPowerShellToolWithSessionSandbox(mgr)
 	powerShellTool, ok := tool.(*PowerShellTool)
 	if !ok {
@@ -413,7 +413,7 @@ func TestEnsureTempDir(t *testing.T) {
 }
 
 func TestSessionSandboxManagerClearAll(t *testing.T) {
-	mgr := NewSessionSandboxManager()
+	mgr := NewSessionSandboxManager("/tmp/test-project", "")
 
 	mgr.SetConfig("session-1", &SandboxConfig{Enabled: true})
 	mgr.SetConfig("session-2", &SandboxConfig{Enabled: true})

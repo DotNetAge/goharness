@@ -82,16 +82,7 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 	logger := getLogger(ctx)
 
 	tc := core.GetToolContext(ctx)
-	projectDir := tc.ProjectDir
-	sessionDir := tc.SessionDir
-	if projectDir == "" {
-		projectDir, _ = os.Getwd()
-	}
-	if sessionDir == "" {
-		sessionDir = projectDir
-	}
-
-	resolvedPath, scope := ResolveTargetPath(filePath, projectDir, sessionDir)
+	resolvedPath, scope := ResolveTargetPath(filePath, tc.ProjectDir, tc.SessionDir)
 
 	logger.Info("editing file",
 		"input_path", filePath,
@@ -100,7 +91,7 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 	)
 
 	// Security check
-	if err := ValidateFileSafety(resolvedPath); err != nil {
+	if err := ValidateFileSafety(resolvedPath, tc.ProjectDir); err != nil {
 		return nil, err
 	}
 

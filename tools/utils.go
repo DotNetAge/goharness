@@ -31,7 +31,12 @@ func ValidateRequiredString(params map[string]any, key string) (string, error) {
 // ValidateFileSafety verifies file access safety using path anchoring.
 // It normalizes the path via filepath.Clean, resolves symlinks, and ensures
 // the real path stays within the allowed workspace boundary.
-func ValidateFileSafety(path string) error {
+//
+// Parameters:
+//   - path: The file path to validate
+//   - projectDir: The project directory (Layer 2) to anchor paths against.
+//     If empty, falls back to os.Getwd() for backward compatibility.
+func ValidateFileSafety(path string, projectDir string) error {
 	// Step 1: Clean the path to eliminate relative components like ../
 	cleaned := filepath.Clean(path)
 
@@ -53,13 +58,16 @@ func ValidateFileSafety(path string) error {
 	}
 
 	// Step 4: Resolve the project directory's real path (also resolving symlinks)
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get project directory: %w", err)
+	// Use provided projectDir (Design-time safety) with fallback to CWD
+	if projectDir == "" {
+		projectDir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get project directory: %w", err)
+		}
 	}
-	realCwd, err := filepath.EvalSymlinks(cwd)
+	realCwd, err := filepath.EvalSymlinks(projectDir)
 	if err != nil {
-		realCwd = cwd
+		realCwd = projectDir
 	}
 
 	// Step 5: Ensure the real path is anchored within the project directory
@@ -125,7 +133,9 @@ const sessionPathPrefix = "session:"
 //
 // Behavior:
 //   - "session:filename" → resolves to <sessionDir>/filename (scope: session)
+//                    → if sessionDir is empty, falls back to <projectDir>/filename
 //   - "relative/path"  → resolves to <projectDir>/relative/path (scope: project)
+//                    → if projectDir is empty, falls back to current working directory
 //   - "/absolute/path" → returns as-is (scope: empty)
 //
 // This is intentionally simple - no heuristic inference.
@@ -141,8 +151,24 @@ func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath
 
 	if strings.HasPrefix(inputPath, sessionPathPrefix) {
 		filename := strings.TrimPrefix(inputPath, sessionPathPrefix)
-		return filepath.Join(sessionDir, filename), PathScopeSession
+		targetDir := sessionDir
+
+		// Defensive fallback: if sessionDir is empty, use projectDir instead
+		if targetDir == "" {
+			targetDir = projectDir
+			scope = PathScopeProject // Fallback to project scope for logging clarity
+		} else {
+			scope = PathScopeSession
+		}
+
+		return filepath.Join(targetDir, filename), scope
 	}
 
-	return filepath.Join(projectDir, inputPath), PathScopeProject
+	// Default: resolve relative to projectDir with defensive fallback
+	targetDir := projectDir
+	if targetDir == "" {
+		targetDir, _ = os.Getwd() // Last resort: use CWD only when no context available
+	}
+
+	return filepath.Join(targetDir, inputPath), PathScopeProject
 }

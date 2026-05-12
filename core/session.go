@@ -30,12 +30,27 @@ type SlideEvent struct {
 type SlideHandler func(ctx context.Context, event SlideEvent)
 
 // SessionInfo holds metadata about a session, used by ListSessions and GetByRole.
+// It includes directory context that is essential for tool execution and prompt generation.
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
+	ProjectDir     string    `json:"project_dir,omitempty"` // Working directory at session creation time
+	SessionDir     string    `json:"session_dir,omitempty"` // Session sandbox directory (managed by Store)
 	Messages       []Message `json:"messages"`
 	LastActivityAt time.Time `json:"last_activity_at"`
 	CreatedAt      time.Time `json:"created_at"`
+}
+
+// GetProjectDir returns the project working directory for this session.
+// Returns empty string if not set (callers should fallback to os.Getwd()).
+func (s *SessionInfo) GetProjectDir() string {
+	return s.ProjectDir
+}
+
+// GetSessionDir returns the session sandbox directory for this session.
+// This directory is isolated per-session and managed by the SessionStore implementation.
+func (s *SessionInfo) GetSessionDir() string {
+	return s.SessionDir
 }
 
 // SessionStore is the persistence interface for conversation history (WAL mode).
@@ -45,6 +60,7 @@ type SessionInfo struct {
 //   - Append/Retrieve ordered message history per session
 //   - CurrentContext returns messages that fit within a token budget (sliding-window read side)
 //   - Notify consumers via SlideHandler when messages are evicted from ContextWindow
+//   - Manage session lifecycle (Create, GetMeta, directory resolution)
 //
 // It does NOT do semantic analysis — that is Memory/RAG's job.
 type SessionStore interface {
@@ -86,6 +102,38 @@ type SessionStore interface {
 	// GetTokenUsages retrieves all token usage records for a session.
 	// Used for billing, monitoring, and external token statistics.
 	GetTokenUsages(ctx context.Context, sessionID string) ([]TokenUsage, error)
+
+	// === Session Lifecycle Management (Framework-level directory control) ===
+
+	// Create creates a new session with the given agent name and options.
+	// The implementation should:
+	//   1. Generate a unique session ID
+	//   2. Capture or accept ProjectDir (working directory at creation time)
+	//   3. Calculate and create SessionDir (sandbox directory: base/<agent>/<session_id>)
+	//   4. Return a complete SessionInfo with directory context
+	//
+	// This centralizes session creation logic that was previously scattered across application layers.
+	Create(ctx context.Context, agentName string, opts ...SessionOption) (*SessionInfo, error)
+
+	// GetMeta returns complete session metadata including directory information.
+	// Unlike GetByRole which returns minimal info, this includes ProjectDir and SessionDir.
+	GetMeta(ctx context.Context, sessionID string) (*SessionInfo, error)
+
+	// ResolveSessionDir returns the filesystem path for the session's sandbox directory.
+	// Returns ErrSessionNotFound if the session does not exist.
+	// This is the canonical way for tools and components to locate session-specific files.
+	ResolveSessionDir(sessionID string) (string, error)
+}
+
+// SessionOption is a functional option for configuring session creation.
+type SessionOption func(*SessionInfo)
+
+// WithProjectDir sets the project working directory for a new session.
+// If not provided, the implementation should use os.Getwd() as default.
+func WithProjectDir(dir string) SessionOption {
+	return func(s *SessionInfo) {
+		s.ProjectDir = dir
+	}
 }
 
 // NoopSlideHandler is a no-op SlideHandler for implementations that don't need it.

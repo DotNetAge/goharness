@@ -36,6 +36,10 @@ type toolExecutorConfig struct {
 	fileStore         FileStore
 	sessionID         string
 	logger            Logger // Unified logging interface
+
+	// Directory context (Design-time safety: guaranteed by Agent layer)
+	projectDir string // Layer 2: Set via WithProjectDirExecutor() or Agent's WithProjectDir()
+	sessionDir string // Layer 3: Set via WithSessionDirExecutor() or auto-resolved from SessionStore
 }
 
 type ExecutorOption func(*toolExecutorConfig)
@@ -86,6 +90,27 @@ func WithFileStore(store FileStore) ExecutorOption {
 
 func WithSessionID(id string) ExecutorOption {
 	return func(c *toolExecutorConfig) { c.sessionID = id }
+}
+
+// WithProjectDirExecutor sets the project working directory for tool execution.
+// This is typically called by the Agent layer to inject its configured ProjectDir.
+//
+// Design-time safety:
+//   - When set, all tools (edit/read/write) will use this as their base directory
+//   - LLM receives this directory in its Environment section of system prompt
+//   - Prevents "file not found" errors caused by ambiguous working directory
+func WithProjectDirExecutor(dir string) ExecutorOption {
+	return func(c *toolExecutorConfig) { c.projectDir = dir }
+}
+
+// WithSessionDirExecutor sets the session sandbox directory for tool execution.
+// This is typically auto-resolved from SessionStore when available.
+//
+// When set:
+//   - Tools can isolate session-specific files (temp files, drafts, etc.)
+//   - LLM knows where to place session-scoped output
+func WithSessionDirExecutor(dir string) ExecutorOption {
+	return func(c *toolExecutorConfig) { c.sessionDir = dir }
 }
 
 func NewToolExecutor(registry ToolRegistry, opts ...ExecutorOption) ToolExecutor {
@@ -196,6 +221,7 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 	}
 
 	// Inject ToolContext so bridge tools (delegate, etc.) can access event bus
+	// Directory context is guaranteed by Agent layer (Design-time safety)
 	toolCtx := &ToolContext{
 		EmitEvent:   e.cfg.eventEmitter,
 		ResultStore: e.cfg.resultStore,
@@ -203,6 +229,8 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 		FileStore:   e.cfg.fileStore,
 		SessionID:   e.cfg.sessionID,
 		Logger:      e.cfg.logger,
+		ProjectDir:  e.cfg.projectDir,  // Layer 2: Always set (defaults to os.Getwd() in Agent)
+		SessionDir:  e.cfg.sessionDir,  // Layer 3: Set when SessionStore is available
 	}
 	execCtx := WithToolContext(ctx, toolCtx)
 

@@ -36,11 +36,16 @@ func (r *Reactor) Think(ctx *ReactContext) (int, error) {
 	if r.fileStore != nil {
 		sessionDir = r.fileStore.GetSessionPath(sessionID)
 	}
+	// Fallback to Reactor's sessionDir if fileStore didn't provide one
+	if sessionDir == "" && r.sessionDir != "" {
+		sessionDir = r.sessionDir
+	}
 
 	// Build system prompt sections using the centralized Prompt
+	// Inject projectDir from Agent/Reactor setup (Design-time safety guarantee)
 	var sections []gochatcore.Message
 	if r.prompt != nil {
-		sections = r.prompt.ToSectionedMessages(sessionID, sessionDir)
+		sections = r.prompt.ToSectionedMessages(sessionID, sessionDir, r.projectDir)
 	}
 
 	callInput := CallInput{

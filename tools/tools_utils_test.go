@@ -68,7 +68,7 @@ func TestValidateFileSafety(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateFileSafety(tt.path)
+			err := ValidateFileSafety(tt.path, "")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateFileSafety(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
 			}

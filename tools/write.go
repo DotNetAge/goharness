@@ -60,16 +60,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 
 	// Resolve path with optional session: prefix support
 	tc := core.GetToolContext(ctx)
-	projectDir := tc.ProjectDir
-	sessionDir := tc.SessionDir
-	if projectDir == "" {
-		projectDir, _ = os.Getwd()
-	}
-	if sessionDir == "" {
-		sessionDir = projectDir
-	}
-
-	resolvedPath, scope := ResolveTargetPath(path, projectDir, sessionDir)
+	resolvedPath, scope := ResolveTargetPath(path, tc.ProjectDir, tc.SessionDir)
 
 	logger.Info("writing file",
 		"input_path", path,
@@ -79,7 +70,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	)
 
 	// Security check on resolved path
-	if err := ValidateFileSafety(resolvedPath); err != nil {
+	if err := ValidateFileSafety(resolvedPath, tc.ProjectDir); err != nil {
 		return nil, err
 	}
 

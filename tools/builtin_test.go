@@ -367,29 +367,29 @@ func TestValidateFunctions(t *testing.T) {
 
 	t.Run("validateFileSafety - restricted files", func(t *testing.T) {
 		// These are outside workspace, so should be rejected
-		err := ValidateFileSafety("/etc/passwd")
+		err := ValidateFileSafety("/etc/passwd", "")
 		if err == nil {
 			t.Error("Expected error for /etc/passwd (outside workspace)")
 		}
 
-		err = ValidateFileSafety("/etc/shadow")
+		err = ValidateFileSafety("/etc/shadow", "")
 		if err == nil {
 			t.Error("Expected error for /etc/shadow (outside workspace)")
 		}
 
-		err = ValidateFileSafety("/etc/sudoers")
+		err = ValidateFileSafety("/etc/sudoers", "")
 		if err == nil {
 			t.Error("Expected error for /etc/sudoers (outside workspace)")
 		}
 
 		// A path inside workspace but with restricted filename should be rejected
-		err = ValidateFileSafety(".env")
+		err = ValidateFileSafety(".env", "")
 		if err == nil {
 			t.Error("Expected error for .env (restricted filename)")
 		}
 
 		// A safe path inside workspace should pass
-		err = ValidateFileSafety("safe_file.txt")
+		err = ValidateFileSafety("safe_file.txt", "")
 		if err != nil {
 			t.Errorf("Expected no error for safe local path, got %v", err)
 		}

@@ -67,7 +67,7 @@ func TestPrompt_ToSectionedMessages_StaticOrder(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs := tt.prompt.ToSectionedMessages("", "")
+			msgs := tt.prompt.ToSectionedMessages("", "", "")
 
 			if len(msgs) != tt.wantTotal {
 				t.Fatalf("len(messages) = %d, want %d", len(msgs), tt.wantTotal)
@@ -113,7 +113,7 @@ func TestPrompt_ToSectionedMessages_EmptyFieldsSkipped(t *testing.T) {
 		Identity: "You are a minimal agent.",
 	}
 
-	msgs := p.ToSectionedMessages("", "")
+	msgs := p.ToSectionedMessages("", "", "")
 
 	// Identity + Environment + SystemReminders + DynamicBoundary
 	if len(msgs) != 4 {

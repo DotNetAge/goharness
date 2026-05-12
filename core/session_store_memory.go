@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -237,4 +239,79 @@ func (s *MemorySessionStore) ListSessions(_ context.Context) ([]SessionInfo, err
 		return result[i].LastActivityAt.After(result[j].LastActivityAt)
 	})
 	return result, nil
+}
+
+// === Session Lifecycle Management (Framework-level directory control) ===
+
+// Create creates a new in-memory session with the given agent name and options.
+// For memory store, SessionDir is set to empty string (no filesystem backing).
+func (s *MemorySessionStore) Create(_ context.Context, agentName string, opts ...SessionOption) (*SessionInfo, error) {
+	sessionID := fmt.Sprintf("sess_%d", time.Now().UnixNano()%100000000)
+
+	sessionInfo := &SessionInfo{
+		SessionID:      sessionID,
+		AgentName:      agentName,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	for _, opt := range opts {
+		opt(sessionInfo)
+	}
+
+	if sessionInfo.ProjectDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			cwd = "."
+		}
+		sessionInfo.ProjectDir = cwd
+	}
+
+	s.mu.Lock()
+	s.store[sessionID] = []Message{}
+	s.metas[sessionID] = &sessionMeta{
+		role:           agentName,
+		createdAt:      time.Now(),
+		lastActivityAt: time.Now(),
+	}
+	s.mu.Unlock()
+
+	return sessionInfo, nil
+}
+
+// GetMeta returns complete session metadata including directory information.
+// For memory store, this is equivalent to GetByRole but includes ProjectDir if set.
+func (s *MemorySessionStore) GetMeta(_ context.Context, sessionID string) (*SessionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	meta, exists := s.metas[sessionID]
+	if !exists {
+		return nil, ErrSessionNotFound
+	}
+
+	msgs := s.store[sessionID]
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+
+	return &SessionInfo{
+		SessionID:      sessionID,
+		AgentName:      meta.role,
+		Messages:       out,
+		LastActivityAt: meta.lastActivityAt,
+		CreatedAt:      meta.createdAt,
+	}, nil
+}
+
+// ResolveSessionDir returns the filesystem path for the session's sandbox directory.
+// For memory store, always returns empty string (no filesystem backing).
+func (s *MemorySessionStore) ResolveSessionDir(sessionID string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, exists := s.metas[sessionID]; !exists {
+		return "", ErrSessionNotFound
+	}
+
+	return "", nil // Memory store has no filesystem path
 }

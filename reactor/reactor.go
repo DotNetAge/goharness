@@ -133,6 +133,10 @@ type Reactor struct {
 	modelRegistry core.ModelRegistry
 
 	auditLogger core.AuditLogger
+
+	// Directory context (Design-time safety: set during initialization from setup)
+	projectDir string // Layer 2: Project working directory (always non-empty after init)
+	sessionDir string // Layer 3: Session sandbox directory
 }
 
 func (r *Reactor) EventBus() EventBus { return r.eventBus }
@@ -219,6 +223,13 @@ type reactorSetup struct {
 	runtimeDir     *core.RuntimeDirectory
 	modelRegistry  core.ModelRegistry
 	auditLogger    core.AuditLogger
+
+	// Directory context (Design-time safety: guaranteed by Agent layer)
+	projectDir string // Layer 2: Set via WithProjectDir() ReactorOption
+	sessionDir string // Layer 3: Auto-resolved from SessionStore or set via WithSessionDir()
+
+	// Sandbox management (Agent Native Design: 4-Layer Architecture)
+	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
 }
 
 func (r *Reactor) applyDefaults(config *ReactorConfig) {
@@ -351,6 +362,8 @@ func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 		core.WithKVStore(r.kvStore),
 		core.WithFileStore(r.fileStore),
 		core.WithLogger(r.getLogger()),
+		core.WithProjectDirExecutor(setup.projectDir), // Layer 2: From Agent or ReactorOption
+		core.WithSessionDirExecutor(setup.sessionDir), // Layer 3: From SessionStore or explicit
 	)
 }
 
@@ -368,8 +381,55 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 		{"Read", tools.NewReadTool()},
 		{"Write", tools.NewWriteTool()},
 		{"FileEdit", tools.NewFileEditTool()},
-		{"Bash", tools.NewBashTool()},
-		{"RunScript", tools.NewRunScriptTool()},
+	}
+
+	for _, bt := range bundledTools {
+		if !setup.skipTools[bt.name] {
+			if err := r.RegisterTool(bt.tool); err != nil {
+				r.getLogger().Warn("failed to register bundled tool", "name", bt.name, "error", err)
+			}
+		}
+	}
+
+	if setup.sandboxMgr != nil {
+		bashTool := tools.NewBashToolWithSessionSandbox(setup.sandboxMgr)
+		if err := r.RegisterTool(bashTool); err != nil {
+			r.getLogger().Warn("failed to register Bash tool with session sandbox", "error", err)
+		}
+
+		runScriptTool := tools.NewRunScriptToolWithSessionSandbox(setup.sandboxMgr)
+		if err := r.RegisterTool(runScriptTool); err != nil {
+			r.getLogger().Warn("failed to register RunScript tool with session sandbox", "error", err)
+		}
+
+		if tools.IsWindowsPlatform() && !setup.skipTools["PowerShell"] {
+			psTool := tools.NewPowerShellToolWithSessionSandbox(setup.sandboxMgr)
+			if err := r.RegisterTool(psTool); err != nil {
+				r.getLogger().Warn("failed to register PowerShell tool with session sandbox", "error", err)
+			}
+		}
+	} else {
+		bashTool := tools.NewBashTool()
+		if err := r.RegisterTool(bashTool); err != nil {
+			r.getLogger().Warn("failed to register Bash tool (no session sandbox)", "error", err)
+		}
+
+		runScriptTool := tools.NewRunScriptTool()
+		if err := r.RegisterTool(runScriptTool); err != nil {
+			r.getLogger().Warn("failed to register RunScript tool (no session sandbox)", "error", err)
+		}
+
+		if tools.IsWindowsPlatform() && !setup.skipTools["PowerShell"] {
+			if err := r.RegisterTool(tools.NewPowerShellTool()); err != nil {
+				r.getLogger().Warn("failed to register PowerShell tool (no session sandbox)", "error", err)
+			}
+		}
+	}
+
+	remainingTools := []struct {
+		name string
+		tool core.FuncTool
+	}{
 		{"WebSearch", tools.NewWebSearchTool()},
 		{"WebFetch", tools.NewWebFetchTool()},
 		{"TodoWrite", tools.NewTodoWriteTool()},
@@ -411,17 +471,11 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 			return "", fmt.Errorf("team_create: SpawnFunc not configured on reactor")
 		})},
 	}
-	for _, bt := range bundledTools {
+	for _, bt := range remainingTools {
 		if !setup.skipTools[bt.name] {
 			if err := r.RegisterTool(bt.tool); err != nil {
 				r.getLogger().Warn("failed to register bundled tool", "name", bt.name, "error", err)
 			}
-		}
-	}
-
-	if tools.IsWindowsPlatform() && !setup.skipTools["PowerShell"] {
-		if err := r.RegisterTool(tools.NewPowerShellTool()); err != nil {
-			r.getLogger().Warn("failed to register PowerShell tool", "error", err)
 		}
 	}
 }
@@ -447,6 +501,10 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.runtimeDir = setup.runtimeDir
 	r.modelRegistry = setup.modelRegistry
 	r.auditLogger = setup.auditLogger
+
+	// Directory context (Design-time safety: copy from setup to Reactor)
+	r.projectDir = setup.projectDir
+	r.sessionDir = setup.sessionDir
 
 	if setup.kvStore == nil {
 		if kv, err := core.NewFileSystemKVStore(""); err == nil {

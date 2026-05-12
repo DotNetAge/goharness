@@ -55,6 +55,9 @@ func (l *LS) Info() *core.ToolInfo {
 }
 
 func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
+	// Get ToolContext for directory awareness (Design-time safety)
+	tc := core.GetToolContext(ctx)
+
 	// Get directory path (defaults to current directory)
 	dirPath := "."
 	if path, ok := params["path"].(string); ok && path != "" {
@@ -62,7 +65,7 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	}
 
 	// Security check
-	if err := ValidateFileSafety(dirPath); err != nil {
+	if err := ValidateFileSafety(dirPath, tc.ProjectDir); err != nil {
 		return nil, err
 	}
 

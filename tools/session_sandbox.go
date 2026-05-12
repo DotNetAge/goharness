@@ -9,23 +9,89 @@ import (
 	"time"
 )
 
+// SessionSandboxManager manages per-session sandbox configurations with full
+// directory context awareness (Agent Native Design: 4-Layer Architecture).
+//
+// Key Design Principles:
+//   - SESSION_DIR is the root for all session-scoped resources
+//   - Each session gets isolated TempDir = ${SESSION_DIR}/tmp
+//   - AllowedPaths automatically includes PROJECT_DIR and SESSION_DIR
+//   - Lifecycle management ensures cleanup on session removal
+//
+// Integration Point:
+//   This should be created once per Agent and shared across all tools.
+//   The Agent is responsible for injecting it via tool constructors.
 type SessionSandboxManager struct {
 	mu            sync.RWMutex
 	sessions      map[string]*SandboxConfig
 	defaultConfig *SandboxConfig
+
+	// Directory context (set at construction time, immutable)
+	projectDir     string // Layer 2: Project working directory
+	sessionBaseDir string // Layer 3 base: Parent dir for all session directories (e.g., ~/.mindx/sessions)
 }
 
-func NewSessionSandboxManager(defaultConfig ...*SandboxConfig) *SessionSandboxManager {
-	cfg := DefaultSandboxConfig()
-	if len(defaultConfig) > 0 {
-		cfg = defaultConfig[0]
+// NewSessionSandboxManager creates a manager with full directory context.
+//
+// Parameters:
+//   - projectDir: Layer 2 directory (required, used for AllowedPaths)
+//   - sessionBaseDir: Layer 3 base directory (optional, enables session isolation)
+//
+// When sessionBaseDir is provided:
+//   - Each session gets its own directory: ${sessionBaseDir}/${sessionID}
+//   - TempDir is automatically set to ${sessionDir}/tmp
+//   - Both projectDir and sessionDir are in AllowedPaths
+//
+// When sessionBaseDir is empty:
+//   - Falls back to system temp directory (backward compatibility)
+//   - No session isolation (all sessions share the same sandbox)
+func NewSessionSandboxManager(projectDir string, sessionBaseDir string) *SessionSandboxManager {
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
 	}
 
-	cfg.TempDir = filepath.Join(cfg.TempDir, generateSessionTempDir())
+	defaultCfg := NewSandboxConfigWithDirs(projectDir, "")
+
+	if sessionBaseDir != "" {
+		defaultCfg.TempDir = filepath.Join(sessionBaseDir, "default", "tmp")
+	} else {
+		// Backward compatibility: use system temp when no session base dir
+		defaultCfg.TempDir = filepath.Join(defaultCfg.TempDir, "default")
+	}
 
 	return &SessionSandboxManager{
-		sessions:      make(map[string]*SandboxConfig),
-		defaultConfig: cfg,
+		sessions:       make(map[string]*SandboxConfig),
+		defaultConfig:  defaultCfg,
+		projectDir:     projectDir,
+		sessionBaseDir: sessionBaseDir,
+	}
+}
+
+// NewSessionSandboxManagerFromConfig creates a manager from an existing SandboxConfig.
+// This preserves backward compatibility while adopting the new architecture.
+func NewSessionSandboxManagerFromConfig(defaultConfig *SandboxConfig) *SessionSandboxManager {
+	if defaultConfig == nil {
+		defaultConfig = DefaultSandboxConfig()
+	}
+
+	projectDir := defaultConfig.ProjectDir
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
+
+	var sessionBaseDir string
+	if defaultConfig.HasSessionIsolation() {
+		sessionBaseDir = filepath.Dir(defaultConfig.SessionDir)
+	}
+
+	cfgCopy := &SandboxConfig{}
+	*cfgCopy = *defaultConfig
+
+	return &SessionSandboxManager{
+		sessions:       make(map[string]*SandboxConfig),
+		defaultConfig:  cfgCopy,
+		projectDir:     projectDir,
+		sessionBaseDir: sessionBaseDir,
 	}
 }
 
@@ -34,57 +100,35 @@ func (m *SessionSandboxManager) GetConfig(sessionID string) *SandboxConfig {
 	defer m.mu.RUnlock()
 
 	if cfg, ok := m.sessions[sessionID]; ok {
-		tempDir := cfg.TempDir
-		if tempDir == "" {
-			tempDir = m.defaultConfig.TempDir
-		}
-		return &SandboxConfig{
-			Enabled:      cfg.Enabled,
-			Profile:      cfg.Profile,
-			AllowedPaths: cfg.AllowedPaths,
-			AllowNetwork: cfg.AllowNetwork,
-			CustomPolicy: cfg.CustomPolicy,
-			TempDir:      tempDir,
-		}
+		return m.copyConfig(cfg)
 	}
 
-	if m.defaultConfig.TempDir != "" {
-		return &SandboxConfig{
-			Enabled:      m.defaultConfig.Enabled,
-			Profile:      m.defaultConfig.Profile,
-			AllowedPaths: m.defaultConfig.AllowedPaths,
-			AllowNetwork: m.defaultConfig.AllowNetwork,
-			CustomPolicy: m.defaultConfig.CustomPolicy,
-			TempDir:      filepath.Join(m.defaultConfig.TempDir, sessionID),
-		}
-	}
-	return &SandboxConfig{
-		Enabled:      m.defaultConfig.Enabled,
-		Profile:      m.defaultConfig.Profile,
-		AllowedPaths: m.defaultConfig.AllowedPaths,
-		AllowNetwork: m.defaultConfig.AllowNetwork,
-		CustomPolicy: m.defaultConfig.CustomPolicy,
-		TempDir:      m.defaultConfig.TempDir,
-	}
+	return m.createDefaultSessionConfig(sessionID)
 }
 
 func (m *SessionSandboxManager) SetConfig(sessionID string, config *SandboxConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	tempDir := config.TempDir
-	if tempDir == "" && m.defaultConfig.TempDir != "" {
-		tempDir = filepath.Join(m.defaultConfig.TempDir, sessionID)
+	cfgCopy := m.prepareSessionConfig(sessionID, config)
+
+	if config.Enabled != cfgCopy.Enabled {
+		cfgCopy.Enabled = config.Enabled
+	}
+	if config.Profile != "" {
+		cfgCopy.Profile = config.Profile
+	}
+	if len(config.AllowedPaths) > 0 {
+		cfgCopy.AllowedPaths = config.AllowedPaths
+	}
+	config.AllowNetwork = cfgCopy.AllowNetwork
+	if config.CustomPolicy != "" {
+		cfgCopy.CustomPolicy = config.CustomPolicy
+	}
+	if config.TempDir != "" {
+		cfgCopy.TempDir = config.TempDir
 	}
 
-	cfgCopy := &SandboxConfig{
-		Enabled:      config.Enabled,
-		Profile:      config.Profile,
-		AllowedPaths: config.AllowedPaths,
-		AllowNetwork: config.AllowNetwork,
-		CustomPolicy: config.CustomPolicy,
-		TempDir:      tempDir,
-	}
 	m.sessions[sessionID] = cfgCopy
 
 	if cfgCopy.TempDir != "" {
@@ -98,15 +142,7 @@ func (m *SessionSandboxManager) UpdateConfig(sessionID string, fn func(cfg *Sand
 
 	cfg, ok := m.sessions[sessionID]
 	if !ok {
-		newCfg := &SandboxConfig{
-			Enabled:      m.defaultConfig.Enabled,
-			Profile:      m.defaultConfig.Profile,
-			AllowedPaths: m.defaultConfig.AllowedPaths,
-			AllowNetwork: m.defaultConfig.AllowNetwork,
-			CustomPolicy: m.defaultConfig.CustomPolicy,
-			TempDir:      filepath.Join(m.defaultConfig.TempDir, sessionID),
-		}
-		cfg = newCfg
+		cfg = m.createDefaultSessionConfigLocked(sessionID)
 		m.sessions[sessionID] = cfg
 	}
 
@@ -122,8 +158,8 @@ func (m *SessionSandboxManager) RemoveSession(sessionID string) {
 	defer m.mu.Unlock()
 
 	cfg, ok := m.sessions[sessionID]
-	if ok && cfg.TempDir != "" {
-		os.RemoveAll(cfg.TempDir)
+	if ok {
+		m.cleanupSessionDir(cfg)
 	}
 	delete(m.sessions, sessionID)
 }
@@ -133,9 +169,7 @@ func (m *SessionSandboxManager) ClearAll() {
 	defer m.mu.Unlock()
 
 	for _, cfg := range m.sessions {
-		if cfg.TempDir != "" {
-			os.RemoveAll(cfg.TempDir)
-		}
+		m.cleanupSessionDir(cfg)
 	}
 	m.sessions = make(map[string]*SandboxConfig)
 }
@@ -161,10 +195,151 @@ func (m *SessionSandboxManager) CleanupSession(sessionID string) {
 	defer m.mu.Unlock()
 
 	cfg, ok := m.sessions[sessionID]
-	if ok && cfg.TempDir != "" {
-		os.RemoveAll(cfg.TempDir)
+	if ok {
+		m.cleanupSessionDir(cfg)
 	}
 	delete(m.sessions, sessionID)
+}
+
+// GetProjectDir returns the project directory this manager was initialized with.
+func (m *SessionSandboxManager) GetProjectDir() string {
+	return m.projectDir
+}
+
+// GetSessionBaseDir returns the session base directory (may be empty).
+func (m *SessionSandboxManager) GetSessionBaseDir() string {
+	return m.sessionBaseDir
+}
+
+// HasSessionIsolation returns true if this manager provides session-level isolation.
+func (m *SessionSandboxManager) HasSessionIsolation() bool {
+	return m.sessionBaseDir != ""
+}
+
+// --- Internal helper methods ---
+
+func (m *SessionSandboxManager) createDefaultSessionConfig(sessionID string) *SandboxConfig {
+	if m.sessionBaseDir != "" {
+		sessionDir := filepath.Join(m.sessionBaseDir, sessionID)
+		tempDir := filepath.Join(sessionDir, "tmp")
+
+		return &SandboxConfig{
+			Enabled:      m.defaultConfig.Enabled,
+			Profile:      m.defaultConfig.Profile,
+			AllowedPaths: []string{m.projectDir, sessionDir},
+			AllowNetwork: m.defaultConfig.AllowNetwork,
+			CustomPolicy: m.defaultConfig.CustomPolicy,
+			TempDir:      tempDir,
+			ProjectDir:   m.projectDir,
+			SessionDir:   sessionDir,
+		}
+	}
+
+	// Fallback: no session isolation
+	tempDir := filepath.Join(m.defaultConfig.TempDir, sessionID)
+	if tempDir == m.defaultConfig.TempDir {
+		tempDir = filepath.Join(os.TempDir(), "goreact-sandbox", sessionID)
+	}
+
+	return &SandboxConfig{
+		Enabled:      m.defaultConfig.Enabled,
+		Profile:      m.defaultConfig.Profile,
+		AllowedPaths: m.defaultConfig.AllowedPaths,
+		AllowNetwork: m.defaultConfig.AllowNetwork,
+		CustomPolicy: m.defaultConfig.CustomPolicy,
+		TempDir:      tempDir,
+		ProjectDir:   m.projectDir,
+	}
+}
+
+func (m *SessionSandboxManager) createDefaultSessionConfigLocked(sessionID string) *SandboxConfig {
+	// Same as createDefaultSessionConfig but assumes lock is held
+	if m.sessionBaseDir != "" {
+		sessionDir := filepath.Join(m.sessionBaseDir, sessionID)
+		tempDir := filepath.Join(sessionDir, "tmp")
+
+		return &SandboxConfig{
+			Enabled:      m.defaultConfig.Enabled,
+			Profile:      m.defaultConfig.Profile,
+			AllowedPaths: []string{m.projectDir, sessionDir},
+			AllowNetwork: m.defaultConfig.AllowNetwork,
+			CustomPolicy: m.defaultConfig.CustomPolicy,
+			TempDir:      tempDir,
+			ProjectDir:   m.projectDir,
+			SessionDir:   sessionDir,
+		}
+	}
+
+	tempDir := filepath.Join(m.defaultConfig.TempDir, sessionID)
+	if tempDir == m.defaultConfig.TempDir {
+		tempDir = filepath.Join(os.TempDir(), "goreact-sandbox", sessionID)
+	}
+
+	return &SandboxConfig{
+		Enabled:      m.defaultConfig.Enabled,
+		Profile:      m.defaultConfig.Profile,
+		AllowedPaths: m.defaultConfig.AllowedPaths,
+		AllowNetwork: m.defaultConfig.AllowNetwork,
+		CustomPolicy: m.defaultConfig.CustomPolicy,
+		TempDir:      tempDir,
+		ProjectDir:   m.projectDir,
+	}
+}
+
+func (m *SessionSandboxManager) prepareSessionConfig(sessionID string, input *SandboxConfig) *SandboxConfig {
+	if m.sessionBaseDir != "" {
+		sessionDir := filepath.Join(m.sessionBaseDir, sessionID)
+		tempDir := filepath.Join(sessionDir, "tmp")
+
+		return &SandboxConfig{
+			Enabled:      input.Enabled,
+			Profile:      input.Profile,
+			AllowedPaths: []string{m.projectDir, sessionDir},
+			AllowNetwork: input.AllowNetwork,
+			CustomPolicy: input.CustomPolicy,
+			TempDir:      tempDir,
+			ProjectDir:   m.projectDir,
+			SessionDir:   sessionDir,
+		}
+	}
+
+	tempDir := input.TempDir
+	if tempDir == "" {
+		tempDir = filepath.Join(m.defaultConfig.TempDir, sessionID)
+	}
+
+	return &SandboxConfig{
+		Enabled:      input.Enabled,
+		Profile:      input.Profile,
+		AllowedPaths: input.AllowedPaths,
+		AllowNetwork: input.AllowNetwork,
+		CustomPolicy: input.CustomPolicy,
+		TempDir:      tempDir,
+		ProjectDir:   m.projectDir,
+	}
+}
+
+func (m *SessionSandboxManager) copyConfig(src *SandboxConfig) *SandboxConfig {
+	return &SandboxConfig{
+		Enabled:      src.Enabled,
+		Profile:      src.Profile,
+		AllowedPaths: src.AllowedPaths,
+		AllowNetwork: src.AllowNetwork,
+		CustomPolicy: src.CustomPolicy,
+		TempDir:      src.TempDir,
+		ProjectDir:   src.ProjectDir,
+		SessionDir:   src.SessionDir,
+	}
+}
+
+func (m *SessionSandboxManager) cleanupSessionDir(cfg *SandboxConfig) {
+	if cfg != nil && cfg.TempDir != "" {
+		os.RemoveAll(cfg.TempDir)
+	}
+	// Also clean up the entire session directory if it exists
+	if cfg != nil && cfg.SessionDir != "" {
+		os.RemoveAll(cfg.SessionDir)
+	}
 }
 
 type SessionContextKey struct{}
@@ -180,29 +355,37 @@ func WithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, SessionContextKey{}, sessionID)
 }
 
-func GenerateSessionTempDir(sessionID string) string {
-	baseTemp := os.TempDir()
-	return filepath.Join(baseTemp, "goreact-sandbox", sessionID)
+// GenerateSessionTempDir returns the expected temp directory path for a session.
+// This uses SESSION_DIR when available, otherwise falls back to system temp.
+func GenerateSessionTempDir(sessionID string, sessionBaseDir string) string {
+	if sessionBaseDir != "" {
+		sessionDir := filepath.Join(sessionBaseDir, sessionID)
+		return filepath.Join(sessionDir, "tmp")
+	}
+	return filepath.Join(os.TempDir(), "goreact-sandbox", sessionID)
 }
 
-func generateSessionTempDir() string {
-	return "default"
-}
+// CleanupStaleSessions removes session directories that haven't been modified recently.
+// Only applicable when using system temp directory (not SESSION_DIR-based).
+func CleanupStaleSessions(baseDir string) {
+	if baseDir == "" {
+		baseDir = filepath.Join(os.TempDir(), "goreact-sandbox")
+	}
 
-func CleanupSandboxTemp() {
-	baseTemp := filepath.Join(os.TempDir(), "goreact-sandbox")
-	if _, err := os.Stat(baseTemp); err == nil {
-		entries, err := os.ReadDir(baseTemp)
-		if err != nil {
-			return
-		}
+	if _, err := os.Stat(baseDir); err != nil {
+		return
+	}
 
-		for _, entry := range entries {
-			if entry.IsDir() {
-				fullPath := filepath.Join(baseTemp, entry.Name())
-				if isStaleSession(fullPath) {
-					os.RemoveAll(fullPath)
-				}
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			fullPath := filepath.Join(baseDir, entry.Name())
+			if isStaleSession(fullPath) {
+				os.RemoveAll(fullPath)
 			}
 		}
 	}

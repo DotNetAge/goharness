@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"strings"
 
 	"github.com/DotNetAge/goreact/core"
@@ -82,16 +81,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	logger := getLogger(ctx)
 
 	tc := core.GetToolContext(ctx)
-	projectDir := tc.ProjectDir
-	sessionDir := tc.SessionDir
-	if projectDir == "" {
-		projectDir, _ = os.Getwd()
-	}
-	if sessionDir == "" {
-		sessionDir = projectDir
-	}
-
-	resolvedPath, scope := ResolveTargetPath(path, projectDir, sessionDir)
+	resolvedPath, scope := ResolveTargetPath(path, tc.ProjectDir, tc.SessionDir)
 
 	logger.Info("reading file",
 		"input_path", path,
@@ -99,7 +89,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		"scope", scope,
 	)
 
-	if err := ValidateFileSafety(resolvedPath); err != nil {
+	if err := ValidateFileSafety(resolvedPath, tc.ProjectDir); err != nil {
 		return nil, err
 	}
 

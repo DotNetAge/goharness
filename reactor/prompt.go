@@ -54,11 +54,16 @@ func NewDefaultPrompt(name, role, description, introduction string) *Prompt {
 // Static sections come first (KV Cache anchor), followed by the dynamic boundary,
 // followed by dynamic sections.
 //
+// Parameters:
+//   - sessionID: Current session identifier (for LLM context)
+//   - sessionDir: Session sandbox directory (Layer 3, from SessionStore)
+//   - projectDir: Project working directory (Layer 2, from Agent/Reactor setup or os.Getwd() fallback)
+//
 // addonSections: optional application-specific system message sections injected
 // after the environment info section. This allows application layers (e.g., MindX)
 // to inject domain-specific guidance (like directory semantics) without modifying
 // the framework's prompt structure.
-func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, addonSections ...string) []gochatcore.Message {
+func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, projectDir string, addonSections ...string) []gochatcore.Message {
 	var msgs []gochatcore.Message
 
 	// ===== Static sections (KV cache anchor) =====
@@ -105,7 +110,7 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, addonS
 	}
 
 	// Section 9: Environment info
-	msgs = append(msgs, gochatcore.NewSystemMessage(BuildEnvironmentInfo(sessionID, sessionDir)))
+	msgs = append(msgs, gochatcore.NewSystemMessage(BuildEnvironmentInfo(sessionID, sessionDir, projectDir)))
 
 	// Section 9.5: Application-specific addons (injected by application layer)
 	// Merge Prompt's built-in AddonSections with any runtime-provided addons
@@ -139,13 +144,52 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, addonS
 
 // RenderToLLMInput assembles the complete CallInput from the Prompt
 // plus runtime context (history, user message, tools).
+//
+// IMPORTANT: This is a low-level convenience method for testing or special cases.
+// In production, prefer using Reactor.Call() which automatically injects:
+//   - sessionID (from conversation context)
+//   - sessionDir (from SessionStore or FileStore)
+//   - projectDir (from Agent/Reactor setup, defaults to os.Getwd())
+//
+// If you use this method directly, directory context may be incomplete:
+//   - ProjectDir will fallback to os.Getwd()
+//   - SessionDir will be empty (no sandbox isolation)
+//   - Directory usage guidance will NOT be included (requires both dirs)
+//
+// For full directory support, use RenderToLLMInputWithContext() instead.
 func (p *Prompt) RenderToLLMInput(
 	input string,
 	history ConversationHistory,
 	tools []gochatcore.Tool,
 ) CallInput {
 	return CallInput{
-		SystemPromptSections: p.ToSectionedMessages("", ""),
+		SystemPromptSections: p.ToSectionedMessages("", "", ""),
+		UserMessage:          input,
+		History:              history,
+		Tools:                tools,
+	}
+}
+
+// RenderToLLMInputWithContext assembles the complete CallInput with explicit directory context.
+// This is the recommended method when building CallInput outside of Reactor's normal flow.
+//
+// Parameters provide complete directory information for LLM awareness:
+//   - projectDir: Working directory (use os.Getwd() if unsure)
+//   - sessionDir: Session sandbox (leave "" if not applicable)
+//   - sessionID: Session identifier (leave "" if starting new session)
+//
+// When both projectDir and sessionDir are provided, the System Prompt automatically
+// includes directory usage guidance to help LLM make informed file operation decisions.
+func (p *Prompt) RenderToLLMInputWithContext(
+	input string,
+	history ConversationHistory,
+	tools []gochatcore.Tool,
+	sessionID string,
+	sessionDir string,
+	projectDir string,
+) CallInput {
+	return CallInput{
+		SystemPromptSections: p.ToSectionedMessages(sessionID, sessionDir, projectDir),
 		UserMessage:          input,
 		History:              history,
 		Tools:                tools,
@@ -227,47 +271,64 @@ Technical terms and code identifiers should keep their original form.`, language
 }
 
 // BuildEnvironmentInfo returns the runtime environment description.
-// This is a convenience wrapper that calls BuildEnvironmentInfoParams with os.Getwd() as project dir.
+// This is a convenience wrapper that calls BuildEnvironmentInfoParams with explicit parameters.
 // Application layers (like MindX) should prefer BuildEnvironmentInfoParams for full control.
-func BuildEnvironmentInfo(sessionID string, sessionDir string) string {
-	cwd, _ := os.Getwd()
+//
+// Parameters:
+//   - sessionID: Current session identifier
+//   - sessionDir: Session sandbox directory (Layer 3)
+//   - projectDir: Project working directory (Layer 2). If empty, falls back to os.Getwd()
+func BuildEnvironmentInfo(sessionID string, sessionDir string, projectDir string) string {
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
 	return BuildEnvironmentInfoParams(EnvironmentInfoParams{
-		ProjectDir: cwd,
+		ProjectDir: projectDir,
 		SessionDir: sessionDir,
 		SessionID:  sessionID,
 	})
 }
 
 // EnvironmentInfoParams holds parameters for building environment information.
-// This allows application layers (e.g., MindX) to inject their own directory semantics
-// without GoReact hardcoding any specific directory meaning.
+//
+// Design Philosophy:
+//   - GoReact provides COMPLETE directory support for Framework-level directories: ProjectDir + SessionDir
+//   - Application-level directories (like HomeDir) should be injected via core.SYSTEM_INFO_USERS extension point
+//   - The framework automatically injects directory usage guidance when both dirs are available
+//   - This prevents framework/application boundary violations and keeps GoReact application-agnostic
 type EnvironmentInfoParams struct {
-	HomeDir    string // Layer 1: User home directory (e.g., ~/.mindx)
-	ProjectDir string // Layer 2: Project directory (captured at session start)
-	SessionDir string // Layer 3: Session sandbox directory
+	ProjectDir string // Layer 2: Project directory (captured at session start, required)
+	SessionDir string // Layer 3: Session sandbox directory (from SessionStore, optional)
 	SessionID  string
 }
 
 // BuildEnvironmentInfoParams builds environment info with explicit parameters.
-// This is the recommended method for application layers that have custom directory semantics.
+// When both ProjectDir and SessionDir are provided, it automatically includes
+// directory usage guidance (DirectorySemanticsPrompt) to help LLM make informed decisions.
+//
+// NOTE: Application-specific directories (e.g., HomeDir, AppDataDir) should NOT be added here.
+// Instead, set core.SYSTEM_INFO_USERS in your application initialization to inject custom paths.
+// This keeps GoReact framework-agnostic and prevents hardcoding application-specific concepts.
+//
+// This is the recommended method for application layers that have custom directory parameters.
 func BuildEnvironmentInfoParams(params EnvironmentInfoParams) string {
 	platform := runtime.GOOS
 	osVersion := runtime.GOARCH
 	shell, _ := os.LookupEnv("SHELL")
-
-	homeDir := params.HomeDir
-	if homeDir == "" {
-		homeDir, _ = os.UserHomeDir()
-	}
 
 	projectDir := params.ProjectDir
 	if projectDir == "" {
 		projectDir, _ = os.Getwd()
 	}
 
+	// Auto-generate directory usage guidance when both directories are available
+	var directoryGuidance string
+	if params.ProjectDir != "" && params.SessionDir != "" {
+		directoryGuidance = buildDirectoryUsageGuidance(params.ProjectDir, params.SessionDir)
+	}
+
 	return fmt.Sprintf(`## Environment
 You have been invoked in the following environment:
-- Home Directory: %s
 - Project Working Directory: %s
 - Session Sandbox Directory: %s
 - Platform: %s/%s
@@ -275,8 +336,7 @@ You have been invoked in the following environment:
 - Session ID: %s
 - App Name: %s
 - App Version: %s
-%s`,
-		homeDir,
+%s%s`,
 		projectDir,
 		params.SessionDir,
 		platform,
@@ -285,7 +345,151 @@ You have been invoked in the following environment:
 		params.SessionID,
 		core.SYSTEM_INFO_NAME,
 		core.SYSTEM_INFO_VERSION,
+		directoryGuidance,
 		core.SYSTEM_INFO_USERS)
+}
+
+// DirectorySemanticsPrompt contains the framework-level directory usage guidance.
+// This is injected automatically into the System Prompt when both ProjectDir and SessionDir
+// are available, ensuring LLM always has complete directory semantics — not just values.
+//
+// Design Principles (Framework-Level):
+//  1. Application-agnostic: No references to any specific application name
+//  2. Role-agnostic: Works for ANY agent type — coder, writer, designer, analyst, etc.
+//  3. Semantic-driven: Guide with clear definitions, not rigid file-type rules
+//  4. Context-aware: The LLM uses its understanding of its own role + user intent to decide
+const DirectorySemanticsPrompt = `
+## File Operation Guidelines
+
+You have two primary workspaces available for file operations. Understanding their purpose will help you make appropriate decisions.
+
+### Project Directory (%s)
+**This is the user's persistent workspace — the context in which you were invoked.**
+
+It is the directory captured when this session started (the user's project directory at invocation time).
+Files here persist beyond this conversation and belong to the user's ongoing work.
+
+**Characteristics:**
+- Persistent: survives after this session ends
+- Version-controlled: typically tracked by git or similar
+- User-owned: belongs to the user's project or workflow
+- Long-lived: intended to remain useful over time
+
+**Use it for:**
+- Deliverables that are part of the user's actual work output
+- Files the user explicitly asked to create or modify in their project
+- Any artifact the user would expect to find again later
+- Configuration, source code, documents, data files — whatever matches YOUR role and the user's request
+
+**Mental model:** *"If the user closes this session and comes back tomorrow, would they expect this file to still be here?"*  
+→ **Yes** → Project Dir
+
+### Session Directory (%s)
+**This is your session-specific sandbox — your temporary workspace.**
+
+A directory unique to this conversation. Files here are ephemeral, scoped to this interaction,
+and not part of the user's persistent project.
+
+**Characteristics:**
+- Ephemeral: tied to this conversation's lifetime
+- Disposable: can be cleaned up when session expires
+- Conversation-owned: created by you during this interaction
+- Intermediate: often a stepping stone to a final deliverable
+
+**Use it for:**
+- Drafts, scratch files, or intermediate work products
+- Analysis outputs, summaries, reports generated during this conversation
+- Temporary data, caches, or computation artifacts
+- Debug logs, investigation notes, or reasoning traces
+- Any byproduct of your thinking process that helps you arrive at the final answer
+- Database or state files needed only for this session's context
+
+**Mental model:** *"Is this something I'm creating as part of my working process, to help me serve the user right now?"*  
+→ **Yes** → Session Dir
+
+---
+
+### Decision Framework
+
+When deciding where to read from or write to, consider these questions:
+
+**1. Persistence**
+Should this outlive our conversation?
+→ **Yes** = Project | **No** = Session
+
+**2. Origin**
+Where did this content come from?
+→ User's existing work = Project | Generated by me during this chat = Session
+
+**3. Destination**
+Where does the user need this?
+→ Their ongoing work/project = Project | As a response or explanation to them = Session
+
+**4. Your Role Context**
+Consider what kind of agent you are:
+- **Coding agent**: source code, configs, tests → Project; analysis reports, diagrams → Session
+- **Writing agent**: drafts, outlines → Session; final deliverables → Project (if user specifies)
+- **Data agent**: raw data stays where it is; analysis results, visualizations → Session
+- **Design agent**: design specs → Project (if in project); exported assets → Session
+- **General assistant**: use judgment based on user intent
+
+---
+
+### Path Syntax Reference
+
+| Syntax | Resolves To | When to Use |
+|--------|-------------|-------------|
+| *(relative path)* | Project Dir | Default for most operations |
+| 'session:<path>' | Session Dir | When you want to explicitly write to session sandbox |
+| '/absolute/path' | Absolute path | Only if allowed by sandbox rules |
+
+**Note:** The prefix syntax is optional. Trust your judgment. Use it when you want to be explicit.
+
+---
+
+### Examples by Scenario
+
+**Scenario A: Modifying existing work**
+User asks you to fix, edit, or improve something that already exists
+→ Read/Edit/Write in **Project Dir** (you're touching their existing files)
+
+**Scenario B: Creating analysis or explanation**
+User asks for a report, summary, analysis, or explanation
+→ Write to **Session Dir** (this is your output product for this conversation)
+→ Exception: If user says "save this report to the project", honor that
+
+**Scenario C: Multi-step workflow**
+You need to create intermediate files before producing the final result
+→ Intermediates → **Session Dir**
+→ Final deliverable → **Project Dir** (or Session Dir, depending on user intent)
+
+**Scenario D: Running tools/commands**
+Executing scripts, builds, commands that operate on the project
+→ Commands run relative to **Project Dir** (default working context)
+→ Output files: depends on what they are (see above)
+
+---
+
+### Constraints
+
+1. **Sandbox boundary**: You can only access files within Project Dir and Session Dir
+2. **No escape**: System paths (/etc, ~/.ssh, etc.) are blocked by security rules
+3. **Respect user intent**: If the user specifies a location, always honor it
+4. **When uncertain**: You may ask the user for clarification, or default to the safer choice
+
+---
+
+### Core Principle
+
+> You have a **persistent workspace** (the user's project) and a **scratchpad** (your session sandbox).  
+> Think about whether what you're creating belongs to the user's long-term work or to your current working process.  
+> That distinction guides everything else.
+`
+
+// buildDirectoryUsageGuidance creates the directory semantics guidance with actual paths substituted.
+// Called automatically by BuildEnvironmentInfoParams when both directories are available.
+func buildDirectoryUsageGuidance(projectDir, sessionDir string) string {
+	return fmt.Sprintf(DirectorySemanticsPrompt, projectDir, sessionDir)
 }
 
 // BuildToolUsageGuidelines returns the standard tool usage guidelines section.

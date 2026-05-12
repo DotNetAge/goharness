@@ -220,3 +220,53 @@ func WithAuditLogger(logger core.AuditLogger) ReactorOption {
 		s.auditLogger = logger
 	}
 }
+
+// WithProjectDir sets the project working directory for this Reactor (and its Agent).
+// This is the primary way to ensure ToolContext.ProjectDir is always populated.
+//
+// Design-time safety guarantee:
+//   - When set, all tools (edit/read/write) use this as their base directory
+//   - LLM receives this in Environment section of system prompt via BuildEnvironmentInfoParams()
+//   - Prevents runtime "file not found" errors from ambiguous working directory
+//
+// Usage:
+//
+//	reactor, err := reactor.NewReactor(cfg,
+//	    reactor.WithProjectDir("/path/to/project"),
+//	)
+//
+// Note: Agent layer's WithProjectDir() is typically used instead, which auto-injects here.
+func WithProjectDir(dir string) ReactorOption {
+	return func(s *reactorSetup) {
+		s.projectDir = dir
+	}
+}
+
+// WithSessionDir sets the session sandbox directory for this Reactor.
+// When SessionStore is available, this is auto-resolved; otherwise set explicitly.
+//
+// When set:
+//   - Tools can isolate session-specific files (temp files, drafts, etc.)
+//   - LLM knows where to place session-scoped output
+func WithSessionDir(dir string) ReactorOption {
+	return func(s *reactorSetup) {
+		s.sessionDir = dir
+	}
+}
+
+// WithSessionSandboxManager sets the session-scoped sandbox manager for this Reactor.
+// This enables Agent Native sandbox design (4-Layer Architecture) where each
+// session gets isolated TempDir and AllowedPaths based on SESSION_DIR.
+//
+// When provided:
+//   - Bash/RunScript/PowerShell tools automatically use session-specific sandbox
+//   - Each session gets: ${sessionBaseDir}/${sessionID}/tmp as TempDir
+//   - AllowedPaths includes both PROJECT_DIR and SESSION_DIR
+//   - Session cleanup removes all session-scoped resources
+//
+// This is typically injected by the Agent layer via NewAgent(), not set directly.
+func WithSessionSandboxManager(mgr *tools.SessionSandboxManager) ReactorOption {
+	return func(s *reactorSetup) {
+		s.sandboxMgr = mgr
+	}
+}
