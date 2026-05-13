@@ -53,14 +53,14 @@ func (p Platform) Shell() string {
 // ScriptExtensions returns all script file extensions supported on this platform.
 func (p Platform) ScriptExtensions() map[string]string {
 	exts := map[string]string{
-		".py":  "python",
-		".sh":  "shell",
+		".py":   "python",
+		".sh":   "shell",
 		".bash": "shell",
-		".zsh": "shell",
-		".js":  "node",
-		".rb":  "ruby",
-		".pl":  "perl",
-		".php": "php",
+		".zsh":  "shell",
+		".js":   "node",
+		".rb":   "ruby",
+		".pl":   "perl",
+		".php":  "php",
 	}
 	if p.IsWindows() {
 		exts[".bat"] = "batch"
@@ -83,7 +83,7 @@ func (p Platform) SupportedInterpreters() map[string]bool {
 		"node": true, "nodejs": true,
 		"ruby": true,
 		"perl": true,
-		"php": true,
+		"php":  true,
 	}
 	switch p {
 	case PlatformWindows:
@@ -129,17 +129,17 @@ type scriptExecutor interface {
 // ---------------------------------------------------------------------------
 
 type platformScriptExecutor struct {
-	platform     Platform
-	mu           sync.Mutex
-	venvManagers map[string]*venvManager
-	sandboxConfig *SandboxConfig
+	platform          Platform
+	mu                sync.Mutex
+	venvManagers      map[string]*venvManager
+	sandboxConfig     *SandboxConfig
 	sessionSandboxMgr *SessionSandboxManager
 }
 
 func newPlatformScriptExecutor() *platformScriptExecutor {
 	return &platformScriptExecutor{
-		platform:     CurrentPlatform(),
-		venvManagers: make(map[string]*venvManager),
+		platform:      CurrentPlatform(),
+		venvManagers:  make(map[string]*venvManager),
 		sandboxConfig: DefaultSandboxConfig(),
 	}
 }
@@ -552,7 +552,7 @@ Usage:
 - Use the args parameter for additional arguments.
 
 Notes:
-- Python virtual environments are created automatically in .venv/ under the skill root.
+- Python virtual environments are managed automatically when available.
 - Output is truncated at 2KB to save context.`
 	case PlatformMacOS:
 		prompt = `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate executor.
@@ -575,7 +575,7 @@ Usage:
 - Use the args parameter for additional arguments.
 
 Notes:
-- Python virtual environments are created automatically in .venv/ under the skill root.
+- Python virtual environments are managed automatically when available.
 - AppleScript can interact with macOS apps (Finder, Safari, Mail, etc.).
 - Output is truncated at 2KB to save context.`
 	case PlatformLinux:
@@ -597,7 +597,7 @@ Usage:
 - Use the args parameter for additional arguments.
 
 Notes:
-- Python virtual environments are created automatically in .venv/ under the skill root.
+- Python virtual environments are managed automatically when available.
 - Output is truncated at 2KB to save context.`
 	default:
 		prompt = `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the command and routes to the appropriate executor. For Python scripts, automatically manages virtual environments and dependencies from requirements.txt.
@@ -610,10 +610,10 @@ Usage:
 	}
 
 	return &core.ToolInfo{
-		Name:        "RunScript",
-		Description: description,
-		Prompt:      prompt,
-		Tags:        []string{"script", "execute", "python", "shell", "skill"},
+		Name:          "RunScript",
+		Description:   description,
+		Prompt:        prompt,
+		Tags:          []string{"script", "execute", "python", "shell", "skill"},
 		SecurityLevel: core.LevelSensitive,
 		Parameters: []core.Parameter{
 			{
@@ -700,7 +700,7 @@ func parseCommand(command, baseDir string) (language, scriptPath string) {
 		"node": true, "nodejs": true,
 		"ruby": true,
 		"perl": true,
-		"php": true,
+		"php":  true,
 		"bash": true, "sh": true, "zsh": true,
 	}
 

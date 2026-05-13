@@ -8,7 +8,7 @@ type ModelConfig struct {
 	Name              string  `json:"name" yaml:"name"`                             // model name
 	Description       string  `json:"description" yaml:"description"`               // model description
 	BaseURL           string  `json:"base_url" yaml:"base_url"`                     // API base URL
-	APIKey            string  `json:"api_key" yaml:"api_key"`                       // API key
+	APIKey            string  `json:"api_key" yaml:"api_key"`                       // API key (or credential reference name)
 	AuthToken         string  `json:"auth_token" yaml:"auth_token"`                 // auth token
 	MaxTokens         int64   `json:"max_tokens" yaml:"max_tokens"`                 // maximum output tokens
 	IsLocal           bool    `json:"is_local" yaml:"is_local"`                     // whether the model is local
@@ -21,6 +21,8 @@ type ModelConfig struct {
 	TopK              float64 `json:"top_k" yaml:"top_k"`                           // top-k sampling parameter
 	Temperature       float64 `json:"temperature" yaml:"temperature"`               // sampling temperature
 	RepetitionPenalty float64 `json:"repetition_penalty" yaml:"repetition_penalty"` // repetition penalty
+	Enabled           bool    `json:"enabled" yaml:"enabled"`                       // whether the model is enabled (API key configured)
+	MaxTurns          int     `json:"max_turns" yaml:"max_turns"`                   // maximum T-A-O loop iterations (0 = use reactor default)
 }
 
 func (m *ModelConfig) Config() *core.Config {

@@ -29,6 +29,7 @@ func DefaultModel() *core.ModelConfig {
 		Name:        "qwen3.5-flash",
 		Description: "Quick and cost-effective model for general-purpose tasks",
 		MaxTokens:   8192,
+		Enabled:     true,
 	}
 }
 
@@ -423,6 +424,7 @@ func buildReactorConfig(model *core.ModelConfig, systemPrompt string) reactor.Re
 		PresencePenalty:  model.RepetitionPenalty,
 		FrequencyPenalty: model.RepetitionPenalty,
 		MaxTokens:        int(model.MaxTokens),
+		MaxIterations:    model.MaxTurns,
 	}
 }
 
@@ -505,6 +507,9 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	model := setup.model
 
 	// Validate required fields
+	if !model.Enabled {
+		return nil, fmt.Errorf("goreact: model %q is not enabled — set Enabled=true or configure API key first", model.Name)
+	}
 	if model.APIKey == "" {
 		return nil, fmt.Errorf("goreact: ModelConfig.APIKey is required, got empty. Use goreact.WithModel(model) where model.APIKey is set")
 	}
