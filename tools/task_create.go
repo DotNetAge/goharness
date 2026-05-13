@@ -37,13 +37,13 @@ The task_id returned can be used with:
 
 Usage:
 - Provide a clear, descriptive task_description
-- Specify the agent_name to run the task (use FindAgent to discover available agents)
+- Specify the agent_name to run the task
 - Multiple TaskCreate calls in the same round run in parallel`,
 		Tags:    []string{"task", "create", "async", "agent", "orchestration"},
 		IsAsync: true,
 		Parameters: []core.Parameter{
 			{Name: "task_description", Type: "string", Description: "Clear description of what the task should accomplish.", Required: true},
-			{Name: "agent_name", Type: "string", Description: "Name of the agent to execute the task. Use FindAgent to discover agents.", Required: true},
+			{Name: "agent_name", Type: "string", Description: "Name of the agent to execute the task.", Required: true},
 		},
 	}
 }

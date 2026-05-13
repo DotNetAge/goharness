@@ -127,11 +127,6 @@ type Reactor struct {
 	cachedLLMTools []gochatcore.Tool
 	cacheMu        sync.RWMutex
 
-	// Agent orchestration dependencies (set by Agent, zero-value safe when nil)
-	agentRegistry tools.AgentDefinitionRegistry
-	runtimeDir    *core.RuntimeDirectory
-	modelRegistry core.ModelRegistry
-
 	auditLogger core.AuditLogger
 
 	// Directory context (Design-time safety: set during initialization from setup)
@@ -219,9 +214,6 @@ type reactorSetup struct {
 	skillRegistry  core.SkillRegistry
 	ruleRegistry   core.RuleRegistry
 	prompt         *Prompt
-	agentRegistry  tools.AgentDefinitionRegistry
-	runtimeDir     *core.RuntimeDirectory
-	modelRegistry  core.ModelRegistry
 	auditLogger    core.AuditLogger
 
 	// Directory context (Design-time safety: guaranteed by Agent layer)
@@ -230,6 +222,9 @@ type reactorSetup struct {
 
 	// Sandbox management (Agent Native Design: 4-Layer Architecture)
 	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
+
+	// Orchestration control
+	// enableOrchestration bool // When true, register orchestration tools (Delegate, CreateAgent, etc.)
 }
 
 func (r *Reactor) applyDefaults(config *ReactorConfig) {
@@ -437,7 +432,7 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 		{"TodoExecute", tools.NewTodoExecuteTool()},
 		{"AskUser", tools.NewAskUserTool()},
 		{"Ls", tools.NewLsTool()},
-		{"Crontab", tools.NewCrontabTool()},
+		// {"Crontab", tools.NewCrontabTool()},
 		{"Delegate", tools.NewDelegateTool(func(ctx context.Context, agentName, task string) (string, error) {
 			if r.SpawnFunc != nil {
 				return r.SpawnFunc(ctx, agentName, task)
@@ -448,12 +443,6 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 		{"Skill", tools.NewSkillTool(func(name string) (*core.Skill, error) {
 			return r.skillRegistry.GetSkill(name)
 		})},
-		{"SkillCreate", tools.NewSkillCreateTool()},
-		{"SkillList", tools.NewSkillListTool()},
-		{"ModelList", tools.NewModelListTool(r.modelRegistry)},
-		{"FindAgent", tools.NewFindAgentTool(r.runtimeDir)},
-		{"Rank", tools.NewRankTool(r.runtimeDir)},
-		{"CreateAgent", tools.NewCreateAgentTool(r.agentRegistry, r.runtimeDir)},
 		{"TaskCreate", tools.NewTaskCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
 			if r.SpawnFunc != nil {
 				return r.SpawnFunc(ctx, agentName, task)
@@ -471,14 +460,28 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 			return "", fmt.Errorf("team_create: SpawnFunc not configured on reactor")
 		})},
 	}
+
 	for _, bt := range remainingTools {
 		if !setup.skipTools[bt.name] {
+			// Skip orchestration tools when EnableOrchestration is false
+			// if !setup.enableOrchestration && toolHasTag(bt.tool, "orchestration") {
+			// 	continue
+			// }
 			if err := r.RegisterTool(bt.tool); err != nil {
 				r.getLogger().Warn("failed to register bundled tool", "name", bt.name, "error", err)
 			}
 		}
 	}
 }
+
+// func toolHasTag(tool core.FuncTool, tag string) bool {
+// 	for _, t := range tool.Info().Tags {
+// 		if t == tag {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r := &Reactor{}
@@ -497,9 +500,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.config = config
 	r.memory = setup.memory
 	r.prompt = setup.prompt
-	r.agentRegistry = setup.agentRegistry
-	r.runtimeDir = setup.runtimeDir
-	r.modelRegistry = setup.modelRegistry
 	r.auditLogger = setup.auditLogger
 
 	// Directory context (Design-time safety: copy from setup to Reactor)
@@ -528,7 +528,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.initRegistries(setup)
 	r.initLLMCaller(config, setup)
 	r.discoverAndLoadSkills(setup)
-	r.registerOrchestrationTools()
 	r.initInteractionHandler()
 	r.initToolExecutor(setup)
 	r.registerBundledTools(setup)
@@ -687,9 +686,6 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		ruleRegistry:  r.ruleRegistry,
 		memory:        r.memory,
 		eventBus:      r.eventBus,
-		agentRegistry: r.agentRegistry,
-		runtimeDir:    r.runtimeDir,
-		modelRegistry: r.modelRegistry,
 		kvStore:       r.kvStore,
 		fileStore:     r.fileStore,
 	}

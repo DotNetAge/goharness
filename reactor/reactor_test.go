@@ -29,22 +29,21 @@ func TestPrompt_ToSectionedMessages_StaticOrder(t *testing.T) {
 			prompt: &Prompt{
 				Identity:            "You are a test agent.",
 				Rules:               "1. Be helpful.",
+				OutputFormat:        "Test output format.",
 				ExecutionGuidelines: "Be cautious with writes.",
 				SkillsCatalog:       "- skill_a",
 				ToolUsage:           "Use tools wisely.",
-				AgentCoordination:   "Find and delegate to expert agents.",
 				ToneAndStyle:        "Be concise.",
 				SystemReminders:     "Remember context limits.",
 				OutputEfficiency:    "Use prose.",
-				Language:            "Always respond in English.",
 			},
 			wantPreEnv: []string{
 				"You are a test agent.",
+				"- skill_a",
 				"## Behavioral Rules\n1. Be helpful.",
+				"Test output format.",
 				"Be cautious with writes.",
 				"Use tools wisely.",
-				"- skill_a",
-				"Find and delegate to expert agents.",
 				"Be concise.",
 			},
 			wantDynamic: []string{
@@ -1227,9 +1226,9 @@ func (m *mockModel) Call(ctx context.Context, model string, messages []gochatcor
 
 // mockModelWithToolCalls returns native tool calls instead of text responses.
 type mockModelWithToolCalls struct {
-	calls      int
-	responses  []gochatcore.Response
-	tools      map[string]core.FuncTool
+	calls     int
+	responses []gochatcore.Response
+	tools     map[string]core.FuncTool
 }
 
 func (m *mockModelWithToolCalls) Call(ctx context.Context, model string, messages []gochatcore.Message, tools []gochatcore.Tool) (*gochatcore.Response, error) {

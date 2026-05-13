@@ -323,7 +323,7 @@ func TestSystemPromptStructure(t *testing.T) {
 			continue
 		}
 		content, _ := m["content"].(string)
-		if strings.HasPrefix(content, "You are an") {
+		if strings.HasPrefix(content, "You are ") && strings.Contains(content, "Name:") {
 			systemSections = append(systemSections, fmt.Sprintf("[%d] Agent Definition", i))
 		} else if strings.Contains(content, "## Behavioral Rules") {
 			systemSections = append(systemSections, fmt.Sprintf("[%d] Behavioral Rules", i))
@@ -549,89 +549,6 @@ func TestAgentWithDeclaredSkillsOnly(t *testing.T) {
 			t.Errorf("skill %q was injected but NOT declared in agent config", name)
 		}
 	}
-}
-
-// ============================ Tool Orchestration Tests ============================
-
-func TestToolOrchestration_Chain(t *testing.T) {
-	// Scenario: Agent chains multiple tools in sequence.
-	// Round 1: LLM returns thought with DecisionAct to call SkillList
-	// Round 2: LLM returns thought with DecisionAct to call SkillCreate
-	// Round 3: LLM returns thought with DecisionAnswer
-	server, captured, _ := captureHTTPServerWithResponses(t, []mockResponse{
-		{
-			Thought: &thoughtJSON{
-				Decision:  "act",
-				Reasoning: "I need to list available skills first.",
-				ToolCalls: map[string]map[string]any{
-					"SkillList": {},
-				},
-			},
-		},
-		{
-			Thought: &thoughtJSON{
-				Decision:  "act",
-				Reasoning: "Now I'll create a new skill.",
-				ToolCalls: map[string]map[string]any{
-					"SkillCreate": {
-						"name":         "test-skill",
-						"description":  "Test skill",
-						"instructions": "Test instructions",
-					},
-				},
-			},
-		},
-		{
-			Thought: &thoughtJSON{
-				Decision:    "answer",
-				FinalAnswer: "我已经创建了 test-skill 技能。",
-				Reasoning:   "Skill created successfully.",
-			},
-		},
-	})
-	agent := setupTestAgent(t, server)
-
-	result, err := agent.Ask("test-tool-chain", "创建一个测试技能")
-	if err != nil {
-		t.Logf("agent error (expected with mock): %v", err)
-	}
-	if result != nil {
-		t.Logf("agent response: %s", result.Answer)
-	}
-
-	// Verify multi-turn: should have 3 HTTP requests (SkillList → SkillCreate → Final)
-	if len(*captured) < 3 {
-		t.Skipf("mock tool calls caused early exit, got %d requests (expected 3)", len(*captured))
-	}
-
-	// Inspect each round to verify tool orchestration chain
-	for i := 0; i < len(*captured); i++ {
-		msgs := parseMessagesAt(t, captured, i)
-		t.Logf("Round %d messages: %d total", i+1, len(msgs))
-
-		// Check for tool call history building up
-		var assistantMsgs, toolMsgs int
-		for _, m := range msgs {
-			switch role, _ := m["role"].(string); role {
-			case "assistant":
-				assistantMsgs++
-			case "tool":
-				toolMsgs++
-			}
-		}
-		t.Logf("  Round %d: %d assistant msgs, %d tool results", i+1, assistantMsgs, toolMsgs)
-
-		// Later rounds should have accumulated more tool results from previous rounds
-		if i > 0 {
-			if toolMsgs < i {
-				t.Logf("  WARN: round %d has %d tool results (expected >= %d from previous rounds)", i+1, toolMsgs, i)
-			}
-		}
-	}
-
-	// Final round should contain the complete conversation history
-	finalMsgs := parseMessagesAt(t, captured, len(*captured)-1)
-	t.Logf("Final round has %d messages in conversation history", len(finalMsgs))
 }
 
 func TestToolOrchestration_DelegateCollect(t *testing.T) {

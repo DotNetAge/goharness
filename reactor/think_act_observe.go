@@ -204,6 +204,14 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 		)
 		return r.executeToolCalls(ctx, thought, start)
 
+	case DecisionDelegate:
+		r.getLogger().Info("act delegate",
+			"session_id", sessionID,
+			"iteration", iter,
+			"delegate_target", thought.DelegateTarget,
+		)
+		return r.executeDelegate(ctx, thought, start)
+
 	default:
 		r.getLogger().Info("act default",
 			"session_id", sessionID,
@@ -381,6 +389,50 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 	return nil
 }
 
+func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start time.Time) error {
+	target := thought.DelegateTarget
+	prompt := thought.DelegatePrompt
+
+	if target == "" {
+		ctx.LastAction = &Action{
+			Type:      ActionTypeDelegate,
+			Result:    "delegate failed: no target agent specified",
+			ErrorMsg:  "no target agent specified",
+			Timestamp: start,
+		}
+		return nil
+	}
+
+	if r.SpawnFunc == nil {
+		ctx.LastAction = &Action{
+			Type:      ActionTypeDelegate,
+			Result:    fmt.Sprintf("delegate to %q failed: sub-agent spawning is not configured", target),
+			ErrorMsg:  "SpawnFunc not configured",
+			Timestamp: start,
+		}
+		return nil
+	}
+
+	result, err := r.SpawnFunc(ctx.Ctx(), target, prompt)
+	if err != nil {
+		ctx.LastAction = &Action{
+			Type:      ActionTypeDelegate,
+			Result:    fmt.Sprintf("[delegate:%s] error: %s", target, err.Error()),
+			Error:     err,
+			ErrorMsg:  err.Error(),
+			Timestamp: start,
+		}
+		return nil
+	}
+
+	ctx.LastAction = &Action{
+		Type:      ActionTypeDelegate,
+		Result:    fmt.Sprintf("[delegate:%s] %s", target, result),
+		Timestamp: start,
+	}
+	return nil
+}
+
 func coalesce(s, fallback string) string {
 	if s != "" {
 		return s
@@ -442,6 +494,14 @@ func (r *Reactor) Observe(ctx *ReactContext) error {
 	case ActionTypeClarify:
 		obs = NewSuccessObservation(action.Result, "clarification question generated")
 		r.getLogger().Info("observe clarify",
+			"session_id", sessionID,
+			"iteration", iter,
+			"elapsed_ms", time.Since(observeStart).Milliseconds(),
+		)
+
+	case ActionTypeDelegate:
+		obs = NewSuccessObservation(action.Result, "delegation executed")
+		r.getLogger().Info("observe delegate",
 			"session_id", sessionID,
 			"iteration", iter,
 			"elapsed_ms", time.Since(observeStart).Milliseconds(),

@@ -33,6 +33,24 @@ func DefaultModel() *core.ModelConfig {
 }
 
 // filterSkills returns only skills whose names are in the required list.
+func mergeUniqueStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var result []string
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
 func filterSkills(allSkills []*core.Skill, required []string) []*core.Skill {
 	need := make(map[string]bool, len(required))
 	for _, name := range required {
@@ -144,21 +162,24 @@ type agentSetup struct {
 	// Unified Prompt (if nil, built from config defaults)
 	prompt *reactor.Prompt
 
-	// Agent orchestration
-	agentRegistry tools.AgentDefinitionRegistry
-	runtimeDir    *core.RuntimeDirectory
-	modelRegistry core.ModelRegistry
-
 	// Directory context (Design-time safety: guaranteed to be set)
 	projectDir string // Layer 2: Working directory at Agent creation time
 	sessionDir string // Layer 3: Session sandbox directory (from SessionStore or explicit)
 
 	// Sandbox configuration
 	sessionBaseDir string // Layer 3 base: Parent dir for session directories (enables SESSION_DIR-based isolation)
+
+	skillNames []string // Registered skill names for all agent
 }
 
 // AgentOption configures an Agent during creation via NewAgent.
 type AgentOption func(*agentSetup)
+
+func WithSkills(skills ...string) AgentOption {
+	return func(s *agentSetup) {
+		s.skillNames = skills
+	}
+}
 
 // WithConfig sets the AgentConfig that defines the agent's identity:
 // name, domain, description, and system prompt.
@@ -266,27 +287,6 @@ func WithEventBus(bus reactor.EventBus) AgentOption {
 func WithSessionStore(store core.SessionStore) AgentOption {
 	return func(s *agentSetup) {
 		s.sessionStore = store
-	}
-}
-
-// WithAgentRegistry sets the agent definition registry for FindAgent/CreateAgent tools.
-func WithAgentRegistry(reg tools.AgentDefinitionRegistry) AgentOption {
-	return func(s *agentSetup) {
-		s.agentRegistry = reg
-	}
-}
-
-// WithRuntimeDirectory sets the runtime directory for agent metadata tracking.
-func WithRuntimeDirectory(dir *core.RuntimeDirectory) AgentOption {
-	return func(s *agentSetup) {
-		s.runtimeDir = dir
-	}
-}
-
-// WithModelRegistry sets the model registry for the ModelList tool.
-func WithModelRegistry(reg core.ModelRegistry) AgentOption {
-	return func(s *agentSetup) {
-		s.modelRegistry = reg
 	}
 }
 
@@ -567,7 +567,9 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 		p := reactor.NewDefaultPrompt(config.Name, config.Role, config.Description, config.Introduction)
 		p.ExecutionGuidelines = reactor.BuildExecutionGuidelines()
 		p.ToolUsage = reactor.BuildToolUsageGuidelines()
-		p.AgentCoordination = reactor.BuildAgentCoordinationGuidance()
+		// if config.EnableOrchestration {
+		// p.AgentCoordination = reactor.BuildAgentCoordinationGuidance()
+		// }
 		p.ToneAndStyle = reactor.BuildToneAndStyle()
 		p.SystemReminders = reactor.BuildSystemReminders()
 		p.OutputEfficiency = reactor.BuildOutputEfficiency()
@@ -575,32 +577,27 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	} else {
 		reactorOpts = append(reactorOpts, reactor.WithPrompt(setup.prompt))
 	}
-	if setup.agentRegistry != nil {
-		reactorOpts = append(reactorOpts, reactor.WithAgentRegistry(setup.agentRegistry))
-	}
-	if setup.runtimeDir != nil {
-		reactorOpts = append(reactorOpts, reactor.WithRuntimeDirectory(setup.runtimeDir))
-	}
-	if setup.modelRegistry != nil {
-		reactorOpts = append(reactorOpts, reactor.WithModelRegistry(setup.modelRegistry))
-	}
+	// Apply orchestration mode from agent config
+	// reactorOpts = append(reactorOpts, reactor.WithEnableOrchestration(config.EnableOrchestration))
 
 	r := reactor.NewReactor(reactorConfig, reactorOpts...)
 
 	// Populate skills catalog and rules on the Prompt
 	if p := r.Prompt(); p != nil {
-		// Only inject skills that the agent explicitly declared in its config.
+		// Only inject skills that the agent explicitly declared in its config or registered via WithSkills.
 		// Progressive disclosure: we do NOT dump all loaded skills into the prompt.
 		// The LLM discovers additional skills on-demand via the Skill tool.
-		if len(config.Skills) > 0 {
+		mergedSkillNames := mergeUniqueStrings(config.Skills, setup.skillNames)
+		if len(mergedSkillNames) > 0 {
 			skills := r.SkillRegistry().ListSkills()
-			filtered := filterSkills(skills, config.Skills)
+			filtered := filterSkills(skills, mergedSkillNames)
 			if len(filtered) > 0 {
 				if catalog := reactor.BuildSkillsCatalog(filtered); catalog != "" {
 					p.SkillsCatalog = catalog
 				}
 			}
 		}
+
 		// Merge custom rules from RuleRegistry into Prompt.Rules (if set)
 		if reg := r.RuleRegistry(); reg != nil {
 			if rules := reg.FormatPromptSection(); rules != "" {

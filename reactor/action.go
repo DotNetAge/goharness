@@ -12,6 +12,7 @@ const (
 	ActionTypeToolCall ActionType = "tool_call"
 	ActionTypeAnswer   ActionType = "answer"
 	ActionTypeClarify  ActionType = "clarify"
+	ActionTypeDelegate ActionType = "delegate"
 )
 
 // Action represents the output of the Act phase.

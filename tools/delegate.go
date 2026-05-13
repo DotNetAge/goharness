@@ -40,7 +40,7 @@ Returns {task_id, status: "running"} immediately. The actual result must be coll
 
 When to delegate:
 - The task is outside your defined area of expertise — do your own work first.
-- You have identified a specialist agent via FindAgent whose role matches the task.
+- A specialist agent exists whose role matches the task.
 - The user explicitly asks for another agent to handle the task.
 - The task has many independent parts — spawn multiple agents in parallel to finish faster.
 

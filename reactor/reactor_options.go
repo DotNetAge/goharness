@@ -183,27 +183,6 @@ func WithFileStore(store core.FileStore) ReactorOption {
 	}
 }
 
-// WithAgentRegistry sets the agent definition registry for FindAgent/CreateAgent tools.
-func WithAgentRegistry(reg tools.AgentDefinitionRegistry) ReactorOption {
-	return func(s *reactorSetup) {
-		s.agentRegistry = reg
-	}
-}
-
-// WithModelRegistry sets the model registry for the ModelList tool.
-func WithModelRegistry(reg core.ModelRegistry) ReactorOption {
-	return func(s *reactorSetup) {
-		s.modelRegistry = reg
-	}
-}
-
-// WithRuntimeDirectory sets the runtime directory for agent metadata (state, scores).
-func WithRuntimeDirectory(dir *core.RuntimeDirectory) ReactorOption {
-	return func(s *reactorSetup) {
-		s.runtimeDir = dir
-	}
-}
-
 // WithRuleRegistry sets a custom RuleRegistry for behavior rule management.
 // Rules are injected into the System Prompt's ## Behavioral Rules section.
 // There is no built-in default — external implementations must be provided.
@@ -253,6 +232,17 @@ func WithSessionDir(dir string) ReactorOption {
 		s.sessionDir = dir
 	}
 }
+
+// WithEnableOrchestration controls whether orchestration tools (Delegate,
+// TeamCreate, TaskCreate/List/Get/Update/Stop, CollectResults) are
+// registered in the tool registry. When false (default), only domain tools (file ops,
+// search, bash) are registered. The Agent Coordination section in the System Prompt
+// is also controlled separately at the Prompt level.
+// func WithEnableOrchestration(enable bool) ReactorOption {
+// 	return func(s *reactorSetup) {
+// 		s.enableOrchestration = enable
+// 	}
+// }
 
 // WithSessionSandboxManager sets the session-scoped sandbox manager for this Reactor.
 // This enables Agent Native sandbox design (4-Layer Architecture) where each
