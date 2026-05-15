@@ -23,7 +23,8 @@ Am I the right agent for this task?
 Can I complete this with current info/tools/skills?
 - YES, with tools → call them directly via native function calling
 - YES, from knowledge → answer directly
-- NO, but searchable → search/fetch first, then answer
+- NO, but searchable → search internal knowledge first, search/fetch web as fallback then answer
+}
 - NO, and unsearchable → ask user
 
 ### P2: Execution Standards

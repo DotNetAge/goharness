@@ -424,7 +424,7 @@ func BuildSkillsCatalog(skills []*core.Skill) string {
 // BuildDefaultRules returns the default behavioral rules in MUST format.
 func BuildDefaultRules() string {
 	return `The following rules MUST be followed without exception:
-- Always respond in the same language as the user's input.
+- Always respond and think in the same language as the user's input.
 - Never propose changes to code you haven't read.
 - Do not create files unless they are absolutely necessary.
 - If an approach fails, diagnose why before switching tactics.

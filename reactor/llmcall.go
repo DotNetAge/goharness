@@ -39,6 +39,10 @@ type CallResult struct {
 // StreamChunkCallback is called for each content chunk during streaming.
 type StreamChunkCallback func(chunk string)
 
+// StreamThinkingCallback is called for each thinking/reasoning chunk during streaming.
+// Used by models with extended thinking (DeepSeek-R1, o1, etc.) to emit raw thinking stream.
+type StreamThinkingCallback func(chunk string)
+
 // MockLLMFunc is the signature for a mock LLM function used in testing.
 type MockLLMFunc func(ctx context.Context, input CallInput) (*gochatcore.Response, error)
 
@@ -287,12 +291,14 @@ func (c *LLMCaller) Call(ctx context.Context, input CallInput) CallResult {
 
 // CallStream makes a streaming LLM call. Token estimation, sliding, and recording
 // happen automatically. The onChunk callback is invoked for each content fragment.
+// The onThinking callback (if non-nil) is invoked for each thinking/reasoning fragment
+// from models with extended thinking (DeepSeek-R1, o1, etc.).
 //
 // Native tool calls are NOT available in the streaming path (gochat Stream interface
 // does not expose ToolCalls). Tool call parsing in the streaming path relies on
 // text-based extraction via ParseThinkResponse or similar.
 // For native tool call support, use Call() (non-streaming).
-func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk StreamChunkCallback) CallResult {
+func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking ...StreamThinkingCallback) CallResult {
 	c.mu.RLock()
 	cw := c.contextWindow
 	c.mu.RUnlock()
@@ -350,6 +356,11 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 	defer stream.Close()
 
 	var contentBuf strings.Builder
+	var thinkingBuf strings.Builder
+	var thinkingCB StreamThinkingCallback
+	if len(onThinking) > 0 && onThinking[0] != nil {
+		thinkingCB = onThinking[0]
+	}
 	for stream.Next() {
 		event := stream.Event()
 		if event.Err != nil {
@@ -359,6 +370,11 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 		case gochatcore.EventContent:
 			contentBuf.WriteString(event.Content)
 			onChunk(event.Content)
+		case gochatcore.EventThinking:
+			thinkingBuf.WriteString(event.Content)
+			if thinkingCB != nil {
+				thinkingCB(event.Content)
+			}
 		case gochatcore.EventError:
 			return c.recordPartialResult(ctx, input, contentBuf.String(), preciseInput, event.Err)
 		case gochatcore.EventDone:
@@ -370,6 +386,7 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 		"model", c.modelName,
 		"elapsed_ms", time.Since(llmStart).Milliseconds(),
 		"output_chars", contentBuf.Len(),
+		"thinking_chars", thinkingBuf.Len(),
 	)
 
 	// Collect native tool calls accumulated from streaming deltas.
@@ -525,7 +542,12 @@ func (c *LLMCaller) assembleMessages(input CallInput) []gochatcore.Message {
 
 	// Layer 2: Conversation history
 	for _, m := range input.History {
-		msgs = append(msgs, gochatcore.NewTextMessage(m.Role, m.Content))
+		msg := gochatcore.NewTextMessage(m.Role, m.Content)
+		// Propagate ToolCallID for role="tool" messages (required by strict APIs like DeepSeek)
+		if m.ToolCallID != "" {
+			msg.ToolCallID = m.ToolCallID
+		}
+		msgs = append(msgs, msg)
 	}
 
 	// Layer 3: User message

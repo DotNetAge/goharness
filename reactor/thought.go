@@ -48,6 +48,10 @@ type Thought struct {
 
 	SelectedSkill string    `json:"selected_skill,omitempty" yaml:"selected_skill"`
 	Timestamp     time.Time `json:"timestamp" yaml:"timestamp"`
+
+	// ToolCallIDs maps tool name → original tool_call_id from the LLM response.
+	// Populated by nativeToolCallsToThought; used when persisting tool results.
+	ToolCallIDs map[string]string `json:"tool_call_ids,omitempty" yaml:"tool_call_ids,omitempty"`
 }
 
 // jsonBlockRegex matches ```json ... ``` code blocks.

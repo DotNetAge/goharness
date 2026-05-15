@@ -68,10 +68,14 @@ func (r *Reactor) Think(ctx *ReactContext) (int, error) {
 		return 0, fmt.Errorf("llm caller not initialized")
 	}
 
-	result := r.llmCaller.CallStream(ctx.Ctx(), callInput, func(chunk string) {
-		contentBuf.WriteString(chunk)
-		ctx.EmitEvent(core.ThinkingDelta, chunk)
-	})
+	result := r.llmCaller.CallStream(ctx.Ctx(), callInput,
+		func(chunk string) {
+			contentBuf.WriteString(chunk)
+		},
+		func(thinkingChunk string) {
+			ctx.EmitEvent(core.ThinkingDelta, thinkingChunk)
+		},
+	)
 
 	// LLM 调用本身失败（网络、认证、超时等），直接返回错误，避免将错误文本送入 ParseThinkResponse。
 	if result.Error != nil {
@@ -140,6 +144,7 @@ func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 	}
 
 	toolCalls := make(map[string]map[string]any, len(tcs))
+	toolCallIDs := make(map[string]string, len(tcs))
 	for _, tc := range tcs {
 		var params map[string]any
 		if tc.Arguments != "" {
@@ -148,12 +153,14 @@ func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 			}
 		}
 		toolCalls[tc.Name] = params
+		toolCallIDs[tc.Name] = tc.ID
 	}
 
 	return &Thought{
-		Decision:  DecisionAct,
-		ToolCalls: toolCalls,
-		Reasoning: "LLM returned native tool calls",
+		Decision:    DecisionAct,
+		ToolCalls:   toolCalls,
+		ToolCallIDs: toolCallIDs,
+		Reasoning:   "LLM returned native tool calls",
 	}
 }
 

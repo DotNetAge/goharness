@@ -804,11 +804,14 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 	if reactCtx.LastThought.Decision == DecisionAct {
 		if reactCtx.LastAction.Error != nil {
 			toolMsg := fmt.Sprintf("%s error: %s", reactCtx.LastAction.Target, reactCtx.LastAction.ErrorMsg)
-			reactCtx.AddMessage("tool", toolMsg)
+			// Extract tool_call_id from LastThought (populated by nativeToolCallsToThought)
+			toolCallID := lookUpToolCallID(reactCtx.LastThought, reactCtx.LastAction.Target)
+			reactCtx.AddToolMessage("tool", toolMsg, toolCallID)
 			r.persistStepToStore(reactCtx.Ctx(), "tool", toolMsg)
 		} else if reactCtx.LastAction.Result != "" {
 			toolMsg := fmt.Sprintf("%s returned: %s", reactCtx.LastAction.Target, reactCtx.LastAction.Result)
-			reactCtx.AddMessage("tool", toolMsg)
+			toolCallID := lookUpToolCallID(reactCtx.LastThought, reactCtx.LastAction.Target)
+			reactCtx.AddToolMessage("tool", toolMsg, toolCallID)
 			r.persistStepToStore(reactCtx.Ctx(), "tool", toolMsg)
 		}
 	}
@@ -1187,6 +1190,29 @@ func (r *Reactor) handleCoordinatorControl(cs *CoordState, cmd *core.ControlComm
 	default:
 		r.getLogger().Info("unknown coordinator control command", "action", cmd.Action)
 	}
+}
+
+// lookUpToolCallID returns the tool_call_id for the given target tool name.
+// Falls back to a synthetic ID based on the target name when the original ID
+// is not available (e.g., legacy Thought or parsed JSON path).
+func lookUpToolCallID(thought *Thought, target string) string {
+	if thought == nil {
+		return target
+	}
+	// Try ToolCallIDs map first (populated by nativeToolCallsToThought)
+	if thought.ToolCallIDs != nil && target != "" {
+		if id, ok := thought.ToolCallIDs[target]; ok && id != "" {
+			return id
+		}
+	}
+	// For multi-tool case where Target is empty, use first available ID
+	if target == "" && len(thought.ToolCallIDs) > 0 {
+		for _, id := range thought.ToolCallIDs {
+			return id
+		}
+	}
+	// Fallback: use target name as synthetic ID
+	return target
 }
 
 // wrapError wraps an error with context information.

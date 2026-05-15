@@ -151,4 +151,16 @@ func (c *ReactContext) AddMessage(role, content string) {
 	})
 }
 
+// AddToolMessage appends a tool result message with its tool_call_id.
+func (c *ReactContext) AddToolMessage(role, content, toolCallID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ConversationHistory = append(c.ConversationHistory, core.Message{
+		Role:       role,
+		Content:    content,
+		Timestamp:  time.Now().Unix(),
+		ToolCallID: toolCallID,
+	})
+}
+
 

@@ -23,7 +23,8 @@ func isCJK(r rune) bool {
 
 // Message represents a single message in a conversation.
 type Message struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Timestamp int64  `json:"timestamp"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	Timestamp  int64  `json:"timestamp"`
+	ToolCallID string `json:"tool_call_id,omitempty"` // tool call ID for role="tool" messages (required by strict APIs like DeepSeek)
 }
