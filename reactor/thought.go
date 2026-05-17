@@ -20,11 +20,7 @@ const (
 )
 
 // Thought represents the output of the Think phase.
-// In two-phase thinking, Phase 1 produces SelectedSkill only,
-// and Phase 2 produces the full decision/action/answer fields.
 type Thought struct {
-	IdentID     string  `json:"ident_id,omitempty" yaml:"ident_id"`
-	Content     string  `json:"content,omitempty" yaml:"content"`
 	Reasoning   string  `json:"reasoning" yaml:"reasoning"`
 	Decision    string  `json:"decision" yaml:"decision"`
 	Confidence  float64 `json:"confidence" yaml:"confidence"`
@@ -46,8 +42,7 @@ type Thought struct {
 	DelegateTarget string `json:"delegate_target,omitempty" yaml:"delegate_target"`
 	DelegatePrompt string `json:"delegate_prompt,omitempty" yaml:"delegate_prompt"`
 
-	SelectedSkill string    `json:"selected_skill,omitempty" yaml:"selected_skill"`
-	Timestamp     time.Time `json:"timestamp" yaml:"timestamp"`
+	Timestamp time.Time `json:"timestamp" yaml:"timestamp"`
 
 	// ToolCallIDs maps tool name → original tool_call_id from the LLM response.
 	// Populated by nativeToolCallsToThought; used when persisting tool results.

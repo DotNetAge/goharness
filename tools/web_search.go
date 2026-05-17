@@ -406,6 +406,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	close(resultCh)
 
 	var allResults []SearchResult
+	var failedAdapters []string
 	successCount := 0
 	for result := range resultCh {
 		if result.err == nil && len(result.results) > 0 {
@@ -415,6 +416,8 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 				"adapter", result.adapter,
 				"result_count", len(result.results),
 			)
+		} else if result.err != nil {
+			failedAdapters = append(failedAdapters, fmt.Sprintf("%s (%v)", result.adapter, result.err))
 		}
 	}
 
@@ -437,10 +440,19 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 
 	if len(results) == 0 {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("search timed out after %v (query: %q). The search engine may be rate-limiting or experiencing issues. Try again later or simplify your query.",
-				15*time.Second, query)
+			return nil, fmt.Errorf("search timed out after %v (query: %q). Failed adapters: [%s]. The search engine may be rate-limiting or experiencing issues. Try again later.",
+				15*time.Second, query, strings.Join(failedAdapters, ", "))
 		}
-		return fmt.Sprintf("No results found for query: %q\n\nPossible reasons:\n- Query too specific or contains typos\n- All search engines may be blocked (GFW) or rate-limiting\n- Network connectivity problems\n\nSuggestion: Try simplifying the query or search again later.\n\nNote: %d search engines were tried.", query, len(adapters)), nil
+		return nil, fmt.Errorf("no results found for query: %q. All search engines failed: [%s]. Possible reasons: GFW blocking, rate-limiting, or network issues. Try simplifying your query.",
+			query, strings.Join(failedAdapters, ", "))
+	}
+
+	var adapterNote string
+	if len(failedAdapters) > 0 {
+		adapterNote = fmt.Sprintf("\n\n[Search Status] %d/%d engines succeeded. Failed: %s",
+			successCount, len(adapters), strings.Join(failedAdapters, ", "))
+	} else {
+		adapterNote = fmt.Sprintf("\n\n[Search Status] All %d engines succeeded.", len(adapters))
 	}
 
 	// Cache results
@@ -449,7 +461,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		timestamp: time.Now(),
 	})
 
-	return formatSearchResults(query, results), nil
+	return formatSearchResults(query, results) + adapterNote, nil
 }
 
 func formatSearchResults(query string, results []SearchResult) string {

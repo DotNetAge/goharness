@@ -219,6 +219,17 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 		)
 		return r.executeDelegate(ctx, thought, start)
 
+	case DecisionCoordinate:
+		r.getLogger().Info("act coordinate",
+			"session_id", sessionID,
+			"iteration", iter,
+		)
+		ctx.LastAction = &Action{
+			Type:   ActionTypeAnswer,
+			Result: "coordination dispatched — polling sub-tasks...",
+		}
+		return nil
+
 	default:
 		r.getLogger().Info("act default",
 			"session_id", sessionID,
@@ -266,7 +277,6 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 		return nil
 	}
 
-	// Separate sync and async tool calls
 	var syncCalls, asyncCalls []toolCall
 	for _, c := range calls {
 		isAsync := false
@@ -280,32 +290,40 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 		}
 	}
 
-	var action Action
-	action.Timestamp = start
-	action.Type = ActionTypeToolCall
-	var results []string
-
-	// Phase 1: Execute sync tools SERIALLY (one at a time)
 	sessionID := r.resolveSessionID(ctx)
+	var allResults []string
+
 	for _, c := range syncCalls {
 		toolStart := time.Now()
+		var toolAction Action
+		toolAction.Timestamp = start
+		toolAction.Type = ActionTypeToolCall
+		toolAction.Target = c.name
+		toolAction.Params = c.params
+
 		r.getLogger().Info("tool start",
 			"session_id", sessionID,
 			"tool", c.name,
 			"params_preview", truncate(fmt.Sprintf("%v", c.params), 120),
 		)
-		ctx.EmitEvent(core.ActionProgress, fmt.Sprintf("正在执行: %s", c.name))
+
+		ctx.LastAction = &toolAction
+		r.emitActionResult(ctx)
+		ctx.PerToolEventsEmitted = true
+
 		res, err := r.toolExecutor.Execute(ctx.Ctx(), c.name, c.params)
 		toolElapsed := time.Since(toolStart)
+		toolAction.Duration = toolElapsed
+
 		if err != nil {
 			r.getLogger().Error("tool error", err,
 				"session_id", sessionID,
 				"tool", c.name,
 				"elapsed_ms", toolElapsed.Milliseconds(),
 			)
-			action.Error = err
-			action.ErrorMsg = err.Error()
-			results = append(results, fmt.Sprintf("[%s] error: %s", c.name, err.Error()))
+			toolAction.Error = err
+			toolAction.ErrorMsg = err.Error()
+			allResults = append(allResults, fmt.Sprintf("[%s] error: %s", c.name, err.Error()))
 		} else if res.Interaction != nil {
 			r.getLogger().Info("tool interaction",
 				"session_id", sessionID,
@@ -314,12 +332,12 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			)
 			answer, interactErr := r.interactionHandler.HandleInteraction(ctx.Ctx(), res.Interaction)
 			if interactErr != nil {
-				results = append(results, fmt.Sprintf("[%s] interaction error: %s", c.name, interactErr.Error()))
+				allResults = append(allResults, fmt.Sprintf("[%s] interaction error: %s", c.name, interactErr.Error()))
 			} else {
-				results = append(results, fmt.Sprintf("[%s] %s", c.name, answer))
+				allResults = append(allResults, fmt.Sprintf("[%s] %s", c.name, answer))
 			}
-			if res.Duration > action.Duration {
-				action.Duration = res.Duration
+			if res.Duration > toolAction.Duration {
+				toolAction.Duration = res.Duration
 			}
 		} else {
 			resultSize := len(res.Result)
@@ -330,15 +348,14 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				"result_size", resultSize,
 				"success", true,
 			)
-			results = append(results, fmt.Sprintf("[%s] %s", c.name, res.Result))
-			if res.Duration > action.Duration {
-				action.Duration = res.Duration
-			}
+			allResults = append(allResults, fmt.Sprintf("[%s] %s", c.name, res.Result))
 		}
-		ctx.EmitEvent(core.ActionProgress, fmt.Sprintf("%s 已完成", c.name))
+
+		toolAction.Result = fmt.Sprintf("[%s] %s", c.name, coalesce(toolAction.Result, "done"))
+		ctx.LastAction = &toolAction
+		r.emitActionResult(ctx)
 	}
 
-	// Phase 2: Execute async tools in PARALLEL (all launched at once)
 	if len(asyncCalls) > 0 {
 		type asyncResult struct {
 			name string
@@ -348,13 +365,22 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 		asyncCh := make(chan asyncResult, len(asyncCalls))
 
 		for _, c := range asyncCalls {
-			c := c // capture
+			c := c
 			go func(toolName string, params map[string]any) {
 				asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), 5*time.Minute)
 				defer cancel()
 
+				startAction := &Action{
+					Timestamp: start,
+					Type:      ActionTypeToolCall,
+					Target:    toolName,
+					Params:    params,
+				}
+				r.emitActionEvent(ctx, startAction)
+
 				resultCh := make(chan struct{}, 1)
 				var execErr error
+				var taskID string
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -367,32 +393,60 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 
 				select {
 				case <-resultCh:
-					taskID := fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
+					taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
 					asyncCh <- asyncResult{name: toolName, id: taskID, err: execErr}
 				case <-asyncCtx.Done():
-					taskID := fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
+					taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
 					asyncCh <- asyncResult{
 						name: toolName,
 						id:   taskID,
 						err:  fmt.Errorf("async tool %q timed out after 5m", toolName),
 					}
 				}
+
+				endAction := &Action{
+					Timestamp: start,
+					Type:      ActionTypeToolCall,
+					Target:    toolName,
+					Params:    params,
+					Duration:  time.Since(start),
+				}
+				if execErr != nil {
+					endAction.Error = execErr
+					endAction.ErrorMsg = execErr.Error()
+				} else {
+					endAction.Result = fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, taskID)
+				}
+				r.emitActionEvent(ctx, endAction)
 			}(c.name, c.params)
 		}
 
-		for i := 0; i < len(asyncCalls); i++ {
-			ar := <-asyncCh
-			if ar.err != nil {
-				results = append(results, fmt.Sprintf("[%s] error: %s", ar.name, ar.err.Error()))
-			} else {
-				results = append(results, fmt.Sprintf("[%s] %s", ar.name,
-					fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, ar.id)))
+		remaining := len(asyncCalls)
+		for remaining > 0 {
+			select {
+			case ar := <-asyncCh:
+				remaining--
+				if ar.err != nil {
+					allResults = append(allResults, fmt.Sprintf("[%s] error: %s", ar.name, ar.err.Error()))
+				} else {
+					allResults = append(allResults, fmt.Sprintf("[%s] %s", ar.name,
+						fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, ar.id)))
+				}
+			case <-ctx.Ctx().Done():
+				r.getLogger().Warn("context cancelled while waiting for async tools",
+					"remaining", remaining)
+				remaining = 0
 			}
 		}
+		ctx.PerToolEventsEmitted = true
 	}
 
-	action.Result = strings.Join(results, "\n")
-	ctx.LastAction = &action
+	summaryAction := &Action{
+		Timestamp: start,
+		Type:      ActionTypeToolCall,
+		Result:    strings.Join(allResults, "\n"),
+	}
+	ctx.LastAction = summaryAction
 	return nil
 }
 

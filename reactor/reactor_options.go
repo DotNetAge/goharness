@@ -64,14 +64,6 @@ func WithEventBus(bus EventBus) ReactorOption {
 	}
 }
 
-// WithMCPRegistry sets an MCP tool registry for discovering and calling
-// tools from external MCP servers.
-func WithMCPRegistry(registry *core.MCPToolRegistry) ReactorOption {
-	return func(s *reactorSetup) {
-		s.mcpRegistry = registry
-	}
-}
-
 // WithSkillDir specifies external directories to load skills from.
 // Each directory should contain subdirectories, each with a SKILL.md file.
 // Skills loaded from these directories are registered in addition to bundled skills.
@@ -129,16 +121,8 @@ func WithPrompt(p *Prompt) ReactorOption {
 // --- Registry Injection Options ---
 
 // WithToolRegistry sets a custom ToolRegistry implementation.
-// Use this to add dynamic tool discovery, MCP integration, semantic filtering, etc.
+// Use this to add dynamic tool discovery, semantic filtering, etc.
 // If not set, DefaultToolRegistry is used automatically.
-//
-// Example: MCP-integrated tool registry that merges local + remote tools:
-//
-//	type MCPToolRegistry struct {
-//	    *reactor.DefaultToolRegistry
-//	    mcpClient *mcp.Client
-//	}
-//	func (m *MCPToolRegistry) FindAvailable(filter core.ToolFilter) []core.FuncTool { /* merge local+remote */ }
 func WithToolRegistry(reg core.ToolRegistry) ReactorOption {
 	return func(s *reactorSetup) {
 		s.toolRegistry = reg

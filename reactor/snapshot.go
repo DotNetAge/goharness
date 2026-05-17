@@ -36,7 +36,6 @@ type RunSnapshot struct {
 
 	// Metadata
 	PausedAt time.Time `json:"paused_at"`
-	ResumeAt time.Time `json:"resume_at,omitempty"`
 }
 
 // ToSnapshot extracts a serializable snapshot from a ReactContext.

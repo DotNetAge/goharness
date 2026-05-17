@@ -9,7 +9,6 @@ type Observation struct {
 	Insights    []string  `json:"insights,omitempty" yaml:"insights,omitempty"`
 	ShouldRetry bool      `json:"should_retry" yaml:"should_retry"`
 	Error       string    `json:"error,omitempty" yaml:"error,omitempty"`
-	Err         error     `json:"-" yaml:"-"` // Structured error for internal use, not serialized
 	Timestamp   time.Time `json:"timestamp" yaml:"timestamp"`
 }
 
@@ -32,7 +31,6 @@ func NewErrorObservation(err error, shouldRetry bool) *Observation {
 	return &Observation{
 		Success:     false,
 		Error:       errMsg,
-		Err:         err,
 		ShouldRetry: shouldRetry,
 		Timestamp:   time.Now(),
 	}

@@ -202,7 +202,6 @@ type reactorSetup struct {
 	resultLimits   core.ToolResultLimits
 	tokenEstimator core.TokenEstimator
 	eventBus       EventBus
-	mcpRegistry    *core.MCPToolRegistry
 	skillDirs      []string
 	skills         []string
 	memory         core.Memory
@@ -960,9 +959,10 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			break
 		}
 
-		if reactCtx.LastAction.Type == ActionTypeToolCall {
+		if reactCtx.LastAction.Type == ActionTypeToolCall && !reactCtx.PerToolEventsEmitted {
 			r.emitActionResult(reactCtx)
 		}
+		reactCtx.PerToolEventsEmitted = false
 
 		if err := r.Observe(reactCtx); err != nil {
 			reactCtx.TerminationReason = fmt.Sprintf("observe error: %v", err)
@@ -1041,6 +1041,33 @@ func (r *Reactor) emitActionResult(reactCtx *ReactContext) {
 		resultData.Error = reactCtx.LastAction.ErrorMsg
 	} else {
 		resultData.Result = reactCtx.LastAction.Result
+	}
+	reactCtx.EmitEvent(core.ActionResult, resultData)
+}
+
+// emitActionEvent emits ActionStart + ActionResult events from an explicit Action,
+// without going through ctx.LastAction. Used by async tool goroutines to avoid data races.
+func (r *Reactor) emitActionEvent(reactCtx *ReactContext, action *Action) {
+	predictedTokens := reactCtx.CurrentInputTokens
+	if predictedTokens > 0 {
+		predictedTokens = int(float64(predictedTokens) * 1.5)
+	}
+
+	reactCtx.EmitEvent(core.ActionStart, core.ActionStartData{
+		ToolName:        action.Target,
+		Params:          action.Params,
+		PredictedTokens: predictedTokens,
+		Iteration:       reactCtx.CurrentIteration,
+	})
+	resultData := core.ActionResultData{
+		ToolName: action.Target,
+		Duration: action.Duration,
+		Success:  action.Error == nil,
+	}
+	if action.Error != nil {
+		resultData.Error = action.ErrorMsg
+	} else {
+		resultData.Result = action.Result
 	}
 	reactCtx.EmitEvent(core.ActionResult, resultData)
 }

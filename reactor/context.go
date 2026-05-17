@@ -53,10 +53,11 @@ type ReactContext struct {
 	ConversationHistory
 
 	// Last cycle results
-	LastThought     *Thought
-	LastAction      *Action
-	LastObservation *Observation
-	History         []Step
+	LastThought           *Thought
+	LastAction            *Action
+	LastObservation       *Observation
+	History               []Step
+	PerToolEventsEmitted  bool
 
 	// Token tracking for current iteration
 	CurrentInputTokens int
