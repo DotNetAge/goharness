@@ -178,29 +178,4 @@ func isDuplicateAction(history []Step) bool {
 	return true
 }
 
-func analyzeActionResult(result string) []string {
-	var insights []string
-	if len(result) > 1000 {
-		insights = append(insights, "large result truncated for context")
-	}
-	if strings.Contains(strings.ToLower(result), "error") {
-		insights = append(insights, "result may contain error information")
-	}
-	return insights
-}
-
-func collectUniqueToolNames(history []Step) []string {
-	seen := make(map[string]bool, len(history))
-	var tools []string
-	for _, step := range history {
-		if step.Action.Type == ActionTypeToolCall && step.Action.Target != "" {
-			if !seen[step.Action.Target] {
-				seen[step.Action.Target] = true
-				tools = append(tools, step.Action.Target)
-			}
-		}
-	}
-	return tools
-}
-
 

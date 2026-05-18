@@ -176,13 +176,6 @@ func WithRuleRegistry(reg core.RuleRegistry) ReactorOption {
 	}
 }
 
-// WithAuditLogger sets an audit logger for security-sensitive event tracking.
-// If not set, audit events are silently discarded.
-func WithAuditLogger(logger core.AuditLogger) ReactorOption {
-	return func(s *reactorSetup) {
-		s.auditLogger = logger
-	}
-}
 
 // WithProjectDir sets the project working directory for this Reactor (and its Agent).
 // This is the primary way to ensure ToolContext.ProjectDir is always populated.

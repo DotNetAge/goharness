@@ -13,28 +13,8 @@ import (
 )
 
 const (
-	historyTokenBudgetRatio = 0.7
 	StreamChannelBufferSize = 256
-
-	defaultMaxHistoryTurns = 8
-	tokensPerTurnEstimate  = 500
-	minMaxHistoryTurns     = 3
-	maxMaxHistoryTurns     = 20
 )
-
-func maxHistoryTurnsForConfig(maxTokens int) int {
-	if maxTokens <= 0 {
-		return defaultMaxHistoryTurns
-	}
-	estimated := int(float64(maxTokens) * historyTokenBudgetRatio / float64(tokensPerTurnEstimate))
-	if estimated < minMaxHistoryTurns {
-		return minMaxHistoryTurns
-	}
-	if estimated > maxMaxHistoryTurns {
-		return maxMaxHistoryTurns
-	}
-	return estimated
-}
 
 // ReactorConfig holds the configuration for creating a Reactor.
 // Generation parameters are aligned with core.ModelConfig for full LLM control.
@@ -58,6 +38,43 @@ type ReactorConfig struct {
 	Logger core.Logger // Unified logging interface (optional, defaults to slog)
 
 	IsLocal bool
+}
+
+func (c ReactorConfig) Merge(override ReactorConfig) ReactorConfig {
+	if override.Model != "" {
+		c.Model = override.Model
+	}
+	if override.APIKey != "" {
+		c.APIKey = override.APIKey
+	}
+	if override.BaseURL != "" {
+		c.BaseURL = override.BaseURL
+	}
+	if override.AuthToken != "" {
+		c.AuthToken = override.AuthToken
+	}
+	if override.Temperature > 0 {
+		c.Temperature = override.Temperature
+	}
+	if override.TopP > 0 {
+		c.TopP = override.TopP
+	}
+	if override.TopK > 0 {
+		c.TopK = override.TopK
+	}
+	if override.PresencePenalty != 0 {
+		c.PresencePenalty = override.PresencePenalty
+	}
+	if override.FrequencyPenalty != 0 {
+		c.FrequencyPenalty = override.FrequencyPenalty
+	}
+	if override.MaxTokens > 0 {
+		c.MaxTokens = override.MaxTokens
+	}
+	if override.IsLocal {
+		c.IsLocal = override.IsLocal
+	}
+	return c
 }
 
 // RunResult holds the complete output of a Run invocation.
@@ -126,8 +143,8 @@ type Reactor struct {
 	// Invalidated when RegisterTool is called after construction.
 	cachedLLMTools []gochatcore.Tool
 	cacheMu        sync.RWMutex
+	offloadMgr *OffloadManager
 
-	auditLogger core.AuditLogger
 
 	// Directory context (Design-time safety: set during initialization from setup)
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
@@ -169,12 +186,6 @@ func (r *Reactor) getSnapshot() *RunSnapshot {
 	return snap
 }
 
-func (r *Reactor) clearSnapshot() {
-	r.snapshotHolder.Lock()
-	defer r.snapshotHolder.Unlock()
-	r.snapshotHolder.snap = nil
-}
-
 func (r *Reactor) ConsumeSnapshot() *RunSnapshot { return r.getSnapshot() }
 
 func (r *Reactor) PeekSnapshot() *RunSnapshot {
@@ -213,7 +224,6 @@ type reactorSetup struct {
 	skillRegistry  core.SkillRegistry
 	ruleRegistry   core.RuleRegistry
 	prompt         *Prompt
-	auditLogger    core.AuditLogger
 
 	// Directory context (Design-time safety: guaranteed by Agent layer)
 	projectDir string // Layer 2: Set via WithProjectDir() ReactorOption
@@ -361,126 +371,108 @@ func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 	)
 }
 
+type toolRegistration struct {
+	name     string
+	factory  func(mgr *tools.SessionSandboxManager) core.FuncTool
+	skipName string
+}
+
+var defaultBundledTools = []toolRegistration{
+	{"Grep", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewGrepTool() }, "Grep"},
+	{"Glob", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewGlobTool() }, "Glob"},
+	{"Read", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewReadTool() }, "Read"},
+	{"Write", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWriteTool() }, "Write"},
+	{"FileEdit", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewFileEditTool() }, "FileEdit"},
+	{"Bash", func(mgr *tools.SessionSandboxManager) core.FuncTool {
+		if mgr != nil { return tools.NewBashToolWithSessionSandbox(mgr) }
+		return tools.NewBashTool()
+	}, "Bash"},
+	{"RunScript", func(mgr *tools.SessionSandboxManager) core.FuncTool {
+		if mgr != nil { return tools.NewRunScriptToolWithSessionSandbox(mgr) }
+		return tools.NewRunScriptTool()
+	}, "RunScript"},
+	{"PowerShell", func(mgr *tools.SessionSandboxManager) core.FuncTool {
+		if !tools.IsWindowsPlatform() { return nil }
+		if mgr != nil { return tools.NewPowerShellToolWithSessionSandbox(mgr) }
+		return tools.NewPowerShellTool()
+	}, "PowerShell"},
+	{"WebSearch", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWebSearchTool() }, "WebSearch"},
+	{"WebFetch", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWebFetchTool() }, "WebFetch"},
+	{"TodoWrite", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTodoWriteTool() }, "TodoWrite"},
+	{"TodoRead", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTodoReadTool() }, "TodoRead"},
+	{"TodoExecute", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTodoExecuteTool() }, "TodoExecute"},
+	{"AskUser", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewAskUserTool() }, "AskUser"},
+	{"Ls", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewLsTool() }, "Ls"},
+	{"CollectResults", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewCollectResultsTool() }, "CollectResults"},
+	{"TaskList", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskListTool() }, "TaskList"},
+	{"TaskGet", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskGetTool() }, "TaskGet"},
+	{"TaskUpdate", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskUpdateTool() }, "TaskUpdate"},
+	{"TaskStop", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskStopTool() }, "TaskStop"},
+}
+
 func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 	if setup.skipAllBundled {
 		return
 	}
 
-	bundledTools := []struct {
+	for _, reg := range defaultBundledTools {
+		if setup.skipTools[reg.skipName] {
+			continue
+		}
+		tool := reg.factory(setup.sandboxMgr)
+		if tool == nil {
+			continue
+		}
+		if err := r.RegisterTool(tool); err != nil {
+			r.getLogger().Warn("failed to register bundled tool", "name", reg.name, "error", err)
+		}
+	}
+
+	if !setup.skipTools["Skill"] {
+		skillTool := tools.NewSkillTool(func(name string) (*core.Skill, error) {
+			return r.skillRegistry.GetSkill(name)
+		})
+		if err := r.RegisterTool(skillTool); err != nil {
+			r.getLogger().Warn("failed to register Skill tool", "error", err)
+		}
+	}
+
+	r.registerOrchestrationTools(setup)
+}
+
+func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
+	spawn := r.SpawnFunc
+	orchestrationTools := []struct {
 		name string
 		tool core.FuncTool
 	}{
-		{"Grep", tools.NewGrepTool()},
-		{"Glob", tools.NewGlobTool()},
-		{"Read", tools.NewReadTool()},
-		{"Write", tools.NewWriteTool()},
-		{"FileEdit", tools.NewFileEditTool()},
-	}
-
-	for _, bt := range bundledTools {
-		if !setup.skipTools[bt.name] {
-			if err := r.RegisterTool(bt.tool); err != nil {
-				r.getLogger().Warn("failed to register bundled tool", "name", bt.name, "error", err)
-			}
-		}
-	}
-
-	if setup.sandboxMgr != nil {
-		bashTool := tools.NewBashToolWithSessionSandbox(setup.sandboxMgr)
-		if err := r.RegisterTool(bashTool); err != nil {
-			r.getLogger().Warn("failed to register Bash tool with session sandbox", "error", err)
-		}
-
-		runScriptTool := tools.NewRunScriptToolWithSessionSandbox(setup.sandboxMgr)
-		if err := r.RegisterTool(runScriptTool); err != nil {
-			r.getLogger().Warn("failed to register RunScript tool with session sandbox", "error", err)
-		}
-
-		if tools.IsWindowsPlatform() && !setup.skipTools["PowerShell"] {
-			psTool := tools.NewPowerShellToolWithSessionSandbox(setup.sandboxMgr)
-			if err := r.RegisterTool(psTool); err != nil {
-				r.getLogger().Warn("failed to register PowerShell tool with session sandbox", "error", err)
-			}
-		}
-	} else {
-		bashTool := tools.NewBashTool()
-		if err := r.RegisterTool(bashTool); err != nil {
-			r.getLogger().Warn("failed to register Bash tool (no session sandbox)", "error", err)
-		}
-
-		runScriptTool := tools.NewRunScriptTool()
-		if err := r.RegisterTool(runScriptTool); err != nil {
-			r.getLogger().Warn("failed to register RunScript tool (no session sandbox)", "error", err)
-		}
-
-		if tools.IsWindowsPlatform() && !setup.skipTools["PowerShell"] {
-			if err := r.RegisterTool(tools.NewPowerShellTool()); err != nil {
-				r.getLogger().Warn("failed to register PowerShell tool (no session sandbox)", "error", err)
-			}
-		}
-	}
-
-	remainingTools := []struct {
-		name string
-		tool core.FuncTool
-	}{
-		{"WebSearch", tools.NewWebSearchTool()},
-		{"WebFetch", tools.NewWebFetchTool()},
-		{"TodoWrite", tools.NewTodoWriteTool()},
-		{"TodoRead", tools.NewTodoReadTool()},
-		{"TodoExecute", tools.NewTodoExecuteTool()},
-		{"AskUser", tools.NewAskUserTool()},
-		{"Ls", tools.NewLsTool()},
-		// {"Crontab", tools.NewCrontabTool()},
 		{"Delegate", tools.NewDelegateTool(func(ctx context.Context, agentName, task string) (string, error) {
-			if r.SpawnFunc != nil {
-				return r.SpawnFunc(ctx, agentName, task)
+			if spawn != nil {
+				return spawn(ctx, agentName, task)
 			}
 			return "", fmt.Errorf("delegate: SpawnFunc not configured on reactor")
 		})},
-		{"CollectResults", tools.NewCollectResultsTool()},
-		{"Skill", tools.NewSkillTool(func(name string) (*core.Skill, error) {
-			return r.skillRegistry.GetSkill(name)
-		})},
 		{"TaskCreate", tools.NewTaskCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
-			if r.SpawnFunc != nil {
-				return r.SpawnFunc(ctx, agentName, task)
+			if spawn != nil {
+				return spawn(ctx, agentName, task)
 			}
 			return "", fmt.Errorf("task_create: SpawnFunc not configured on reactor")
 		})},
-		{"TaskList", tools.NewTaskListTool()},
-		{"TaskGet", tools.NewTaskGetTool()},
-		{"TaskUpdate", tools.NewTaskUpdateTool()},
-		{"TaskStop", tools.NewTaskStopTool()},
 		{"TeamCreate", tools.NewTeamCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
-			if r.SpawnFunc != nil {
-				return r.SpawnFunc(ctx, agentName, task)
+			if spawn != nil {
+				return spawn(ctx, agentName, task)
 			}
 			return "", fmt.Errorf("team_create: SpawnFunc not configured on reactor")
 		})},
 	}
-
-	for _, bt := range remainingTools {
-		if !setup.skipTools[bt.name] {
-			// Skip orchestration tools when EnableOrchestration is false
-			// if !setup.enableOrchestration && toolHasTag(bt.tool, "orchestration") {
-			// 	continue
-			// }
-			if err := r.RegisterTool(bt.tool); err != nil {
-				r.getLogger().Warn("failed to register bundled tool", "name", bt.name, "error", err)
+	for _, ot := range orchestrationTools {
+		if !setup.skipTools[ot.name] {
+			if err := r.RegisterTool(ot.tool); err != nil {
+				r.getLogger().Warn("failed to register orchestration tool", "name", ot.name, "error", err)
 			}
 		}
 	}
 }
-
-// func toolHasTag(tool core.FuncTool, tag string) bool {
-// 	for _, t := range tool.Info().Tags {
-// 		if t == tag {
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
 
 func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r := &Reactor{}
@@ -499,8 +491,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.config = config
 	r.memory = setup.memory
 	r.prompt = setup.prompt
-	r.auditLogger = setup.auditLogger
-
 	// Directory context (Design-time safety: copy from setup to Reactor)
 	r.projectDir = setup.projectDir
 	r.sessionDir = setup.sessionDir
@@ -550,24 +540,11 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 		r.cacheMu.Unlock()
 	}
 
-	// Inject logger into offload package for proper dependency injection
-	SetOffloadLogger(r.getLogger())
-
 	// Start background cleanup for offloaded files
-	CleanupOffloadedFiles()
+	r.offloadMgr = NewOffloadManager(r.getLogger())
+	r.offloadMgr.StartBackgroundCleanup()
 
 	return r
-}
-
-func (r *Reactor) AuditLogger() core.AuditLogger { return r.auditLogger }
-
-func (r *Reactor) logAudit(ctx context.Context, entry core.AuditEntry) {
-	if r.auditLogger == nil {
-		return
-	}
-	if err := r.auditLogger.Log(ctx, entry); err != nil {
-		r.getLogger().Warn("failed to write audit log", "error", err)
-	}
 }
 
 func (r *Reactor) SkillRegistry() core.SkillRegistry       { return r.skillRegistry }
@@ -589,7 +566,6 @@ func (r *Reactor) RegisterTool(tool core.FuncTool) error {
 	r.cacheMu.Unlock()
 	return r.toolRegistry.Register(tool)
 }
-func (r *Reactor) maxHistoryTurns() int { return maxHistoryTurnsForConfig(r.config.MaxTokens) }
 
 // getLLMTools returns cached LLM-ready tool definitions, building them on first call.
 func (r *Reactor) getLLMTools() []gochatcore.Tool {
@@ -632,50 +608,14 @@ func (r *Reactor) getLLMTools() []gochatcore.Tool {
 // Use case: SubAgent creation where the child needs parent's tools/skills/memory
 // but runs its own T-A-O loop with possibly a different model or system prompt.
 func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
-	childConfig := r.config
-	if configOverride.Model != "" {
-		childConfig.Model = configOverride.Model
-	}
-	// FIX(P0-Safe): CloneReactor creates an independent Reactor for a DIFFERENT Agent
-	// with its own identity (role, rules, constraints). The new Agent will call
-	// Reload(AgentConfig) to inject its own complete SystemPrompt.
-	// Therefore, NEVER inherit or append the parent's SystemPrompt — always use
-	// the override value directly, or clear to prevent identity leakage.
-	if configOverride.SystemPrompt != "" {
-		childConfig.SystemPrompt = configOverride.SystemPrompt
-	} else {
-		childConfig.SystemPrompt = ""
-	}
-	if configOverride.APIKey != "" {
-		childConfig.APIKey = configOverride.APIKey
-	}
-	if configOverride.BaseURL != "" {
-		childConfig.BaseURL = configOverride.BaseURL
-	}
-	if configOverride.AuthToken != "" {
-		childConfig.AuthToken = configOverride.AuthToken
-	}
-	if configOverride.Temperature > 0 {
-		childConfig.Temperature = configOverride.Temperature
-	}
-	if configOverride.TopP > 0 {
-		childConfig.TopP = configOverride.TopP
-	}
-	if configOverride.TopK > 0 {
-		childConfig.TopK = configOverride.TopK
-	}
-	if configOverride.PresencePenalty != 0 {
-		childConfig.PresencePenalty = configOverride.PresencePenalty
-	}
-	if configOverride.FrequencyPenalty != 0 {
-		childConfig.FrequencyPenalty = configOverride.FrequencyPenalty
-	}
-	if configOverride.MaxTokens > 0 {
-		childConfig.MaxTokens = configOverride.MaxTokens
-	}
-	if configOverride.IsLocal {
-		childConfig.IsLocal = configOverride.IsLocal
-	}
+	childConfig := r.config.Merge(configOverride)
+
+	// SystemPrompt: always use override value directly, or clear to prevent identity leakage.
+	// Merge() skips empty strings, but for SystemPrompt, empty means "explicitly clear".
+	childConfig.SystemPrompt = configOverride.SystemPrompt
+
+	// OffloadManager: child reuses parent's reference (shared, cleanup via sync.Once).
+	// See Phase 2.2 CloneReactor compatibility notes.
 
 	child := &Reactor{
 		config:        childConfig,
@@ -687,6 +627,7 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		eventBus:      r.eventBus,
 		kvStore:       r.kvStore,
 		fileStore:     r.fileStore,
+		offloadMgr:    r.offloadMgr,
 	}
 
 	// Clone LLMCaller with parent's shared infrastructure but independent client/context
@@ -818,38 +759,52 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 
 // buildResultFromContext constructs a RunResult from the ReactContext state.
 func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int, runStart time.Time) *RunResult {
-	result := &RunResult{
+	answer := extractAnswer(reactCtx)
+	if answer != "" {
+		reactCtx.EmitEvent(core.FinalAnswer, answer)
+	}
+
+	totalDuration := time.Since(runStart)
+
+	summary := buildExecutionSummary(reactCtx, totalTokens, totalDuration)
+	reactCtx.EmitEvent(core.ExecutionSummary, summary)
+
+	taskSummary := buildTaskSummary(answer, totalTokens, reactCtx.CurrentIteration,
+		summary.ToolCalls, totalDuration, reactCtx.TerminationReason)
+	reactCtx.EmitEvent(core.TaskSummary, taskSummary)
+
+	return &RunResult{
+		Answer:            answer,
 		Steps:             reactCtx.History,
 		TotalIterations:   reactCtx.CurrentIteration,
 		TerminationReason: reactCtx.TerminationReason,
 		TokensUsed:        totalTokens,
+		TotalDuration:     totalDuration,
 	}
+}
 
-	if reactCtx.LastAction != nil {
-		result.Answer = reactCtx.LastAction.Result
+func extractAnswer(reactCtx *ReactContext) string {
+	if reactCtx.LastAction != nil && reactCtx.LastAction.Result != "" {
+		return reactCtx.LastAction.Result
 	}
-	if result.Answer == "" && reactCtx.LastThought != nil {
-		result.Answer = reactCtx.LastThought.FinalAnswer
+	if reactCtx.LastThought != nil && reactCtx.LastThought.FinalAnswer != "" {
+		return reactCtx.LastThought.FinalAnswer
 	}
-	if result.Answer == "" && reactCtx.LastObservation != nil {
-		result.Answer = reactCtx.LastObservation.Result
+	if reactCtx.LastObservation != nil && reactCtx.LastObservation.Result != "" {
+		return reactCtx.LastObservation.Result
 	}
-	if result.Answer == "" && reactCtx.TerminationReason != "" {
-		result.Answer = fmt.Sprintf("<task-terminated>%s</task-terminated>", reactCtx.TerminationReason)
+	if reactCtx.TerminationReason != "" {
+		return fmt.Sprintf("<task-terminated>%s</task-terminated>", reactCtx.TerminationReason)
 	}
+	return ""
+}
 
-	if result.Answer != "" {
-		reactCtx.EmitEvent(core.FinalAnswer, result.Answer)
-	}
-
-	totalDuration := time.Since(runStart)
-	result.TotalDuration = totalDuration
-
+func buildExecutionSummary(reactCtx *ReactContext, totalTokens int, totalDuration time.Duration) core.ExecutionSummaryData {
 	summary := core.ExecutionSummaryData{
-		TotalIterations:   result.TotalIterations,
+		TotalIterations:   reactCtx.CurrentIteration,
 		TotalDuration:     totalDuration,
 		TokensUsed:        totalTokens,
-		TerminationReason: result.TerminationReason,
+		TerminationReason: reactCtx.TerminationReason,
 	}
 	summary.ToolsUsed = collectUniqueToolNames(reactCtx.History)
 	summary.ToolCalls = 0
@@ -858,29 +813,40 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int
 			summary.ToolCalls++
 		}
 	}
-	reactCtx.EmitEvent(core.ExecutionSummary, summary)
+	return summary
+}
 
-	// Emit TaskSummary for non-trivial tasks (more than 1 iteration or at least 1 tool call)
-	taskSummaryData := core.TaskSummaryData{
-		InputTokens:  totalTokens,
+func buildTaskSummary(answer string, inputTokens int, iterations int, toolCalls int, duration time.Duration, terminationReason string) core.TaskSummaryData {
+	data := core.TaskSummaryData{
+		InputTokens:  inputTokens,
 		OutputTokens: 0,
 	}
-	if result.TotalIterations > 1 || summary.ToolCalls > 0 {
+	if iterations > 1 || toolCalls > 0 {
 		toolWord := "tool calls"
-		if summary.ToolCalls == 1 {
+		if toolCalls == 1 {
 			toolWord = "tool call"
 		}
-		taskSummaryData.Summary = fmt.Sprintf(
+		data.Summary = fmt.Sprintf(
 			"Completed %d iteration(s) with %d %s in %s. Termination reason: %s.",
-			result.TotalIterations, summary.ToolCalls, toolWord,
-			totalDuration.Round(time.Millisecond), result.TerminationReason,
+			iterations, toolCalls, toolWord,
+			duration.Round(time.Millisecond), terminationReason,
 		)
-	} else if result.Answer != "" {
-		taskSummaryData.Summary = fmt.Sprintf("Direct answer provided. %s", result.TerminationReason)
+	} else if answer != "" {
+		data.Summary = fmt.Sprintf("Direct answer provided. %s", terminationReason)
 	}
-	reactCtx.EmitEvent(core.TaskSummary, taskSummaryData)
+	return data
+}
 
-	return result
+func (r *Reactor) abortCycle(reactCtx *ReactContext, phase string, err error,
+	cycleStart time.Time, cycleNum int, sessionID string) {
+	reactCtx.TerminationReason = fmt.Sprintf("%s error: %v", phase, err)
+	reactCtx.EmitEvent(core.Error, reactCtx.TerminationReason)
+	r.getLogger().Error("cycle abort", err,
+		"session_id", sessionID,
+		"iteration", cycleNum,
+		"phase", phase,
+		"elapsed_ms", time.Since(cycleStart).Milliseconds(),
+	)
 }
 
 // handlePauseSnapshot checks if a pause was requested and saves a snapshot if so.
@@ -929,14 +895,7 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		totalTokens += tokens
 		reactCtx.CurrentInputTokens = tokens
 		if err != nil {
-			reactCtx.TerminationReason = fmt.Sprintf("think error: %v", err)
-			reactCtx.EmitEvent(core.Error, reactCtx.TerminationReason)
-			r.getLogger().Error("cycle abort", err,
-				"session_id", sessionID,
-				"iteration", cycleNum,
-				"phase", "think",
-				"elapsed_ms", time.Since(cycleStart).Milliseconds(),
-			)
+			r.abortCycle(reactCtx, "think", err, cycleStart, cycleNum, sessionID)
 			break
 		}
 		reactCtx.EmitEvent(core.ThinkingDone, reactCtx.LastThought)
@@ -944,31 +903,17 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		// ====== Coordinator Mode: Skip normal Act/Observe, use coord path ======
 		if reactCtx.Mode == ModeCoordinator && reactCtx.LastThought != nil &&
 			reactCtx.LastThought.Decision == DecisionCoordinate {
-			return r.runCoordinatorLoop(reactCtx, totalTokens, cycleStart, runStart)
+			return r.runCoordinatorLoop(reactCtx, totalTokens, runStart)
 		}
 
 		if err := r.Act(reactCtx); err != nil {
-			reactCtx.TerminationReason = fmt.Sprintf("act error: %v", err)
-			reactCtx.EmitEvent(core.Error, reactCtx.TerminationReason)
-			r.getLogger().Error("cycle abort", err,
-				"session_id", sessionID,
-				"iteration", cycleNum,
-				"phase", "act",
-				"elapsed_ms", time.Since(cycleStart).Milliseconds(),
-			)
+			r.abortCycle(reactCtx, "act", err, cycleStart, cycleNum, sessionID)
 			break
 		}
 
 
 		if err := r.Observe(reactCtx); err != nil {
-			reactCtx.TerminationReason = fmt.Sprintf("observe error: %v", err)
-			reactCtx.EmitEvent(core.Error, reactCtx.TerminationReason)
-			r.getLogger().Error("cycle abort", err,
-				"session_id", sessionID,
-				"iteration", cycleNum,
-				"phase", "observe",
-				"elapsed_ms", time.Since(cycleStart).Milliseconds(),
-			)
+			r.abortCycle(reactCtx, "observe", err, cycleStart, cycleNum, sessionID)
 			break
 		}
 		reactCtx.EmitEvent(core.ObservationDone, reactCtx.LastObservation)
@@ -1025,7 +970,7 @@ func (r *Reactor) persistStepToStore(ctx context.Context, role, content string) 
 //
 // This is separate from runLoop because Coordinator mode has fundamentally
 // different control flow — it doesn't call tools, it waits for async results.
-func (r *Reactor) runCoordinatorLoop(reactCtx *ReactContext, totalTokens int, coordStart, runStart time.Time) (*RunResult, error) {
+func (r *Reactor) runCoordinatorLoop(reactCtx *ReactContext, totalTokens int, runStart time.Time) (*RunResult, error) {
 	cs := reactCtx.CoordState
 	if cs == nil {
 		return nil, fmt.Errorf("coordinator mode but no CoordState")
@@ -1107,7 +1052,7 @@ func (r *Reactor) runCoordinatorLoop(reactCtx *ReactContext, totalTokens int, co
 		case <-reactCtx.Ctx().Done():
 			// External context cancelled
 			cs.Cancel("external context cancelled")
-			break
+			goto exitCoordinatorLoop
 		case ctrl := <-cs.ControlChan:
 			// Lifecycle control command received
 			r.handleCoordinatorControl(cs, ctrl)
@@ -1117,6 +1062,8 @@ func (r *Reactor) runCoordinatorLoop(reactCtx *ReactContext, totalTokens int, co
 			break
 		}
 	}
+
+exitCoordinatorLoop:
 
 	// Build result from coordinator state
 	result := &RunResult{
@@ -1163,33 +1110,3 @@ func (r *Reactor) handleCoordinatorControl(cs *CoordState, cmd *core.ControlComm
 	}
 }
 
-// lookUpToolCallID returns the tool_call_id for the given target tool name.
-// Falls back to a synthetic ID based on the target name when the original ID
-// is not available (e.g., legacy Thought or parsed JSON path).
-func lookUpToolCallID(thought *Thought, target string) string {
-	if thought == nil {
-		return target
-	}
-	// Try ToolCallIDs map first (populated by nativeToolCallsToThought)
-	if thought.ToolCallIDs != nil && target != "" {
-		if id, ok := thought.ToolCallIDs[target]; ok && id != "" {
-			return id
-		}
-	}
-	// For multi-tool case where Target is empty, use first available ID
-	if target == "" && len(thought.ToolCallIDs) > 0 {
-		for _, id := range thought.ToolCallIDs {
-			return id
-		}
-	}
-	// Fallback: use target name as synthetic ID
-	return target
-}
-
-// wrapError wraps an error with context information.
-func wrapError(err error, format string, args ...any) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
-}

@@ -3,6 +3,8 @@ package reactor
 import (
 	"testing"
 	"time"
+
+	"github.com/DotNetAge/goreact/core"
 )
 
 // ===========================================================================
@@ -231,7 +233,7 @@ func TestTaskEntry_IsTerminal_IsCompletedSuccessfully_CanRetry(t *testing.T) {
 // ===========================================================================
 
 func TestNewCoordState(t *testing.T) {
-	cs := NewCoordState("parent-1", 30*time.Second, nil)
+	cs := NewCoordState("parent-1", 30*time.Second, core.DefaultLogger())
 
 	if cs.ParentTaskID != "parent-1" {
 		t.Errorf("ParentTaskID = %q, want %q", cs.ParentTaskID, "parent-1")
@@ -253,7 +255,7 @@ func TestNewCoordState(t *testing.T) {
 }
 
 func TestNewCoordState_NoTimeout(t *testing.T) {
-	cs := NewCoordState("parent-1", 0, nil)
+	cs := NewCoordState("parent-1", 0, core.DefaultLogger())
 
 	if cs.GlobalTimer != nil {
 		t.Error("GlobalTimer should be nil for zero timeout")
@@ -262,7 +264,7 @@ func TestNewCoordState_NoTimeout(t *testing.T) {
 }
 
 func TestCoordState_Lifecycle_Transitions(t *testing.T) {
-	cs := NewCoordState("parent-1", 0, nil)
+	cs := NewCoordState("parent-1", 0, core.DefaultLogger())
 	defer cs.Dispose()
 
 	// Running → Interrupted
@@ -305,7 +307,7 @@ func TestCoordState_Lifecycle_Transitions(t *testing.T) {
 }
 
 func TestCoordState_InvalidTransitions(t *testing.T) {
-	cs := NewCoordState("parent-1", 0, nil)
+	cs := NewCoordState("parent-1", 0, core.DefaultLogger())
 	defer cs.Dispose()
 
 	// Cannot interrupt when already completed
@@ -315,7 +317,7 @@ func TestCoordState_InvalidTransitions(t *testing.T) {
 	}
 
 	// Cannot resume from running
-	cs2 := NewCoordState("parent-2", 0, nil)
+	cs2 := NewCoordState("parent-2", 0, core.DefaultLogger())
 	defer cs2.Dispose()
 	if err := cs2.Resume(); err == nil {
 		t.Error("Resume() from Running should error")
@@ -323,7 +325,7 @@ func TestCoordState_InvalidTransitions(t *testing.T) {
 }
 
 func TestCoordState_RegisterUnregisterSubTask(t *testing.T) {
-	cs := NewCoordState("parent-1", 0, nil)
+	cs := NewCoordState("parent-1", 0, core.DefaultLogger())
 	defer cs.Dispose()
 
 	taskCtx := cs.RegisterSubTask("task-1")
@@ -337,51 +339,5 @@ func TestCoordState_RegisterUnregisterSubTask(t *testing.T) {
 	cs.UnregisterSubTask("task-1")
 	if _, ok := cs.SubTaskCtxs["task-1"]; ok {
 		t.Error("SubTaskCtxs should NOT contain 'task-1' after UnregisterSubTask")
-	}
-}
-
-// ===========================================================================
-// Data Structure Validation
-// ===========================================================================
-
-func TestResponsibilityCheck_Struct(t *testing.T) {
-	rc := ResponsibilityCheck{
-		IsMatch:    true,
-		Confidence: 0.85,
-		Reasoning:  "The query matches my code review capability",
-	}
-	if rc.Confidence < 0 || rc.Confidence > 1 {
-		t.Errorf("Confidence out of range: %.2f", rc.Confidence)
-	}
-}
-
-func TestAtomicityCheck_Struct(t *testing.T) {
-	ac := AtomicityCheck{
-		IsAtomic: false,
-		SubTasks: []TaskDecomposition{
-			{ID: "sub-1", Title: "Research", Priority: 1},
-			{ID: "sub-2", Title: "Implementation", Priority: 2, DependsOn: []string{"sub-1"}},
-		},
-		Reasoning: "Complex multi-step task",
-	}
-	if ac.IsAtomic {
-		t.Error("Expected IsAtomic=false")
-	}
-	if len(ac.SubTasks) != 2 {
-		t.Errorf("SubTasks count = %d, want 2", len(ac.SubTasks))
-	}
-}
-
-func TestTaskDecomposition_Struct(t *testing.T) {
-	td := TaskDecomposition{
-		ID:                "sub-1",
-		Title:             "Write unit tests",
-		Description:        "Add comprehensive unit tests for the auth module",
-		Priority:           1,
-		DependsOn:          []string{},
-		DesiredCapability:  "testing",
-	}
-	if td.ID == "" {
-		t.Error("TaskDecomposition ID should not be empty")
 	}
 }

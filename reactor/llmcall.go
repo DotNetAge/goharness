@@ -607,8 +607,7 @@ func (c *LLMCaller) calcPreciseTokens(messages []gochatcore.Message) int {
 	return total
 }
 
-// recordResult builds a TokenUsage record, appends it to the internal records list,
-// persists it to SessionStore, updates the context window, and returns a CallResult.
+// recordResult builds a TokenUsage record via recordTokenUsage, and returns a CallResult.
 // toolCalls carries native function call results from the LLM response.
 func (c *LLMCaller) recordResult(ctx context.Context, input CallInput, content string, inputTokens int, respOrTokens interface{}, messages []gochatcore.Message, toolCalls []gochatcore.ToolCall) CallResult {
 	outputTokens := 0
@@ -623,49 +622,9 @@ func (c *LLMCaller) recordResult(ctx context.Context, input CallInput, content s
 	case int:
 		outputTokens = v
 	case error:
-		// Error case: record what we have
 	}
 
-	// Calculate remain tokens
-	remainTokens := c.maxTokens
-	c.mu.RLock()
-	if c.contextWindow != nil {
-		remainTokens = int(c.contextWindow.TokensRemaining())
-	}
-	c.mu.RUnlock()
-
-	usage := core.TokenUsage{
-		Timestamp:    time.Now(),
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		RemainTokens: remainTokens,
-	}
-
-	// Update context window
-	c.mu.Lock()
-	if c.contextWindow != nil && inputTokens > 0 {
-		c.contextWindow.AddTokens(int64(inputTokens))
-	}
-	c.records = append(c.records, usage)
-	c.mu.Unlock()
-
-	// Persist to SessionStore
-	sessionID := input.SessionID
-	if sessionID == "" {
-		c.mu.RLock()
-		if c.contextWindow != nil {
-			sessionID = c.contextWindow.SessionID
-		}
-		c.mu.RUnlock()
-	}
-	if c.sessionStore != nil && sessionID != "" {
-		if persistErr := c.sessionStore.AppendTokenUsage(ctx, sessionID, usage); persistErr != nil {
-			c.logger.Warn("failed to persist token usage",
-				"session_id", sessionID,
-				"error", persistErr,
-			)
-		}
-	}
+	usage := c.recordTokenUsage(ctx, input, inputTokens, outputTokens)
 
 	return CallResult{
 		Content:    content,
@@ -684,7 +643,19 @@ func (c *LLMCaller) recordPartialResult(ctx context.Context, input CallInput, co
 // buildErrorResult creates a CallResult for failed calls, records the token usage,
 // persists it to SessionStore, and returns the result.
 func (c *LLMCaller) buildErrorResult(ctx context.Context, input CallInput, err error, inputTokens int) CallResult {
-	// Calculate remain tokens
+	usage := c.recordTokenUsage(ctx, input, inputTokens, 0)
+
+	return CallResult{
+		Content:    fmt.Sprintf("[llmcaller error] %v", err),
+		ToolCalls:  nil,
+		TokenUsage: usage,
+		Error:      err,
+	}
+}
+
+// recordTokenUsage records token usage: calculates remain tokens, builds TokenUsage,
+// updates context window, appends to internal records, and persists to SessionStore.
+func (c *LLMCaller) recordTokenUsage(ctx context.Context, input CallInput, inputTokens int, outputTokens int) core.TokenUsage {
 	remainTokens := c.maxTokens
 	c.mu.RLock()
 	if c.contextWindow != nil {
@@ -695,11 +666,10 @@ func (c *LLMCaller) buildErrorResult(ctx context.Context, input CallInput, err e
 	usage := core.TokenUsage{
 		Timestamp:    time.Now(),
 		InputTokens:  inputTokens,
-		OutputTokens: 0,
+		OutputTokens: outputTokens,
 		RemainTokens: remainTokens,
 	}
 
-	// Update context window
 	c.mu.Lock()
 	if c.contextWindow != nil && inputTokens > 0 {
 		c.contextWindow.AddTokens(int64(inputTokens))
@@ -707,7 +677,6 @@ func (c *LLMCaller) buildErrorResult(ctx context.Context, input CallInput, err e
 	c.records = append(c.records, usage)
 	c.mu.Unlock()
 
-	// Persist to SessionStore
 	sessionID := input.SessionID
 	if sessionID == "" {
 		c.mu.RLock()
@@ -718,35 +687,14 @@ func (c *LLMCaller) buildErrorResult(ctx context.Context, input CallInput, err e
 	}
 	if c.sessionStore != nil && sessionID != "" {
 		if persistErr := c.sessionStore.AppendTokenUsage(ctx, sessionID, usage); persistErr != nil {
-			c.logger.Warn("failed to persist token usage on error",
+			c.logger.Warn("failed to persist token usage",
 				"session_id", sessionID,
 				"error", persistErr,
 			)
 		}
 	}
 
-	return CallResult{
-		Content:    fmt.Sprintf("[llmcaller error] %v", err),
-		ToolCalls:  nil,
-		TokenUsage: usage,
-		Error:      err,
-	}
+	return usage
 }
 
-// formatConversationContext extracts a compact context summary from conversation history
-// for injection into prompts that benefit from conversational awareness (e.g., intent classification).
-// maxTurns controls how many recent messages to include; 0 means all.
-func formatConversationContext(history ConversationHistory, maxTurns int) string {
-	if len(history) == 0 {
-		return ""
-	}
-	messages := history
-	if maxTurns > 0 && len(messages) > maxTurns {
-		messages = messages[len(messages)-maxTurns:]
-	}
-	var sb strings.Builder
-	for _, msg := range messages {
-		fmt.Fprintf(&sb, "[%s] %s\n", msg.Role, msg.Content)
-	}
-	return sb.String()
-}
+

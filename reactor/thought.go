@@ -108,15 +108,6 @@ func ParseThinkResponse(content string, logger core.Logger) (*Thought, error) {
 	return &thought, nil
 }
 
-// truncate shortens a string to maxLen runes for error messages.
-func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
-}
-
 // looksLikeDirectAnswer checks if the content appears to be a direct text answer
 // rather than malformed JSON or an error message.
 // It uses heuristics: length > 10 chars, contains natural language patterns,

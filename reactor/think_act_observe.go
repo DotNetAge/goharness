@@ -255,12 +255,32 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 // This ensures deterministic behavior for sync tools (e.g., read_file, grep)
 // while allowing long-running async tools (e.g., web_search, bash) to run concurrently.
 func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start time.Time) error {
-	type toolCall struct {
-		name   string
-		params map[string]any
+	calls := r.parseToolCalls(thought)
+	if len(calls) == 0 {
+		return r.handleEmptyCalls(ctx, thought)
 	}
-	var calls []toolCall
 
+	syncCalls, asyncCalls := r.partitionByAsync(calls)
+
+	sessionID := r.resolveSessionID(ctx)
+	var allResults []string
+	var successCount int
+
+	r.emitActionStart(ctx, calls)
+
+	r.executeSyncTools(ctx, syncCalls, sessionID, &allResults, &successCount)
+	r.executeAsyncTools(ctx, asyncCalls, start, sessionID, &allResults, &successCount)
+
+	return r.assembleActionResult(ctx, calls, start, allResults, successCount)
+}
+
+type toolCall struct {
+	name   string
+	params map[string]any
+}
+
+func (r *Reactor) parseToolCalls(thought *Thought) []toolCall {
+	var calls []toolCall
 	if len(thought.ToolCalls) > 0 {
 		for name, params := range thought.ToolCalls {
 			calls = append(calls, toolCall{name, params})
@@ -268,16 +288,18 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 	} else if thought.ActionTarget != "" {
 		calls = append(calls, toolCall{thought.ActionTarget, thought.ActionParams})
 	}
+	return calls
+}
 
-	if len(calls) == 0 {
-		ctx.LastAction = &Action{
-			Type:   ActionTypeAnswer,
-			Result: coalesce(thought.FinalAnswer, "Sorry, I cannot determine which tool to use for your request."),
-		}
-		return nil
+func (r *Reactor) handleEmptyCalls(ctx *ReactContext, thought *Thought) error {
+	ctx.LastAction = &Action{
+		Type:   ActionTypeAnswer,
+		Result: coalesce(thought.FinalAnswer, "Sorry, I cannot determine which tool to use for your request."),
 	}
+	return nil
+}
 
-	var syncCalls, asyncCalls []toolCall
+func (r *Reactor) partitionByAsync(calls []toolCall) (syncCalls, asyncCalls []toolCall) {
 	for _, c := range calls {
 		isAsync := false
 		if tool, ok := r.toolRegistry.Get(c.name); ok {
@@ -289,12 +311,10 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			syncCalls = append(syncCalls, c)
 		}
 	}
+	return
+}
 
-	sessionID := r.resolveSessionID(ctx)
-	var allResults []string
-	successCount := 0
-
-	// Emit ActionStart at action level
+func (r *Reactor) emitActionStart(ctx *ReactContext, calls []toolCall) {
 	predictedTokens := ctx.CurrentInputTokens
 	if predictedTokens > 0 {
 		predictedTokens = int(float64(predictedTokens) * 1.5)
@@ -304,13 +324,14 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 		toolNames = append(toolNames, c.name)
 	}
 	ctx.EmitEvent(core.ActionStart, core.ActionStartData{
-		ToolCount:           len(calls),
-		ToolNames:           toolNames,
+		ToolCount:            len(calls),
+		ToolNames:            toolNames,
 		TotalPredictedTokens: predictedTokens,
-		Iteration:           ctx.CurrentIteration,
+		Iteration:            ctx.CurrentIteration,
 	})
+}
 
-	// Execute sync tools serially
+func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sessionID string, allResults *[]string, successCount *int) {
 	for _, c := range syncCalls {
 		toolStart := time.Now()
 
@@ -320,7 +341,6 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			"params_preview", truncate(fmt.Sprintf("%v", c.params), 120),
 		)
 
-		// ToolExecStart
 		ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
 			ToolName: c.name,
 			Params:   c.params,
@@ -343,7 +363,7 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			)
 			endData.Success = false
 			endData.Error = err.Error()
-			allResults = append(allResults, fmt.Sprintf("[%s] error: %s", c.name, err.Error()))
+			*allResults = append(*allResults, fmt.Sprintf("[%s] error: %s", c.name, err.Error()))
 		} else if res.Interaction != nil {
 			r.getLogger().Info("tool interaction",
 				"session_id", sessionID,
@@ -354,10 +374,10 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			if interactErr != nil {
 				endData.Success = false
 				endData.Error = interactErr.Error()
-				allResults = append(allResults, fmt.Sprintf("[%s] interaction error: %s", c.name, interactErr.Error()))
+				*allResults = append(*allResults, fmt.Sprintf("[%s] interaction error: %s", c.name, interactErr.Error()))
 			} else {
 				endData.Result = answer
-				allResults = append(allResults, fmt.Sprintf("[%s] %s", c.name, answer))
+				*allResults = append(*allResults, fmt.Sprintf("[%s] %s", c.name, answer))
 			}
 			if res.Duration > toolElapsed {
 				endData.Duration = res.Duration
@@ -372,97 +392,99 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				"success", true,
 			)
 			endData.Result = res.Result
-			allResults = append(allResults, fmt.Sprintf("[%s] %s", c.name, res.Result))
+			*allResults = append(*allResults, fmt.Sprintf("[%s] %s", c.name, res.Result))
 		}
 
 		if endData.Success {
-			successCount++
+			*successCount++
 		}
 		ctx.EmitEvent(core.ToolExecEnd, endData)
 	}
+}
 
-	// Execute async tools in parallel goroutines
-	if len(asyncCalls) > 0 {
-		type asyncResult struct {
-			name string
-			id   string
-			err  error
-		}
-		asyncCh := make(chan asyncResult, len(asyncCalls))
-
-		for _, c := range asyncCalls {
-			c := c
-			go func(toolName string, params map[string]any) {
-				asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), 5*time.Minute)
-				defer cancel()
-
-				// ToolExecStart (before execution)
-				ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
-					ToolName: toolName,
-					Params:   params,
-				})
-
-				resultCh := make(chan struct{}, 1)
-				var execErr error
-				var taskID string
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							execErr = fmt.Errorf("tool %q panicked: %v", toolName, r)
-						}
-						resultCh <- struct{}{}
-					}()
-					_, execErr = r.toolExecutor.Execute(asyncCtx, toolName, params)
-				}()
-
-				select {
-				case <-resultCh:
-					taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
-				case <-asyncCtx.Done():
-					taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
-					execErr = fmt.Errorf("async tool %q timed out after 5m", toolName)
-				}
-
-				// ToolExecEnd (after execution)
-				endData := core.ToolExecEndData{
-					ToolName: toolName,
-					Duration: time.Since(start),
-					Success:  execErr == nil,
-				}
-				if execErr != nil {
-					endData.Error = execErr.Error()
-				} else {
-					endData.Result = fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, taskID)
-				}
-				ctx.EmitEvent(core.ToolExecEnd, endData)
-
-				asyncCh <- asyncResult{name: toolName, id: taskID, err: execErr}
-			}(c.name, c.params)
-		}
-
-		remaining := len(asyncCalls)
-		for remaining > 0 {
-			select {
-			case ar := <-asyncCh:
-				remaining--
-				if ar.err != nil {
-					allResults = append(allResults, fmt.Sprintf("[%s] error: %s", ar.name, ar.err.Error()))
-				} else {
-					successCount++
-					allResults = append(allResults, fmt.Sprintf("[%s] %s", ar.name,
-						fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, ar.id)))
-				}
-			case <-ctx.Ctx().Done():
-				r.getLogger().Warn("context cancelled while waiting for async tools",
-					"remaining", remaining)
-				remaining = 0
-			}
-		}
+func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, start time.Time, _ string, allResults *[]string, successCount *int) {
+	if len(asyncCalls) == 0 {
+		return
 	}
 
+	type asyncResult struct {
+		name string
+		id   string
+		err  error
+	}
+	asyncCh := make(chan asyncResult, len(asyncCalls))
+
+	for _, c := range asyncCalls {
+		c := c
+		go func(toolName string, params map[string]any) {
+			asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), 5*time.Minute)
+			defer cancel()
+
+			ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
+				ToolName: toolName,
+				Params:   params,
+			})
+
+			resultCh := make(chan struct{}, 1)
+			var execErr error
+			var taskID string
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						execErr = fmt.Errorf("tool %q panicked: %v", toolName, r)
+					}
+					resultCh <- struct{}{}
+				}()
+				_, execErr = r.toolExecutor.Execute(asyncCtx, toolName, params)
+			}()
+
+			select {
+			case <-resultCh:
+				taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
+			case <-asyncCtx.Done():
+				taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
+				execErr = fmt.Errorf("async tool %q timed out after 5m", toolName)
+			}
+
+			endData := core.ToolExecEndData{
+				ToolName: toolName,
+				Duration: time.Since(start),
+				Success:  execErr == nil,
+			}
+			if execErr != nil {
+				endData.Error = execErr.Error()
+			} else {
+				endData.Result = fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, taskID)
+			}
+			ctx.EmitEvent(core.ToolExecEnd, endData)
+
+			asyncCh <- asyncResult{name: toolName, id: taskID, err: execErr}
+		}(c.name, c.params)
+	}
+
+	remaining := len(asyncCalls)
+	for remaining > 0 {
+		select {
+		case ar := <-asyncCh:
+			remaining--
+			if ar.err != nil {
+				*allResults = append(*allResults, fmt.Sprintf("[%s] error: %s", ar.name, ar.err.Error()))
+			} else {
+				*successCount++
+				*allResults = append(*allResults, fmt.Sprintf("[%s] %s", ar.name,
+					fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, ar.id)))
+			}
+		case <-ctx.Ctx().Done():
+			r.getLogger().Warn("context cancelled while waiting for async tools",
+				"remaining", remaining)
+			remaining = 0
+		}
+	}
+}
+
+func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, start time.Time, allResults []string, successCount int) error {
 	summary := strings.Join(allResults, "\n")
 
-	// ActionProgress: final progress report before ActionEnd
 	if len(calls) > 1 {
 		ctx.EmitEvent(core.ActionProgress, core.ActionProgressData{
 			CompletedCount: len(calls),
@@ -471,7 +493,6 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 		})
 	}
 
-	// ActionEnd: signal all tools have completed
 	ctx.EmitEvent(core.ActionEnd, core.ActionEndData{
 		TotalTools:   len(calls),
 		SuccessCount: successCount,
@@ -479,7 +500,6 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 		Summary:      summary,
 	})
 
-	// Set summary Action for the Observe phase
 	ctx.LastAction = &Action{
 		Timestamp: start,
 		Type:      ActionTypeToolCall,
@@ -531,13 +551,6 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 		Timestamp: start,
 	}
 	return nil
-}
-
-func coalesce(s, fallback string) string {
-	if s != "" {
-		return s
-	}
-	return fallback
 }
 
 // Observe evaluates the result of the Act phase.
