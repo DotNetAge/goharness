@@ -14,14 +14,20 @@ const (
 	// ThinkingDone signals the Think phase has completed and the full thought is available.
 	ThinkingDone ReactEventType = "thinking_done"
 
-	// ActionStart signals a tool/action is about to execute.
+	// ActionStart signals the Act phase has begun with the given tools.
 	ActionStart ReactEventType = "action_start"
 
-	// ActionProgress reports intermediate progress of a long-running tool.
+	// ActionProgress reports progress of the current Act phase (e.g., "3/5 tools complete").
 	ActionProgress ReactEventType = "action_progress"
 
-	// ActionResult signals a tool/action has completed with its result.
-	ActionResult ReactEventType = "action_result"
+	// ToolExecStart signals a specific tool is about to start executing.
+	ToolExecStart ReactEventType = "tool_exec_start"
+
+	// ToolExecEnd signals a specific tool has completed execution.
+	ToolExecEnd ReactEventType = "tool_exec_end"
+
+	// ActionEnd signals all tools in the current Act phase have completed.
+	ActionEnd ReactEventType = "action_end"
 
 	// ObservationDone signals the Observe phase has completed.
 	ObservationDone ReactEventType = "observation_done"
@@ -82,8 +88,10 @@ type ReactEvent struct {
 	//   - ThinkingDelta: string (text fragment)
 	//   - ThinkingDone: Thought
 	//   - ActionStart: ActionStartData
-	//   - ActionProgress: string (progress text)
-	//   - ActionResult: ActionResultData
+	//   - ActionProgress: ActionProgressData
+	//   - ToolExecStart: ToolExecStartData
+	//   - ToolExecEnd: ToolExecEndData
+	//   - ActionEnd: ActionEndData
 	//   - ObservationDone: Observation
 	//   - SubtaskSpawned: SubtaskInfo
 	//   - SubtaskCompleted: SubtaskResult
@@ -100,21 +108,43 @@ type ReactEvent struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
-// ActionStartData is the payload for ActionStart events.
+// ActionStartData is the payload for ActionStart events (action-level, not per-tool).
 type ActionStartData struct {
-	ToolName      string         `json:"tool_name"`
-	Params        map[string]any `json:"params,omitempty"`
-	PredictedTokens int           `json:"predicted_tokens,omitempty"`
-	Iteration     int            `json:"iteration,omitempty"`
+	ToolCount            int      `json:"tool_count"`
+	ToolNames            []string `json:"tool_names"`
+	TotalPredictedTokens int      `json:"total_predicted_tokens,omitempty"`
+	Iteration            int      `json:"iteration,omitempty"`
 }
 
-// ActionResultData is the payload for ActionResult events.
-type ActionResultData struct {
+// ToolExecStartData is the payload for ToolExecStart events.
+type ToolExecStartData struct {
+	ToolName       string         `json:"tool_name"`
+	Params         map[string]any `json:"params,omitempty"`
+	PredictedTokens int           `json:"predicted_tokens,omitempty"`
+}
+
+// ToolExecEndData is the payload for ToolExecEnd events.
+type ToolExecEndData struct {
 	ToolName string        `json:"tool_name"`
+	Success  bool          `json:"success"`
 	Result   string        `json:"result,omitempty"`
 	Error    string        `json:"error,omitempty"`
 	Duration time.Duration `json:"duration_ms"`
-	Success  bool          `json:"success"`
+}
+
+// ActionEndData is the payload for ActionEnd events.
+type ActionEndData struct {
+	TotalTools   int    `json:"total_tools"`
+	SuccessCount int    `json:"success_count"`
+	FailedCount  int    `json:"failed_count"`
+	Summary      string `json:"summary,omitempty"`
+}
+
+// ActionProgressData is the payload for ActionProgress events.
+type ActionProgressData struct {
+	CompletedCount int    `json:"completed_count"`
+	TotalCount     int    `json:"total_count"`
+	Status         string `json:"status,omitempty"`
 }
 
 // SubtaskInfo is the payload for SubtaskSpawned events.

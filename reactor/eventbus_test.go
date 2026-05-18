@@ -46,7 +46,7 @@ func TestEventBus_FilteredSubscribe(t *testing.T) {
 	defer cancel()
 
 	bus.Emit(core.NewReactEvent("s", "main", "", core.ThinkingDelta, "skip"))
-	bus.Emit(core.NewReactEvent("s", "task_1", "main", core.ActionStart, core.ActionStartData{ToolName: "Grep"}))
+	bus.Emit(core.NewReactEvent("s", "task_1", "main", core.ActionStart, core.ActionStartData{ToolCount: 1, ToolNames: []string{"Grep"}}))
 
 	select {
 	case received := <-ch:
@@ -148,14 +148,14 @@ func TestReactContext_EmitEvent(t *testing.T) {
 	ctx.emitEvent = bus.Emit
 
 	// Emit through context
-	ctx.EmitEvent(core.ActionStart, core.ActionStartData{ToolName: "Read", Params: map[string]any{"path": "/tmp"}})
+	ctx.EmitEvent(core.ActionStart, core.ActionStartData{ToolCount: 1, ToolNames: []string{"Read"}})
 	ctx.EmitEvent(core.ThinkingDelta, "should be filtered")
 
 	select {
 	case ev := <-ch:
 		data := ev.Data.(core.ActionStartData)
-		if data.ToolName != "Read" {
-			t.Errorf("expected tool read, got %s", data.ToolName)
+		if len(data.ToolNames) != 1 || data.ToolNames[0] != "Read" {
+			t.Errorf("expected tool Read, got %v", data.ToolNames)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout")
@@ -176,7 +176,9 @@ func TestReactEventTypes(t *testing.T) {
 		core.ThinkingDone:    false,
 		core.ActionStart:     false,
 		core.ActionProgress:  false,
-		core.ActionResult:    false,
+		core.ToolExecStart:   false,
+		core.ToolExecEnd:     false,
+		core.ActionEnd:       false,
 		core.ObservationDone: false,
 		core.SubtaskSpawned:  false,
 		core.SubtaskCompleted: false,

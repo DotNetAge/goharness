@@ -34,7 +34,7 @@ GoReAct 是一个用纯 Go 实现的 AI Agent 框架，核心采用 **T-A-O (Thi
 
 **中断-恢复交互模式**：`ask_user` 工具支持多轮对话澄清，`ask_permission` 工具支持高风险工具授权。
 
-**事件总线**：完整的 ReactEvent 事件流（ThinkingDelta、ActionStart、ActionResult、ExecutionSummary 等），支持客户端实时渲染。
+**事件总线**：完整的 ReactEvent 事件流（ThinkingDelta、ActionStart、ToolExecStart/ToolExecEnd、ActionEnd、ExecutionSummary 等），支持客户端实时渲染。
 
 **渐进式 Skill 加载**：YAML Frontmatter + Markdown Body 的 SKILL.md 格式，支持文件系统目录加载和 Go embed 内置加载。
 
@@ -195,8 +195,8 @@ func main() {
             case core.ThinkingDelta:
                 // 思维片段（流式）
                 fmt.Print(event.Data)
-            case core.ActionStart:
-                data := event.Data.(core.ActionStartData)
+            case core.ToolExecStart:
+                data := event.Data.(core.ToolExecStartData)
                 fmt.Printf("\n[Tool: %s]\n", data.ToolName)
             case core.ExecutionSummary:
                 data := event.Data.(core.ExecutionSummaryData)

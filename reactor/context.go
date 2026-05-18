@@ -57,7 +57,6 @@ type ReactContext struct {
 	LastAction            *Action
 	LastObservation       *Observation
 	History               []Step
-	PerToolEventsEmitted  bool
 
 	// Token tracking for current iteration
 	CurrentInputTokens int

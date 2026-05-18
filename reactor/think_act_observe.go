@@ -292,14 +292,27 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 
 	sessionID := r.resolveSessionID(ctx)
 	var allResults []string
+	successCount := 0
 
+	// Emit ActionStart at action level
+	predictedTokens := ctx.CurrentInputTokens
+	if predictedTokens > 0 {
+		predictedTokens = int(float64(predictedTokens) * 1.5)
+	}
+	var toolNames []string
+	for _, c := range calls {
+		toolNames = append(toolNames, c.name)
+	}
+	ctx.EmitEvent(core.ActionStart, core.ActionStartData{
+		ToolCount:           len(calls),
+		ToolNames:           toolNames,
+		TotalPredictedTokens: predictedTokens,
+		Iteration:           ctx.CurrentIteration,
+	})
+
+	// Execute sync tools serially
 	for _, c := range syncCalls {
 		toolStart := time.Now()
-		var toolAction Action
-		toolAction.Timestamp = start
-		toolAction.Type = ActionTypeToolCall
-		toolAction.Target = c.name
-		toolAction.Params = c.params
 
 		r.getLogger().Info("tool start",
 			"session_id", sessionID,
@@ -307,13 +320,20 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			"params_preview", truncate(fmt.Sprintf("%v", c.params), 120),
 		)
 
-		ctx.LastAction = &toolAction
-		r.emitActionResult(ctx)
-		ctx.PerToolEventsEmitted = true
+		// ToolExecStart
+		ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
+			ToolName: c.name,
+			Params:   c.params,
+		})
 
 		res, err := r.toolExecutor.Execute(ctx.Ctx(), c.name, c.params)
 		toolElapsed := time.Since(toolStart)
-		toolAction.Duration = toolElapsed
+
+		endData := core.ToolExecEndData{
+			ToolName: c.name,
+			Duration: toolElapsed,
+			Success:  true,
+		}
 
 		if err != nil {
 			r.getLogger().Error("tool error", err,
@@ -321,8 +341,8 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				"tool", c.name,
 				"elapsed_ms", toolElapsed.Milliseconds(),
 			)
-			toolAction.Error = err
-			toolAction.ErrorMsg = err.Error()
+			endData.Success = false
+			endData.Error = err.Error()
 			allResults = append(allResults, fmt.Sprintf("[%s] error: %s", c.name, err.Error()))
 		} else if res.Interaction != nil {
 			r.getLogger().Info("tool interaction",
@@ -332,12 +352,15 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 			)
 			answer, interactErr := r.interactionHandler.HandleInteraction(ctx.Ctx(), res.Interaction)
 			if interactErr != nil {
+				endData.Success = false
+				endData.Error = interactErr.Error()
 				allResults = append(allResults, fmt.Sprintf("[%s] interaction error: %s", c.name, interactErr.Error()))
 			} else {
+				endData.Result = answer
 				allResults = append(allResults, fmt.Sprintf("[%s] %s", c.name, answer))
 			}
-			if res.Duration > toolAction.Duration {
-				toolAction.Duration = res.Duration
+			if res.Duration > toolElapsed {
+				endData.Duration = res.Duration
 			}
 		} else {
 			resultSize := len(res.Result)
@@ -348,14 +371,17 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				"result_size", resultSize,
 				"success", true,
 			)
+			endData.Result = res.Result
 			allResults = append(allResults, fmt.Sprintf("[%s] %s", c.name, res.Result))
 		}
 
-		toolAction.Result = fmt.Sprintf("[%s] %s", c.name, coalesce(toolAction.Result, "done"))
-		ctx.LastAction = &toolAction
-		r.emitActionResult(ctx)
+		if endData.Success {
+			successCount++
+		}
+		ctx.EmitEvent(core.ToolExecEnd, endData)
 	}
 
+	// Execute async tools in parallel goroutines
 	if len(asyncCalls) > 0 {
 		type asyncResult struct {
 			name string
@@ -370,13 +396,11 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), 5*time.Minute)
 				defer cancel()
 
-				startAction := &Action{
-					Timestamp: start,
-					Type:      ActionTypeToolCall,
-					Target:    toolName,
-					Params:    params,
-				}
-				r.emitActionEvent(ctx, startAction)
+				// ToolExecStart (before execution)
+				ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
+					ToolName: toolName,
+					Params:   params,
+				})
 
 				resultCh := make(chan struct{}, 1)
 				var execErr error
@@ -394,30 +418,25 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				select {
 				case <-resultCh:
 					taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
-					asyncCh <- asyncResult{name: toolName, id: taskID, err: execErr}
 				case <-asyncCtx.Done():
 					taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
-					asyncCh <- asyncResult{
-						name: toolName,
-						id:   taskID,
-						err:  fmt.Errorf("async tool %q timed out after 5m", toolName),
-					}
+					execErr = fmt.Errorf("async tool %q timed out after 5m", toolName)
 				}
 
-				endAction := &Action{
-					Timestamp: start,
-					Type:      ActionTypeToolCall,
-					Target:    toolName,
-					Params:    params,
-					Duration:  time.Since(start),
+				// ToolExecEnd (after execution)
+				endData := core.ToolExecEndData{
+					ToolName: toolName,
+					Duration: time.Since(start),
+					Success:  execErr == nil,
 				}
 				if execErr != nil {
-					endAction.Error = execErr
-					endAction.ErrorMsg = execErr.Error()
+					endData.Error = execErr.Error()
 				} else {
-					endAction.Result = fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, taskID)
+					endData.Result = fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, taskID)
 				}
-				r.emitActionEvent(ctx, endAction)
+				ctx.EmitEvent(core.ToolExecEnd, endData)
+
+				asyncCh <- asyncResult{name: toolName, id: taskID, err: execErr}
 			}(c.name, c.params)
 		}
 
@@ -429,6 +448,7 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				if ar.err != nil {
 					allResults = append(allResults, fmt.Sprintf("[%s] error: %s", ar.name, ar.err.Error()))
 				} else {
+					successCount++
 					allResults = append(allResults, fmt.Sprintf("[%s] %s", ar.name,
 						fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, ar.id)))
 				}
@@ -438,15 +458,34 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 				remaining = 0
 			}
 		}
-		ctx.PerToolEventsEmitted = true
 	}
 
-	summaryAction := &Action{
+	summary := strings.Join(allResults, "\n")
+
+	// ActionProgress: final progress report before ActionEnd
+	if len(calls) > 1 {
+		ctx.EmitEvent(core.ActionProgress, core.ActionProgressData{
+			CompletedCount: len(calls),
+			TotalCount:     len(calls),
+			Status:         "completed",
+		})
+	}
+
+	// ActionEnd: signal all tools have completed
+	ctx.EmitEvent(core.ActionEnd, core.ActionEndData{
+		TotalTools:   len(calls),
+		SuccessCount: successCount,
+		FailedCount:  len(calls) - successCount,
+		Summary:      summary,
+	})
+
+	// Set summary Action for the Observe phase
+	ctx.LastAction = &Action{
 		Timestamp: start,
 		Type:      ActionTypeToolCall,
-		Result:    strings.Join(allResults, "\n"),
+		Target:    "tool_calls",
+		Result:    summary,
 	}
-	ctx.LastAction = summaryAction
 	return nil
 }
 
