@@ -65,14 +65,8 @@ type ReactContext struct {
 	IsTerminated      bool
 	TerminationReason string
 
-	// ====== Orchestration: Dual-mode framework (see coordination.go) ======
-	// Mode defaults to ModeExecutor. Switched to ModeCoordinator when WBS decomposition occurs.
+	// Mode defaults to ModeExecutor.
 	Mode AgentMode
-
-	// CoordState holds Coordinator-mode runtime state. Non-nil only when Mode == ModeCoordinator.
-	// Contains TaskProgressTable, lifecycle control contexts, sub-task result map, etc.
-	CoordState *CoordState
-
 	// Event callback — set by the Reactor before Run.
 	// If non-nil, called after each T-A-O phase to emit events.
 	emitEvent func(event core.ReactEvent)

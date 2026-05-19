@@ -89,17 +89,19 @@ func offloadPath(sessionID string) string {
 }
 
 func (r *Reactor) offloadLargeResults(ctx *ReactContext) {
-	if ctx.LastAction == nil || ctx.LastAction.Result == "" {
-		return
-	}
-	if !resultExceedsThreshold(ctx.LastAction.Result) {
+	if ctx.LastAction == nil || len(ctx.LastAction.Results) == 0 {
 		return
 	}
 
 	sessionID := r.resolveSessionID(ctx)
-	ref := offloadResult(ctx.Ctx(), sessionID, ctx.LastAction.Target, ctx.LastAction.Result)
-	if ref != ctx.LastAction.Result {
-		ctx.LastAction.Result = ref
+	for i, tr := range ctx.LastAction.Results {
+		if !resultExceedsThreshold(tr.Result) {
+			continue
+		}
+		ref := offloadResult(ctx.Ctx(), sessionID, tr.ToolName, tr.Result)
+		if ref != tr.Result {
+			ctx.LastAction.Results[i].Result = ref
+		}
 	}
 }
 

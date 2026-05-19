@@ -179,8 +179,8 @@ func TestReactor_Run_MockLLM_AnswerImmediately(t *testing.T) {
 	if result.TotalIterations != 1 {
 		t.Errorf("expected 1 iteration, got %d", result.TotalIterations)
 	}
-	if result.Answer != "Hello, user!" {
-		t.Errorf("expected answer 'Hello, user!', got '%s'", result.Answer)
+	if result.Answer != "[answer] Hello, user!" {
+		t.Errorf("expected answer '[answer] Hello, user!', got '%s'", result.Answer)
 	}
 	if result.TerminationReason != "direct answer produced" {
 		t.Errorf("expected termination 'direct answer produced', got '%s'", result.TerminationReason)
@@ -223,8 +223,8 @@ func TestReactor_Run_MockLLM_ActThenAnswer(t *testing.T) {
 	if result.TotalIterations < 2 {
 		t.Errorf("expected at least 2 iterations, got %d", result.TotalIterations)
 	}
-	if result.Answer != "Done." {
-		t.Errorf("expected answer 'Done.', got '%s'", result.Answer)
+	if result.Answer != "[answer] Done." {
+		t.Errorf("expected answer '[answer] Done.', got '%s'", result.Answer)
 	}
 	if result.TerminationReason != "direct answer produced" {
 		t.Errorf("expected termination 'direct answer produced', got '%s'", result.TerminationReason)
@@ -284,7 +284,7 @@ func TestReactor_Think_ProducesThought(t *testing.T) {
 
 	ctx := NewReactContext(context.Background(), "Test input", nil, 10)
 
-	tokens, err := r.Think(ctx)
+	inputTokens, outputTokens, err := r.Think(ctx)
 	if err != nil {
 		t.Fatalf("Think failed: %v", err)
 	}
@@ -297,8 +297,11 @@ func TestReactor_Think_ProducesThought(t *testing.T) {
 	if ctx.LastThought.FinalAnswer != "Done." {
 		t.Errorf("expected FinalAnswer 'Done.', got '%s'", ctx.LastThought.FinalAnswer)
 	}
-	if tokens < 0 {
-		t.Errorf("expected non-negative token count, got %d", tokens)
+	if inputTokens < 0 {
+		t.Errorf("expected non-negative token count, got %d", inputTokens)
+	}
+	if outputTokens < 0 {
+		t.Errorf("expected non-negative output token count, got %d", outputTokens)
 	}
 }
 
@@ -315,7 +318,7 @@ func TestReactor_Think_NativeToolCalls(t *testing.T) {
 
 	ctx := NewReactContext(context.Background(), "Read a file", nil, 10)
 
-	_, err := r.Think(ctx)
+	_, _, err := r.Think(ctx)
 	if err != nil {
 		t.Fatalf("Think failed: %v", err)
 	}
@@ -348,11 +351,11 @@ func TestReactor_Act_AnswerDecision(t *testing.T) {
 	if ctx.LastAction == nil {
 		t.Fatal("expected LastAction to be set")
 	}
-	if ctx.LastAction.Type != ActionTypeAnswer {
-		t.Errorf("expected ActionTypeAnswer, got %s", ctx.LastAction.Type)
+	if len(ctx.LastAction.Results) == 0 || ctx.LastAction.Results[0].ToolName != "answer" {
+		t.Errorf("expected answer result, got %v", ctx.LastAction.Results)
 	}
-	if ctx.LastAction.Result != "The answer is 42." {
-		t.Errorf("expected result 'The answer is 42.', got '%s'", ctx.LastAction.Result)
+	if ctx.LastAction.Summary() != "[answer] The answer is 42." {
+		t.Errorf("expected result '[answer] The answer is 42.', got '%s'", ctx.LastAction.Summary())
 	}
 }
 
@@ -368,8 +371,8 @@ func TestReactor_Act_ClarifyDecision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Act failed: %v", err)
 	}
-	if ctx.LastAction.Type != ActionTypeClarify {
-		t.Errorf("expected ActionTypeClarify, got %s", ctx.LastAction.Type)
+	if len(ctx.LastAction.Results) == 0 || ctx.LastAction.Results[0].ToolName != "clarify" {
+		t.Errorf("expected clarify result, got %v", ctx.LastAction.Results)
 	}
 }
 
@@ -387,10 +390,9 @@ func TestReactor_Observe_ToolCallResult(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
 	ctx.LastAction = &Action{
-		Type:   ActionTypeToolCall,
-		Target: "read",
-		Result: "file contents here",
+		Results: []ToolResult{{ToolName: "read", Result: "file contents here", Success: true}},
 	}
+	ctx.LastThought = &Thought{Decision: DecisionAct}
 
 	err := r.Observe(ctx)
 	if err != nil {
@@ -399,8 +401,8 @@ func TestReactor_Observe_ToolCallResult(t *testing.T) {
 	if ctx.LastObservation == nil {
 		t.Fatal("expected LastObservation to be set")
 	}
-	if ctx.LastObservation.Result != "file contents here" {
-		t.Errorf("expected observation result 'file contents here', got '%s'", ctx.LastObservation.Result)
+	if ctx.LastObservation.Result != "[read] file contents here" {
+		t.Errorf("expected observation result '[read] file contents here', got '%s'", ctx.LastObservation.Result)
 	}
 }
 
@@ -408,11 +410,9 @@ func TestReactor_Observe_ToolCallError(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
 	ctx.LastAction = &Action{
-		Type:     ActionTypeToolCall,
-		Target:   "read",
-		Error:    fmt.Errorf("file not found"),
-		ErrorMsg: "file not found",
+		Results: []ToolResult{{ToolName: "read", Success: false, Error: "file not found"}},
 	}
+	ctx.LastThought = &Thought{Decision: DecisionAct}
 
 	err := r.Observe(ctx)
 	if err != nil {
@@ -486,7 +486,8 @@ func TestCheckTermination_FinalAnswer(t *testing.T) {
 func TestCheckTermination_DirectAnswer(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastAction = &Action{Type: ActionTypeAnswer}
+	ctx.LastAction = &Action{}
+	ctx.LastThought = &Thought{Decision: DecisionAnswer}
 
 	terminated, reason := r.CheckTermination(ctx)
 	if !terminated {
@@ -500,7 +501,8 @@ func TestCheckTermination_DirectAnswer(t *testing.T) {
 func TestCheckTermination_Clarification(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastAction = &Action{Type: ActionTypeClarify}
+	ctx.LastAction = &Action{}
+	ctx.LastThought = &Thought{Decision: DecisionClarify}
 
 	terminated, reason := r.CheckTermination(ctx)
 	if !terminated {
@@ -515,9 +517,9 @@ func TestCheckTermination_DestructiveLoop(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
 	ctx.History = []Step{
-		{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /"}}, Observation: Observation{Error: "permission denied"}},
-		{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /"}}, Observation: Observation{Error: "permission denied"}},
-		{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /"}}, Observation: Observation{Error: "permission denied"}},
+		{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
+		{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
+		{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
 	}
 
 	terminated, _ := r.CheckTermination(ctx)
@@ -532,7 +534,7 @@ func TestCheckTermination_AgentStuck(t *testing.T) {
 	// 4 consecutive answer iterations (no tool calls)
 	for i := 0; i < 4; i++ {
 		ctx.History = append(ctx.History, Step{
-			Action: Action{Type: ActionTypeAnswer, Result: "stuck answer"},
+			Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck answer", Success: true}}},
 		})
 	}
 
@@ -551,7 +553,7 @@ func TestCheckTermination_ResultConverged(t *testing.T) {
 	// 3 identical action results
 	for i := 0; i < 3; i++ {
 		ctx.History = append(ctx.History, Step{
-			Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "same result"},
+			Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same result", Success: true}}},
 		})
 	}
 
@@ -568,8 +570,8 @@ func TestCheckTermination_DuplicateAction(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
 	ctx.History = []Step{
-		{Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "same"}},
-		{Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "same"}},
+		{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}, Thought: Thought{Decision: DecisionAct}},
+		{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}, Thought: Thought{Decision: DecisionAct}},
 	}
 
 	terminated, reason := r.CheckTermination(ctx)
@@ -586,9 +588,9 @@ func TestCheckTermination_DuplicateAction(t *testing.T) {
 func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 	t.Run("different params should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /"}}, Observation: Observation{Error: "permission denied"}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /tmp"}}, Observation: Observation{Error: "permission denied"}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /home"}}, Observation: Observation{Error: "permission denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "permission denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "permission denied"}},
 		}
 		if isDestructiveLoop(history) {
 			t.Error("isDestructiveLoop should return false: different params per call")
@@ -597,8 +599,8 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 
 	t.Run("fewer than 3 calls should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /"}}, Observation: Observation{Error: "denied"}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "bash", Params: map[string]any{"cmd": "rm -rf /"}}, Observation: Observation{Error: "denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "denied"}},
 		}
 		if isDestructiveLoop(history) {
 			t.Error("isDestructiveLoop should return false: only 2 calls")
@@ -607,9 +609,9 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 
 	t.Run("answer actions should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeAnswer, Result: "ok"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "ok"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "ok"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}},
 		}
 		if isDestructiveLoop(history) {
 			t.Error("isDestructiveLoop should return false: no tool calls")
@@ -620,9 +622,9 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 func TestCheckTermination_AgentStuck_NotTriggered(t *testing.T) {
 	t.Run("3 answer actions (not enough)", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeAnswer, Result: "stuck"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "stuck"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "stuck"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck", Success: true}}}},
 		}
 		if isAgentStuck(history) {
 			t.Error("isAgentStuck should return false: only 3 answers, need 4")
@@ -631,10 +633,10 @@ func TestCheckTermination_AgentStuck_NotTriggered(t *testing.T) {
 
 	t.Run("a recent tool call among last 4 should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeToolCall, Target: "read"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "ok"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "ok"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "ok"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "read", Success: true}}}, Thought: Thought{Decision: DecisionAct}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}, Thought: Thought{Decision: DecisionAnswer}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}, Thought: Thought{Decision: DecisionAnswer}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}, Thought: Thought{Decision: DecisionAnswer}},
 		}
 		if isAgentStuck(history) {
 			t.Error("isAgentStuck should return false: the first entry of the window is a tool call")
@@ -645,9 +647,9 @@ func TestCheckTermination_AgentStuck_NotTriggered(t *testing.T) {
 func TestCheckTermination_ResultConverged_NotTriggered(t *testing.T) {
 	t.Run("empty results should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeToolCall, Target: "read", Result: ""}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "grep", Result: ""}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "write", Result: ""}},
+			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "grep", Result: "", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "write", Result: "", Success: true}}}},
 		}
 		if isResultConverged(history) {
 			t.Error("isResultConverged should return false: empty results are skipped by guard")
@@ -656,8 +658,8 @@ func TestCheckTermination_ResultConverged_NotTriggered(t *testing.T) {
 
 	t.Run("only 2 identical results should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "same"}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "same"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}},
 		}
 		if isResultConverged(history) {
 			t.Error("isResultConverged should return false: need at least 3 steps")
@@ -671,8 +673,8 @@ func TestCheckTermination_DuplicateAction_NotTriggered(t *testing.T) {
 	t.Run("different targets should not trigger", func(t *testing.T) {
 		ctx := NewReactContext(context.Background(), "Test", nil, 10)
 		ctx.History = []Step{
-			{Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "abc"}},
-			{Action: Action{Type: ActionTypeToolCall, Target: "write", Result: "abc"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "abc", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "write", Result: "abc", Success: true}}}},
 		}
 		terminated, _ := r.CheckTermination(ctx)
 		if terminated {
@@ -683,8 +685,8 @@ func TestCheckTermination_DuplicateAction_NotTriggered(t *testing.T) {
 	t.Run("answer actions should not trigger", func(t *testing.T) {
 		ctx := NewReactContext(context.Background(), "Test", nil, 10)
 		ctx.History = []Step{
-			{Action: Action{Type: ActionTypeAnswer, Result: "hello"}},
-			{Action: Action{Type: ActionTypeAnswer, Result: "hello"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "hello", Success: true}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "hello", Success: true}}}},
 		}
 		terminated, _ := r.CheckTermination(ctx)
 		if terminated {
@@ -907,10 +909,10 @@ func TestSnapshot_JSONRoundtrip(t *testing.T) {
 	original.TaskID = "task-789"
 	original.CurrentIteration = 2
 	original.LastThought = &Thought{Decision: DecisionAct, Reasoning: "need info", FinalAnswer: ""}
-	original.LastAction = &Action{Type: ActionTypeToolCall, Target: "grep", Result: "line 42"}
+	original.LastAction = &Action{ Results: []ToolResult{{ToolName: "grep", Result: "line 42", Success: true}}}
 	original.LastObservation = &Observation{Result: "line 42"}
 	original.History = []Step{
-		{Iteration: 1, Thought: Thought{Decision: DecisionAct, Reasoning: "first"}, Action: Action{Type: ActionTypeToolCall, Target: "read", Result: "data"}, Observation: Observation{Result: "data"}},
+		{Iteration: 1, Thought: Thought{Decision: DecisionAct, Reasoning: "first"}, Action: Action{Results: []ToolResult{{ToolName: "read", Result: "data", Success: true}}}, Observation: Observation{Result: "data"}},
 	}
 
 	snap := original.ToSnapshot()
@@ -943,8 +945,8 @@ func TestSnapshot_JSONRoundtrip(t *testing.T) {
 	if restoredSnap.LastThought == nil || restoredSnap.LastThought.Decision != DecisionAct {
 		t.Error("LastThought.Decision should be 'act' after roundtrip")
 	}
-	if restoredSnap.LastAction == nil || restoredSnap.LastAction.Target != "grep" {
-		t.Error("LastAction.Target should be 'grep' after roundtrip")
+	if restoredSnap.LastAction == nil || len(restoredSnap.LastAction.Results) == 0 || restoredSnap.LastAction.Results[0].ToolName != "grep" {
+		t.Error("LastAction.Results[0].ToolName should be 'grep' after roundtrip")
 	}
 	if restoredSnap.LastObservation == nil || restoredSnap.LastObservation.Result != "line 42" {
 		t.Error("LastObservation.Result should be 'line 42' after roundtrip")
@@ -978,11 +980,11 @@ func TestSnapshot_Roundtrip(t *testing.T) {
 	original.TaskID = "task-456"
 	original.CurrentIteration = 3
 	original.LastThought = &Thought{Decision: DecisionAct, Reasoning: "need tool"}
-	original.LastAction = &Action{Type: ActionTypeToolCall, Target: "read"}
+	original.LastAction = &Action{ Results: []ToolResult{{ToolName: "read", Success: true}}}
 	original.LastObservation = &Observation{Result: "file content"}
 	original.History = []Step{
-		{Iteration: 1, Thought: Thought{Decision: DecisionAct}, Action: Action{Type: ActionTypeToolCall}},
-		{Iteration: 2, Thought: Thought{Decision: DecisionAct}, Action: Action{Type: ActionTypeToolCall}},
+		{Iteration: 1, Thought: Thought{Decision: DecisionAct}, Action: Action{Results: []ToolResult{{Success: true}}}},
+		{Iteration: 2, Thought: Thought{Decision: DecisionAct}, Action: Action{Results: []ToolResult{{Success: true}}}},
 	}
 
 	snap := original.ToSnapshot()
@@ -1271,8 +1273,8 @@ func TestReactor_MockLLMWithThought(t *testing.T) {
 	if callCount == 0 {
 		t.Fatal("mock LLM was not called")
 	}
-	if result.Answer != "Hello from mock!" {
-		t.Errorf("expected answer 'Hello from mock!', got %q", result.Answer)
+	if result.Answer != "[answer] Hello from mock!" {
+		t.Errorf("expected answer '[answer] Hello from mock!', got %q", result.Answer)
 	}
 	if result.TotalIterations < 1 {
 		t.Errorf("expected at least 1 iteration, got %d", result.TotalIterations)
@@ -1322,7 +1324,7 @@ func TestReactor_MockLLMWithNativeToolCalls(t *testing.T) {
 
 	hasToolCall := false
 	for _, step := range result.Steps {
-		if step.Action.Type == ActionTypeToolCall && step.Action.Target == "echo_tool" {
+		if step.Thought.Decision == DecisionAct && toolNameInAction(step.Action, "echo_tool") {
 			hasToolCall = true
 			break
 		}
@@ -1467,9 +1469,9 @@ func TestReactor_MockLLMMultipleToolCallsInParallel(t *testing.T) {
 	}
 
 	for _, step := range result.Steps {
-		if step.Action.Type == ActionTypeToolCall {
-			t.Logf("Step %d: action result = %q", step.Iteration, step.Action.Result)
-			if strings.Contains(step.Action.Result, "echo_tool") && strings.Contains(step.Action.Result, "read") {
+		if step.Thought.Decision == DecisionAct {
+			t.Logf("Step %d: action result = %q", step.Iteration, step.Action.Summary())
+			if strings.Contains(step.Action.Summary(), "echo_tool") && strings.Contains(step.Action.Summary(), "read") {
 				t.Log("PASS: both tools called in same step")
 			}
 		}
@@ -1498,10 +1500,10 @@ func TestReactor_MockLLMDecisionClarify(t *testing.T) {
 
 	hasClarify := false
 	for _, step := range result.Steps {
-		if step.Action.Type == ActionTypeClarify {
+		if step.Thought.Decision == DecisionClarify {
 			hasClarify = true
-			if step.Action.Result != "Can you provide more details?" {
-				t.Errorf("expected clarify question, got %q", step.Action.Result)
+			if step.Action.Summary() != "[clarify] Can you provide more details?" {
+				t.Errorf("expected clarify question, got %q", step.Action.Summary())
 			}
 		}
 	}
@@ -1540,4 +1542,15 @@ func TestReactor_MockLLMMaxIterationsRespected(t *testing.T) {
 		t.Errorf("expected <= 3 iterations, got %d", result.TotalIterations)
 	}
 	t.Logf("Iterations: %d (max was 3), LLM calls: %d", result.TotalIterations, callCount)
+}
+
+
+// toolNameInAction reports whether any ToolResult in the Action has the given tool name.
+func toolNameInAction(a Action, name string) bool {
+	for _, tr := range a.Results {
+		if tr.ToolName == name {
+			return true
+		}
+	}
+	return false
 }

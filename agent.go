@@ -138,9 +138,8 @@ type agentSetup struct {
 	config *core.AgentConfig
 	model  *core.ModelConfig
 
-	memory        core.Memory
-	sessionID     string
-	sessionTokens int64
+	memory    core.Memory
+	sessionID string
 
 	// Tools & Skills
 	extraTools     []core.FuncTool
@@ -220,11 +219,10 @@ func WithMemory(mem core.Memory) AgentOption {
 }
 
 // WithSession starts a conversation session immediately upon creation.
-// sessionID identifies the session; maxTokens sets the token budget (0 = default 8192).
-func WithSession(sessionID string, maxTokens int64) AgentOption {
+// sessionID identifies the session.
+func WithSession(sessionID string) AgentOption {
 	return func(s *agentSetup) {
 		s.sessionID = sessionID
-		s.sessionTokens = maxTokens
 	}
 }
 
@@ -443,7 +441,7 @@ func DefaultAgent(apiKey string) (*Agent, error) {
 	// NOTE: MaxTokens below 40K is insufficient for most general-purpose tasks.
 	return NewAgent(
 		WithModel(model),
-		WithSession(uuid.NewString(), 131072),
+		WithSession(uuid.NewString()),
 	)
 }
 
@@ -476,7 +474,7 @@ func DefaultAgent(apiKey string) (*Agent, error) {
 //	    goreact.WithMemory(mem),
 //	    goreact.WithExtraTools(myTool),
 //	    goreact.WithSkillDir("/path/to/skills"),
-//	    goreact.WithSession("s1", 16384),
+//	    goreact.WithSession("s1"),
 //	    goreact.WithSecurityPolicy(policy),
 //	)
 func NewAgent(opts ...AgentOption) (*Agent, error) {
@@ -645,9 +643,9 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	}
 
 	if setup.sessionID != "" {
-		maxTokens := setup.sessionTokens
-		if maxTokens <= 0 {
-			maxTokens = 131072
+		maxTokens := int64(131072)
+		if a.model != nil {
+			maxTokens = int64(a.model.MaxTokens)
 		}
 		a.reactor.SetContextWindow(core.NewContextWindow(setup.sessionID, maxTokens))
 	}
@@ -667,6 +665,32 @@ func (a *Agent) Config() *core.AgentConfig {
 // Model returns the agent's model configuration.
 func (a *Agent) Model() *core.ModelConfig {
 	return a.model
+}
+
+// SetModel updates the agent's model configuration at runtime.
+// Changes propagate to the Reactor and ultimately the gochat LLM client,
+// taking effect on the next Ask/AskStream call. Conversation history and
+// context window are preserved.
+//
+// Safe to call between Ask/AskStream calls. Do NOT call concurrently with
+// a running Ask/AskStream — Cancel() first if needed.
+//
+//	model := goreact.DefaultModel()
+//	model.Name = "qwen3.5-32b"
+//	model.Temperature = 0.3
+//	agent.SetModel(model)
+func (a *Agent) SetModel(model *core.ModelConfig) {
+	a.interruptMu.Lock()
+	defer a.interruptMu.Unlock()
+
+	if model == nil {
+		return
+	}
+	// Update the local model config (copy to avoid external mutation)
+	cp := *model
+	a.model = &cp
+
+	a.reactor.SetModelConfig(cp)
 }
 
 func (a *Agent) Name() string {
@@ -711,7 +735,12 @@ func (a *Agent) SessionStore() core.SessionStore {
 // NewSession starts a new conversation session, replacing any existing one.
 // The session is automatically bound to the agent's current config name as its role,
 // so that sessions are isolated per role and never shared across agents.
-func (a *Agent) NewSession(sessionID string, maxTokens int64) {
+// maxTokens is read from the agent's model config internally.
+func (a *Agent) NewSession(sessionID string) {
+	maxTokens := int64(131072)
+	if a.model != nil {
+		maxTokens = int64(a.model.MaxTokens)
+	}
 	cw := core.NewContextWindowWithRole(sessionID, a.config.Name, maxTokens)
 	a.reactor.SetContextWindow(cw)
 

@@ -34,6 +34,7 @@ type CallResult struct {
 	ToolCalls  []gochatcore.ToolCall // native function call results (non-streaming) or nil
 	TokenUsage core.TokenUsage
 	Error      error // non-nil when the LLM call itself failed (network, auth, timeout, etc.)
+	TimedOut   bool // true when the call was cancelled due to streamTimeout
 }
 
 // StreamChunkCallback is called for each content chunk during streaming.
@@ -83,7 +84,8 @@ type LLMCaller struct {
 	slideHandler core.SlideHandler
 
 	// Testing support
-	mockLLM MockLLMFunc
+	mockLLM      MockLLMFunc
+	streamTimeout time.Duration // per-call timeout for streaming (default 3min)
 }
 
 // LLMCallerConfig holds the configuration needed to create an LLMCaller.
@@ -129,6 +131,7 @@ func NewLLMCaller(
 		sessionStore:     sessionStore,
 		logger:           cfg.Logger,
 		records:          make([]core.TokenUsage, 0),
+		streamTimeout:    3 * time.Minute,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -158,6 +161,34 @@ func WithLLMCallerSlideHandler(handler core.SlideHandler) LLMCallerOption {
 	return func(c *LLMCaller) {
 		c.slideHandler = handler
 	}
+}
+
+// SetConfig updates the LLM caller's configuration at runtime.
+// Changes take effect on the next LLM call. Safe to call concurrently with
+// running calls — in-flight requests use the previous values.
+func (c *LLMCaller) SetConfig(cfg LLMCallerConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.modelName = cfg.ModelName
+	c.systemPrompt = cfg.SystemPrompt
+	c.temperature = cfg.Temperature
+	c.topP = cfg.TopP
+	c.topK = cfg.TopK
+	c.presencePenalty = cfg.PresencePenalty
+	c.frequencyPenalty = cfg.FrequencyPenalty
+	c.maxTokens = cfg.MaxTokens
+	c.clientType = cfg.ClientType
+	if cfg.Logger != nil {
+		c.logger = cfg.Logger
+	}
+}
+
+// SetClient replaces the underlying gochat client builder.
+// Used when API key, base URL, or auth token change.
+func (c *LLMCaller) SetClient(client gochat.ClientBuilder) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.client = client
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +341,9 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 		c.mu.RUnlock()
 	}
 
+	callCtx, cancel := context.WithTimeout(ctx, c.streamTimeout)
+	defer cancel()
+
 	// 1. Check slide
 	c.doSlide(input)
 
@@ -322,9 +356,9 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 	// 4. Handle mock LLM (ToolCalls from mock are preserved)
 	var toolCalls []gochatcore.ToolCall
 	if c.mockLLM != nil {
-		resp, err := c.mockLLM(ctx, input)
+		resp, err := c.mockLLM(callCtx, input)
 		if err != nil {
-			return c.buildErrorResult(ctx, input, err, preciseInput)
+			return c.buildErrorResult(callCtx, input, err, preciseInput)
 		}
 		if resp != nil {
 			onChunk(resp.Content)
@@ -332,7 +366,7 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 				toolCalls = resp.Message.ToolCalls
 			}
 		}
-		return c.recordResult(ctx, input, resp.Content, preciseInput, resp, messages, toolCalls)
+		return c.recordResult(callCtx, input, resp.Content, preciseInput, resp, messages, toolCalls)
 	}
 
 	// 5. Build request and stream
@@ -351,7 +385,7 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 			"model", c.modelName,
 			"elapsed_ms", time.Since(llmStart).Milliseconds(),
 		)
-		return c.buildErrorResult(ctx, input, fmt.Errorf("stream LLM call failed: %w", err), preciseInput)
+		return c.buildErrorResult(callCtx, input, fmt.Errorf("stream LLM call failed: %w", err), preciseInput)
 	}
 	defer stream.Close()
 
@@ -361,10 +395,29 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 	if len(onThinking) > 0 && onThinking[0] != nil {
 		thinkingCB = onThinking[0]
 	}
+
 	for stream.Next() {
+		select {
+		case <-callCtx.Done():
+			stream.Close()
+			elapsed := time.Since(llmStart)
+			c.logger.Error("llm call timed out",
+				fmt.Errorf("%w (timeout: %s, elapsed: %s)", callCtx.Err(), c.streamTimeout, elapsed),
+				"session_id", input.SessionID,
+				"model", c.modelName,
+				"elapsed_ms", elapsed.Milliseconds(),
+				"output_chars", contentBuf.Len(),
+				"thinking_chars", thinkingBuf.Len(),
+			)
+			result := c.recordPartialResult(callCtx, input, contentBuf.String(), preciseInput, fmt.Errorf("llm call timed out after %v (%s)", c.streamTimeout, callCtx.Err()))
+			result.TimedOut = true
+			return result
+		default:
+		}
+
 		event := stream.Event()
 		if event.Err != nil {
-			return c.recordPartialResult(ctx, input, contentBuf.String(), preciseInput, event.Err)
+			return c.recordPartialResult(callCtx, input, contentBuf.String(), preciseInput, event.Err)
 		}
 		switch event.Type {
 		case gochatcore.EventContent:
@@ -376,7 +429,7 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 				thinkingCB(event.Content)
 			}
 		case gochatcore.EventError:
-			return c.recordPartialResult(ctx, input, contentBuf.String(), preciseInput, event.Err)
+			return c.recordPartialResult(callCtx, input, contentBuf.String(), preciseInput, event.Err)
 		case gochatcore.EventDone:
 		}
 	}

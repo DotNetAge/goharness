@@ -15,7 +15,7 @@ import (
 // No L1 routing — the LLM decides tool vs answer in one call.
 // The System Prompt and Instructions remain stable across rounds;
 // direction is steered via tool result footers.
-func (r *Reactor) Think(ctx *ReactContext) (int, error) {
+func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 	thinkStart := time.Now()
 	sessionID := r.resolveSessionID(ctx)
 	iter := ctx.CurrentIteration + 1
@@ -65,7 +65,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, error) {
 			"session_id", sessionID,
 			"iteration", iter,
 		)
-		return 0, fmt.Errorf("llm caller not initialized")
+		return 0, 0, fmt.Errorf("llm caller not initialized")
 	}
 
 	result := r.llmCaller.CallStream(ctx.Ctx(), callInput,
@@ -84,7 +84,15 @@ func (r *Reactor) Think(ctx *ReactContext) (int, error) {
 			"iteration", iter,
 			"elapsed_ms", time.Since(thinkStart).Milliseconds(),
 		)
-		return int(result.TokenUsage.InputTokens), fmt.Errorf("llm call failed: %w", result.Error)
+		if result.TimedOut {
+			ctx.EmitEvent(core.LLMTimeout, core.LLMTimeoutData{
+				SessionID: sessionID,
+				Timeout:   r.llmCaller.streamTimeout,
+				Elapsed:   time.Since(thinkStart),
+				Error:     result.Error.Error(),
+			})
+		}
+		return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), fmt.Errorf("llm call failed: %w", result.Error)
 	}
 
 	content := contentBuf.String()
@@ -115,7 +123,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, error) {
 				"raw_preview", truncate(content, 100),
 				"content_length", len(content),
 			)
-			return int(result.TokenUsage.InputTokens), fmt.Errorf("think parse failed: %w", parseErr)
+			return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), fmt.Errorf("think parse failed: %w", parseErr)
 		}
 		r.getLogger().Info("think done",
 			"session_id", sessionID,
@@ -129,7 +137,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, error) {
 	}
 
 	ctx.LastThought = thought
-	return int(result.TokenUsage.InputTokens), nil
+	return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), nil
 }
 
 // nativeToolCallsToThought converts native gochat ToolCalls to the Thought format used by
@@ -184,8 +192,7 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 			"answer_preview", truncate(thought.FinalAnswer, 80),
 		)
 		ctx.LastAction = &Action{
-			Type:   ActionTypeAnswer,
-			Result: coalesce(thought.FinalAnswer, thought.Reasoning),
+			Results: []ToolResult{{ToolName: "answer", Result: coalesce(thought.FinalAnswer, thought.Reasoning), Success: true}},
 		}
 		return nil
 
@@ -200,7 +207,7 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"question_preview", truncate(q, 80),
 		)
-		ctx.LastAction = &Action{Type: ActionTypeClarify, Result: q}
+		ctx.LastAction = &Action{Results: []ToolResult{{ToolName: "clarify", Result: q, Success: true}}}
 		return nil
 
 	case DecisionAct:
@@ -218,30 +225,8 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 			"delegate_target", thought.DelegateTarget,
 		)
 		return r.executeDelegate(ctx, thought, start)
-
-	case DecisionCoordinate:
-		r.getLogger().Info("act coordinate",
-			"session_id", sessionID,
-			"iteration", iter,
-		)
-		ctx.LastAction = &Action{
-			Type:   ActionTypeAnswer,
-			Result: "coordination dispatched — polling sub-tasks...",
-		}
-		return nil
-
-	default:
-		r.getLogger().Info("act default",
-			"session_id", sessionID,
-			"iteration", iter,
-			"decision", thought.Decision,
-		)
-		ctx.LastAction = &Action{
-			Type:   ActionTypeAnswer,
-			Result: coalesce(thought.FinalAnswer, thought.Reasoning),
-		}
-		return nil
 	}
+	return nil
 }
 
 // executeToolCalls executes tool calls in two phases:
@@ -263,15 +248,15 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 	syncCalls, asyncCalls := r.partitionByAsync(calls)
 
 	sessionID := r.resolveSessionID(ctx)
-	var allResults []string
-	var successCount int
+	var results []ToolResult
 
 	r.emitActionStart(ctx, calls)
 
-	r.executeSyncTools(ctx, syncCalls, sessionID, &allResults, &successCount)
-	r.executeAsyncTools(ctx, asyncCalls, start, sessionID, &allResults, &successCount)
+	toolCallIDs := thought.ToolCallIDs
+	r.executeSyncTools(ctx, syncCalls, sessionID, toolCallIDs, &results)
+	r.executeAsyncTools(ctx, asyncCalls, start, sessionID, toolCallIDs, &results)
 
-	return r.assembleActionResult(ctx, calls, start, allResults, successCount)
+	return r.assembleActionResult(ctx, calls, start, results)
 }
 
 type toolCall struct {
@@ -292,9 +277,9 @@ func (r *Reactor) parseToolCalls(thought *Thought) []toolCall {
 }
 
 func (r *Reactor) handleEmptyCalls(ctx *ReactContext, thought *Thought) error {
+	ctx.LastThought.Decision = DecisionAnswer
 	ctx.LastAction = &Action{
-		Type:   ActionTypeAnswer,
-		Result: coalesce(thought.FinalAnswer, "Sorry, I cannot determine which tool to use for your request."),
+		Results: []ToolResult{{ToolName: "answer", Result: coalesce(thought.FinalAnswer, "Sorry, I cannot determine which tool to use for your request."), Success: true}},
 	}
 	return nil
 }
@@ -331,7 +316,7 @@ func (r *Reactor) emitActionStart(ctx *ReactContext, calls []toolCall) {
 	})
 }
 
-func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sessionID string, allResults *[]string, successCount *int) {
+func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sessionID string, toolCallIDs map[string]string, results *[]ToolResult) {
 	for _, c := range syncCalls {
 		toolStart := time.Now()
 
@@ -350,9 +335,17 @@ func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sess
 		toolElapsed := time.Since(toolStart)
 
 		endData := core.ToolExecEndData{
-			ToolName: c.name,
-			Duration: toolElapsed,
-			Success:  true,
+			ToolName:   c.name,
+			ToolCallID: toolCallIDs[c.name],
+			Duration:   toolElapsed,
+			Success:    true,
+		}
+
+		tr := ToolResult{
+			ToolName:   c.name,
+			ToolCallID: toolCallIDs[c.name],
+			Duration:   toolElapsed,
+			Success:    true,
 		}
 
 		if err != nil {
@@ -363,7 +356,8 @@ func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sess
 			)
 			endData.Success = false
 			endData.Error = err.Error()
-			*allResults = append(*allResults, fmt.Sprintf("[%s] error: %s", c.name, err.Error()))
+			tr.Success = false
+			tr.Error = err.Error()
 		} else if res.Interaction != nil {
 			r.getLogger().Info("tool interaction",
 				"session_id", sessionID,
@@ -374,13 +368,15 @@ func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sess
 			if interactErr != nil {
 				endData.Success = false
 				endData.Error = interactErr.Error()
-				*allResults = append(*allResults, fmt.Sprintf("[%s] interaction error: %s", c.name, interactErr.Error()))
+				tr.Success = false
+				tr.Error = interactErr.Error()
 			} else {
 				endData.Result = answer
-				*allResults = append(*allResults, fmt.Sprintf("[%s] %s", c.name, answer))
+				tr.Result = answer
 			}
 			if res.Duration > toolElapsed {
 				endData.Duration = res.Duration
+				tr.Duration = res.Duration
 			}
 		} else {
 			resultSize := len(res.Result)
@@ -392,25 +388,24 @@ func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sess
 				"success", true,
 			)
 			endData.Result = res.Result
-			*allResults = append(*allResults, fmt.Sprintf("[%s] %s", c.name, res.Result))
+			tr.Result = res.Result
 		}
 
-		if endData.Success {
-			*successCount++
-		}
+		*results = append(*results, tr)
 		ctx.EmitEvent(core.ToolExecEnd, endData)
 	}
 }
 
-func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, start time.Time, _ string, allResults *[]string, successCount *int) {
+func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, start time.Time, sessionID string, toolCallIDs map[string]string, results *[]ToolResult) {
 	if len(asyncCalls) == 0 {
 		return
 	}
 
 	type asyncResult struct {
-		name string
-		id   string
-		err  error
+		name        string
+		result      string
+		err         error
+		toolCallID  string
 	}
 	asyncCh := make(chan asyncResult, len(asyncCalls))
 
@@ -426,8 +421,8 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 			})
 
 			resultCh := make(chan struct{}, 1)
+			var execResult *core.ToolExecutionResult
 			var execErr error
-			var taskID string
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -435,45 +430,61 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 					}
 					resultCh <- struct{}{}
 				}()
-				_, execErr = r.toolExecutor.Execute(asyncCtx, toolName, params)
+				execResult, execErr = r.toolExecutor.Execute(asyncCtx, toolName, params)
 			}()
 
 			select {
 			case <-resultCh:
-				taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
+				// normal completion or panic
 			case <-asyncCtx.Done():
-				taskID = fmt.Sprintf("async-%s-%d", toolName, time.Now().UnixNano())
 				execErr = fmt.Errorf("async tool %q timed out after 5m", toolName)
 			}
 
+			resultStr := ""
+			if execErr == nil && execResult != nil {
+				resultStr = execResult.Result
+			}
+
+			tr := ToolResult{
+				ToolName:   toolName,
+				ToolCallID: toolCallIDs[toolName],
+				Duration:   time.Since(start),
+				Success:    execErr == nil,
+				Result:     resultStr,
+			}
+			if execErr != nil {
+				tr.Error = execErr.Error()
+			}
+
 			endData := core.ToolExecEndData{
-				ToolName: toolName,
-				Duration: time.Since(start),
-				Success:  execErr == nil,
+				ToolName:   toolName,
+				ToolCallID: toolCallIDs[toolName],
+				Duration:   time.Since(start),
+				Success:    execErr == nil,
+				Result:     resultStr,
 			}
 			if execErr != nil {
 				endData.Error = execErr.Error()
-			} else {
-				endData.Result = fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, taskID)
 			}
 			ctx.EmitEvent(core.ToolExecEnd, endData)
 
-			asyncCh <- asyncResult{name: toolName, id: taskID, err: execErr}
+			asyncCh <- asyncResult{name: toolName, result: resultStr, err: execErr, toolCallID: toolCallIDs[toolName]}
 		}(c.name, c.params)
 	}
 
-	remaining := len(asyncCalls)
-	for remaining > 0 {
+	for remaining := len(asyncCalls); remaining > 0; {
 		select {
 		case ar := <-asyncCh:
 			remaining--
+			var tr ToolResult
+			tr.ToolName = ar.name
+			tr.ToolCallID = ar.toolCallID
+			tr.Result = ar.result
+			tr.Success = ar.err == nil
 			if ar.err != nil {
-				*allResults = append(*allResults, fmt.Sprintf("[%s] error: %s", ar.name, ar.err.Error()))
-			} else {
-				*successCount++
-				*allResults = append(*allResults, fmt.Sprintf("[%s] %s", ar.name,
-					fmt.Sprintf(`{"task_id": "%s", "status": "running"}`, ar.id)))
+				tr.Error = ar.err.Error()
 			}
+			*results = append(*results, tr)
 		case <-ctx.Ctx().Done():
 			r.getLogger().Warn("context cancelled while waiting for async tools",
 				"remaining", remaining)
@@ -482,8 +493,21 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 	}
 }
 
-func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, start time.Time, allResults []string, successCount int) error {
-	summary := strings.Join(allResults, "\n")
+func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, start time.Time, results []ToolResult) error {
+	summary := strings.Join(func() []string {
+		var parts []string
+		for _, r := range results {
+			parts = append(parts, r.ToolResultSummary())
+		}
+		return parts
+	}(), "\n")
+
+	successCount := 0
+	for _, r := range results {
+		if r.Success {
+			successCount++
+		}
+	}
 
 	if len(calls) > 1 {
 		ctx.EmitEvent(core.ActionProgress, core.ActionProgressData{
@@ -502,9 +526,7 @@ func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, star
 
 	ctx.LastAction = &Action{
 		Timestamp: start,
-		Type:      ActionTypeToolCall,
-		Target:    "tool_calls",
-		Result:    summary,
+		Results:   results,
 	}
 	return nil
 }
@@ -514,10 +536,8 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 	prompt := thought.DelegatePrompt
 
 	if target == "" {
-		ctx.LastAction = &Action{
-			Type:      ActionTypeDelegate,
-			Result:    "delegate failed: no target agent specified",
-			ErrorMsg:  "no target agent specified",
+	ctx.LastAction = &Action{
+			Results:   []ToolResult{{ToolName: "delegate", Result: "delegate failed: no target agent specified", Success: false}},
 			Timestamp: start,
 		}
 		return nil
@@ -525,9 +545,7 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 
 	if r.SpawnFunc == nil {
 		ctx.LastAction = &Action{
-			Type:      ActionTypeDelegate,
-			Result:    fmt.Sprintf("delegate to %q failed: sub-agent spawning is not configured", target),
-			ErrorMsg:  "SpawnFunc not configured",
+			Results:   []ToolResult{{ToolName: "delegate", Result: fmt.Sprintf("delegate to %q failed: sub-agent spawning is not configured", target), Success: false}},
 			Timestamp: start,
 		}
 		return nil
@@ -536,18 +554,14 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 	result, err := r.SpawnFunc(ctx.Ctx(), target, prompt)
 	if err != nil {
 		ctx.LastAction = &Action{
-			Type:      ActionTypeDelegate,
-			Result:    fmt.Sprintf("[delegate:%s] error: %s", target, err.Error()),
-			Error:     err,
-			ErrorMsg:  err.Error(),
+			Results:   []ToolResult{{ToolName: "delegate", Result: fmt.Sprintf("[delegate:%s] error: %s", target, err.Error()), Success: false}},
 			Timestamp: start,
 		}
 		return nil
 	}
 
 	ctx.LastAction = &Action{
-		Type:      ActionTypeDelegate,
-		Result:    fmt.Sprintf("[delegate:%s] %s", target, result),
+		Results:   []ToolResult{{ToolName: "delegate", Result: fmt.Sprintf("[delegate:%s] %s", target, result), Success: true}},
 		Timestamp: start,
 	}
 	return nil
@@ -565,190 +579,77 @@ func (r *Reactor) Observe(ctx *ReactContext) error {
 	sessionID := r.resolveSessionID(ctx)
 	iter := ctx.CurrentIteration + 1
 
-	// ====== Coordinator Mode Branch ======
-	if ctx.Mode == ModeCoordinator && ctx.CoordState != nil {
-		return r.observeCoordinator(ctx)
-	}
-
 	var obs *Observation
 
-	switch action.Type {
-	case ActionTypeToolCall:
-		if action.Error != nil {
-			obs = NewErrorObservation(action.Error, false)
-			obs.Insights = []string{fmt.Sprintf("Tool %q execution failed", action.Target)}
+	switch ctx.LastThought.Decision {
+	case DecisionAct:
+		// Count success/failure from Results, also check action.Error for legacy paths
+		successCount := 0
+		var failedTools []string
+		for _, tr := range action.Results {
+			if tr.Success {
+				successCount++
+			} else {
+				failedTools = append(failedTools, tr.ToolName)
+			}
+		}
+		toolNames := make([]string, len(action.Results))
+		for i, tr := range action.Results {
+			toolNames[i] = tr.ToolName
+		}
+
+		switch {
+		case len(failedTools) > 0:
+			errMsg := fmt.Sprintf("tools failed: %s", strings.Join(failedTools, ", "))
+			obs = NewErrorObservation(fmt.Errorf("%s", errMsg), false)
+			obs.Insights = []string{fmt.Sprintf("%d/%d tools failed: %s", len(failedTools), len(action.Results), errMsg)}
 			r.getLogger().Warn("observe tool error",
 				"session_id", sessionID,
 				"iteration", iter,
-				"tool", action.Target,
+				"tools", toolNames,
 				"elapsed_ms", time.Since(observeStart).Milliseconds(),
-				"error", action.Error,
+				"failed", len(failedTools),
+				"errors", strings.Join(failedTools, ","),
 			)
-		} else {
-			insights := analyzeActionResult(action.Result)
-			obs = NewSuccessObservation(action.Result, insights...)
+
+		default:
+			insights := analyzeActionResult(action.Summary())
+			obs = NewSuccessObservation(action.Summary(), insights...)
 			r.getLogger().Info("observe tool success",
 				"session_id", sessionID,
 				"iteration", iter,
-				"tool", action.Target,
+				"tools", toolNames,
 				"elapsed_ms", time.Since(observeStart).Milliseconds(),
 				"insights", len(insights),
 			)
 		}
 
-	case ActionTypeAnswer:
-		obs = NewSuccessObservation(action.Result, "direct answer generated")
+	case DecisionAnswer:
+		obs = NewSuccessObservation(action.Summary(), "direct answer generated")
 		r.getLogger().Info("observe answer",
 			"session_id", sessionID,
 			"iteration", iter,
 			"elapsed_ms", time.Since(observeStart).Milliseconds(),
 		)
 
-	case ActionTypeClarify:
-		obs = NewSuccessObservation(action.Result, "clarification question generated")
+	case DecisionClarify:
+		obs = NewSuccessObservation(action.Summary(), "clarification question generated")
 		r.getLogger().Info("observe clarify",
 			"session_id", sessionID,
 			"iteration", iter,
 			"elapsed_ms", time.Since(observeStart).Milliseconds(),
 		)
 
-	case ActionTypeDelegate:
-		obs = NewSuccessObservation(action.Result, "delegation executed")
+	case DecisionDelegate:
+		obs = NewSuccessObservation(action.Summary(), "delegation executed")
 		r.getLogger().Info("observe delegate",
 			"session_id", sessionID,
 			"iteration", iter,
 			"elapsed_ms", time.Since(observeStart).Milliseconds(),
 		)
 
-	default:
-		obs = NewSuccessObservation(action.Result)
-		r.getLogger().Info("observe default",
-			"session_id", sessionID,
-			"iteration", iter,
-			"action_type", action.Type,
-			"elapsed_ms", time.Since(observeStart).Milliseconds(),
-		)
 	}
 
 	ctx.LastObservation = obs
 	return nil
-}
-
-// observeCoordinator handles Observe phase when in Coordinator mode.
-// Checks sub-task progress, determines if all tasks are done, and produces
-// a final answer or continues waiting.
-func (r *Reactor) observeCoordinator(ctx *ReactContext) error {
-	cs := ctx.CoordState
-	if cs == nil || cs.TaskProgress == nil {
-		return fmt.Errorf("coordinator mode but no CoordState")
-	}
-
-	tp := cs.TaskProgress
-	total := tp.Count()
-	completed := tp.CompletedCount()
-	failed := tp.FailedCount()
-	pending := tp.PendingCount()
-
-	r.getLogger().Info("coordinator observe",
-		"total", total, "completed", completed, "failed", failed, "pending", pending)
-
-	var obs *Observation
-
-	if tp.AllCompleted() {
-		// All tasks done → produce summary answer
-		summary := r.buildCoordinatorSummary(cs)
-		cs.MarkCompleted()
-
-		// Switch back to Executor mode for next cycle (if any)
-		ctx.Mode = ModeExecutor
-
-		obs = NewSuccessObservation(summary,
-			fmt.Sprintf("all %d tasks done (%d succeeded, %d failed)", total, completed, failed))
-		ctx.LastThought = &Thought{
-			Decision:    DecisionAnswer,
-			Reasoning:   fmt.Sprintf("Coordination complete. %d/%d tasks succeeded.", completed, total),
-			FinalAnswer: summary,
-			IsFinal:     true,
-		}
-	} else if pending > 0 {
-		// Still waiting for results
-		obs = NewSuccessObservation(tp.Summary(),
-			fmt.Sprintf("coordinating: %d/%d complete, %d pending", completed+failed, total, pending))
-
-		// Check lifecycle state — if cancelled/interrupted, stop
-		if cs.LifecycleState.IsTerminal() {
-			summary := r.buildCoordinatorSummary(cs)
-			obs = NewSuccessObservation(summary, fmt.Sprintf("coordination ended: %s", cs.LifecycleState))
-			ctx.LastThought = &Thought{
-				Decision:    DecisionAnswer,
-				FinalAnswer: summary,
-				IsFinal:     true,
-			}
-		}
-	} else {
-		// All terminal states reached (mix of success/fail)
-		summary := r.buildCoordinatorSummary(cs)
-		cs.MarkCompleted()
-		ctx.Mode = ModeExecutor
-
-		obs = NewSuccessObservation(summary,
-			fmt.Sprintf("coordination finished: %d succeeded, %d failed", completed, failed))
-		ctx.LastThought = &Thought{
-			Decision:    DecisionAnswer,
-			Reasoning:   "All sub-tasks reached terminal state",
-			FinalAnswer: summary,
-			IsFinal:     true,
-		}
-	}
-
-	ctx.LastObservation = obs
-	return nil
-}
-
-// buildCoordinatorSummary builds a human-readable summary of all sub-task results.
-func (r *Reactor) buildCoordinatorSummary(cs *CoordState) string {
-	if cs.TaskProgress == nil {
-		return "(no task progress)"
-	}
-
-	var sb strings.Builder
-	entries := cs.TaskProgress.ListAll()
-
-	sb.WriteString("## Task Coordination Summary\n\n")
-
-	for _, e := range entries {
-		statusIcon := map[TaskStatus]string{
-			TaskSucceeded:    "[OK]",
-			TaskFailed:       "[FAIL]",
-			TaskTimedOut:     "[TIMEOUT]",
-			TaskCancelled:    "[CANCELLED]",
-			TaskRetryPending: "[RETRY]",
-		}[e.Status]
-
-		if statusIcon == "" {
-			statusIcon = string(e.Status)
-		}
-
-		fmt.Fprintf(&sb, "%s **%s** (priority=%d)\n", statusIcon, e.Title, e.Priority)
-
-		if e.Result != nil && e.Result.Content != "" {
-			// Truncate very long results
-			content := e.Result.Content
-			if len(content) > 500 {
-				content = content[:500] + "...(truncated)"
-			}
-			fmt.Fprintf(&sb, "  Result: %s\n", content)
-		}
-		if e.Error != nil {
-			fmt.Fprintf(&sb, "  Error: %v\n", e.Error)
-		}
-		sb.WriteString("\n")
-	}
-
-	// Append aggregated stats
-	s := cs.TaskProgress
-	fmt.Fprintf(&sb, "---\nTotal: %d | Succeeded: %d | Failed: %d\n",
-		s.Count(), s.CompletedCount(), s.FailedCount())
-
-	return sb.String()
 }

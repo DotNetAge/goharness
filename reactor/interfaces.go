@@ -44,7 +44,7 @@ type Lifecycle interface {
 
 // TAOExecutor provides access to the T-A-O phases for testing and orchestration.
 type TAOExecutor interface {
-	Think(ctx *ReactContext) (int, error)
+	Think(ctx *ReactContext) (int, int, error)
 	Act(ctx *ReactContext) error
 	Observe(ctx *ReactContext) error
 	CheckTermination(ctx *ReactContext) (bool, string)

@@ -49,7 +49,7 @@ func TestIntegration_WebFetch_StatusCode200_StaticHTML(t *testing.T) {
 	s := result.(string)
 	t.Logf("PASS [200-StaticHTML]: len=%d bytes, contains_html=%v, contains_example_domain=%v",
 		len(s), strings.Contains(s, "<html") || strings.Contains(s, "<!DOCTYPE"),
-			strings.Contains(s, "Example Domain"))
+		strings.Contains(s, "Example Domain"))
 	if !strings.Contains(s, "Example Domain") && !strings.Contains(s, "<html") {
 		t.Error("expected Example Domain or HTML content")
 	}
@@ -215,7 +215,7 @@ func TestIntegration_WebFetch_SSRF_Protection_RealDNS(t *testing.T) {
 // SECTION 2: WebFetchTool (Claude-style) — Enhanced Tests
 // ============================================================
 
-func TestIntegration_ClaudeFetch_ExampleCom(t *testing.T) {
+func TestIntegration_WebFetch_ExampleCom(t *testing.T) {
 	mustHaveProxy(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -241,7 +241,7 @@ func TestIntegration_ClaudeFetch_ExampleCom(t *testing.T) {
 	}
 }
 
-func TestIntegration_ClaudeFetch_HTMLToTextExtraction(t *testing.T) {
+func TestIntegration_WebFetch_HTMLToTextExtraction(t *testing.T) {
 	mustHaveProxy(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -262,7 +262,7 @@ func TestIntegration_ClaudeFetch_HTMLToTextExtraction(t *testing.T) {
 		noScript, noStyle, hasText, len(s))
 }
 
-func TestIntegration_ClaudeFetch_URLAutoNormalization(t *testing.T) {
+func TestIntegration_WebFetch_URLAutoNormalization(t *testing.T) {
 	mustHaveProxy(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -282,19 +282,19 @@ func TestIntegration_ClaudeFetch_URLAutoNormalization(t *testing.T) {
 		t.Run(v.name, func(t *testing.T) {
 			result, err := tool.Execute(ctx, map[string]any{"url": v.url})
 			if err != nil {
-				t.Fatalf("FAIL [Claude-Normalize-%s]: error = %v", v.name, err)
+				t.Fatalf("FAIL [Normalize-%s]: error = %v", v.name, err)
 			}
 			s := result.(string)
 			if !strings.Contains(s, "Example Domain") {
-				t.Errorf("FAIL [Claude-Normalize-%s]: URL normalization failed for %q", v.name, v.url)
+				t.Errorf("FAIL [Normalize-%s]: URL normalization failed for %q", v.name, v.url)
 			} else {
-				t.Logf("PASS [Claude-Normalize-%s]: %q → success, len=%d", v.name, v.url, len(s))
+				t.Logf("PASS [Normalize-%s]: %q → success, len=%d", v.name, v.url, len(s))
 			}
 		})
 	}
 }
 
-func TestIntegration_ClaudeFetch_ResponseMetadata(t *testing.T) {
+func TestIntegration_WebFetch_ResponseMetadata(t *testing.T) {
 	mustHaveProxy(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -302,13 +302,13 @@ func TestIntegration_ClaudeFetch_ResponseMetadata(t *testing.T) {
 	tool := NewWebFetchTool()
 	result, err := tool.Execute(ctx, map[string]any{"url": "https://httpbin.org/xml"})
 	if err != nil {
-		t.Fatalf("FAIL [Claude-Metadata]: error = %v", err)
+		t.Fatalf("FAIL [Metadata]: error = %v", err)
 	}
 	s := result.(string)
-	t.Logf("PASS [Claude-Metadata]: full_response_preview:\n%s\n[END PREVIEW, total %d chars]", s[:min(500, len(s))], len(s))
+	t.Logf("PASS [Metadata]: full_response_preview:\n%s\n[END PREVIEW, total %d chars]", s[:min(500, len(s))], len(s))
 }
 
-func TestIntegration_ClaudeFetch_BinaryLikeContent(t *testing.T) {
+func TestIntegration_WebFetch_BinaryLikeContent(t *testing.T) {
 	mustHaveProxy(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -316,11 +316,11 @@ func TestIntegration_ClaudeFetch_BinaryLikeContent(t *testing.T) {
 	tool := NewWebFetchTool()
 	result, err := tool.Execute(ctx, map[string]any{"url": "https://httpbin.org/image/png"})
 	if err != nil {
-		t.Logf("INFO [Claude-Binary]: binary content may fail: %v", err)
+		t.Logf("INFO [Binary]: binary content may fail: %v", err)
 		return
 	}
 	s := result.(string)
-	t.Logf("PASS [Claude-Binary]: handled binary/png response, len=%d (may contain garbled text)", len(s))
+	t.Logf("PASS [Binary]: handled binary/png response, len=%d (may contain garbled text)", len(s))
 }
 
 // ============================================================

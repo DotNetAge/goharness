@@ -17,7 +17,6 @@ func TestAgentMode_String(t *testing.T) {
 		want string
 	}{
 		{ModeExecutor, "executor"},
-		{ModeCoordinator, "coordinator"},
 	}
 
 	for _, tt := range tests {
@@ -27,18 +26,9 @@ func TestAgentMode_String(t *testing.T) {
 	}
 }
 
-func TestAgentMode_IsExecutor_IsCoordinator(t *testing.T) {
+func TestAgentMode_IsExecutor(t *testing.T) {
 	if !ModeExecutor.IsExecutor() {
 		t.Error("ModeExecutor.IsExecutor() = false")
-	}
-	if ModeExecutor.IsCoordinator() {
-		t.Error("ModeExecutor.IsCoordinator() = true")
-	}
-	if ModeCoordinator.IsExecutor() {
-		t.Error("ModeCoordinator.IsExecutor() = true")
-	}
-	if !ModeCoordinator.IsCoordinator() {
-		t.Error("ModeCoordinator.IsCoordinator() = false")
 	}
 }
 

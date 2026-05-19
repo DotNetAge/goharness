@@ -98,7 +98,7 @@ type Runner interface {
 // Used by test code and internal orchestration that needs fine-grained control.
 type TAORunner interface {
 	Runner
-	Think(ctx *ReactContext) (int, error)
+	Think(ctx *ReactContext) (int, int, error)
 	Act(ctx *ReactContext) error
 	Observe(ctx *ReactContext) error
 	CheckTermination(ctx *ReactContext) (bool, string)
@@ -143,8 +143,7 @@ type Reactor struct {
 	// Invalidated when RegisterTool is called after construction.
 	cachedLLMTools []gochatcore.Tool
 	cacheMu        sync.RWMutex
-	offloadMgr *OffloadManager
-
+	offloadMgr     *OffloadManager
 
 	// Directory context (Design-time safety: set during initialization from setup)
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
@@ -384,16 +383,24 @@ var defaultBundledTools = []toolRegistration{
 	{"Write", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWriteTool() }, "Write"},
 	{"FileEdit", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewFileEditTool() }, "FileEdit"},
 	{"Bash", func(mgr *tools.SessionSandboxManager) core.FuncTool {
-		if mgr != nil { return tools.NewBashToolWithSessionSandbox(mgr) }
+		if mgr != nil {
+			return tools.NewBashToolWithSessionSandbox(mgr)
+		}
 		return tools.NewBashTool()
 	}, "Bash"},
 	{"RunScript", func(mgr *tools.SessionSandboxManager) core.FuncTool {
-		if mgr != nil { return tools.NewRunScriptToolWithSessionSandbox(mgr) }
+		if mgr != nil {
+			return tools.NewRunScriptToolWithSessionSandbox(mgr)
+		}
 		return tools.NewRunScriptTool()
 	}, "RunScript"},
 	{"PowerShell", func(mgr *tools.SessionSandboxManager) core.FuncTool {
-		if !tools.IsWindowsPlatform() { return nil }
-		if mgr != nil { return tools.NewPowerShellToolWithSessionSandbox(mgr) }
+		if !tools.IsWindowsPlatform() {
+			return nil
+		}
+		if mgr != nil {
+			return tools.NewPowerShellToolWithSessionSandbox(mgr)
+		}
 		return tools.NewPowerShellTool()
 	}, "PowerShell"},
 	{"WebSearch", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWebSearchTool() }, "WebSearch"},
@@ -560,6 +567,56 @@ func (r *Reactor) SlideConfig() core.SlideConfig           { return r.llmCaller.
 func (r *Reactor) EstimateTokens(content string) int {
 	return r.llmCaller.Estimator().Estimate(content)
 }
+
+// SetModelConfig updates the reactor's LLM configuration at runtime.
+// This propagates model parameters to the LLMCaller and recreates the
+// gochat client when API key or base URL change.
+// Conversation history and context window are preserved.
+func (r *Reactor) SetModelConfig(model core.ModelConfig) {
+	// Update reactor config
+	r.config.Model = model.Name
+	r.config.Temperature = model.Temperature
+	r.config.TopP = model.TopP
+	r.config.TopK = int(model.TopK)
+	r.config.PresencePenalty = model.RepetitionPenalty
+	r.config.FrequencyPenalty = model.RepetitionPenalty
+	r.config.MaxTokens = int(model.MaxTokens)
+	r.config.MaxIterations = model.MaxTurns
+	r.config.IsLocal = model.IsLocal
+
+	// Update connection parameters
+	if model.APIKey != "" {
+		r.config.APIKey = model.APIKey
+	}
+	if model.BaseURL != "" {
+		r.config.BaseURL = model.BaseURL
+	}
+	if model.AuthToken != "" {
+		r.config.AuthToken = model.AuthToken
+	}
+
+	// Recreate gochat client to pick up API key / base URL changes
+	client := gochat.Client().Config(
+		gochat.WithAPIKey(r.config.APIKey),
+		gochat.WithBaseURL(r.config.BaseURL),
+	)
+	r.llmCaller.SetClient(client)
+
+	// Update LLMCaller config
+	r.llmCaller.SetConfig(LLMCallerConfig{
+		ModelName:        r.config.Model,
+		SystemPrompt:     r.config.SystemPrompt,
+		Temperature:      r.config.Temperature,
+		TopP:             r.config.TopP,
+		TopK:             r.config.TopK,
+		PresencePenalty:  r.config.PresencePenalty,
+		FrequencyPenalty: r.config.FrequencyPenalty,
+		MaxTokens:        r.config.MaxTokens,
+		ClientType:       r.config.ClientType,
+		Logger:           r.config.Logger,
+	})
+}
+
 func (r *Reactor) RegisterTool(tool core.FuncTool) error {
 	r.cacheMu.Lock()
 	r.cachedLLMTools = nil // invalidate cache
@@ -690,6 +747,10 @@ func (r *Reactor) Run(ctx context.Context, input string, history ConversationHis
 		reactCtx.emitEvent = r.eventBus.Emit
 	}
 
+	if cw := r.ContextWindow(); cw != nil && cw.SessionID != "" {
+		reactCtx.SessionID = cw.SessionID
+	}
+
 	return r.runLoop(reactCtx, 0, time.Now())
 }
 
@@ -740,17 +801,11 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 	reactCtx.AddMessage("assistant", thoughtMsg)
 	r.persistStepToStore(reactCtx.Ctx(), "assistant", thoughtMsg)
 
-	// Structured tool message: action result (if tool was called)
+	// Structured tool messages: one per tool result (with correct tool_call_id)
 	if reactCtx.LastThought.Decision == DecisionAct {
-		if reactCtx.LastAction.Error != nil {
-			toolMsg := fmt.Sprintf("%s error: %s", reactCtx.LastAction.Target, reactCtx.LastAction.ErrorMsg)
-			// Extract tool_call_id from LastThought (populated by nativeToolCallsToThought)
-			toolCallID := lookUpToolCallID(reactCtx.LastThought, reactCtx.LastAction.Target)
-			reactCtx.AddToolMessage("tool", toolMsg, toolCallID)
-			r.persistStepToStore(reactCtx.Ctx(), "tool", toolMsg)
-		} else if reactCtx.LastAction.Result != "" {
-			toolMsg := fmt.Sprintf("%s returned: %s", reactCtx.LastAction.Target, reactCtx.LastAction.Result)
-			toolCallID := lookUpToolCallID(reactCtx.LastThought, reactCtx.LastAction.Target)
+		for _, tr := range reactCtx.LastAction.Results {
+			toolCallID := lookUpToolCallID(reactCtx.LastThought, tr.ToolName)
+			toolMsg := tr.ToolResultSummary()
 			reactCtx.AddToolMessage("tool", toolMsg, toolCallID)
 			r.persistStepToStore(reactCtx.Ctx(), "tool", toolMsg)
 		}
@@ -758,7 +813,7 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 }
 
 // buildResultFromContext constructs a RunResult from the ReactContext state.
-func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int, runStart time.Time) *RunResult {
+func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int, totalInputTokens int, runStart time.Time) *RunResult {
 	answer := extractAnswer(reactCtx)
 	if answer != "" {
 		reactCtx.EmitEvent(core.FinalAnswer, answer)
@@ -769,7 +824,8 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int
 	summary := buildExecutionSummary(reactCtx, totalTokens, totalDuration)
 	reactCtx.EmitEvent(core.ExecutionSummary, summary)
 
-	taskSummary := buildTaskSummary(answer, totalTokens, reactCtx.CurrentIteration,
+	totalOutputTokens := totalTokens - totalInputTokens
+	taskSummary := buildTaskSummary(answer, totalInputTokens, totalOutputTokens, reactCtx.CurrentIteration,
 		summary.ToolCalls, totalDuration, reactCtx.TerminationReason)
 	reactCtx.EmitEvent(core.TaskSummary, taskSummary)
 
@@ -784,8 +840,8 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int
 }
 
 func extractAnswer(reactCtx *ReactContext) string {
-	if reactCtx.LastAction != nil && reactCtx.LastAction.Result != "" {
-		return reactCtx.LastAction.Result
+	if reactCtx.LastAction != nil && len(reactCtx.LastAction.Results) > 0 {
+		return reactCtx.LastAction.Summary()
 	}
 	if reactCtx.LastThought != nil && reactCtx.LastThought.FinalAnswer != "" {
 		return reactCtx.LastThought.FinalAnswer
@@ -809,17 +865,17 @@ func buildExecutionSummary(reactCtx *ReactContext, totalTokens int, totalDuratio
 	summary.ToolsUsed = collectUniqueToolNames(reactCtx.History)
 	summary.ToolCalls = 0
 	for _, step := range reactCtx.History {
-		if step.Action.Type == ActionTypeToolCall && step.Action.Target != "" {
-			summary.ToolCalls++
+		if step.Thought.Decision == DecisionAct {
+			summary.ToolCalls += len(step.Action.Results)
 		}
 	}
 	return summary
 }
 
-func buildTaskSummary(answer string, inputTokens int, iterations int, toolCalls int, duration time.Duration, terminationReason string) core.TaskSummaryData {
+func buildTaskSummary(answer string, inputTokens int, outputTokens int, iterations int, toolCalls int, duration time.Duration, terminationReason string) core.TaskSummaryData {
 	data := core.TaskSummaryData{
 		InputTokens:  inputTokens,
-		OutputTokens: 0,
+		OutputTokens: outputTokens,
 	}
 	if iterations > 1 || toolCalls > 0 {
 		toolWord := "tool calls"
@@ -864,6 +920,7 @@ func (r *Reactor) handlePauseSnapshot(reactCtx *ReactContext) {
 
 func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart time.Time) (*RunResult, error) {
 	totalTokens := initialTokens
+	totalInputTokens := initialTokens
 	sessionID := r.resolveSessionID(reactCtx)
 	r.getLogger().Info("run loop start",
 		"session_id", sessionID,
@@ -891,26 +948,24 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		)
 		r.toolExecutor.ResetCycle()
 
-		tokens, err := r.Think(reactCtx)
-		totalTokens += tokens
-		reactCtx.CurrentInputTokens = tokens
+		inputTokens, outputTokens, err := r.Think(reactCtx)
+		totalTokens += inputTokens + outputTokens
+		totalInputTokens += inputTokens
+		reactCtx.CurrentInputTokens = inputTokens
 		if err != nil {
 			r.abortCycle(reactCtx, "think", err, cycleStart, cycleNum, sessionID)
 			break
 		}
-		reactCtx.EmitEvent(core.ThinkingDone, reactCtx.LastThought)
 
-		// ====== Coordinator Mode: Skip normal Act/Observe, use coord path ======
-		if reactCtx.Mode == ModeCoordinator && reactCtx.LastThought != nil &&
-			reactCtx.LastThought.Decision == DecisionCoordinate {
-			return r.runCoordinatorLoop(reactCtx, totalTokens, runStart)
-		}
+		thoughtMap := reactCtx.LastThought.ToMap()
+		thoughtMap["tokens_in"] = inputTokens
+		thoughtMap["tokens_out"] = 0
+		reactCtx.EmitEvent(core.ThinkingDone, thoughtMap)
 
 		if err := r.Act(reactCtx); err != nil {
 			r.abortCycle(reactCtx, "act", err, cycleStart, cycleNum, sessionID)
 			break
 		}
-
 
 		if err := r.Observe(reactCtx); err != nil {
 			r.abortCycle(reactCtx, "observe", err, cycleStart, cycleNum, sessionID)
@@ -925,11 +980,11 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			"session_id", sessionID,
 			"iteration", cycleNum,
 			"elapsed_ms", time.Since(cycleStart).Milliseconds(),
-			"input_tokens", tokens,
+			"input_tokens", inputTokens,
 		)
 	}
 
-	result := r.buildResultFromContext(reactCtx, totalTokens, runStart)
+	result := r.buildResultFromContext(reactCtx, totalTokens, totalInputTokens, runStart)
 	r.getLogger().Info("run loop done",
 		"session_id", sessionID,
 		"total_iterations", result.TotalIterations,
@@ -959,154 +1014,3 @@ func (r *Reactor) persistStepToStore(ctx context.Context, role, content string) 
 		r.getLogger().Warn("failed to persist step to session store", "session_id", cw.SessionID, "role", role, "error", err)
 	}
 }
-
-
-// runCoordinatorLoop runs the Coordinator-mode T-A-O loop (Design §4.3 / §10).
-// When Think produces DecisionCoordinate, this method takes over:
-//
-// 1. Act: Reports coordination status
-// 2. Observe: Checks sub-task completion, produces summary when all done
-// 3. Loops with polling interval until all tasks complete or timeout/cancel
-//
-// This is separate from runLoop because Coordinator mode has fundamentally
-// different control flow — it doesn't call tools, it waits for async results.
-func (r *Reactor) runCoordinatorLoop(reactCtx *ReactContext, totalTokens int, runStart time.Time) (*RunResult, error) {
-	cs := reactCtx.CoordState
-	if cs == nil {
-		return nil, fmt.Errorf("coordinator mode but no CoordState")
-	}
-
-	r.getLogger().Info("entering coordinator wait loop", "parent", cs.ParentTaskID,
-		"tasks", cs.TaskProgress.Count())
-
-	// Poll interval: start at 500ms, adaptive up to 5s
-	pollInterval := 500 * time.Millisecond
-	maxPollInterval := 5 * time.Second
-	coordDeadline := time.Now().Add(10 * time.Minute) // Default coordinator timeout
-
-	for reactCtx.CurrentIteration < reactCtx.MaxIterations {
-		if terminated, reason := r.CheckTermination(reactCtx); terminated {
-			reactCtx.IsTerminated = true
-			reactCtx.TerminationReason = reason
-			break
-		}
-
-		// Check lifecycle state
-		if cs.LifecycleState.IsTerminal() {
-			break
-		}
-
-		// Check global deadline
-		if time.Now().After(coordDeadline) {
-			cs.Cancel("coordinator global timeout exceeded")
-			break
-		}
-
-		cycleStart := time.Now()
-
-		// Act (coordination status report)
-		if err := r.Act(reactCtx); err != nil {
-			r.getLogger().Warn("coordinator act error", "error", err)
-		}
-		reactCtx.EmitEvent(core.ThinkingDone, reactCtx.LastThought)
-
-		// Observe (check task completion)
-		if err := r.Observe(reactCtx); err != nil {
-			r.getLogger().Warn("coordinator observe error", "error", err)
-			break
-		}
-		reactCtx.EmitEvent(core.ObservationDone, reactCtx.LastObservation)
-
-		// Record step in history (for debugging/audit)
-		step := Step{
-			Iteration:   reactCtx.CurrentIteration + 1,
-			Thought:     *reactCtx.LastThought,
-			Action:      *reactCtx.LastAction,
-			Observation: *reactCtx.LastObservation,
-			Timestamp:   time.Now(),
-			Duration:    time.Since(cycleStart),
-		}
-		reactCtx.AppendHistory(step)
-		reactCtx.CurrentIteration++
-
-		// If Observe produced a final answer (all tasks done), exit loop
-		if reactCtx.LastThought != nil && reactCtx.LastThought.Decision == DecisionAnswer &&
-			reactCtx.LastThought.IsFinal {
-			r.getLogger().Info("coordinator loop complete", "iterations", reactCtx.CurrentIteration)
-			break
-		}
-
-		// Adaptive poll: increase interval if no new results
-		pending := cs.TaskProgress.PendingCount()
-		if pending > 0 && pollInterval < maxPollInterval {
-			pollInterval *= 2
-			if pollInterval > maxPollInterval {
-				pollInterval = maxPollInterval
-			}
-		}
-
-		// Wait before next poll cycle
-		select {
-		case <-time.After(pollInterval):
-			// Normal poll tick
-		case <-reactCtx.Ctx().Done():
-			// External context cancelled
-			cs.Cancel("external context cancelled")
-			goto exitCoordinatorLoop
-		case ctrl := <-cs.ControlChan:
-			// Lifecycle control command received
-			r.handleCoordinatorControl(cs, ctrl)
-		}
-
-		if cs.LifecycleState.IsTerminal() {
-			break
-		}
-	}
-
-exitCoordinatorLoop:
-
-	// Build result from coordinator state
-	result := &RunResult{
-		Steps:             reactCtx.History,
-		TotalIterations:   reactCtx.CurrentIteration,
-		TerminationReason: reactCtx.TerminationReason,
-		TokensUsed:        totalTokens,
-		TotalDuration:     time.Since(runStart),
-	}
-
-	// Extract final answer from last thought or observation
-	if reactCtx.LastThought != nil && reactCtx.LastThought.FinalAnswer != "" {
-		result.Answer = reactCtx.LastThought.FinalAnswer
-	} else if reactCtx.LastObservation != nil {
-		result.Answer = reactCtx.LastObservation.Result
-	}
-	if result.Answer == "" && cs.TaskProgress != nil {
-		result.Answer = cs.TaskProgress.Summary()
-	}
-	if reactCtx.TerminationReason == "" {
-		reactCtx.TerminationReason = "coordination_complete"
-	}
-
-	// Cleanup coordinator resources
-	cs.Dispose()
-	reactCtx.Mode = ModeExecutor // Reset to executor mode
-
-	return result, nil
-}
-
-// handleCoordinatorControl processes an incoming lifecycle control command.
-func (r *Reactor) handleCoordinatorControl(cs *CoordState, cmd *core.ControlCommand) {
-	switch cmd.Action {
-	case core.CmdInterrupt:
-		if err := cs.Interrupt(cmd.Reason); err != nil {
-			r.getLogger().Warn("coordinator interrupt failed", "error", err)
-		}
-	case core.CmdCancel:
-		if err := cs.Cancel(cmd.Reason); err != nil {
-			r.getLogger().Warn("coordinator cancel failed", "error", err)
-		}
-	default:
-		r.getLogger().Info("unknown coordinator control command", "action", cmd.Action)
-	}
-}
-

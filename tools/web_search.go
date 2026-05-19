@@ -216,10 +216,10 @@ func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
 //   - WebSearch: lightweight discovery → returns {title, url} only (small token cost)
 //   - WebFetch: deep reading → local HTTP fetch → HTML→Markdown → LLM summarization
 type WebSearchTool struct {
-	adapters   []SearchAdapter
-	adapterMu  sync.RWMutex
-	cache      sync.Map // map[string]cachedSearch
-	cacheTTL   time.Duration
+	adapters  []SearchAdapter
+	adapterMu sync.RWMutex
+	cache     sync.Map // map[string]cachedSearch
+	cacheTTL  time.Duration
 }
 
 type cachedSearch struct {
@@ -355,7 +355,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	logger := getLogger(ctx)
 
 	hybridOpts := SearchOptions{
-		MaxResults:     5,
+		MaxResults:     3,
 		AllowedDomains: allowedDomains,
 		BlockedDomains: blockedDomains,
 	}

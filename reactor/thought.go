@@ -16,7 +16,6 @@ const (
 	DecisionAnswer      = "answer"
 	DecisionClarify     = "clarify"
 	DecisionDelegate    = "delegate"
-	DecisionCoordinate  = "coordinate" // WBS decomposed → enter Coordinator mode to dispatch & monitor sub-tasks
 )
 
 // Thought represents the output of the Think phase.
@@ -150,4 +149,17 @@ func looksLikeDirectAnswer(content string) bool {
 
 	// If content is long enough (>50 chars) and has letters, likely an answer
 	return len(content) > 50
+}
+
+// ToMap converts Thought to a map[string]any for event bus transmission.
+// This allows consumers (like MindX TUI) to access Thought fields without
+// importing the reactor package.
+func (t *Thought) ToMap() map[string]any {
+	if t == nil {
+		return nil
+	}
+	data, _ := json.Marshal(t)
+	var result map[string]any
+	json.Unmarshal(data, &result)
+	return result
 }

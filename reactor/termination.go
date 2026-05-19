@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -33,16 +34,14 @@ func (r *Reactor) CheckTermination(ctx *ReactContext) (bool, string) {
 		return true, "thinker produced final answer"
 	}
 
-	if ctx.LastAction != nil && ctx.LastAction.Type == ActionTypeAnswer {
+	if ctx.LastAction != nil && ctx.LastThought.Decision == DecisionAnswer {
 		r.getLogger().Debug("termination: direct answer produced")
 		return true, "direct answer produced"
 	}
 
-	if ctx.LastAction != nil && ctx.LastAction.Type == ActionTypeClarify {
-		if ctx.LastAction.Target == "" {
-			r.getLogger().Debug("termination: clarification needed")
-			return true, "clarification needed"
-		}
+	if ctx.LastAction != nil && ctx.LastThought.Decision == DecisionClarify {
+		r.getLogger().Debug("termination: clarification needed")
+		return true, "clarification needed"
 	}
 
 	if isDestructiveLoop(ctx.History) {
@@ -67,12 +66,10 @@ func (r *Reactor) CheckTermination(ctx *ReactContext) (bool, string) {
 		last := ctx.History[len(ctx.History)-1]
 		prev := ctx.History[len(ctx.History)-2]
 		r.getLogger().Warn("termination: duplicate action detected",
-			"last_target", last.Action.Target,
-			"last_params", fmt.Sprintf("%v", last.Action.Params),
-			"last_result_len", len(last.Action.Result),
-			"prev_target", prev.Action.Target,
-			"prev_params", fmt.Sprintf("%v", prev.Action.Params),
-			"prev_result_len", len(prev.Action.Result),
+			"last_tools", collectToolNames(last.Action),
+			"last_result_len", len(last.Action.Summary()),
+			"prev_tools", collectToolNames(prev.Action),
+			"prev_result_len", len(prev.Action.Summary()),
 			"history_len", len(ctx.History),
 			"iteration", ctx.CurrentIteration)
 		return true, "duplicate action detected"
@@ -112,24 +109,23 @@ func isDestructiveLoop(history []Step) bool {
 		return false
 	}
 	tail := history[len(history)-maxDestructiveLoopCount:]
-	var target, params, errMsg string
-	for i, step := range tail {
-		if step.Action.Type != ActionTypeToolCall {
+	firstSig := toolSignature(tail[0])
+	firstErr := tail[0].Observation.Error
+	if firstErr == "" {
+		return false
+	}
+	for _, step := range tail[1:] {
+		if step.Thought.Decision != DecisionAct {
 			return false
 		}
-		if i == 0 {
-			target = step.Action.Target
-			params = fmt.Sprintf("%v", step.Action.Params)
-			errMsg = step.Observation.Error
-		} else {
-			if step.Action.Target != target ||
-				fmt.Sprintf("%v", step.Action.Params) != params ||
-				step.Observation.Error != errMsg {
-				return false
-			}
+		if toolSignature(step) != firstSig {
+			return false
+		}
+		if step.Observation.Error != firstErr {
+			return false
 		}
 	}
-	return errMsg != ""
+	return true
 }
 
 func isAgentStuck(history []Step) bool {
@@ -138,7 +134,7 @@ func isAgentStuck(history []Step) bool {
 	}
 	count := 0
 	for i := len(history) - 1; i >= 0 && i >= len(history)-maxStuckCount; i-- {
-		if history[i].Action.Type != ActionTypeToolCall {
+		if history[i].Thought.Decision != DecisionAct {
 			count++
 		} else {
 			break
@@ -152,10 +148,10 @@ func isResultConverged(history []Step) bool {
 		return false
 	}
 	last3 := history[len(history)-3:]
-	if last3[0].Action.Result == "" || last3[1].Action.Result == "" || last3[2].Action.Result == "" {
+	if last3[0].Action.Summary() == "" || last3[1].Action.Summary() == "" || last3[2].Action.Summary() == "" {
 		return false
 	}
-	return last3[0].Action.Result == last3[1].Action.Result && last3[1].Action.Result == last3[2].Action.Result
+	return last3[0].Action.Summary() == last3[1].Action.Summary() && last3[1].Action.Summary() == last3[2].Action.Summary()
 }
 
 func isDuplicateAction(history []Step) bool {
@@ -164,18 +160,51 @@ func isDuplicateAction(history []Step) bool {
 	}
 	last := history[len(history)-1]
 	prev := history[len(history)-2]
-	if last.Action.Type != ActionTypeToolCall || prev.Action.Type != ActionTypeToolCall {
+	if last.Thought.Decision != DecisionAct || prev.Thought.Decision != DecisionAct {
 		return false
 	}
-	if last.Action.Target != prev.Action.Target || last.Action.Result != prev.Action.Result {
+	if toolSignature(last) != toolSignature(prev) {
 		return false
 	}
-	lastParams := fmt.Sprintf("%v", last.Action.Params)
-	prevParams := fmt.Sprintf("%v", prev.Action.Params)
-	if lastParams != prevParams {
+	if last.Action.Summary() != prev.Action.Summary() {
 		return false
 	}
 	return true
 }
 
 
+
+
+// toolSignature builds a stable signature for a Step based on its tool set + params.
+// Used by isDestructiveLoop and isDuplicateAction for multi-tool-aware comparison.
+// Signature format: "[tool1:params1 tool2:params2 ...]" with tools sorted by name.
+func toolSignature(step Step) string {
+	var names []string
+	for _, tr := range step.Action.Results {
+		names = append(names, tr.ToolName)
+	}
+	sort.Strings(names)
+
+	var parts []string
+	for _, name := range names {
+		paramStr := ""
+		if step.Thought.ToolCalls != nil {
+			if params, ok := step.Thought.ToolCalls[name]; ok {
+				paramStr = fmt.Sprintf("%v", params)
+			}
+		}
+		parts = append(parts, name+":"+paramStr)
+	}
+	return fmt.Sprintf("[%s]", strings.Join(parts, " "))
+}
+
+// collectToolNames returns a comma-separated list of tool names from an Action's Results.
+func collectToolNames(a Action) string {
+	names := make([]string, len(a.Results))
+	for i, tr := range a.Results {
+		names[i] = tr.ToolName
+	}
+	// Sort for deterministic output
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}

@@ -7,14 +7,13 @@ import (
 )
 
 // ===========================================================================
-// Agent Mode — Executor / Coordinator (mutually exclusive)
+// Agent Mode — Executor
 // ===========================================================================
 
 type AgentMode string
 
 const (
-	ModeExecutor    AgentMode = "executor"
-	ModeCoordinator AgentMode = "coordinator"
+	ModeExecutor AgentMode = "executor"
 )
 
 func (m AgentMode) String() string {
@@ -23,7 +22,6 @@ func (m AgentMode) String() string {
 
 func (m AgentMode) IsExecutor() bool { return m == ModeExecutor }
 
-func (m AgentMode) IsCoordinator() bool { return m == ModeCoordinator }
 
 // ===========================================================================
 // Lifecycle State — Coordinator lifecycle management

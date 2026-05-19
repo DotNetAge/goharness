@@ -425,6 +425,7 @@ func BuildSkillsCatalog(skills []*core.Skill) string {
 func BuildDefaultRules() string {
 	return `The following rules MUST be followed without exception:
 - Always respond and think in the same language as the user's input.
+- Your internal reasoning must also be written in the user's language.
 - Never propose changes to code you haven't read.
 - Do not create files unless they are absolutely necessary.
 - If an approach fails, diagnose why before switching tactics.
@@ -477,7 +478,7 @@ Return a JSON object (plain text also works as fallback):
 
 ### Key Fields
 - **decision**: Routes your response (act/answer/clarify/delegate)
-- **reasoning**: Written to history for next cycle's reflection. Keep it brief and factual.
+- **reasoning**: Written to history for next cycle's reflection. Keep it brief and factual. **MUST match the user's language.**
   Good: "Factual query, no tools needed."
   Bad: "I think the user might want to know about this topic which I happen to have information about..."
 - **is_final**:

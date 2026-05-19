@@ -56,6 +56,9 @@ const (
 	// Error signals an error at the reactor level.
 	Error ReactEventType = "error"
 
+	// LLMTimeout signals the LLM call (Think phase) exceeded its time limit.
+	LLMTimeout ReactEventType = "llm_timeout"
+
 	// CycleEnd signals one complete T-A-O cycle has ended.
 	CycleEnd ReactEventType = "cycle_end"
 
@@ -118,18 +121,19 @@ type ActionStartData struct {
 
 // ToolExecStartData is the payload for ToolExecStart events.
 type ToolExecStartData struct {
-	ToolName       string         `json:"tool_name"`
-	Params         map[string]any `json:"params,omitempty"`
-	PredictedTokens int           `json:"predicted_tokens,omitempty"`
+	ToolName        string         `json:"tool_name"`
+	Params          map[string]any `json:"params,omitempty"`
+	PredictedTokens int            `json:"predicted_tokens,omitempty"`
 }
 
 // ToolExecEndData is the payload for ToolExecEnd events.
 type ToolExecEndData struct {
-	ToolName string        `json:"tool_name"`
-	Success  bool          `json:"success"`
-	Result   string        `json:"result,omitempty"`
-	Error    string        `json:"error,omitempty"`
-	Duration time.Duration `json:"duration_ms"`
+	ToolName   string        `json:"tool_name"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	Success    bool          `json:"success"`
+	Result     string        `json:"result,omitempty"`
+	Error      string        `json:"error,omitempty"`
+	Duration   time.Duration `json:"duration_ms"`
 }
 
 // ActionEndData is the payload for ActionEnd events.
@@ -170,22 +174,30 @@ type CycleInfo struct {
 	Duration          time.Duration `json:"duration_ms"`
 }
 
+// LLMTimeoutData is the payload for LLMTimeout events.
+type LLMTimeoutData struct {
+	SessionID string        `json:"session_id"`
+	Timeout   time.Duration `json:"timeout_ms"`
+	Elapsed   time.Duration `json:"elapsed_ms"`
+	Error     string        `json:"error,omitempty"`
+}
+
 // PermissionRequestData is the payload for PermissionRequest events.
 type PermissionRequestData struct {
-	ToolName    string         `json:"tool_name"`
-	Params      map[string]any `json:"params,omitempty"`
-	Reason      string         `json:"reason,omitempty"`
-	SecurityLevel SecurityLevel `json:"security_level"`
+	ToolName      string         `json:"tool_name"`
+	Params        map[string]any `json:"params,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	SecurityLevel SecurityLevel  `json:"security_level"`
 }
 
 // ExecutionSummaryData is the payload for ExecutionSummary events.
 type ExecutionSummaryData struct {
-	TotalIterations int            `json:"total_iterations"`
-	ToolCalls       int            `json:"tool_calls"`
-	ToolsUsed       []string       `json:"tools_used,omitempty"`
-	TotalDuration   time.Duration  `json:"total_duration_ms"`
-	TokensUsed      int            `json:"tokens_used"`
-	TerminationReason string       `json:"termination_reason,omitempty"`
+	TotalIterations   int           `json:"total_iterations"`
+	ToolCalls         int           `json:"tool_calls"`
+	ToolsUsed         []string      `json:"tools_used,omitempty"`
+	TotalDuration     time.Duration `json:"total_duration_ms"`
+	TokensUsed        int           `json:"tokens_used"`
+	TerminationReason string        `json:"termination_reason,omitempty"`
 }
 
 // NewReactEvent creates a new ReactEvent with the current timestamp.
@@ -204,6 +216,6 @@ func NewReactEvent(sessionID, taskID, parentID string, eventType ReactEventType,
 // It carries a natural-language summary of the task execution produced by the LLM.
 type TaskSummaryData struct {
 	Summary      string `json:"summary"`       // Natural-language task execution summary
-	InputTokens  int    `json:"input_tokens"`   // Estimated input tokens for this LLM call
-	OutputTokens int    `json:"output_tokens"`  // Reported output tokens from LLM provider
+	InputTokens  int    `json:"input_tokens"`  // Estimated input tokens for this LLM call
+	OutputTokens int    `json:"output_tokens"` // Reported output tokens from LLM provider
 }

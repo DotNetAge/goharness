@@ -55,10 +55,12 @@ func collectUniqueToolNames(history []Step) []string {
 	seen := make(map[string]bool, len(history))
 	var tools []string
 	for _, step := range history {
-		if step.Action.Type == ActionTypeToolCall && step.Action.Target != "" {
-			if !seen[step.Action.Target] {
-				seen[step.Action.Target] = true
-				tools = append(tools, step.Action.Target)
+		if step.Thought.Decision == DecisionAct {
+			for _, tr := range step.Action.Results {
+				if !seen[tr.ToolName] {
+					seen[tr.ToolName] = true
+					tools = append(tools, tr.ToolName)
+				}
 			}
 		}
 	}
