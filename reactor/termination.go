@@ -172,9 +172,6 @@ func isDuplicateAction(history []Step) bool {
 	return true
 }
 
-
-
-
 // toolSignature builds a stable signature for a Step based on its tool set + params.
 // Used by isDestructiveLoop and isDuplicateAction for multi-tool-aware comparison.
 // Signature format: "[tool1:params1 tool2:params2 ...]" with tools sorted by name.

@@ -116,25 +116,3 @@ func paramTypeToSchema(t string) string {
 		return "string"
 	}
 }
-
-// // BuildAgentCoordinationGuidance returns the system prompt section for agent orchestration tools.
-// func BuildAgentCoordinationGuidance() string {
-// 	return `## Agent Coordination
-
-// Agent coordination has two purposes: (a) handing off tasks that fall outside your role to a specialist, and (b) parallelizing large workloads by dispatching independent sub-tasks to multiple agents simultaneously.
-
-// Do NOT use these tools for tasks you can handle directly. Your first responsibility is to complete the work yourself.
-
-// ### When to delegate to another agent
-// - The user asks for something that is not in your area of expertise (e.g. you are a code reviewer and they ask for legal advice).
-// - The task requires a specialized capability you do not have access to.
-// - The user explicitly requests that another agent handle the task.
-
-// ### When to parallelize by spawning multiple agents
-// - The current task involves many independent sub-tasks that could run in parallel (e.g. reviewing 10 files, researching 5 topics, testing 3 configurations).
-// - You estimate that the total task would take significantly longer if done sequentially — dispatching sub-tasks to agents with the same capabilities as yourself can reduce wall-clock time.
-// - Each sub-task is self-contained and does not depend on results from other sub-tasks.
-
-// In those cases, call Delegate multiple times in the same Act phase with different sub-tasks — they will run in parallel. Use CollectResults to gather all outcomes.
-// `
-// }

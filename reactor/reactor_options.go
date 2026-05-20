@@ -210,17 +210,6 @@ func WithSessionDir(dir string) ReactorOption {
 	}
 }
 
-// WithEnableOrchestration controls whether orchestration tools (Delegate,
-// TeamCreate, TaskCreate/List/Get/Update/Stop, CollectResults) are
-// registered in the tool registry. When false (default), only domain tools (file ops,
-// search, bash) are registered. The Agent Coordination section in the System Prompt
-// is also controlled separately at the Prompt level.
-// func WithEnableOrchestration(enable bool) ReactorOption {
-// 	return func(s *reactorSetup) {
-// 		s.enableOrchestration = enable
-// 	}
-// }
-
 // WithSessionSandboxManager sets the session-scoped sandbox manager for this Reactor.
 // This enables Agent Native sandbox design (4-Layer Architecture) where each
 // session gets isolated TempDir and AllowedPaths based on SESSION_DIR.

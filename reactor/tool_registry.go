@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -98,6 +99,7 @@ func (r *DefaultToolRegistry) FindAvailable(filter *core.ToolFilter) []core.Func
 	}
 
 	if len(matched) == 0 {
+		log.Printf("tool registry: filter matched no tools, returning all %d tools (filter may be too restrictive)", len(allTools))
 		return allTools
 	}
 	return matched

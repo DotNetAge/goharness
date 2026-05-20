@@ -231,9 +231,6 @@ type reactorSetup struct {
 
 	// Sandbox management (Agent Native Design: 4-Layer Architecture)
 	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
-
-	// Orchestration control
-	// enableOrchestration bool // When true, register orchestration tools (Delegate, CreateAgent, etc.)
 }
 
 func (r *Reactor) applyDefaults(config *ReactorConfig) {
@@ -595,7 +592,7 @@ func (r *Reactor) SetModelConfig(model core.ModelConfig) {
 	r.config.TopP = model.TopP
 	r.config.TopK = int(model.TopK)
 	r.config.PresencePenalty = model.RepetitionPenalty
-	r.config.FrequencyPenalty = model.RepetitionPenalty
+	r.config.FrequencyPenalty = model.FrequencyPenalty
 	r.config.MaxTokens = int(model.MaxTokens)
 	r.config.MaxIterations = model.MaxTurns
 	r.config.IsLocal = model.IsLocal

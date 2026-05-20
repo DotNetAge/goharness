@@ -22,14 +22,8 @@ type Prompt struct {
 	ToolUsage           string // Tool usage guidelines
 	SkillsCatalog       string // Skills metadata matched to AgentConfig.Skills
 	ExecutionGuidelines string // Caution about risky operations
-	// AgentCoordination   string // Agent discovery, delegation, ranking, and creation guidance
 	ToneAndStyle    string // Tone and style guidelines
 	SystemReminders string // System-level reminders
-
-	// // AddonSections — application-specific sections injected after environment info.
-	// // Set by application layers (e.g., MindX) via Prompt.AddonSections field.
-	// // Used for domain-specific guidance like directory semantics, workspace rules, etc.
-	// AddonSections []string
 
 	// Dynamic sections — after DYNAMIC_BOUNDARY, can change per session
 	OutputEfficiency string // How to communicate with the user (prose style)

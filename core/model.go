@@ -21,6 +21,7 @@ type ModelConfig struct {
 	TopK              float64 `json:"top_k" yaml:"top_k"`                           // top-k sampling parameter
 	Temperature       float64 `json:"temperature" yaml:"temperature"`               // sampling temperature
 	RepetitionPenalty float64 `json:"repetition_penalty" yaml:"repetition_penalty"` // repetition penalty
+	FrequencyPenalty  float64 `json:"frequency_penalty" yaml:"frequency_penalty"`   // frequency penalty (reduces exact token repetition)
 	Enabled           bool    `json:"enabled" yaml:"enabled"`                       // whether the model is enabled (API key configured)
 	MaxTurns          int     `json:"max_turns" yaml:"max_turns"`                   // maximum T-A-O loop iterations (0 = use reactor default)
 }

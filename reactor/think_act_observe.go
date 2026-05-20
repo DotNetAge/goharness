@@ -533,7 +533,7 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 	prompt := thought.DelegatePrompt
 
 	if target == "" {
-	ctx.LastAction = &Action{
+		ctx.LastAction = &Action{
 			Results:   []ToolResult{{ToolName: "delegate", Result: "delegate failed: no target agent specified", Success: false}},
 			Timestamp: start,
 		}

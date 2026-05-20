@@ -216,7 +216,7 @@ func (c *LLMCaller) SlideConfig() core.SlideConfig {
 	return c.slideConfig
 }
 
-// Estimatormator returns the underlying token estimator.
+// Estimator returns the underlying token estimator.
 func (c *LLMCaller) Estimator() core.TokenEstimator {
 	return c.tokenEstimator
 }
