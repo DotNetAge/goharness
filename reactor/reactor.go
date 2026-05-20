@@ -143,8 +143,6 @@ type Reactor struct {
 	// Invalidated when RegisterTool is called after construction.
 	cachedLLMTools []gochatcore.Tool
 	cacheMu        sync.RWMutex
-	offloadMgr     *OffloadManager
-
 	// Directory context (Design-time safety: set during initialization from setup)
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
 	sessionDir string // Layer 3: Session sandbox directory
@@ -547,9 +545,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 		r.cacheMu.Unlock()
 	}
 
-	// Start background cleanup for offloaded files
-	r.offloadMgr = NewOffloadManager(r.getLogger())
-	r.offloadMgr.StartBackgroundCleanup()
 
 	return r
 }
@@ -671,9 +666,6 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 	// Merge() skips empty strings, but for SystemPrompt, empty means "explicitly clear".
 	childConfig.SystemPrompt = configOverride.SystemPrompt
 
-	// OffloadManager: child reuses parent's reference (shared, cleanup via sync.Once).
-	// See Phase 2.2 CloneReactor compatibility notes.
-
 	child := &Reactor{
 		config:        childConfig,
 		toolRegistry:  r.toolRegistry,
@@ -684,7 +676,6 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		eventBus:      r.eventBus,
 		kvStore:       r.kvStore,
 		fileStore:     r.fileStore,
-		offloadMgr:    r.offloadMgr,
 	}
 
 	// Clone LLMCaller with parent's shared infrastructure but independent client/context
@@ -778,6 +769,10 @@ func (r *Reactor) RunFromSnapshot(ctx context.Context, snapshot *RunSnapshot, ne
 //	tool:      "<tool_name> returned: <result>"     (if tool was called)
 //	tool:      "<tool_name> error: <error>"           (if tool errored)
 func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
+	// Offload large results before they enter conversation history,
+	// preventing unbounded context growth across T-A-O cycles.
+	r.offloadLargeResults(reactCtx)
+
 	step := Step{
 		Iteration:   reactCtx.CurrentIteration + 1,
 		Thought:     *reactCtx.LastThought,
@@ -792,9 +787,6 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 		Iteration: reactCtx.CurrentIteration + 1,
 		Duration:  time.Since(cycleStart),
 	})
-
-	// Offload large results (>30K chars) before persisting
-	r.offloadLargeResults(reactCtx)
 
 	// Structured assistant message: thought content
 	thoughtMsg := fmt.Sprintf("Thought: %s\nDecision: %s", reactCtx.LastThought.Reasoning, reactCtx.LastThought.Decision)
@@ -918,7 +910,17 @@ func (r *Reactor) handlePauseSnapshot(reactCtx *ReactContext) {
 	}
 }
 
-func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart time.Time) (*RunResult, error) {
+func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart time.Time) (ret *RunResult, retErr error) {
+	defer func() {
+		if p := recover(); p != nil {
+			retErr = fmt.Errorf("runLoop panicked: %v", p)
+			r.getLogger().Error("runLoop panicked", retErr,
+				"session_id", r.resolveSessionID(reactCtx),
+				"panic", p,
+			)
+		}
+	}()
+
 	totalTokens := initialTokens
 	totalInputTokens := initialTokens
 	sessionID := r.resolveSessionID(reactCtx)

@@ -329,7 +329,16 @@ func (c *LLMCaller) Call(ctx context.Context, input CallInput) CallResult {
 // does not expose ToolCalls). Tool call parsing in the streaming path relies on
 // text-based extraction via ParseThinkResponse or similar.
 // For native tool call support, use Call() (non-streaming).
-func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking ...StreamThinkingCallback) CallResult {
+func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking ...StreamThinkingCallback) (cr CallResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			c.logger.Error("CallStream panicked", fmt.Errorf("%v", p),
+				"panic", p,
+			)
+			cr.Error = fmt.Errorf("CallStream panic: %v", p)
+		}
+	}()
+
 	c.mu.RLock()
 	cw := c.contextWindow
 	c.mu.RUnlock()
