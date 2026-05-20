@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"sync"
 	"time"
 )
 
@@ -30,8 +28,6 @@ type toolExecutorConfig struct {
 	resultLimits      ToolResultLimits
 	eventEmitter      func(ReactEvent)
 	resultStore       *ResultStore
-	maxPersistChars   int
-	persistDir        string
 	kvStore           KVStore
 	fileStore         FileStore
 	sessionID         string
@@ -72,14 +68,6 @@ func WithResultStore(store *ResultStore) ExecutorOption {
 	return func(c *toolExecutorConfig) { c.resultStore = store }
 }
 
-func WithMaxPersistChars(n int) ExecutorOption {
-	return func(c *toolExecutorConfig) { c.maxPersistChars = n }
-}
-
-func WithPersistDir(dir string) ExecutorOption {
-	return func(c *toolExecutorConfig) { c.persistDir = dir }
-}
-
 func WithKVStore(store KVStore) ExecutorOption {
 	return func(c *toolExecutorConfig) { c.kvStore = store }
 }
@@ -118,28 +106,24 @@ func NewToolExecutor(registry ToolRegistry, opts ...ExecutorOption) ToolExecutor
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	if cfg.maxPersistChars == 0 {
-		cfg.maxPersistChars = DefaultToolResultLimits().MaxResultSizeChars
+	if cfg.resultLimits.MaxResultSizeChars == 0 {
+		cfg.resultLimits.MaxResultSizeChars = DefaultToolResultLimits().MaxResultSizeChars
 	}
-	if cfg.persistDir == "" {
-		cfg.persistDir = defaultPersistDir()
+	if cfg.resultLimits.MaxToolResultsPerMessageChars == 0 {
+		cfg.resultLimits.MaxToolResultsPerMessageChars = DefaultToolResultLimits().MaxToolResultsPerMessageChars
 	}
 	return &defaultToolExecutor{
-		cfg:       cfg,
-		charsUsed: 0,
+		cfg: cfg,
 	}
 }
 
 type defaultToolExecutor struct {
-	cfg       *toolExecutorConfig
-	charsUsed int
-	mu        sync.RWMutex
+	cfg *toolExecutorConfig
 }
 
 func (e *defaultToolExecutor) ResetCycle() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.charsUsed = 0
+	// ResetCycle is a no-op after removing per-executor charsUsed tracking.
+	// Budget enforcement is handled by ToolResultBudgetEnforcer at the reactor layer.
 }
 
 func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params map[string]any) (*ToolExecutionResult, error) {
@@ -229,8 +213,8 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 		FileStore:   e.cfg.fileStore,
 		SessionID:   e.cfg.sessionID,
 		Logger:      e.cfg.logger,
-		ProjectDir:  e.cfg.projectDir,  // Layer 2: Always set (defaults to os.Getwd() in Agent)
-		SessionDir:  e.cfg.sessionDir,  // Layer 3: Set when SessionStore is available
+		ProjectDir:  e.cfg.projectDir, // Layer 2: Always set (defaults to os.Getwd() in Agent)
+		SessionDir:  e.cfg.sessionDir, // Layer 3: Set when SessionStore is available
 	}
 	execCtx := WithToolContext(ctx, toolCtx)
 
@@ -302,45 +286,19 @@ func (e *defaultToolExecutor) processResult(toolName, str string, toolInfo *Tool
 		return str
 	}
 
-	e.mu.Lock()
-	e.charsUsed += len([]rune(str))
-	currentChars := e.charsUsed
-	e.mu.Unlock()
-
-	limits := DefaultToolResultLimits()
-	if e.cfg.resultLimits.MaxResultSizeChars > 0 {
-		limits = e.cfg.resultLimits
+	// Simplified: only check per-tool threshold.
+	// The actual persistence and aggregate budget enforcement
+	// is handled by ToolResultBudgetEnforcer in the reactor layer.
+	threshold := e.cfg.resultLimits.MaxResultSizeChars
+	if toolInfo.MaxResultSizeChars > 0 {
+		threshold = toolInfo.MaxResultSizeChars
 	}
-
-	if currentChars > limits.MaxToolResultsPerMessageChars {
-		targetChars := limits.MaxResultSizeChars
-		if targetChars <= 0 {
-			targetChars = 5000
-		}
-		runes := []rune(str)
-		if len(runes) > targetChars {
-			var buf strings.Builder
-			buf.Grow(targetChars + 200)
-			buf.WriteString(string(runes[:targetChars]))
-			buf.WriteString("\n... [context budget exceeded: total tool output in this cycle is ")
-			buf.WriteString(fmt.Sprintf("%d", currentChars))
-			buf.WriteString(" chars, limit is ")
-			buf.WriteString(fmt.Sprintf("%d", limits.MaxToolResultsPerMessageChars))
-			buf.WriteString("] ...")
-			str = buf.String()
-		}
-		return str
-	}
-
 	charCount := len([]rune(str))
-	if charCount <= e.cfg.maxPersistChars {
+	if charCount <= threshold {
 		return str
 	}
 
-	persisted := PersistToDisk(toolName, str, e.cfg.persistDir, e.cfg.maxPersistChars, e.cfg.maxPersistChars/2)
-	if persisted != nil {
-		str = PersistedResultTag(persisted)
-	}
-
+	// Mark as needing reactor-level processing by returning unchanged.
+	// The callers (e.g., persistStep in reactor) will apply budget enforcement.
 	return str
 }

@@ -394,7 +394,9 @@ func BuildToolUsageGuidelines() string {
 2. **Prefer dedicated tools**: Use Read/Glob/Grep/FileEdit over Bash cat/find/grep/sed.
    (Each tool's description has specifics.)
 3. **Track progress**: Use TodoWrite for multi-step tasks. Mark items complete IMMEDIATELY
-   after finishing each one. Enables progress estimation across cycles.`
+   after finishing each one. Enables progress estimation across cycles.
+4. **Read efficiently**: When you Read a file, extract ONLY relevant portions with file path and line numbers, then summarize them concisely in your thinking. Do NOT copy large file blocks
+  verbatim — reference and summarize instead. This avoids redundant re-reads and preserves context space.`
 }
 
 // BuildSkillsCatalog returns the skills metadata section with loading strategy.

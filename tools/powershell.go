@@ -85,6 +85,7 @@ func (t *PowerShellTool) SetSessionSandboxManager(mgr *SessionSandboxManager) {
 func (t *PowerShellTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "PowerShell",
+		MaxResultSizeChars: 30000,
 		Description: "Execute PowerShell commands on Windows. Use for system registry queries, service management, and Windows-specific operations.",
 		Prompt:      t.buildDescription(),
 		Tags:        []string{"windows", "powershell", "system", "command"},

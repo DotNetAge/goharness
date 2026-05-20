@@ -146,6 +146,9 @@ type Reactor struct {
 	// Directory context (Design-time safety: set during initialization from setup)
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
 	sessionDir string // Layer 3: Session sandbox directory
+
+	contentReplacementState  *core.ContentReplacementState
+	toolResultBudgetEnforcer *ToolResultBudgetEnforcer
 }
 
 func (r *Reactor) EventBus() EventBus { return r.eventBus }
@@ -526,6 +529,24 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.initToolExecutor(setup)
 	r.registerBundledTools(setup)
 
+	// Initialize content replacement state and budget enforcer
+	r.contentReplacementState = core.NewContentReplacementState()
+	sessionDir := r.sessionDir
+	if sessionDir == "" && r.fileStore != nil {
+		sessionDir = r.fileStore.GetSessionPath("")
+	}
+	r.toolResultBudgetEnforcer = NewToolResultBudgetEnforcer(
+		core.NewDiskResultPersister(sessionDir),
+		core.DefaultToolResultLimits(),
+		r.contentReplacementState,
+		func(name string) *core.ToolInfo {
+			if t, ok := r.toolRegistry.Get(name); ok {
+				return t.Info()
+			}
+			return nil
+		},
+	)
+
 	for _, tool := range setup.extraTools {
 		if err := r.RegisterTool(tool); err != nil {
 			r.getLogger().Warn("failed to register extra tool", "error", err)
@@ -667,15 +688,17 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 	childConfig.SystemPrompt = configOverride.SystemPrompt
 
 	child := &Reactor{
-		config:        childConfig,
-		toolRegistry:  r.toolRegistry,
-		toolExecutor:  r.toolExecutor,
-		skillRegistry: r.skillRegistry,
-		ruleRegistry:  r.ruleRegistry,
-		memory:        r.memory,
-		eventBus:      r.eventBus,
-		kvStore:       r.kvStore,
-		fileStore:     r.fileStore,
+		config:                   childConfig,
+		toolRegistry:             r.toolRegistry,
+		toolExecutor:             r.toolExecutor,
+		skillRegistry:            r.skillRegistry,
+		ruleRegistry:             r.ruleRegistry,
+		memory:                   r.memory,
+		eventBus:                 r.eventBus,
+		kvStore:                  r.kvStore,
+		fileStore:                r.fileStore,
+		contentReplacementState: r.contentReplacementState.Clone(),
+		toolResultBudgetEnforcer: r.toolResultBudgetEnforcer,
 	}
 
 	// Clone LLMCaller with parent's shared infrastructure but independent client/context
@@ -769,9 +792,14 @@ func (r *Reactor) RunFromSnapshot(ctx context.Context, snapshot *RunSnapshot, ne
 //	tool:      "<tool_name> returned: <result>"     (if tool was called)
 //	tool:      "<tool_name> error: <error>"           (if tool errored)
 func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
-	// Offload large results before they enter conversation history,
-	// preventing unbounded context growth across T-A-O cycles.
-	r.offloadLargeResults(reactCtx)
+	// Apply budget enforcement before results enter conversation history.
+	// Large results are persisted and replaced with previews (Phase 1),
+	// then aggregate budget is checked (Phase 2).
+	if reactCtx.LastThought.Decision == DecisionAct && r.toolResultBudgetEnforcer != nil {
+		reactCtx.LastAction.Results = r.toolResultBudgetEnforcer.Enforce(
+			reactCtx.LastAction.Results,
+		)
+	}
 
 	step := Step{
 		Iteration:   reactCtx.CurrentIteration + 1,

@@ -37,6 +37,7 @@ func NewGrepToolWithSandbox(config *SandboxConfig) core.FuncTool {
 func (t *GrepTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "Grep",
+		MaxResultSizeChars: 50000,
 		Description: "A powerful search tool built on ripgrep",
 		Prompt: `A powerful search tool built on ripgrep
 

@@ -19,6 +19,7 @@ func NewCollectResultsTool() *CollectResultsTool {
 func (t *CollectResultsTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "CollectResults",
+		MaxResultSizeChars: 50000,
 		Description: "Wait for one or more async tasks to complete and return their results. Blocks until all specified tasks are done.",
 		Prompt: `Wait for async tasks (started by Delegate) to finish and collect their results.
 

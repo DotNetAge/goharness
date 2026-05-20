@@ -36,10 +36,6 @@ type ToolResultLimits struct {
 	// within a single message cycle, in characters.
 	// Default: 200,000 characters.
 	MaxToolResultsPerMessageChars int `json:"max_tool_results_per_message_chars" yaml:"max_tool_results_per_message_chars"`
-
-	// CompactThresholdRatio triggers context compaction when used tokens
-	// exceed this ratio of MaxTokens. Range: 0.0 - 1.0. Default: 0.8.
-	CompactThresholdRatio float64 `json:"compact_threshold_ratio" yaml:"compact_threshold_ratio"`
 }
 
 // DefaultToolResultLimits returns the default tool result limits.
@@ -47,7 +43,6 @@ func DefaultToolResultLimits() ToolResultLimits {
 	return ToolResultLimits{
 		MaxResultSizeChars:           50000,
 		MaxToolResultsPerMessageChars: 200000,
-		CompactThresholdRatio:         0.8,
 	}
 }
 

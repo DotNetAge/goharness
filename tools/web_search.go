@@ -571,6 +571,7 @@ func NewWebFetchTool() core.FuncTool {
 func (t *WebFetchTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "WebFetch",
+		MaxResultSizeChars: 50000,
 		Description: "Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.",
 		Prompt: `Read the full content of a specific URL. Unlike WebSearch which only returns titles and URLs, WebFetch retrieves the actual page content.
 

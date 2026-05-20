@@ -613,6 +613,7 @@ Usage:
 		Name:          "RunScript",
 		Description:   description,
 		Prompt:        prompt,
+		MaxResultSizeChars: 30000,
 		Tags:          []string{"script", "execute", "python", "shell", "skill"},
 		SecurityLevel: core.LevelSensitive,
 		Parameters: []core.Parameter{

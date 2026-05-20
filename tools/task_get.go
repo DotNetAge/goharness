@@ -16,6 +16,7 @@ func NewTaskGetTool() *TaskGetTool {
 func (t *TaskGetTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "TaskGet",
+		MaxResultSizeChars: 50000,
 		Description: "Get detailed information about a specific task including its status, output, and any errors.",
 		Prompt: `Get detailed information about a specific task by task_id.
 

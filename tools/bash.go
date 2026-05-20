@@ -90,6 +90,7 @@ var baseCommandPattern = regexp.MustCompile(`^\s*([a-zA-Z][a-zA-Z0-9._\-]*)(\s|$
 func (t *BashTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "Bash",
+		MaxResultSizeChars: 60000,
 		Description: "Execute shell commands and return their output. Use dedicated tools instead of bash when available.",
 		Prompt: `Executes a given bash command and returns its output. The project directory persists between commands, but shell state does not.
 

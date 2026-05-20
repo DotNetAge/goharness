@@ -26,9 +26,6 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 		"input_preview", truncate(ctx.Input, 80),
 	)
 
-	// Pre-Think: restore any previously offloaded results from disk
-	r.restoreOffloadedResults(ctx)
-
 	// Use cached LLM tool definitions — rebuilt only when RegisterTool is called
 	llmTools := r.getLLMTools()
 
