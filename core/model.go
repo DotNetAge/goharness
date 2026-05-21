@@ -10,7 +10,8 @@ type ModelConfig struct {
 	BaseURL           string  `json:"base_url" yaml:"base_url"`                     // API base URL
 	APIKey            string  `json:"api_key" yaml:"api_key"`                       // API key (or credential reference name)
 	AuthToken         string  `json:"auth_token" yaml:"auth_token"`                 // auth token
-	MaxTokens         int64   `json:"max_tokens" yaml:"max_tokens"`                 // maximum output tokens
+	MaxTokens         int64   `json:"max_tokens" yaml:"max_tokens"`                 // maximum output tokens per LLM call
+	ContextLength     int64   `json:"context_length" yaml:"context_length"`         // total context window (input + output), 0 = unknown
 	IsLocal           bool    `json:"is_local" yaml:"is_local"`                     // whether the model is local
 	FuncCalling       bool    `json:"func_calling" yaml:"func_calling"`             // whether function calling is supported
 	Structuring       bool    `json:"structuring" yaml:"structuring"`               // whether structured output is supported

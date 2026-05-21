@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -22,6 +24,7 @@ const (
 
 type MemoryRecord struct {
 	ID        string      `json:"id"`
+	SessionID string      `json:"session_id,omitempty"`
 	Type      MemoryType  `json:"type"`
 	Title     string      `json:"title"`
 	Content   string      `json:"content"`
@@ -37,9 +40,10 @@ type Memory interface {
 }
 
 type RetrieveConfig struct {
-	Types    []MemoryType
-	Limit    int
-	MinScore float64
+	Types     []MemoryType
+	SessionID string
+	Limit     int
+	MinScore  float64
 }
 
 type RetrieveOption func(*RetrieveConfig)
@@ -56,6 +60,12 @@ func WithMemoryLimit(n int) RetrieveOption {
 
 func WithMinScore(score float64) RetrieveOption {
 	return func(c *RetrieveConfig) { c.MinScore = score }
+}
+
+// WithMemorySessionID scopes memory retrieval to a specific session.
+// Memory implementations should filter by this field for session-scoped recall.
+func WithMemorySessionID(sessionID string) RetrieveOption {
+	return func(c *RetrieveConfig) { c.SessionID = sessionID }
 }
 
 func DefaultRetrieveConfig() RetrieveConfig {
@@ -90,5 +100,45 @@ func memoryTypeLabel(t MemoryType) string {
 		return "Long-term Knowledge"
 	default:
 		return "Unknown"
+	}
+}
+
+// NewMemorySlideHandler creates a SlideHandler that stores slid context window
+// messages as MemoryRecords. This forms the write-half of the memory closed loop:
+//
+//	doSlide() evicts old messages → SlideEvent
+//	This handler stores each message as a MemoryRecord → SessionRAG
+//	buildCallInput retrieves relevant records → prompts next-round recall
+//
+// The handler stores messages with tags ["slided", "context", "<role>"] so
+// that retrievers (e.g. MindX's SessionRAG) can filter or weight appropriately.
+//
+// Example:
+//
+//	memory := myMemoryImpl(...)
+//	slideHandler := core.NewMemorySlideHandler(memory)
+//	llmCaller := NewLLMCaller(cfg, client, estimator, store,
+//	    WithLLMCallerSlideHandler(slideHandler),
+//	)
+func NewMemorySlideHandler(memory Memory) SlideHandler {
+	return func(ctx context.Context, event SlideEvent) {
+		for i, msg := range event.Slided {
+			record := MemoryRecord{
+				ID:        fmt.Sprintf("slide-%s-%d-%d", event.SessionID, event.Timestamp, i),
+				SessionID: event.SessionID,
+				Type:      MemoryTypeSession,
+				Title:     msg.Role + " message",
+				Content:   fmt.Sprintf("[%s]\n%s", msg.Role, msg.Content),
+				Tags:      []string{"slided", "context", msg.Role},
+				CreatedAt: time.Unix(event.Timestamp, 0),
+			}
+			if _, err := memory.Store(ctx, record); err != nil {
+				slog.Warn("memory slide handler: failed to store slided message",
+					"session_id", event.SessionID,
+					"error", err,
+					"role", msg.Role,
+				)
+			}
+		}
 	}
 }

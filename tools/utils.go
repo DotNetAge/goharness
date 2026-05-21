@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -171,4 +172,21 @@ func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath
 	}
 
 	return filepath.Join(targetDir, inputPath), PathScopeProject
+}
+
+
+// SessionContextKey is the context key for storing session ID.
+type SessionContextKey struct{}
+
+// ExtractSessionID extracts the session ID from context.
+func ExtractSessionID(ctx context.Context) string {
+	if sessionID, ok := ctx.Value(SessionContextKey{}).(string); ok {
+		return sessionID
+	}
+	return ""
+}
+
+// WithSessionID embeds a session ID into context.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, SessionContextKey{}, sessionID)
 }

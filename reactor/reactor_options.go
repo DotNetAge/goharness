@@ -2,7 +2,6 @@ package reactor
 
 import (
 	"github.com/DotNetAge/goreact/core"
-	"github.com/DotNetAge/goreact/tools"
 )
 
 // ReactorOption configures a Reactor during creation.
@@ -83,13 +82,34 @@ func WithSkills(skillNames ...string) ReactorOption {
 	}
 }
 
-// WithMemory sets a Memory implementation for knowledge retrieval.
+// WithMemory sets the primary (long-term) Memory implementation for knowledge retrieval.
 // Memory is queried during the Think phase to inject relevant knowledge
 // into the LLM prompt, suppressing hallucination.
 // If not set, the reactor operates without memory augmentation.
 func WithMemory(mem core.Memory) ReactorOption {
 	return func(s *reactorSetup) {
 		s.memory = mem
+	}
+}
+
+// WithSessionMemory sets a separate short-term/session-scoped Memory instance.
+// Unlike WithMemory (which holds long-term/project knowledge), this memory is
+// used by the memory closed loop:
+//   - MemorySlideHandler stores slid-out context messages here (write-half)
+//   - MemoryThoughtHook retrieves from here before each Think phase (read-half)
+//
+// When set, the closed loop uses this instead of the primary Memory.
+// Typically backed by a session-scoped RAG index (SessionRAG).
+//
+// Usage:
+//
+//	// Long-term project memory
+//	opts = append(opts, goreact.WithMemory(longTermMem))
+//	// Session-scoped memory for context recall
+//	opts = append(opts, goreact.WithSessionMemory(sessionMem))
+func WithSessionMemory(mem core.Memory) ReactorOption {
+	return func(s *reactorSetup) {
+		s.sessionMemory = mem
 	}
 }
 
@@ -213,23 +233,6 @@ func WithSessionDir(dir string) ReactorOption {
 	}
 }
 
-// WithSessionSandboxManager sets the session-scoped sandbox manager for this Reactor.
-// This enables Agent Native sandbox design (4-Layer Architecture) where each
-// session gets isolated TempDir and AllowedPaths based on SESSION_DIR.
-//
-// When provided:
-//   - Bash/RunScript/PowerShell tools automatically use session-specific sandbox
-//   - Each session gets: ${sessionBaseDir}/${sessionID}/tmp as TempDir
-//   - AllowedPaths includes both PROJECT_DIR and SESSION_DIR
-//   - Session cleanup removes all session-scoped resources
-//
-// This is typically injected by the Agent layer via NewAgent(), not set directly.
-func WithSessionSandboxManager(mgr *tools.SessionSandboxManager) ReactorOption {
-	return func(s *reactorSetup) {
-		s.sandboxMgr = mgr
-	}
-}
-
 // ── Hook 注入 Option ───────────────────────────────────────────────────────
 
 // WithThoughtHooks 注入思考阶段 hooks。
@@ -251,5 +254,29 @@ func WithToolHooks(hooks ...ToolHook) ReactorOption {
 func WithObservationHooks(hooks ...ObservationHook) ReactorOption {
 	return func(s *reactorSetup) {
 		s.observationHooks = append(s.observationHooks, hooks...)
+	}
+}
+
+// WithStuckDetection 设置循环卡死检测器。
+// detector 分析迭代历史，检测工具循环、错误循环、决策振荡、无进展等模式，
+// 早期注入提示引导 LLM 自修正，三次仍无改进时硬终止。
+//
+// 使用 NewDefaultStuckDetector() 创建包含全部内置检测器的默认组合：
+//
+//	reactor.WithStuckDetection(reactor.NewDefaultStuckDetector())
+//
+// 也可自定义检测器组合：
+//
+//	reactor.WithStuckDetection(&reactor.CompositeDetector{
+//	    Detectors: []reactor.StuckDetector{
+//	        &reactor.ToolLoopDetector{Threshold: 3},
+//	        &reactor.ErrorLoopDetector{Threshold: 2},
+//	    },
+//	})
+//
+// 如果未设置此选项，Reactor 循环不进行卡死检测。
+func WithStuckDetection(detector StuckDetector) ReactorOption {
+	return func(s *reactorSetup) {
+		s.stuckAnalyzer = detector
 	}
 }

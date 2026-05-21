@@ -132,24 +132,13 @@ type platformScriptExecutor struct {
 	platform          Platform
 	mu                sync.Mutex
 	venvManagers      map[string]*venvManager
-	sandboxConfig     *SandboxConfig
-	sessionSandboxMgr *SessionSandboxManager
 }
 
 func newPlatformScriptExecutor() *platformScriptExecutor {
 	return &platformScriptExecutor{
 		platform:      CurrentPlatform(),
 		venvManagers:  make(map[string]*venvManager),
-		sandboxConfig: DefaultSandboxConfig(),
 	}
-}
-
-func (e *platformScriptExecutor) SetSandboxConfig(config *SandboxConfig) {
-	e.sandboxConfig = config
-}
-
-func (e *platformScriptExecutor) SetSessionSandboxManager(mgr *SessionSandboxManager) {
-	e.sessionSandboxMgr = mgr
 }
 
 func (e *platformScriptExecutor) Execute(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
@@ -233,13 +222,6 @@ func (e *platformScriptExecutor) executeShell(ctx context.Context, skillRoot, sc
 	cmd := exec.CommandContext(ctx, shell, scriptPath)
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Dir = skillRoot
-
-	sessionID := ExtractSessionID(ctx)
-	if e.sessionSandboxMgr != nil && sessionID != "" {
-		cmd = e.sessionSandboxMgr.ApplyToCommand(cmd, sessionID)
-	} else {
-		cmd = ApplySandbox(cmd, e.sandboxConfig)
-	}
 
 	return runScriptCommand(cmd)
 }
@@ -463,8 +445,6 @@ func dirExists(path string) bool {
 type RunScript struct {
 	info              *core.ToolInfo
 	scriptExecutor    scriptExecutor
-	sandboxConfig     *SandboxConfig
-	sessionSandboxMgr *SessionSandboxManager
 }
 
 func NewRunScriptTool() core.FuncTool {
@@ -473,44 +453,6 @@ func NewRunScriptTool() core.FuncTool {
 	return &RunScript{
 		info:           buildRunScriptInfo(platform),
 		scriptExecutor: executor,
-		sandboxConfig:  DefaultSandboxConfig(),
-	}
-}
-
-func NewRunScriptToolWithSandbox(config *SandboxConfig) core.FuncTool {
-	platform := CurrentPlatform()
-	executor := newPlatformScriptExecutor()
-	executor.SetSandboxConfig(config)
-	return &RunScript{
-		info:           buildRunScriptInfo(platform),
-		scriptExecutor: executor,
-		sandboxConfig:  config,
-	}
-}
-
-func NewRunScriptToolWithSessionSandbox(mgr *SessionSandboxManager) core.FuncTool {
-	platform := CurrentPlatform()
-	executor := newPlatformScriptExecutor()
-	executor.SetSessionSandboxManager(mgr)
-	return &RunScript{
-		info:              buildRunScriptInfo(platform),
-		scriptExecutor:    executor,
-		sandboxConfig:     mgr.defaultConfig,
-		sessionSandboxMgr: mgr,
-	}
-}
-
-func (t *RunScript) SetSandboxConfig(config *SandboxConfig) {
-	t.sandboxConfig = config
-	if exe, ok := t.scriptExecutor.(*platformScriptExecutor); ok {
-		exe.SetSandboxConfig(config)
-	}
-}
-
-func (t *RunScript) SetSessionSandboxManager(mgr *SessionSandboxManager) {
-	t.sessionSandboxMgr = mgr
-	if exe, ok := t.scriptExecutor.(*platformScriptExecutor); ok {
-		exe.SetSessionSandboxManager(mgr)
 	}
 }
 

@@ -21,8 +21,6 @@ const maxBashOutputSize = 30000
 type BashTool struct {
 	whitelistEnabled     bool
 	customWhitelist      map[string]bool
-	sandboxConfig        *SandboxConfig
-	sessionSandboxMgr    *SessionSandboxManager
 }
 
 // NewBashTool creates a Bash tool with default whitelist enabled.
@@ -30,7 +28,6 @@ func NewBashTool() core.FuncTool {
 	return &BashTool{
 		whitelistEnabled: true,
 		customWhitelist:  make(map[string]bool),
-		sandboxConfig:    DefaultSandboxConfig(),
 	}
 }
 
@@ -43,7 +40,6 @@ func NewBashToolWithWhitelist(allowedCommands []string) core.FuncTool {
 	return &BashTool{
 		whitelistEnabled: true,
 		customWhitelist:  wl,
-		sandboxConfig:    DefaultSandboxConfig(),
 	}
 }
 
@@ -52,37 +48,7 @@ func NewBashToolUnrestricted() core.FuncTool {
 	return &BashTool{
 		whitelistEnabled: false,
 		customWhitelist:  make(map[string]bool),
-		sandboxConfig:    UnrestrictedSandboxConfig(),
 	}
-}
-
-// NewBashToolWithSandbox creates a Bash tool with sandbox configuration.
-func NewBashToolWithSandbox(config *SandboxConfig) core.FuncTool {
-	return &BashTool{
-		whitelistEnabled: true,
-		customWhitelist:  make(map[string]bool),
-		sandboxConfig:    config,
-	}
-}
-
-// NewBashToolWithSessionSandbox creates a Bash tool with session-level sandbox isolation.
-func NewBashToolWithSessionSandbox(mgr *SessionSandboxManager) core.FuncTool {
-	return &BashTool{
-		whitelistEnabled:  true,
-		customWhitelist:   make(map[string]bool),
-		sandboxConfig:     mgr.defaultConfig,
-		sessionSandboxMgr: mgr,
-	}
-}
-
-// SetSandboxConfig sets the sandbox configuration for this Bash tool.
-func (t *BashTool) SetSandboxConfig(config *SandboxConfig) {
-	t.sandboxConfig = config
-}
-
-// SetSessionSandboxManager sets the session-level sandbox manager.
-func (t *BashTool) SetSessionSandboxManager(mgr *SessionSandboxManager) {
-	t.sessionSandboxMgr = mgr
 }
 
 var baseCommandPattern = regexp.MustCompile(`^\s*([a-zA-Z][a-zA-Z0-9._\-]*)(\s|$)`)
@@ -146,6 +112,7 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	logger := getLogger(ctx)
+	sessionID := ExtractSessionID(ctx)
 
 	if len(command) > 100000 {
 		logger.Warn("command exceeds maximum length",
@@ -195,15 +162,6 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	defer cancel()
 
 	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", command)
-
-	sessionID := ExtractSessionID(ctx)
-	if t.sessionSandboxMgr != nil && sessionID != "" {
-		cmd = t.sessionSandboxMgr.ApplyToCommand(cmd, sessionID)
-	} else {
-		cmd = ApplySandbox(cmd, t.sandboxConfig)
-	}
-
-	ensureTempDir(t.sandboxConfig.TempDir)
 
 	logger.Info("executing bash command",
 		"command", truncateForLog(command, 200),

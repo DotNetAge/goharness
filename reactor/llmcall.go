@@ -66,6 +66,7 @@ type LLMCaller struct {
 	presencePenalty  float64
 	frequencyPenalty float64
 	maxTokens        int
+	contextLength     int
 	systemPrompt     string
 	clientType       gochat.ClientType
 
@@ -98,6 +99,7 @@ type LLMCallerConfig struct {
 	PresencePenalty  float64
 	FrequencyPenalty float64
 	MaxTokens        int
+	ContextLength    int
 	ClientType       gochat.ClientType
 	Logger           core.Logger // Unified logging interface
 }
@@ -245,7 +247,11 @@ func (c *LLMCaller) RebuildContext(ctx context.Context, sessionID, agentName str
 		return nil
 	}
 
-	cw := core.NewContextWindowWithRole(sessionID, agentName, int64(c.maxTokens))
+	winSize := c.contextLength
+	if winSize <= 0 {
+		winSize = c.maxTokens
+	}
+	cw := core.NewContextWindowWithRole(sessionID, agentName, int64(winSize))
 	for _, m := range msgs {
 		cw.AddMessageWithTimestamp(m.Role, m.Content, m.Timestamp)
 	}
@@ -556,7 +562,11 @@ func (c *LLMCaller) ensureContextWindow(sessionID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.contextWindow == nil {
-		c.contextWindow = core.NewContextWindow(sessionID, int64(c.maxTokens))
+			winSize := c.contextLength
+			if winSize <= 0 {
+				winSize = c.maxTokens
+			}
+			c.contextWindow = core.NewContextWindow(sessionID, int64(winSize))
 	}
 }
 

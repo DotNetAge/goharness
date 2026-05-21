@@ -33,6 +33,7 @@ type ReactorConfig struct {
 	TopK             int
 	PresencePenalty  float64
 	FrequencyPenalty float64
+	ContextLength    int
 	MaxTokens        int
 
 	SystemPrompt  string
@@ -80,6 +81,9 @@ func (c ReactorConfig) Merge(override ReactorConfig) ReactorConfig {
 	}
 	if override.FrequencyPenalty != 0 {
 		c.FrequencyPenalty = override.FrequencyPenalty
+	}
+	if override.ContextLength > 0 {
+		c.ContextLength = override.ContextLength
 	}
 	if override.MaxTokens > 0 {
 		c.MaxTokens = override.MaxTokens
@@ -146,7 +150,13 @@ type Reactor struct {
 	ruleRegistry core.RuleRegistry
 
 	// memory provides knowledge retrieval for grounding LLM responses (optional).
+	// Long-term/project knowledge — used by syncProjectMemory and external consumers.
 	memory core.Memory
+
+	// sessionMemory is a separate short-term memory instance for the memory closed loop.
+	// When set, MemoryThoughtHook and MemorySlideHandler use this instead of memory.
+	// Typically backed by a session-scoped RAG index (SessionRAG).
+	sessionMemory core.Memory
 
 	// llmCaller handles all LLM API interactions including streaming and token management.
 	llmCaller *LLMCaller
@@ -182,7 +192,7 @@ type Reactor struct {
 
 	// Directory context (Design-time safety: set during initialization from setup)
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
-	sessionDir string // Layer 3: Session sandbox directory
+	sessionDir string // Layer 3: Session working directory
 
 	// contentReplacementState tracks which tool results have been replaced with previews.
 	contentReplacementState *core.ContentReplacementState
@@ -197,6 +207,10 @@ type Reactor struct {
 	thoughtHooks     []ThoughtHook
 	toolHooks        []ToolHook
 	observationHooks []ObservationHook
+
+	// stuckAnalyzer 检测迭代卡死模式，注入提示或终止循环。
+	stuckAnalyzer    StuckDetector
+	stuckNudgeCounts map[StuckPattern]int
 }
 
 // EventBus returns the event bus for subscribing to reactor events.
@@ -422,8 +436,9 @@ type reactorSetup struct {
 	eventBus       EventBus
 	skillDirs      []string
 	skills         []string
-	memory         core.Memory
-	mockLLM        MockLLMFunc
+	memory          core.Memory
+	sessionMemory   core.Memory
+	mockLLM         MockLLMFunc
 	sessionStore   core.SessionStore
 	kvStore        core.KVStore
 	fileStore      core.FileStore
@@ -436,13 +451,14 @@ type reactorSetup struct {
 	projectDir string // Layer 2: Set via WithProjectDir() ReactorOption
 	sessionDir string // Layer 3: Auto-resolved from SessionStore or set via WithSessionDir()
 
-	// Sandbox management (Agent Native Design: 4-Layer Architecture)
-	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
+
 
 	// Hook 注入
 	thoughtHooks     []ThoughtHook
 	toolHooks        []ToolHook
 	observationHooks []ObservationHook
+
+	stuckAnalyzer StuckDetector
 }
 
 // applyDefaults sets reasonable defaults for zero-value config fields.
@@ -512,6 +528,16 @@ func (r *Reactor) initLLMCaller(config ReactorConfig, setup *reactorSetup) {
 	if setup.mockLLM != nil {
 		llmOpts = append(llmOpts, WithLLMCallerMock(setup.mockLLM))
 	}
+	// Auto-wire memory slide handler (write-half of memory closed loop).
+	// Uses sessionMemory when available (preferred for slid-context storage),
+	// falling back to the primary memory.
+	memForSlide := setup.sessionMemory
+	if memForSlide == nil {
+		memForSlide = setup.memory
+	}
+	if memForSlide != nil {
+		llmOpts = append(llmOpts, WithLLMCallerSlideHandler(core.NewMemorySlideHandler(memForSlide)))
+	}
 
 	r.llmCaller = NewLLMCaller(llmCfg, client, estimator, setup.sessionStore, llmOpts...)
 }
@@ -566,49 +592,36 @@ func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 
 type toolRegistration struct {
 	name     string
-	factory  func(mgr *tools.SessionSandboxManager) core.FuncTool
+	factory  func() core.FuncTool
 	skipName string
 }
 
 var defaultBundledTools = []toolRegistration{
-	{"Grep", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewGrepTool() }, "Grep"},
-	{"Glob", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewGlobTool() }, "Glob"},
-	{"Read", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewReadTool() }, "Read"},
-	{"Write", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWriteTool() }, "Write"},
-	{"FileEdit", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewFileEditTool() }, "FileEdit"},
-	{"Bash", func(mgr *tools.SessionSandboxManager) core.FuncTool {
-		if mgr != nil {
-			return tools.NewBashToolWithSessionSandbox(mgr)
-		}
-		return tools.NewBashTool()
-	}, "Bash"},
-	{"RunScript", func(mgr *tools.SessionSandboxManager) core.FuncTool {
-		if mgr != nil {
-			return tools.NewRunScriptToolWithSessionSandbox(mgr)
-		}
-		return tools.NewRunScriptTool()
-	}, "RunScript"},
-	{"PowerShell", func(mgr *tools.SessionSandboxManager) core.FuncTool {
+	{"Grep", func() core.FuncTool { return tools.NewGrepTool() }, "Grep"},
+	{"Glob", func() core.FuncTool { return tools.NewGlobTool() }, "Glob"},
+	{"Read", func() core.FuncTool { return tools.NewReadTool() }, "Read"},
+	{"Write", func() core.FuncTool { return tools.NewWriteTool() }, "Write"},
+	{"FileEdit", func() core.FuncTool { return tools.NewFileEditTool() }, "FileEdit"},
+	{"Bash", func() core.FuncTool { return tools.NewBashTool() }, "Bash"},
+	{"RunScript", func() core.FuncTool { return tools.NewRunScriptTool() }, "RunScript"},
+	{"PowerShell", func() core.FuncTool {
 		if !tools.IsWindowsPlatform() {
 			return nil
 		}
-		if mgr != nil {
-			return tools.NewPowerShellToolWithSessionSandbox(mgr)
-		}
 		return tools.NewPowerShellTool()
 	}, "PowerShell"},
-	{"WebSearch", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWebSearchTool() }, "WebSearch"},
-	{"WebFetch", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewWebFetchTool() }, "WebFetch"},
-	{"TodoWrite", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTodoWriteTool() }, "TodoWrite"},
-	{"TodoRead", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTodoReadTool() }, "TodoRead"},
-	{"TodoExecute", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTodoExecuteTool() }, "TodoExecute"},
-	{"AskUser", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewAskUserTool() }, "AskUser"},
-	{"Ls", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewLsTool() }, "Ls"},
-	{"CollectResults", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewCollectResultsTool() }, "CollectResults"},
-	{"TaskList", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskListTool() }, "TaskList"},
-	{"TaskGet", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskGetTool() }, "TaskGet"},
-	{"TaskUpdate", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskUpdateTool() }, "TaskUpdate"},
-	{"TaskStop", func(_ *tools.SessionSandboxManager) core.FuncTool { return tools.NewTaskStopTool() }, "TaskStop"},
+	{"WebSearch", func() core.FuncTool { return tools.NewWebSearchTool() }, "WebSearch"},
+	{"WebFetch", func() core.FuncTool { return tools.NewWebFetchTool() }, "WebFetch"},
+	{"TodoWrite", func() core.FuncTool { return tools.NewTodoWriteTool() }, "TodoWrite"},
+	{"TodoRead", func() core.FuncTool { return tools.NewTodoReadTool() }, "TodoRead"},
+	{"TodoExecute", func() core.FuncTool { return tools.NewTodoExecuteTool() }, "TodoExecute"},
+	{"AskUser", func() core.FuncTool { return tools.NewAskUserTool() }, "AskUser"},
+	{"Ls", func() core.FuncTool { return tools.NewLsTool() }, "Ls"},
+	{"CollectResults", func() core.FuncTool { return tools.NewCollectResultsTool() }, "CollectResults"},
+	{"TaskList", func() core.FuncTool { return tools.NewTaskListTool() }, "TaskList"},
+	{"TaskGet", func() core.FuncTool { return tools.NewTaskGetTool() }, "TaskGet"},
+	{"TaskUpdate", func() core.FuncTool { return tools.NewTaskUpdateTool() }, "TaskUpdate"},
+	{"TaskStop", func() core.FuncTool { return tools.NewTaskStopTool() }, "TaskStop"},
 }
 
 func (r *Reactor) registerBundledTools(setup *reactorSetup) {
@@ -620,7 +633,7 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 		if setup.skipTools[reg.skipName] {
 			continue
 		}
-		tool := reg.factory(setup.sandboxMgr)
+		tool := reg.factory()
 		if tool == nil {
 			continue
 		}
@@ -691,6 +704,7 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 
 	r.config = config
 	r.memory = setup.memory
+	r.sessionMemory = setup.sessionMemory
 	r.prompt = setup.prompt
 	// Initialize async tool timeout (default 5 minutes if not configured)
 	if config.AsyncToolTimeout > 0 {
@@ -777,10 +791,29 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.toolHooks = append(r.toolHooks, setup.toolHooks...)
 	r.observationHooks = append(r.observationHooks, setup.observationHooks...)
 
+	// Auto-register MemoryThoughtHook (read-half of memory closed loop).
+	// Retrieves relevant context from Memory and injects into System Prompt
+	// before each Think phase. Registered as a built-in hook at priority 50.
+	// Auto-register MemoryThoughtHook (read-half of memory closed loop).
+	// Uses sessionMemory when available, falling back to primary memory.
+	memForHook := setup.sessionMemory
+	if memForHook == nil {
+		memForHook = setup.memory
+	}
+	if memForHook != nil {
+		r.thoughtHooks = append(r.thoughtHooks, NewMemoryThoughtHook(memForHook))
+	}
+
 	// 按 priority 排序（per-chain）
 	sortByPriority(r.thoughtHooks)
 	sortByPriority(r.toolHooks)
 	sortByPriority(r.observationHooks)
+
+	// StuckDetector
+	if setup.stuckAnalyzer != nil {
+		r.stuckAnalyzer = setup.stuckAnalyzer
+		r.stuckNudgeCounts = make(map[StuckPattern]int)
+	}
 
 	return r
 }
@@ -917,6 +950,7 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		skillRegistry:            r.skillRegistry,
 		ruleRegistry:             r.ruleRegistry,
 		memory:                   r.memory,
+		sessionMemory:            r.sessionMemory,
 		eventBus:                 r.eventBus,
 		kvStore:                  r.kvStore,
 		fileStore:                r.fileStore,
@@ -925,6 +959,8 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		thoughtHooks:             r.thoughtHooks,
 		toolHooks:                r.toolHooks,
 		observationHooks:         r.observationHooks,
+		stuckAnalyzer:            r.stuckAnalyzer,
+		stuckNudgeCounts:         r.stuckNudgeCounts,
 		asyncToolTimeout:         r.asyncToolTimeout,
 	}
 
@@ -1123,6 +1159,37 @@ func buildTaskSummary(answer string, inputTokens int, outputTokens int, iteratio
 		data.Summary = fmt.Sprintf("Direct answer provided. %s", terminationReason)
 	}
 	return data
+}
+
+// buildIterationHistory 将 ReactContext.History 转换为 stuck detector 可分析的快照列表。
+func (r *Reactor) buildIterationHistory(reactCtx *ReactContext) []IterationSnapshot {
+	history := make([]IterationSnapshot, len(reactCtx.History))
+	for i, step := range reactCtx.History {
+		snap := IterationSnapshot{
+			Iteration: step.Iteration,
+			Decision:  step.Thought.Decision,
+		}
+		if step.Thought.Decision == DecisionAct {
+			for _, tr := range step.Action.Results {
+				snap.ToolCalls = append(snap.ToolCalls, ToolCallSnapshot{
+					Name:  tr.ToolName,
+					Error: tr.Error,
+				})
+			}
+		}
+		history[i] = snap
+	}
+	return history
+}
+
+// analyzeStuckPatterns 对历史迭代执行 stuck detector 分析。
+// 返回诊断结果，调用方根据 nudgeCount 决定提示或终止。
+func (r *Reactor) analyzeStuckPatterns(reactCtx *ReactContext) *StuckDiagnosis {
+	if r.stuckAnalyzer == nil {
+		return nil
+	}
+	history := r.buildIterationHistory(reactCtx)
+	return r.stuckAnalyzer.Analyze(history)
 }
 
 func (r *Reactor) abortCycle(reactCtx *ReactContext, phase string, err error,

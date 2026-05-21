@@ -13,21 +13,12 @@ import (
 // GlobTool implements file path discovery using 'find' or 'fd'.
 type GlobTool struct {
 	MaxResults int
-	sandbox    *SandboxConfig
 }
 
 // NewGlobTool creates a Glob tool.
 func NewGlobTool() core.FuncTool {
 	return &GlobTool{
 		MaxResults: 200,
-		sandbox:    UnrestrictedSandboxConfig(),
-	}
-}
-
-func NewGlobToolWithSandbox(config *SandboxConfig) core.FuncTool {
-	return &GlobTool{
-		MaxResults: 200,
-		sandbox:    config,
 	}
 }
 
@@ -82,8 +73,6 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 	// Use 'find' as a portable fallback, or 'fd' if available.
 	// Here we use 'find' with some exclusions for simplicity.
 	cmd := exec.CommandContext(ctx, "find", searchPath, "-name", pattern, "-not", "-path", "*/.*")
-	cmd = ApplySandbox(cmd, t.sandbox)
-	ensureTempDir(t.sandbox.TempDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glob failed: %v", err)

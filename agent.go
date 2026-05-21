@@ -12,7 +12,6 @@ import (
 	"github.com/DotNetAge/goreact/internal/reactor/hooks/observation"
 	"github.com/DotNetAge/goreact/internal/reactor/hooks/thought"
 	"github.com/DotNetAge/goreact/reactor"
-	"github.com/DotNetAge/goreact/tools"
 	"github.com/google/uuid"
 )
 
@@ -137,7 +136,8 @@ type agentSetup struct {
 	config *core.AgentConfig
 	model  *core.ModelConfig
 
-	memory    core.Memory
+	memory          core.Memory
+	sessionMemory   core.Memory
 	sessionID string
 
 	// Tools & Skills
@@ -163,10 +163,7 @@ type agentSetup struct {
 
 	// Directory context (Design-time safety: guaranteed to be set)
 	projectDir string // Layer 2: Working directory at Agent creation time
-	sessionDir string // Layer 3: Session sandbox directory (from SessionStore or explicit)
-
-	// Sandbox configuration
-	sessionBaseDir string // Layer 3 base: Parent dir for session directories (enables SESSION_DIR-based isolation)
+	sessionDir string // Layer 3: Session directory (from SessionStore or explicit)
 
 	skillNames []string // Registered skill names for all agent
 
@@ -222,6 +219,20 @@ func WithModel(model *core.ModelConfig) AgentOption {
 func WithMemory(mem core.Memory) AgentOption {
 	return func(s *agentSetup) {
 		s.memory = mem
+	}
+}
+
+// WithSessionMemory sets a separate short-term/session-scoped Memory instance.
+// Unlike WithMemory (which holds long-term/project knowledge), this memory is
+// used by the memory closed loop:
+//   - MemorySlideHandler stores slid-out context messages here (write-half)
+//   - MemoryThoughtHook retrieves from here before each Think phase (read-half)
+//
+// When set, the closed loop uses this instead of the primary Memory.
+// Typically backed by a session-scoped RAG index (SessionRAG).
+func WithSessionMemory(mem core.Memory) AgentOption {
+	return func(s *agentSetup) {
+		s.sessionMemory = mem
 	}
 }
 
@@ -319,8 +330,8 @@ func WithProjectDir(dir string) AgentOption {
 	}
 }
 
-// WithSessionDir sets the session sandbox directory for this Agent.
-// This provides isolation for session-specific files (temp files, drafts, etc.).
+// WithSessionDir sets the session directory for this Agent.
+// This provides a session-scoped working directory (temp files, drafts, etc.).
 //
 // When to use:
 //   - When you have an existing Session and want to bind the Agent to it
@@ -333,34 +344,6 @@ func WithProjectDir(dir string) AgentOption {
 func WithSessionDir(dir string) AgentOption {
 	return func(s *agentSetup) {
 		s.sessionDir = dir
-	}
-}
-
-// WithSessionBaseDir sets the base directory for session-scoped sandbox isolation.
-// This enables Agent Native sandbox design where each session gets its own
-// directory under this base path (Layer 3 of 4-Layer Architecture).
-//
-// When provided:
-//   - Each session gets: ${sessionBaseDir}/${sessionID}/
-//   - TempDir is automatically set to: ${sessionBaseDir}/${sessionID}/tmp
-//   - AllowedPaths includes both PROJECT_DIR and SESSION_DIR
-//   - Session cleanup removes the entire session directory
-//
-// When NOT provided:
-//   - Falls back to system temp directory (/tmp/goreact-sandbox/)
-//   - No session-level directory isolation (backward compatible)
-//
-// Example (MindX integration):
-//
-//	sessionBaseDir := filepath.Join(homeDir, ".mindx", "sessions")
-//	agent, err := goreact.NewAgent(
-//	    goreact.WithConfig(cfg),
-//	    goreact.WithProjectDir(projectDir),
-//	    goreact.WithSessionBaseDir(sessionBaseDir),  // ← Enables full isolation
-//	)
-func WithSessionBaseDir(dir string) AgentOption {
-	return func(s *agentSetup) {
-		s.sessionBaseDir = dir
 	}
 }
 
@@ -548,6 +531,9 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	if setup.memory != nil {
 		reactorOpts = append(reactorOpts, reactor.WithMemory(setup.memory))
 	}
+	if setup.sessionMemory != nil {
+		reactorOpts = append(reactorOpts, reactor.WithSessionMemory(setup.sessionMemory))
+	}
 	if setup.eventBus != nil {
 		reactorOpts = append(reactorOpts, reactor.WithEventBus(setup.eventBus))
 	}
@@ -582,12 +568,6 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	if setup.sessionDir != "" {
 		reactorOpts = append(reactorOpts, reactor.WithSessionDir(setup.sessionDir))
 	}
-
-	// Initialize SessionSandboxManager (Agent Native Design: 4-Layer Architecture)
-	// This creates a sandbox manager that provides session-scoped isolation
-	// when sessionBaseDir is provided, otherwise falls back to system temp.
-	sandboxMgr := tools.NewSessionSandboxManager(setup.projectDir, setup.sessionBaseDir)
-	reactorOpts = append(reactorOpts, reactor.WithSessionSandboxManager(sandboxMgr))
 
 	// Hook 注入
 	if len(setup.thoughtHooks) > 0 {
