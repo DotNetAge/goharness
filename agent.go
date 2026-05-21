@@ -173,6 +173,9 @@ type agentSetup struct {
 	// Hook 注入
 	thoughtHooks     []reactor.ThoughtHook
 	toolHooks        []reactor.ToolHook
+	// Permission rule store (injected externally, nil = skip rule-based checking)
+	permissionRuleStore core.PermissionRuleStore
+
 	observationHooks []reactor.ObservationHook
 }
 
@@ -418,6 +421,12 @@ func WithObservationHooks(hooks ...reactor.ObservationHook) AgentOption {
 	}
 }
 
+func WithPermissionRuleStore(store core.PermissionRuleStore) AgentOption {
+	return func(s *agentSetup) {
+		s.permissionRuleStore = store
+	}
+}
+
 func WithLogger(logger core.Logger) AgentOption {
 	return func(s *agentSetup) {
 		s.logger = logger
@@ -620,7 +629,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 
 	// Register default lifecycle hooks (user hooks already registered as ReactorOptions)
 	r.RegisterThoughtHooks(thought.Defaults(r.Logger())...)
-	r.RegisterToolHooks(action.Defaults(r.AskPermission(), r.BudgetEnforcer(), r.Logger())...)
+	r.RegisterToolHooks(action.Defaults(r.AskPermission(), setup.permissionRuleStore, r.SkillRegistry(), r.BudgetEnforcer(), r.Logger())...)
 	r.RegisterObservationHooks(observation.Defaults(r.Logger())...)
 
 	// Populate skills catalog and rules on the Prompt

@@ -1241,3 +1241,10 @@ func (r *Reactor) persistStepToStore(ctx context.Context, role, content string) 
 		r.getLogger().Warn("failed to persist step to session store", "session_id", cw.SessionID, "role", role, "error", err)
 	}
 }
+
+// BuildExecutionGuidelines returns guidelines for cautious action execution.
+// DEPRECATED: Safety guidance is now merged into Behavioral Rules P2 (Execution Standards).
+// Returns empty string to skip this section in ToSectionedMessages.
+func BuildExecutionGuidelines() string {
+	return ""
+}

@@ -7,9 +7,18 @@ import (
 )
 
 // Defaults returns the default set of tool/action hooks.
-func Defaults(askPermission *tools.AskPermission, enforcer *reactor.ToolResultBudgetEnforcer, logger core.Logger) []reactor.ToolHook {
+// ruleStore and skillRegistry are optional — pass nil to skip the corresponding permission checks.
+func Defaults(askPermission *tools.AskPermission, ruleStore core.PermissionRuleStore, skillRegistry core.SkillRegistry, enforcer *reactor.ToolResultBudgetEnforcer, logger core.Logger) []reactor.ToolHook {
+	checkers := []core.ToolPermissionChecker{
+		core.NewSkillBasedChecker(skillRegistry), // [0] pre-approved by skill AllowedTools
+	}
+	if ruleStore != nil {
+		checkers = append(checkers, core.NewRuleBasedChecker(ruleStore))
+	}
+	checkers = append(checkers, askPermission)
+
 	return []reactor.ToolHook{
-		&PermissionHook{Chain: core.NewPermissionChain(askPermission)},
+		&PermissionHook{Chain: core.NewPermissionChain(checkers...)},
 		&ToolEventHook{},
 		&ToolLoggerHook{Logger: logger},
 		&BudgetHook{Enforcer: enforcer},
