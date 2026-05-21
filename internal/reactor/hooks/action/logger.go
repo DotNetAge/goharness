@@ -15,6 +15,9 @@ type ToolLoggerHook struct {
 func (h *ToolLoggerHook) Priority() int { return reactor.PriorityToolLogger }
 
 func (h *ToolLoggerHook) Before(ctx *reactor.ReactContext, toolName string, params map[string]any) reactor.HookResult {
+	if h.Logger == nil {
+		return reactor.HookResult{}
+	}
 	h.Logger.Info("tool start",
 		"session_id", ctx.SessionID,
 		"tool", toolName,
@@ -23,6 +26,9 @@ func (h *ToolLoggerHook) Before(ctx *reactor.ReactContext, toolName string, para
 }
 
 func (h *ToolLoggerHook) After(ctx *reactor.ReactContext, result *reactor.ToolResult) reactor.HookResult {
+	if h.Logger == nil {
+		return reactor.HookResult{}
+	}
 	if result.Error != "" {
 		h.Logger.Error("tool error", fmt.Errorf("%s", result.Error),
 			"session_id", ctx.SessionID,

@@ -7,18 +7,33 @@ import (
 
 // ToolEventHook 在工具执行过程中发射 ActionStart/ToolExecStart/ToolExecEnd/ActionProgress 事件。
 type ToolEventHook struct {
-	totalTools int
-	completed  int
+	totalTools   int
+	completed    int
+	lastIter     int
+	emitStartFor int
 }
 
 func (h *ToolEventHook) Priority() int { return reactor.PriorityToolEvent }
 
 func (h *ToolEventHook) Before(ctx *reactor.ReactContext, toolName string, params map[string]any) reactor.HookResult {
-	if h.totalTools == 0 && ctx.LastThought != nil {
+	iter := ctx.CurrentIteration
+	if iter != h.lastIter {
+		h.lastIter = iter
+		h.totalTools = 0
+		h.completed = 0
+		h.emitStartFor = 0
+	}
+	if h.emitStartFor == 0 && ctx.LastThought != nil && len(ctx.LastThought.ToolCalls) > 0 {
 		h.totalTools = len(ctx.LastThought.ToolCalls)
+		h.emitStartFor = h.totalTools
+		toolNames := make([]string, 0, h.totalTools)
+		for name := range ctx.LastThought.ToolCalls {
+			toolNames = append(toolNames, name)
+		}
 		ctx.EmitEvent(core.ActionStart, core.ActionStartData{
 			ToolCount: h.totalTools,
-			Iteration: ctx.CurrentIteration,
+			ToolNames: toolNames,
+			Iteration: iter,
 		})
 	}
 
