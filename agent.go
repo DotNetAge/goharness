@@ -96,13 +96,9 @@ type Agent struct {
 	lastResult   *Result
 	sessionStore core.SessionStore
 
-	// Sandbox management (Agent Native Design: 4-Layer Architecture)
-	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
-
 	interruptMu sync.Mutex
 	cancelFunc  context.CancelFunc
 	isRunning   bool
-	snapshot    *reactor.RunSnapshot
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,109 +1034,18 @@ func (a *Agent) checkSlide(ctx context.Context, sessionID string) {
 }
 
 // ---------------------------------------------------------------------------
-// Interruption — Cancel, Pause, Resume
+// Interruption — Cancel
 // ---------------------------------------------------------------------------
 
 // Cancel interrupts the currently running Ask/AskStream call.
 // The Run will return with partial results and TerminationReason "request cancelled".
 // If no Run is in progress, this is a no-op.
-// The state is NOT saved — use Pause() if you want to resume later.
 func (a *Agent) Cancel() {
 	a.interruptMu.Lock()
 	defer a.interruptMu.Unlock()
 	if a.cancelFunc != nil {
 		a.cancelFunc()
 	}
-}
-
-// Pause interrupts the currently running Ask/AskStream call and saves the
-// execution state (snapshot) so it can be resumed later with Resume().
-// The Run returns with partial results.
-// If no Run is in progress, this is a no-op.
-// Calling Pause() replaces any previously saved snapshot.
-func (a *Agent) Pause() {
-	a.interruptMu.Lock()
-	defer a.interruptMu.Unlock()
-	if !a.isRunning {
-		return
-	}
-	a.reactor.SetPauseRequested()
-	if a.cancelFunc != nil {
-		a.cancelFunc()
-	}
-	a.snapshot = nil
-}
-
-// Resume continues a previously paused task. If newInput is non-empty, it is
-// appended to the conversation history before resuming (useful for redirect scenarios).
-//
-// The sessionID parameter identifies which session to persist the resumed
-// result into. Pass empty string to use the currently bound session.
-func (a *Agent) Resume(sessionID string, newInput ...string) (*Result, error) {
-	a.interruptMu.Lock()
-	snap := a.snapshot
-	if snap == nil {
-		snap = a.reactor.ConsumeSnapshot()
-	}
-	a.interruptMu.Unlock()
-
-	if snap == nil {
-		return nil, fmt.Errorf("goreact: cannot Resume — no paused snapshot available. Call Pause() first while a Run is in progress")
-	}
-	input := ""
-	if len(newInput) > 0 {
-		input = newInput[0]
-	}
-
-	ctx := context.Background()
-
-	if input != "" {
-		effectiveSessionID := sessionID
-		if effectiveSessionID == "" {
-			effectiveSessionID = a.SessionID()
-		}
-		a.persistMessage(ctx, effectiveSessionID, "user", input)
-	}
-
-	runResult, err := a.reactor.RunFromSnapshot(ctx, snap, input)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &Result{
-		Answer:    runResult.Answer,
-		Tokens:    runResult.TokensUsed,
-		Duration:  runResult.TotalDuration.String(),
-		Steps:     runResult.TotalIterations,
-		ToolsUsed: len(runResult.Steps),
-	}
-	a.lastResult = result
-
-	// Persist resumed result to session
-	if runResult.Answer != "" {
-		effectiveSessionID := sessionID
-		if effectiveSessionID == "" {
-			effectiveSessionID = a.SessionID()
-		}
-		a.persistMessage(ctx, effectiveSessionID, "assistant", runResult.Answer)
-		a.checkSlide(ctx, effectiveSessionID)
-	}
-
-	a.interruptMu.Lock()
-	a.snapshot = nil
-	a.interruptMu.Unlock()
-
-	return result, nil
-}
-
-// Snapshot returns the current saved RunSnapshot (from Pause), or nil if none.
-func (a *Agent) Snapshot() *reactor.RunSnapshot {
-	a.interruptMu.Lock()
-	defer a.interruptMu.Unlock()
-	if a.snapshot != nil {
-		return a.snapshot
-	}
-	return a.reactor.PeekSnapshot()
 }
 
 // IsRunning returns true if an Ask/AskStream call is currently in progress.
@@ -1241,7 +1146,6 @@ func (a *Agent) Clone(childConfig *core.AgentConfig, childModel *core.ModelConfi
 		reactor:      childReactor,
 		eventBus:     a.eventBus,
 		sessionStore: a.sessionStore,
-		snapshot:     nil,
 		lastResult:   nil,
 	}
 }

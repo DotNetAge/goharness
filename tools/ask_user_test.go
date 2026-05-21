@@ -2,9 +2,8 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 func TestAskUser_Info(t *testing.T) {
@@ -12,10 +11,10 @@ func TestAskUser_Info(t *testing.T) {
 	info := tool.Info()
 
 	if info.Name != "AskUser" {
-		t.Errorf("expected tool name 'ask_user', got %q", info.Name)
+		t.Errorf("expected tool name 'AskUser', got %q", info.Name)
 	}
-	if !info.IsReadOnly {
-		t.Error("expected IsReadOnly to be true")
+	if info.IsReadOnly {
+		t.Error("expected IsReadOnly to be false (uses permission system)")
 	}
 	if len(info.Parameters) == 0 {
 		t.Error("expected parameters to be defined")
@@ -36,7 +35,7 @@ func TestAskUser_Info(t *testing.T) {
 	}
 }
 
-func TestAskUser_ExecuteReturnsInteractionRequest(t *testing.T) {
+func TestAskUser_ExecuteWithoutAnswers(t *testing.T) {
 	tool := NewAskUserTool()
 
 	result, err := tool.Execute(context.Background(), map[string]any{
@@ -46,44 +45,42 @@ func TestAskUser_ExecuteReturnsInteractionRequest(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 
-	m, ok := result.(map[string]any)
+	str, ok := result.(string)
 	if !ok {
-		t.Fatalf("expected map[string]any, got %T", result)
+		t.Fatalf("expected string result, got %T", result)
 	}
-
-	if m["status"] != "waiting_for_user" {
-		t.Errorf("expected status 'waiting_for_user', got %v", m["status"])
-	}
-
-	interaction, ok := m["_interaction"].(*core.InteractionRequest)
-	if !ok {
-		t.Fatalf("expected _interaction to be *core.InteractionRequest, got %T", m["_interaction"])
-	}
-
-	if interaction.Type != core.InteractionAskUser {
-		t.Errorf("expected type %s, got %s", core.InteractionAskUser, interaction.Type)
-	}
-	if interaction.Question != "What is your name?" {
-		t.Errorf("expected question 'What is your name?', got %s", interaction.Question)
-	}
-	if interaction.ToolName != "AskUser" {
-		t.Errorf("expected tool_name 'ask_user', got %s", interaction.ToolName)
+	if !strings.Contains(str, "What is your name?") {
+		t.Errorf("result should contain the question, got: %s", str)
 	}
 }
 
-func TestAskUser_ExecuteIsNonBlocking(t *testing.T) {
+func TestAskUser_ExecuteWithAnswers(t *testing.T) {
 	tool := NewAskUserTool()
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		tool.Execute(context.Background(), map[string]any{"question": "test"})
-	}()
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"question": "What is your name?",
+		"answers": map[string]any{
+			"What is your name?": "Alice",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
 
-	select {
-	case <-done:
-	case <-context.Background().Done():
-		t.Fatal("Execute blocked - expected non-blocking return")
+	str, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string result, got %T", result)
+	}
+
+	// Should contain the formatted answer message (Claude Code style)
+	if !strings.Contains(str, "User has answered your questions") {
+		t.Errorf("expected answer summary, got: %s", str)
+	}
+	if !strings.Contains(str, "Alice") {
+		t.Errorf("expected answer value in result, got: %s", str)
+	}
+	if !strings.Contains(str, "continue with the user's answers in mind") {
+		t.Errorf("expected guidance for LLM, got: %s", str)
 	}
 }
 
@@ -107,13 +104,34 @@ func TestAskUser_EmptyQuestion(t *testing.T) {
 	}
 }
 
-func TestAskUser_NoReactorDependency(t *testing.T) {
+func TestAskUser_ExecuteIsNonBlocking(t *testing.T) {
 	tool := NewAskUserTool()
 
-	if _, ok := tool.(interface{ SetEventEmitter(any) }); ok {
-		t.Error("AskUser should not have SetEventEmitter method after decoupling")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tool.Execute(context.Background(), map[string]any{"question": "test"})
+	}()
+
+	select {
+	case <-done:
+	case <-context.Background().Done():
+		t.Fatal("Execute blocked - expected non-blocking return")
 	}
-	if _, ok := tool.(interface{ Respond(string) error }); ok {
-		t.Error("AskUser should not have Respond method after decoupling")
+}
+
+func TestAskUser_NoInteractionRequest(t *testing.T) {
+	tool := NewAskUserTool()
+
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"question": "test?",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	// Must NOT contain _interaction key (side channel is removed)
+	if _, ok := result.(map[string]any); ok {
+		t.Fatal("result should not be a map — _interaction side channel has been removed")
 	}
 }

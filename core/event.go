@@ -42,6 +42,8 @@ const (
 	FinalAnswer ReactEventType = "final_answer"
 
 	// ClarifyNeeded signals the Reactor needs user clarification.
+	// Deprecated: Merged into PermissionRequest with Questions field.
+	// Use PermissionRequest instead.
 	ClarifyNeeded ReactEventType = "clarify_needed"
 
 	// PermissionRequest signals a tool needs user authorization before execution.
@@ -99,7 +101,7 @@ type ReactEvent struct {
 	//   - SubtaskSpawned: SubtaskInfo
 	//   - SubtaskCompleted: SubtaskResult
 	//   - FinalAnswer: string
-	//   - ClarifyNeeded: string (the question)
+	//   - ClarifyNeeded: string (the question) [Deprecated: merged into PermissionRequest]
 	//   - PermissionRequest: PermissionRequestData
 	//   - PermissionDenied: string (denial reason)
 	//   - ExecutionSummary: ExecutionSummaryData
@@ -183,11 +185,14 @@ type LLMTimeoutData struct {
 }
 
 // PermissionRequestData is the payload for PermissionRequest events.
+// When Questions is non-empty, the tool is AskUser and the frontend should
+// render a multi-question form instead of a simple allow/deny dialog.
 type PermissionRequestData struct {
-	ToolName      string         `json:"tool_name"`
-	Params        map[string]any `json:"params,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
-	SecurityLevel SecurityLevel  `json:"security_level"`
+	ToolName      string              `json:"tool_name"`
+	Params        map[string]any      `json:"params,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	SecurityLevel SecurityLevel       `json:"security_level"`
+	Questions     []PermissionQuestion `json:"questions,omitempty"`
 }
 
 // ExecutionSummaryData is the payload for ExecutionSummary events.

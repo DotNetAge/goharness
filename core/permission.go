@@ -15,6 +15,22 @@ const (
 	PermissionAsk PermissionBehavior = "ask"
 )
 
+// QuestionOption represents a single choice in a permission question.
+type QuestionOption struct {
+	Label       string `json:"label"`       // Display text for the option
+	Description string `json:"description"` // Explanation of this choice's implications
+	Preview     string `json:"preview"`     // Optional side-by-side preview (markdown/HTML)
+}
+
+// PermissionQuestion represents a structured question with options.
+// Used by AskUser tool; the permission dialog renders this as a form.
+type PermissionQuestion struct {
+	Question    string           `json:"question"`     // The question text
+	Header      string           `json:"header"`       // Short chip/tag label (max 12 chars)
+	Options     []QuestionOption `json:"options"`      // Available choices (2-4 items)
+	MultiSelect bool             `json:"multi_select"` // Allow multiple selections
+}
+
 // PermissionResult represents the outcome of a permission/authorization check.
 type PermissionResult struct {
 	Behavior PermissionBehavior `json:"behavior"`
@@ -22,7 +38,12 @@ type PermissionResult struct {
 	// Message explains the reason when denied, or the question when asking.
 	Message string `json:"message,omitempty"`
 
+	// Questions are populated when Behavior=Ask and the tool is AskUser.
+	// The permission dialog renders these as a multi-question form.
+	Questions []PermissionQuestion `json:"questions,omitempty"`
+
 	// UpdatedInput allows hooks or user to modify tool parameters before execution.
+	// For AskUser, this carries the user's answers back.
 	// Only meaningful when Behavior is Allow or Ask (user approved with modifications).
 	UpdatedInput map[string]any `json:"updated_input,omitempty"`
 }
@@ -70,10 +91,12 @@ type ToolPermissionChecker interface {
 // either Respond() or RespondError() is called.
 type PermissionResponder interface {
 	// Respond delivers the user's permission decision.
-	Respond(result PermissionResult)
+	// Returns an error if there is no pending permission request.
+	Respond(result PermissionResult) error
 
 	// RespondError delivers an error (e.g., timeout, cancellation).
-	RespondError(err error)
+	// Returns an error if there is no pending permission request.
+	RespondError(err error) error
 
 	// IsWaiting returns true if the system is currently blocked waiting for a response.
 	IsWaiting() bool

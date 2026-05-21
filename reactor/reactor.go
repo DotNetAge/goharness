@@ -88,10 +88,8 @@ type RunResult struct {
 }
 
 // Runner is the public interface for the T-A-O reactor.
-// External consumers only need Run/RunFromSnapshot for task execution.
 type Runner interface {
 	Run(ctx context.Context, input string, history ConversationHistory) (*RunResult, error)
-	RunFromSnapshot(ctx context.Context, snapshot *RunSnapshot, newInput string) (*RunResult, error)
 }
 
 // TAORunner extends Runner with individual T-A-O phase access.
@@ -117,7 +115,6 @@ type Reactor struct {
 	llmCaller *LLMCaller
 	prompt    *Prompt
 
-	interactionHandler HumanInteractionHandler
 	askPermission      *tools.AskPermission
 	eventBus           EventBus
 
@@ -128,14 +125,6 @@ type Reactor struct {
 	// SpawnFunc creates sub-agents for the delegate tool.
 	// Set by Agent after Reactor creation to avoid circular deps.
 	SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
-
-	pauseRequested bool
-	pauseMu        sync.Mutex
-
-	snapshotHolder struct {
-		sync.RWMutex
-		snap *RunSnapshot
-	}
 
 	// cachedLLMTools caches the LLM-ready tool definitions.
 	// The full tool registry is converted once after all tools are registered
@@ -153,48 +142,16 @@ type Reactor struct {
 
 func (r *Reactor) EventBus() EventBus { return r.eventBus }
 
-func (r *Reactor) InteractionHandler() HumanInteractionHandler { return r.interactionHandler }
 
 func (r *Reactor) Memory() core.Memory { return r.memory }
 
 func (r *Reactor) Prompt() *Prompt { return r.prompt }
 
-func (r *Reactor) SetPauseRequested() {
-	r.pauseMu.Lock()
-	defer r.pauseMu.Unlock()
-	r.pauseRequested = true
-}
-
-func (r *Reactor) TakeSnapshot() *RunSnapshot {
-	r.pauseMu.Lock()
-	defer r.pauseMu.Unlock()
-	r.pauseRequested = false
-	return r.snapshotHolder.snap
-}
-
-func (r *Reactor) setSnapshot(snap *RunSnapshot) {
-	r.snapshotHolder.Lock()
-	defer r.snapshotHolder.Unlock()
-	r.snapshotHolder.snap = snap
-}
-
-func (r *Reactor) getSnapshot() *RunSnapshot {
-	r.snapshotHolder.Lock()
-	defer r.snapshotHolder.Unlock()
-	snap := r.snapshotHolder.snap
-	r.snapshotHolder.snap = nil
-	return snap
-}
-
-func (r *Reactor) ConsumeSnapshot() *RunSnapshot { return r.getSnapshot() }
-
-func (r *Reactor) PeekSnapshot() *RunSnapshot {
-	r.snapshotHolder.RLock()
-	defer r.snapshotHolder.RUnlock()
-	return r.snapshotHolder.snap
-}
-
 func (r *Reactor) SetAskPermission(p *tools.AskPermission) { r.askPermission = p }
+
+// PermissionResponder returns the PermissionResponder for the AskPermission checker,
+// which allows external code (e.g., TUI) to respond to pending permission requests.
+func (r *Reactor) PermissionResponder() core.PermissionResponder { return r.askPermission }
 
 // getLogger returns the injected Logger or default slog-based logger.
 func (r *Reactor) getLogger() core.Logger {
@@ -331,23 +288,7 @@ func (r *Reactor) discoverAndLoadSkills(setup *reactorSetup) {
 	}
 }
 
-func (r *Reactor) initInteractionHandler() {
-	r.interactionHandler = NewDefaultInteractionHandler(func(e core.ReactEvent) {
-		if r.eventBus != nil {
-			r.eventBus.Emit(e)
-		}
-	})
-	if err := r.RegisterTool(tools.NewAskUserTool()); err != nil {
-		r.getLogger().Warn("failed to register ask_user tool", "error", err)
-	}
 
-	r.askPermission = tools.NewAskPermission()
-	r.askPermission.SetEventEmitter(func(e core.ReactEvent) {
-		if r.eventBus != nil {
-			r.eventBus.Emit(e)
-		}
-	})
-}
 
 func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 	r.toolExecutor = core.NewToolExecutor(
@@ -522,7 +463,13 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.initRegistries(setup)
 	r.initLLMCaller(config, setup)
 	r.discoverAndLoadSkills(setup)
-	r.initInteractionHandler()
+	// Initialize permission checker (used by tool executor)
+	r.askPermission = tools.NewAskPermission()
+	r.askPermission.SetEventEmitter(func(e core.ReactEvent) {
+		if r.eventBus != nil {
+			r.eventBus.Emit(e)
+		}
+	})
 	r.initToolExecutor(setup)
 	r.registerBundledTools(setup)
 
@@ -701,12 +648,6 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 	// Clone LLMCaller with parent's shared infrastructure but independent client/context
 	child.llmCaller = r.cloneLLMCallerForChild(childConfig)
 
-	child.interactionHandler = NewDefaultInteractionHandler(func(e core.ReactEvent) {
-		if child.eventBus != nil {
-			child.eventBus.Emit(e)
-		}
-	})
-
 	child.askPermission = tools.NewAskPermission()
 	child.askPermission.SetEventEmitter(func(e core.ReactEvent) {
 		if child.eventBus != nil {
@@ -760,23 +701,6 @@ func (r *Reactor) Run(ctx context.Context, input string, history ConversationHis
 
 	if cw := r.ContextWindow(); cw != nil && cw.SessionID != "" {
 		reactCtx.SessionID = cw.SessionID
-	}
-
-	return r.runLoop(reactCtx, 0, time.Now())
-}
-
-func (r *Reactor) RunFromSnapshot(ctx context.Context, snapshot *RunSnapshot, newInput string) (*RunResult, error) {
-	reactCtx := NewReactContextFromSnapshot(ctx, snapshot)
-
-	if r.eventBus != nil {
-		reactCtx.emitEvent = r.eventBus.Emit
-	}
-
-	reactCtx.IsTerminated = false
-	reactCtx.TerminationReason = ""
-
-	if newInput != "" {
-		reactCtx.AddMessage("user", newInput)
 	}
 
 	return r.runLoop(reactCtx, 0, time.Now())
@@ -858,6 +782,14 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int
 
 func extractAnswer(reactCtx *ReactContext) string {
 	if reactCtx.LastAction != nil && len(reactCtx.LastAction.Results) > 0 {
+		// When the answer comes from a DecisionAnswer action, the result is
+		// stored as ToolResult{ToolName:"answer", Result:text}.  Use the raw
+		// Result directly rather than Summary() which would prefix "[answer]".
+		for _, r := range reactCtx.LastAction.Results {
+			if r.ToolName == "answer" {
+				return r.Result
+			}
+		}
 		return reactCtx.LastAction.Summary()
 	}
 	if reactCtx.LastThought != nil && reactCtx.LastThought.FinalAnswer != "" {
@@ -922,18 +854,6 @@ func (r *Reactor) abortCycle(reactCtx *ReactContext, phase string, err error,
 	)
 }
 
-// handlePauseSnapshot checks if a pause was requested and saves a snapshot if so.
-func (r *Reactor) handlePauseSnapshot(reactCtx *ReactContext) {
-	r.pauseMu.Lock()
-	paused := r.pauseRequested
-	r.pauseRequested = false
-	r.pauseMu.Unlock()
-	if paused {
-		snap := reactCtx.ToSnapshot()
-		snap.TerminationReason = "paused"
-		r.setSnapshot(snap)
-	}
-}
 
 func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart time.Time) (ret *RunResult, retErr error) {
 	defer func() {
@@ -1019,7 +939,7 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		"total_elapsed_ms", time.Since(runStart).Milliseconds(),
 		"termination_reason", result.TerminationReason,
 	)
-	r.handlePauseSnapshot(reactCtx)
+
 
 	return result, nil
 }

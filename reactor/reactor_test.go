@@ -2,7 +2,6 @@ package reactor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -179,8 +178,8 @@ func TestReactor_Run_MockLLM_AnswerImmediately(t *testing.T) {
 	if result.TotalIterations != 1 {
 		t.Errorf("expected 1 iteration, got %d", result.TotalIterations)
 	}
-	if result.Answer != "[answer] Hello, user!" {
-		t.Errorf("expected answer '[answer] Hello, user!', got '%s'", result.Answer)
+	if result.Answer != "Hello, user!" {
+		t.Errorf("expected answer 'Hello, user!', got '%s'", result.Answer)
 	}
 	if result.TerminationReason != "direct answer produced" {
 		t.Errorf("expected termination 'direct answer produced', got '%s'", result.TerminationReason)
@@ -223,8 +222,8 @@ func TestReactor_Run_MockLLM_ActThenAnswer(t *testing.T) {
 	if result.TotalIterations < 2 {
 		t.Errorf("expected at least 2 iterations, got %d", result.TotalIterations)
 	}
-	if result.Answer != "[answer] Done." {
-		t.Errorf("expected answer '[answer] Done.', got '%s'", result.Answer)
+	if result.Answer != "Done." {
+		t.Errorf("expected answer 'Done.', got '%s'", result.Answer)
 	}
 	if result.TerminationReason != "direct answer produced" {
 		t.Errorf("expected termination 'direct answer produced', got '%s'", result.TerminationReason)
@@ -900,160 +899,10 @@ func TestLooksLikeDirectAnswer(t *testing.T) {
 }
 
 // ============================================================================
-// Snapshot — JSON Serialization Roundtrip
-// ============================================================================
-
-func TestSnapshot_JSONRoundtrip(t *testing.T) {
-	original := NewReactContext(context.Background(), "json input", nil, 10)
-	original.SessionID = "json-123"
-	original.TaskID = "task-789"
-	original.CurrentIteration = 2
-	original.LastThought = &Thought{Decision: DecisionAct, Reasoning: "need info", FinalAnswer: ""}
-	original.LastAction = &Action{ Results: []ToolResult{{ToolName: "grep", Result: "line 42", Success: true}}}
-	original.LastObservation = &Observation{Result: "line 42"}
-	original.History = []Step{
-		{Iteration: 1, Thought: Thought{Decision: DecisionAct, Reasoning: "first"}, Action: Action{Results: []ToolResult{{ToolName: "read", Result: "data", Success: true}}}, Observation: Observation{Result: "data"}},
-	}
-
-	snap := original.ToSnapshot()
-
-	// Marshal to JSON
-	data, err := json.Marshal(snap)
-	if err != nil {
-		t.Fatalf("Marshal snapshot: %v", err)
-	}
-
-	// Unmarshal back
-	var restoredSnap RunSnapshot
-	if err := json.Unmarshal(data, &restoredSnap); err != nil {
-		t.Fatalf("Unmarshal snapshot: %v", err)
-	}
-
-	// Verify fields
-	if restoredSnap.SessionID != "json-123" {
-		t.Errorf("SessionID = %q, want %q", restoredSnap.SessionID, "json-123")
-	}
-	if restoredSnap.Input != "json input" {
-		t.Errorf("Input = %q, want %q", restoredSnap.Input, "json input")
-	}
-	if restoredSnap.CurrentIteration != 2 {
-		t.Errorf("CurrentIteration = %d, want 2", restoredSnap.CurrentIteration)
-	}
-	if len(restoredSnap.History) != 1 {
-		t.Errorf("len(History) = %d, want 1", len(restoredSnap.History))
-	}
-	if restoredSnap.LastThought == nil || restoredSnap.LastThought.Decision != DecisionAct {
-		t.Error("LastThought.Decision should be 'act' after roundtrip")
-	}
-	if restoredSnap.LastAction == nil || len(restoredSnap.LastAction.Results) == 0 || restoredSnap.LastAction.Results[0].ToolName != "grep" {
-		t.Error("LastAction.Results[0].ToolName should be 'grep' after roundtrip")
-	}
-	if restoredSnap.LastObservation == nil || restoredSnap.LastObservation.Result != "line 42" {
-		t.Error("LastObservation.Result should be 'line 42' after roundtrip")
-	}
-	if restoredSnap.PausedAt.IsZero() {
-		t.Error("PausedAt should be set by ToSnapshot")
-	}
-
-	// Restore context from the deserialized snapshot
-	restoredCtx := NewReactContextFromSnapshot(context.Background(), &restoredSnap)
-	if restoredCtx.SessionID != "json-123" {
-		t.Errorf("restoredCtx.SessionID = %q", restoredCtx.SessionID)
-	}
-	if restoredCtx.CurrentIteration != 2 {
-		t.Errorf("restoredCtx.CurrentIteration = %d, want 2", restoredCtx.CurrentIteration)
-	}
-
-	// Verify the restored context can be used for execution
-	if restoredCtx.Ctx().Err() != nil {
-		t.Error("restored context should have a fresh, non-cancelled context")
-	}
-}
 
 // ============================================================================
-// Snapshot / Pause-Resume Tests
-// ============================================================================
 
-func TestSnapshot_Roundtrip(t *testing.T) {
-	original := NewReactContext(context.Background(), "original input", nil, 10)
-	original.SessionID = "session-123"
-	original.TaskID = "task-456"
-	original.CurrentIteration = 3
-	original.LastThought = &Thought{Decision: DecisionAct, Reasoning: "need tool"}
-	original.LastAction = &Action{ Results: []ToolResult{{ToolName: "read", Success: true}}}
-	original.LastObservation = &Observation{Result: "file content"}
-	original.History = []Step{
-		{Iteration: 1, Thought: Thought{Decision: DecisionAct}, Action: Action{Results: []ToolResult{{Success: true}}}},
-		{Iteration: 2, Thought: Thought{Decision: DecisionAct}, Action: Action{Results: []ToolResult{{Success: true}}}},
-	}
 
-	snap := original.ToSnapshot()
-
-	restored := NewReactContextFromSnapshot(context.Background(), snap)
-
-	if restored.SessionID != "session-123" {
-		t.Errorf("expected session-id 'session-123', got '%s'", restored.SessionID)
-	}
-	if restored.Input != "original input" {
-		t.Errorf("expected input 'original input', got '%s'", restored.Input)
-	}
-	if restored.CurrentIteration != 3 {
-		t.Errorf("expected iteration 3, got %d", restored.CurrentIteration)
-	}
-	if len(restored.History) != 2 {
-		t.Errorf("expected 2 history steps, got %d", len(restored.History))
-	}
-	if restored.LastThought.Decision != DecisionAct {
-		t.Errorf("expected DecisionAct, got %s", restored.LastThought.Decision)
-	}
-}
-
-func TestReactor_RunFromSnapshot(t *testing.T) {
-	callCount := 0
-	r := newTestReactor(func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
-		callCount++
-		return &gochatcore.Response{
-			Content: "Thought: Resumed execution.\nDecision: answer\nFinalAnswer: Resumed and done.",
-		}, nil
-	})
-
-	// First create a snapshot
-	ctx := NewReactContext(context.Background(), "initial task", nil, 10)
-	ctx.CurrentIteration = 1
-	snap := ctx.ToSnapshot()
-
-	result, err := r.RunFromSnapshot(context.Background(), snap, "new input after resume")
-	if err != nil {
-		t.Fatalf("RunFromSnapshot failed: %v", err)
-	}
-	if result.Answer == "" {
-		t.Error("expected non-empty answer from resumed run")
-	}
-}
-
-func TestReactor_PauseAndTakeSnapshot(t *testing.T) {
-	var r *Reactor
-	r = newTestReactor(func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
-		// Request pause on first call
-		r.SetPauseRequested()
-		return &gochatcore.Response{
-			Content: "Thought: Pausing.\nDecision: answer\nFinalAnswer: paused state",
-		}, nil
-	})
-
-	_, err := r.Run(context.Background(), "Pause after this", nil)
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-
-	snap := r.TakeSnapshot()
-	if snap == nil {
-		t.Fatal("expected non-nil snapshot after pause")
-	}
-	if snap.TerminationReason != "paused" {
-		t.Errorf("expected termination reason 'paused', got '%s'", snap.TerminationReason)
-	}
-}
 
 // ============================================================================
 // CloneReactor Tests (Child Agent Inheritance and Isolation)
@@ -1273,8 +1122,8 @@ func TestReactor_MockLLMWithThought(t *testing.T) {
 	if callCount == 0 {
 		t.Fatal("mock LLM was not called")
 	}
-	if result.Answer != "[answer] Hello from mock!" {
-		t.Errorf("expected answer '[answer] Hello from mock!', got %q", result.Answer)
+	if result.Answer != "Hello from mock!" {
+		t.Errorf("expected answer 'Hello from mock!', got %q", result.Answer)
 	}
 	if result.TotalIterations < 1 {
 		t.Errorf("expected at least 1 iteration, got %d", result.TotalIterations)

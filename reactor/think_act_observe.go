@@ -355,26 +355,6 @@ func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sess
 			endData.Error = err.Error()
 			tr.Success = false
 			tr.Error = err.Error()
-		} else if res.Interaction != nil {
-			r.getLogger().Info("tool interaction",
-				"session_id", sessionID,
-				"tool", c.name,
-				"elapsed_ms", toolElapsed.Milliseconds(),
-			)
-			answer, interactErr := r.interactionHandler.HandleInteraction(ctx.Ctx(), res.Interaction)
-			if interactErr != nil {
-				endData.Success = false
-				endData.Error = interactErr.Error()
-				tr.Success = false
-				tr.Error = interactErr.Error()
-			} else {
-				endData.Result = answer
-				tr.Result = answer
-			}
-			if res.Duration > toolElapsed {
-				endData.Duration = res.Duration
-				tr.Duration = res.Duration
-			}
 		} else {
 			resultSize := len(res.Result)
 			r.getLogger().Info("tool done",

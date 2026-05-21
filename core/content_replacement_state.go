@@ -76,7 +76,7 @@ func (s *ContentReplacementState) Clone() *ContentReplacementState {
 }
 
 // ReconstructFromHistory rebuilds the state from stored conversation history.
-// Used when resuming from a snapshot or reloading a session.
+// Used when reloading a session.
 func (s *ContentReplacementState) ReconstructFromHistory(history []Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

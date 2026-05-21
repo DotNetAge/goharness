@@ -431,9 +431,10 @@ func BuildDefaultRules() string {
 - Prefer known facts from memory; when memory is available, use it to ground responses.`
 }
 
-// BuildOutputFormat returns the response protocol with dual-path support.
+// BuildOutputFormat returns the response protocol with tool-first routing.
 // Path A: native function calling for tools (no JSON wrapper needed).
-// Path B: JSON schema for answer/clarify/delegate decisions.
+// Path B: JSON schema for answer/delegate decisions.
+// AskUser: use the dedicated AskUser tool for clarification (not Path C JSON).
 // Plain text answers are also accepted as fallback (auto-detected by ParseThinkResponse).
 func BuildOutputFormat() string {
 	return `## Response Format
@@ -455,13 +456,9 @@ Return a JSON object (plain text also works as fallback):
   "is_final": true
 }
 
-### Path C: Need More Info
-{
-  "decision": "clarify",
-  "reasoning": "<what's ambiguous>",
-  "clarification_question": "<ask user>",
-  "is_final": false
-}
+### Path C: Need More Info — Use AskUser Tool Instead
+Don't use the JSON "clarify" path. Use the **AskUser** tool (available in your tool list).
+It supports options, multi-select, and free-form questions, and blocks until you get an answer.
 
 ### Path D: Outside Your Expertise
 {
@@ -473,7 +470,7 @@ Return a JSON object (plain text also works as fallback):
 }
 
 ### Key Fields
-- **decision**: Routes your response (act/answer/clarify/delegate)
+- **decision**: Routes your response (act/answer/delegate)
 - **reasoning**: Written to history for next cycle's reflection. Keep it brief and factual. **MUST match the user's language.**
   Good: "Factual query, no tools needed."
   Bad: "I think the user might want to know about this topic which I happen to have information about..."
@@ -484,8 +481,6 @@ Return a JSON object (plain text also works as fallback):
 
 ### Examples
 {"decision":"answer","reasoning":"Direct factual answer.","final_answer":"REST stands for Representational State Transfer.","is_final":true}
-
-{"decision":"clarify","reasoning":"Missing specific file path.","clarification_question":"Which file would you like me to read?","is_final":false}
 
 {"decision":"delegate","reasoning":"API design is a backend engineering task.","delegate_target":"backend-engineer","delegate_prompt":"Design REST API for user auth","is_final":false}`
 }

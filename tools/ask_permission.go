@@ -36,8 +36,9 @@ type AskPermission struct {
 }
 
 type permRequest struct {
-	toolName string
-	done     chan struct{}
+	toolName   string
+	toolParams map[string]any // stored for AskUser merge
+	done       chan struct{}
 	result   core.PermissionResult
 	err      error
 }
@@ -73,6 +74,16 @@ func (p *AskPermission) CheckPermissions(ctx *core.ToolUseContext) core.Permissi
 	}
 	p.mu.Unlock()
 
+	// Special case: AskUser tool always goes through the permission system
+	if ctx.ToolName == "AskUser" {
+		questions := extractPermissionQuestions(ctx.Params)
+		return core.PermissionResult{
+			Behavior:  core.PermissionAsk,
+			Message:   "Answer questions?",
+			Questions: questions,
+		}
+	}
+
 	// Auto-allow for safe/read-only tools
 	info := ctx.ToolInfo
 	if info != nil {
@@ -93,6 +104,38 @@ func (p *AskPermission) CheckPermissions(ctx *core.ToolUseContext) core.Permissi
 	}
 }
 
+// extractPermissionQuestions converts AskUser's params into PermissionQuestion structs.
+func extractPermissionQuestions(params map[string]any) []core.PermissionQuestion {
+	qText, _ := params["question"].(string)
+	if qText == "" {
+		return nil
+	}
+	q := core.PermissionQuestion{
+		Question: qText,
+		Header:   "Question",
+	}
+	// Parse multiSelect flag
+	if ms, ok := params["multiSelect"]; ok {
+		if msBool, ok := ms.(bool); ok {
+			q.MultiSelect = msBool
+		}
+	}
+	// Parse options if provided
+	if optsRaw, ok := params["options"]; ok {
+		if opts, ok := optsRaw.([]any); ok {
+			for _, o := range opts {
+				if s, ok := o.(string); ok {
+					q.Options = append(q.Options, core.QuestionOption{
+						Label:       s,
+						Description: "",
+					})
+				}
+			}
+		}
+	}
+	return []core.PermissionQuestion{q}
+}
+
 // BlockAndWait blocks until the user responds to the permission request.
 // This must be called after CheckPermissions returns PermissionAsk.
 // Returns the user's permission decision.
@@ -106,8 +149,9 @@ func (p *AskPermission) BlockAndWait(ctx *core.ToolUseContext) core.PermissionRe
 	}
 
 	req := &permRequest{
-		toolName: ctx.ToolName,
-		done:     make(chan struct{}),
+		toolName:   ctx.ToolName,
+		toolParams: ctx.Params,
+		done:       make(chan struct{}),
 	}
 	p.pending = req
 	p.mu.Unlock()
@@ -140,8 +184,25 @@ func (p *AskPermission) Respond(result core.PermissionResult) error {
 		p.mu.Unlock()
 		return fmt.Errorf("no pending permission request")
 	}
+	// For AskUser, merge answers into original params so the tool
+	// receives both the original question and the user's answers.
+	if req.toolName == "AskUser" && result.UpdatedInput != nil && result.Behavior == core.PermissionAllow {
+		merged := make(map[string]any, len(req.toolParams)+len(result.UpdatedInput))
+		for k, v := range req.toolParams {
+			merged[k] = v
+		}
+		for k, v := range result.UpdatedInput {
+			merged[k] = v
+		}
+		result.UpdatedInput = merged
+	}
 	req.result = result
-	close(req.done)
+	// Guard against double-close
+	select {
+	case <-req.done:
+	default:
+		close(req.done)
+	}
 	p.mu.Unlock()
 	return nil
 }
@@ -159,7 +220,12 @@ func (p *AskPermission) RespondError(err error) error {
 		Behavior: core.PermissionDeny,
 		Message:  err.Error(),
 	}
-	close(req.done)
+	// Guard against double-close
+	select {
+	case <-req.done:
+	default:
+		close(req.done)
+	}
 	p.mu.Unlock()
 	return nil
 }

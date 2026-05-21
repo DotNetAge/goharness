@@ -422,21 +422,4 @@ type CoordLifecycleEvent struct {
 	Timestamp      time.Time
 }
 
-// ResumeTaskEvent is emitted by the Orchestrator to notify an agent that it should
-// resume execution after a previous interrupt/pause (design §10.5.7).
-type ResumeTaskEvent struct {
-	TaskID    string
-	AgentID   string
-	Reason    string
-	Timestamp time.Time
-}
 
-// TaskPausedEvent is emitted by an agent in response to an interrupt, confirming
-// it has paused and preserved its state for later resumption (design §10.5.7).
-type TaskPausedEvent struct {
-	TaskID    string
-	AgentID   string
-	Reason    string
-	SnapshotSaved bool // Whether a resumable snapshot was saved
-	Timestamp time.Time
-}
