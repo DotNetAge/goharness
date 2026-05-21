@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/internal/reactor/hooks/action"
+	"github.com/DotNetAge/goreact/internal/reactor/hooks/observation"
+	"github.com/DotNetAge/goreact/internal/reactor/hooks/thought"
 	"github.com/DotNetAge/goreact/reactor"
 	"github.com/DotNetAge/goreact/tools"
 	"github.com/google/uuid"
@@ -166,6 +169,11 @@ type agentSetup struct {
 	sessionBaseDir string // Layer 3 base: Parent dir for session directories (enables SESSION_DIR-based isolation)
 
 	skillNames []string // Registered skill names for all agent
+
+	// Hook 注入
+	thoughtHooks     []reactor.ThoughtHook
+	toolHooks        []reactor.ToolHook
+	observationHooks []reactor.ObservationHook
 }
 
 // AgentOption configures an Agent during creation via NewAgent.
@@ -392,6 +400,24 @@ func WithRuleRegistry(reg core.RuleRegistry) AgentOption {
 //	    goreact.WithModel(model),
 //	    goreact.WithLogger(zapLogger),  // ← All logs go through Zap
 //	)
+func WithThoughtHooks(hooks ...reactor.ThoughtHook) AgentOption {
+	return func(s *agentSetup) {
+		s.thoughtHooks = append(s.thoughtHooks, hooks...)
+	}
+}
+
+func WithToolHooks(hooks ...reactor.ToolHook) AgentOption {
+	return func(s *agentSetup) {
+		s.toolHooks = append(s.toolHooks, hooks...)
+	}
+}
+
+func WithObservationHooks(hooks ...reactor.ObservationHook) AgentOption {
+	return func(s *agentSetup) {
+		s.observationHooks = append(s.observationHooks, hooks...)
+	}
+}
+
 func WithLogger(logger core.Logger) AgentOption {
 	return func(s *agentSetup) {
 		s.logger = logger
@@ -554,6 +580,17 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	sandboxMgr := tools.NewSessionSandboxManager(setup.projectDir, setup.sessionBaseDir)
 	reactorOpts = append(reactorOpts, reactor.WithSessionSandboxManager(sandboxMgr))
 
+	// Hook 注入
+	if len(setup.thoughtHooks) > 0 {
+		reactorOpts = append(reactorOpts, reactor.WithThoughtHooks(setup.thoughtHooks...))
+	}
+	if len(setup.toolHooks) > 0 {
+		reactorOpts = append(reactorOpts, reactor.WithToolHooks(setup.toolHooks...))
+	}
+	if len(setup.observationHooks) > 0 {
+		reactorOpts = append(reactorOpts, reactor.WithObservationHooks(setup.observationHooks...))
+	}
+
 	// Build ReactorConfig from ModelConfig — align all generation parameters
 	reactorConfig := buildReactorConfig(model, config.Introduction)
 
@@ -580,6 +617,11 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	// reactorOpts = append(reactorOpts, reactor.WithEnableOrchestration(config.EnableOrchestration))
 
 	r := reactor.NewReactor(reactorConfig, reactorOpts...)
+
+	// Register default lifecycle hooks (user hooks already registered as ReactorOptions)
+	r.RegisterThoughtHooks(thought.Defaults(r.Logger())...)
+	r.RegisterToolHooks(action.Defaults(r.AskPermission(), r.BudgetEnforcer(), r.Logger())...)
+	r.RegisterObservationHooks(observation.Defaults(r.Logger())...)
 
 	// Populate skills catalog and rules on the Prompt
 	if p := r.Prompt(); p != nil {

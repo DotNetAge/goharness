@@ -6,105 +6,23 @@ import (
 	"strings"
 )
 
-// CheckTermination evaluates whether the T-A-O loop should stop.
-func (r *Reactor) CheckTermination(ctx *ReactContext) (bool, string) {
-	if ctx.CurrentIteration >= ctx.MaxIterations {
-		r.getLogger().Debug("termination: max iterations reached",
-			"iteration", ctx.CurrentIteration,
-			"max", ctx.MaxIterations)
-		return true, "reached max iterations"
-	}
-
-	if ctx.Ctx().Err() != nil {
-		r.getLogger().Debug("termination: context cancelled",
-			"error", ctx.Ctx().Err())
-		return true, "request cancelled"
-	}
-
-	if ctx.LastObservation != nil && ctx.LastObservation.Error != "" && !ctx.LastObservation.ShouldRetry {
-		if isToolErrorIrrecoverable(ctx.LastObservation) {
-			r.getLogger().Warn("termination: irrecoverable tool error",
-				"error", ctx.LastObservation.Error)
-			return true, "tool error: irrecoverable"
-		}
-	}
-
-	if ctx.LastThought != nil && ctx.LastThought.IsFinal {
-		r.getLogger().Debug("termination: thinker produced final answer")
-		return true, "thinker produced final answer"
-	}
-
-	if ctx.LastAction != nil && ctx.LastThought.Decision == DecisionAnswer {
-		r.getLogger().Debug("termination: direct answer produced")
-		return true, "direct answer produced"
-	}
-
-	if ctx.LastAction != nil && ctx.LastThought.Decision == DecisionClarify {
-		r.getLogger().Debug("termination: clarification needed")
-		return true, "clarification needed"
-	}
-
-	if isDestructiveLoop(ctx.History) {
-		r.getLogger().Warn("termination: destructive loop detected",
-			"history_len", len(ctx.History))
-		return true, "destructive loop detected: same tool call and error repeated"
-	}
-
-	if isAgentStuck(ctx.History) {
-		r.getLogger().Warn("termination: agent stuck detected",
-			"history_len", len(ctx.History))
-		return true, "agent stuck: no tool progress in recent iterations"
-	}
-
-	if isResultConverged(ctx.History) {
-		r.getLogger().Info("termination: result converged",
-			"history_len", len(ctx.History))
-		return true, "result converged"
-	}
-
-	if isDuplicateAction(ctx.History) {
-		last := ctx.History[len(ctx.History)-1]
-		prev := ctx.History[len(ctx.History)-2]
-		r.getLogger().Warn("termination: duplicate action detected",
-			"last_tools", collectToolNames(last.Action),
-			"last_result_len", len(last.Action.Summary()),
-			"prev_tools", collectToolNames(prev.Action),
-			"prev_result_len", len(prev.Action.Summary()),
-			"history_len", len(ctx.History),
-			"iteration", ctx.CurrentIteration)
-		return true, "duplicate action detected"
-	}
-
-	return false, ""
-}
-
 const (
+	// maxDestructiveLoopCount is the number of consecutive identical failed tool calls
+	// required to classify the agent as being in a destructive loop.
 	maxDestructiveLoopCount = 3
-	maxStuckCount           = 4
+	// maxStuckCount is the number of consecutive non-act decisions (e.g., Observe, Wait)
+	// required to classify the agent as stuck.
+	maxStuckCount = 4
 )
 
-func isToolErrorIrrecoverable(obs *Observation) bool {
-	if obs == nil || obs.Error == "" {
-		return false
-	}
-	irrecoverablePatterns := []string{
-		"permission denied",
-		"unauthorized",
-		"invalid api key",
-		"authentication failed",
-		"access denied",
-		"forbidden",
-	}
-	lower := strings.ToLower(obs.Error)
-	for _, p := range irrecoverablePatterns {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return false
-}
-
-func isDestructiveLoop(history []Step) bool {
+// IsDestructiveLoop detects whether the agent is repeating the same failing tool call
+// in a loop without making progress. A destructive loop is identified when:
+//   - The last maxDestructiveLoopCount steps are all DecisionAct steps.
+//   - They all invoke the same tool (same signature).
+//   - They all produce the same error.
+//
+// This typically indicates the agent is retrying a fundamentally broken approach.
+func IsDestructiveLoop(history []Step) bool {
 	if len(history) < maxDestructiveLoopCount {
 		return false
 	}
@@ -128,7 +46,10 @@ func isDestructiveLoop(history []Step) bool {
 	return true
 }
 
-func isAgentStuck(history []Step) bool {
+// IsAgentStuck detects whether the agent is making no forward progress by repeatedly
+// choosing non-Act decisions (e.g., Observe, Wait, Finish) without taking action.
+// This can indicate the agent is confused or waiting for conditions that won't change.
+func IsAgentStuck(history []Step) bool {
 	if len(history) < maxStuckCount {
 		return false
 	}
@@ -143,7 +64,10 @@ func isAgentStuck(history []Step) bool {
 	return count >= maxStuckCount
 }
 
-func isResultConverged(history []Step) bool {
+// IsResultConverged detects whether the agent's last 3 actions all produced identical
+// summaries, indicating the agent is generating the same output repeatedly without
+// incorporating new information or changing strategy.
+func IsResultConverged(history []Step) bool {
 	if len(history) < 3 {
 		return false
 	}
@@ -154,7 +78,10 @@ func isResultConverged(history []Step) bool {
 	return last3[0].Action.Summary() == last3[1].Action.Summary() && last3[1].Action.Summary() == last3[2].Action.Summary()
 }
 
-func isDuplicateAction(history []Step) bool {
+// IsDuplicateAction detects whether the agent's last two actions are identical
+// (same tool signature and same result summary). This is a weaker signal than
+// IsDestructiveLoop (only 2 steps) and catches near-term repetition.
+func IsDuplicateAction(history []Step) bool {
 	if len(history) < 2 {
 		return false
 	}
@@ -173,7 +100,6 @@ func isDuplicateAction(history []Step) bool {
 }
 
 // toolSignature builds a stable signature for a Step based on its tool set + params.
-// Used by isDestructiveLoop and isDuplicateAction for multi-tool-aware comparison.
 // Signature format: "[tool1:params1 tool2:params2 ...]" with tools sorted by name.
 func toolSignature(step Step) string {
 	var names []string
@@ -193,15 +119,4 @@ func toolSignature(step Step) string {
 		parts = append(parts, name+":"+paramStr)
 	}
 	return fmt.Sprintf("[%s]", strings.Join(parts, " "))
-}
-
-// collectToolNames returns a comma-separated list of tool names from an Action's Results.
-func collectToolNames(a Action) string {
-	names := make([]string, len(a.Results))
-	for i, tr := range a.Results {
-		names[i] = tr.ToolName
-	}
-	// Sort for deterministic output
-	sort.Strings(names)
-	return strings.Join(names, ",")
 }

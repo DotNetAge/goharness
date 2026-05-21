@@ -10,42 +10,55 @@ import (
 	"github.com/DotNetAge/goreact/core"
 )
 
-// Decision constants for Thought.Decision
+// Decision constants define the possible values for Thought.Decision.
+// These determine the next phase behavior in the T-A-O cycle.
 const (
-	DecisionAct         = "act"
-	DecisionAnswer      = "answer"
-	DecisionClarify     = "clarify"
-	DecisionDelegate    = "delegate"
+	DecisionAct      = "act"       // Execute tool calls
+	DecisionAnswer   = "answer"    // Return a final answer to the user
+	DecisionClarify  = "clarify"   // Ask the user a clarification question
+	DecisionDelegate = "delegate"  // Delegate to a sub-agent
 )
 
-// Thought represents the output of the Think phase.
+// Thought represents the output of the Think (reasoning) phase in the T-A-O cycle.
+// It encapsulates the LLM's reasoning process, decision, and any associated data
+// needed for the subsequent Act or Answer phases.
 type Thought struct {
-	Reasoning   string  `json:"reasoning" yaml:"reasoning"`
-	Decision    string  `json:"decision" yaml:"decision"`
-	Confidence  float64 `json:"confidence" yaml:"confidence"`
-	IsFinal     bool    `json:"is_final" yaml:"is_final"`
-	FinalAnswer string  `json:"final_answer,omitempty" yaml:"final_answer"`
+	Reasoning string `json:"reasoning" yaml:"reasoning"`
+	// Reasoning contains the LLM's step-by-step reasoning explanation.
 
-	// ActionTarget + ActionParams: single tool call (legacy path, backward compatible)
-	ActionTarget string         `json:"action_target,omitempty" yaml:"action_target"`
-	ActionParams map[string]any `json:"action_params,omitempty" yaml:"action_params"`
+	Decision string `json:"decision" yaml:"decision"`
+	// Decision indicates the chosen action: "act", "answer", "clarify", or "delegate".
 
+	Confidence float64 `json:"confidence" yaml:"confidence"`
+	// Confidence is the LLM's confidence level in its decision (0.0–1.0).
+
+	IsFinal bool `json:"is_final" yaml:"is_final"`
+	// IsFinal marks whether this thought concludes the reasoning loop.
+
+	FinalAnswer string `json:"final_answer,omitempty" yaml:"final_answer"`
+	// FinalAnswer holds the response content when Decision is DecisionAnswer.
+
+	ToolCalls map[string]map[string]any `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`
 	// ToolCalls holds multiple tool calls for batch parallel execution (v2).
 	// Map key = tool name, value = parameter map.
 	// When set, Act executes all tools in parallel: sync tools wait for result,
 	// async tools (IsAsync=true) run in goroutines and return {task_id, status: "running"}.
-	ToolCalls map[string]map[string]any `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`
 
 	ClarificationQuestion string `json:"clarification_question,omitempty" yaml:"clarification_question"`
+	// ClarificationQuestion stores the question to ask the user when Decision is DecisionClarify.
 
 	DelegateTarget string `json:"delegate_target,omitempty" yaml:"delegate_target"`
+	// DelegateTarget identifies the sub-agent or service to delegate to.
+
 	DelegatePrompt string `json:"delegate_prompt,omitempty" yaml:"delegate_prompt"`
+	// DelegatePrompt contains the task description forwarded to the delegate target.
 
 	Timestamp time.Time `json:"timestamp" yaml:"timestamp"`
+	// Timestamp records when this thought was produced.
 
+	ToolCallIDs map[string]string `json:"tool_call_ids,omitempty" yaml:"tool_call_ids,omitempty"`
 	// ToolCallIDs maps tool name → original tool_call_id from the LLM response.
 	// Populated by nativeToolCallsToThought; used when persisting tool results.
-	ToolCallIDs map[string]string `json:"tool_call_ids,omitempty" yaml:"tool_call_ids,omitempty"`
 }
 
 // jsonBlockRegex matches ```json ... ``` code blocks.
@@ -77,7 +90,7 @@ func ParseThinkResponse(content string, logger core.Logger) (*Thought, error) {
 			if logger != nil {
 				logger.Info("parsing non-JSON response as direct answer",
 					"content_length", len(trimmed),
-					"preview", truncate(trimmed, 100),
+					"preview", Truncate(trimmed, 100),
 				)
 			}
 			return &Thought{
@@ -88,7 +101,7 @@ func ParseThinkResponse(content string, logger core.Logger) (*Thought, error) {
 				Timestamp:   time.Now(),
 			}, nil
 		}
-		return nil, fmt.Errorf("failed to parse thought JSON: %w\nraw: %s", err, truncate(content, 200))
+		return nil, fmt.Errorf("failed to parse thought JSON: %w\nraw: %s", err, Truncate(content, 200))
 	}
 
 	// Normalize decision

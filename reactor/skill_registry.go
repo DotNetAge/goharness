@@ -14,10 +14,6 @@ type DefaultSkillRegistry struct {
 	skills map[string]*core.Skill
 }
 
-// SkillRegistry is an alias for DefaultSkillRegistry for backward compatibility.
-// Deprecated: Use DefaultSkillRegistry directly.
-type SkillRegistry = DefaultSkillRegistry
-
 // NewDefaultSkillRegistry creates a new empty skill registry.
 func NewDefaultSkillRegistry() core.SkillRegistry {
 	return &DefaultSkillRegistry{
@@ -25,15 +21,21 @@ func NewDefaultSkillRegistry() core.SkillRegistry {
 	}
 }
 
-// NewSkillRegistry creates a new empty skill registry.
-// Deprecated: Use NewDefaultSkillRegistry instead.
-func NewSkillRegistry() core.SkillRegistry {
-	return NewDefaultSkillRegistry()
-}
-
 // Compile-time interface check
 var _ core.SkillRegistry = (*DefaultSkillRegistry)(nil)
 
+// RegisterSkill adds or updates a skill in the registry.
+//
+// Behavior:
+//   - If the skill name does not exist, it is registered.
+//   - If a skill with the same name already exists, it is **silently overwritten**.
+//     This differs from ToolRegistry.Register() which returns an error on duplicates.
+//     The overwrite behavior allows hot-reloading of skill definitions.
+//
+// Parameters:
+//   - skill: The skill to register (must not be nil, name must not be empty).
+//
+// Returns an error if skill is nil or has an empty name.
 func (r *DefaultSkillRegistry) RegisterSkill(skill *core.Skill) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -44,6 +46,8 @@ func (r *DefaultSkillRegistry) RegisterSkill(skill *core.Skill) error {
 	return nil
 }
 
+// GetSkill retrieves a skill by name.
+// Returns the skill and nil if found, or nil and core.ErrSkillNotFound if not found.
 func (r *DefaultSkillRegistry) GetSkill(name string) (*core.Skill, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

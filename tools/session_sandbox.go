@@ -84,8 +84,16 @@ func NewSessionSandboxManagerFromConfig(defaultConfig *SandboxConfig) *SessionSa
 		sessionBaseDir = filepath.Dir(defaultConfig.SessionDir)
 	}
 
-	cfgCopy := &SandboxConfig{}
-	*cfgCopy = *defaultConfig
+	cfgCopy := &SandboxConfig{
+		Enabled:      defaultConfig.Enabled,
+		Profile:      defaultConfig.Profile,
+		AllowedPaths: defaultConfig.AllowedPaths,
+		AllowNetwork: defaultConfig.AllowNetwork,
+		TempDir:      defaultConfig.TempDir,
+		CustomPolicy: defaultConfig.CustomPolicy,
+		ProjectDir:   defaultConfig.ProjectDir,
+		SessionDir:   defaultConfig.SessionDir,
+	}
 
 	return &SessionSandboxManager{
 		sessions:       make(map[string]*SandboxConfig),

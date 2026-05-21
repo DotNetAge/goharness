@@ -11,49 +11,50 @@ import (
 	"github.com/DotNetAge/goreact/core"
 )
 
-// Think executes a single thinking phase with full-schema tools.
-// No L1 routing — the LLM decides tool vs answer in one call.
-// The System Prompt and Instructions remain stable across rounds;
-// direction is steered via tool result footers.
-func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
-	thinkStart := time.Now()
+// buildCallInput assembles the CallInput for an LLM call.
+// It resolves session ID, builds system prompt sections from Prompt,
+// and includes conversation history and tool definitions.
+func (r *Reactor) buildCallInput(ctx *ReactContext) *CallInput {
 	sessionID := r.resolveSessionID(ctx)
-	iter := ctx.CurrentIteration + 1
-	r.getLogger().Info("think start",
-		"session_id", sessionID,
-		"iteration", iter,
-		"model", r.config.Model,
-		"input_preview", truncate(ctx.Input, 80),
-	)
-
-	// Use cached LLM tool definitions — rebuilt only when RegisterTool is called
 	llmTools := r.getLLMTools()
 
 	sessionDir := ""
 	if r.fileStore != nil {
 		sessionDir = r.fileStore.GetSessionPath(sessionID)
 	}
-	// Fallback to Reactor's sessionDir if fileStore didn't provide one
 	if sessionDir == "" && r.sessionDir != "" {
 		sessionDir = r.sessionDir
 	}
 
-	// Build system prompt sections using the centralized Prompt
-	// Inject projectDir from Agent/Reactor setup (Design-time safety guarantee)
 	var sections []gochatcore.Message
 	if r.prompt != nil {
 		sections = r.prompt.ToSectionedMessages(sessionID, sessionDir, r.projectDir)
 	}
 
-	callInput := CallInput{
+	return &CallInput{
 		SessionID:            sessionID,
 		SystemPromptSections: sections,
 		UserMessage:          ctx.Input,
 		History:              ctx.ConversationHistory,
 		Tools:                llmTools,
 	}
+}
 
-	var contentBuf strings.Builder
+// Think executes a single thinking phase with full-schema tools.
+// No L1 routing — the LLM decides tool vs answer in one call.
+// The System Prompt and Instructions remain stable across rounds;
+// direction is steered via tool result footers.
+//
+// Returns (inputTokens, outputTokens, error).
+// On success, ctx.LastThought is populated with the parsed Thought.
+// On abort (hook), ctx.TerminationReason is set and error is nil.
+// On failure, error is non-nil and ctx.LastThought may be partially set.
+func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
+	thinkStart := time.Now()
+	sessionID := r.resolveSessionID(ctx)
+	iter := ctx.CurrentIteration + 1
+
+	callInput := r.buildCallInput(ctx)
 
 	// 防御性检查：确保 LLMCaller 已初始化
 	if r.llmCaller == nil {
@@ -65,7 +66,23 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 		return 0, 0, fmt.Errorf("llm caller not initialized")
 	}
 
-	result := r.llmCaller.CallStream(ctx.Ctx(), callInput,
+	// Thought Before hooks (PreCheck, ThoughtEvent, ThoughtLogger)
+	if hr := r.execThoughtHooksBefore(ctx, callInput); hr.IsTerminal() {
+		if hr.Error != nil {
+			return 0, 0, hr.Error
+		}
+		ctx.TerminationReason = hr.AbortReason
+		ctx.LastThought = &Thought{
+			Decision:  DecisionAnswer,
+			IsFinal:   true,
+			Reasoning: hr.AbortReason,
+		}
+		return 0, 0, nil
+	}
+
+	var contentBuf strings.Builder
+
+	result := r.llmCaller.CallStream(ctx.Ctx(), *callInput,
 		func(chunk string) {
 			contentBuf.WriteString(chunk)
 		},
@@ -74,7 +91,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 		},
 	)
 
-	// LLM 调用本身失败（网络、认证、超时等），直接返回错误，避免将错误文本送入 ParseThinkResponse。
+	// LLM 调用本身失败（网络、认证、超时等）
 	if result.Error != nil {
 		r.getLogger().Error("llm call failed in think", result.Error,
 			"session_id", sessionID,
@@ -100,15 +117,6 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 	var thought *Thought
 	if len(result.ToolCalls) > 0 {
 		thought = nativeToolCallsToThought(result.ToolCalls)
-		r.getLogger().Info("think done",
-			"session_id", sessionID,
-			"iteration", iter,
-			"decision", thought.Decision,
-			"elapsed_ms", time.Since(thinkStart).Milliseconds(),
-			"input_tokens", result.TokenUsage.InputTokens,
-			"output_tokens", result.TokenUsage.OutputTokens,
-			"tool_calls", len(thought.ToolCalls),
-		)
 	} else {
 		var parseErr error
 		thought, parseErr = ParseThinkResponse(content, r.getLogger())
@@ -117,23 +125,24 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 				"session_id", sessionID,
 				"iteration", iter,
 				"elapsed_ms", time.Since(thinkStart).Milliseconds(),
-				"raw_preview", truncate(content, 100),
+				"raw_preview", Truncate(content, 100),
 				"content_length", len(content),
 			)
 			return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), fmt.Errorf("think parse failed: %w", parseErr)
 		}
-		r.getLogger().Info("think done",
-			"session_id", sessionID,
-			"iteration", iter,
-			"decision", thought.Decision,
-			"elapsed_ms", time.Since(thinkStart).Milliseconds(),
-			"input_tokens", result.TokenUsage.InputTokens,
-			"output_tokens", result.TokenUsage.OutputTokens,
-			"is_final_answer", thought.IsFinal && thought.Decision == DecisionAnswer,
-		)
 	}
 
+	// Set LastThought before After hooks so hooks can reference it
 	ctx.LastThought = thought
+
+	// Thought After hooks (ThoughtEvent, ThoughtLogger)
+	if hr := r.execThoughtHooksAfter(ctx, thought); hr.IsTerminal() {
+		if hr.Error != nil {
+			return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), hr.Error
+		}
+		ctx.TerminationReason = hr.AbortReason
+	}
+
 	return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), nil
 }
 
@@ -170,6 +179,14 @@ func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 }
 
 // Act executes the decision from the Think phase.
+// Based on Thought.Decision, it either:
+//   - Generates a direct answer (DecisionAnswer)
+//   - Asks a clarification question (DecisionClarify)
+//   - Executes tool calls (DecisionAct)
+//   - Delegates to a sub-agent (DecisionDelegate)
+//
+// On success, ctx.LastAction is populated with the execution results.
+// Returns error if the decision is unknown or execution fails.
 func (r *Reactor) Act(ctx *ReactContext) error {
 	thought := ctx.LastThought
 	if thought == nil {
@@ -186,7 +203,7 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 			"session_id", sessionID,
 			"iteration", iter,
 			"elapsed_ms", time.Since(start).Milliseconds(),
-			"answer_preview", truncate(thought.FinalAnswer, 80),
+			"answer_preview", Truncate(thought.FinalAnswer, 80),
 		)
 		ctx.LastAction = &Action{
 			Results: []ToolResult{{ToolName: "answer", Result: coalesce(thought.FinalAnswer, thought.Reasoning), Success: true}},
@@ -202,7 +219,7 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 			"session_id", sessionID,
 			"iteration", iter,
 			"elapsed_ms", time.Since(start).Milliseconds(),
-			"question_preview", truncate(q, 80),
+			"question_preview", Truncate(q, 80),
 		)
 		ctx.LastAction = &Action{Results: []ToolResult{{ToolName: "clarify", Result: q, Success: true}}}
 		return nil
@@ -222,8 +239,15 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 			"delegate_target", thought.DelegateTarget,
 		)
 		return r.executeDelegate(ctx, thought, start)
+
+	default:
+		r.getLogger().Warn("act unknown decision",
+			"session_id", sessionID,
+			"iteration", iter,
+			"decision", thought.Decision,
+		)
+		return fmt.Errorf("unknown decision type: %s", thought.Decision)
 	}
-	return nil
 }
 
 // executeToolCalls executes tool calls in two phases:
@@ -247,32 +271,36 @@ func (r *Reactor) executeToolCalls(ctx *ReactContext, thought *Thought, start ti
 	sessionID := r.resolveSessionID(ctx)
 	var results []ToolResult
 
-	r.emitActionStart(ctx, calls)
-
-	toolCallIDs := thought.ToolCallIDs
-	r.executeSyncTools(ctx, syncCalls, sessionID, toolCallIDs, &results)
-	r.executeAsyncTools(ctx, asyncCalls, start, sessionID, toolCallIDs, &results)
+	r.executeSyncTools(ctx, syncCalls, &results)
+	r.executeAsyncTools(ctx, asyncCalls, start, sessionID, &results)
 
 	return r.assembleActionResult(ctx, calls, start, results)
 }
 
+// toolCall represents a single parsed tool call with its parameters and ID.
 type toolCall struct {
-	name   string
-	params map[string]any
+	name       string         // Tool name as registered in the tool registry
+	params     map[string]any // Parameters from Thought.ToolCalls[name]
+	toolCallID string         // Original tool_call_id from LLM response (for OpenAI compatibility)
 }
 
+// parseToolCalls converts Thought.ToolCalls map into a slice of toolCall structs.
+// Each entry in the map becomes one toolCall with resolved toolCallID.
 func (r *Reactor) parseToolCalls(thought *Thought) []toolCall {
 	var calls []toolCall
-	if len(thought.ToolCalls) > 0 {
-		for name, params := range thought.ToolCalls {
-			calls = append(calls, toolCall{name, params})
-		}
-	} else if thought.ActionTarget != "" {
-		calls = append(calls, toolCall{thought.ActionTarget, thought.ActionParams})
+	for name, params := range thought.ToolCalls {
+		calls = append(calls, toolCall{
+			name:       name,
+			params:     params,
+			toolCallID: thought.ToolCallIDs[name],
+		})
 	}
 	return calls
 }
 
+// handleEmptyCalled handles the case where Thought.Decision is "act" but ToolCalls is empty.
+// This can happen if the LLM returns an empty tool_calls array.
+// Falls back to DecisionAnswer with a generic error message.
 func (r *Reactor) handleEmptyCalls(ctx *ReactContext, thought *Thought) error {
 	ctx.LastThought.Decision = DecisionAnswer
 	ctx.LastAction = &Action{
@@ -296,100 +324,30 @@ func (r *Reactor) partitionByAsync(calls []toolCall) (syncCalls, asyncCalls []to
 	return
 }
 
-func (r *Reactor) emitActionStart(ctx *ReactContext, calls []toolCall) {
-	predictedTokens := ctx.CurrentInputTokens
-	if predictedTokens > 0 {
-		predictedTokens = int(float64(predictedTokens) * 1.5)
-	}
-	var toolNames []string
-	for _, c := range calls {
-		toolNames = append(toolNames, c.name)
-	}
-	ctx.EmitEvent(core.ActionStart, core.ActionStartData{
-		ToolCount:            len(calls),
-		ToolNames:            toolNames,
-		TotalPredictedTokens: predictedTokens,
-		Iteration:            ctx.CurrentIteration,
-	})
-}
-
-func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, sessionID string, toolCallIDs map[string]string, results *[]ToolResult) {
+func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, results *[]ToolResult) {
 	for _, c := range syncCalls {
-		toolStart := time.Now()
-
-		r.getLogger().Info("tool start",
-			"session_id", sessionID,
-			"tool", c.name,
-			"params_preview", truncate(fmt.Sprintf("%v", c.params), 120),
-		)
-
-		ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
-			ToolName: c.name,
-			Params:   c.params,
-		})
-
-		res, err := r.toolExecutor.Execute(ctx.Ctx(), c.name, c.params)
-		toolElapsed := time.Since(toolStart)
-
-		endData := core.ToolExecEndData{
-			ToolName:   c.name,
-			ToolCallID: toolCallIDs[c.name],
-			Duration:   toolElapsed,
-			Success:    true,
-		}
-
-		tr := ToolResult{
-			ToolName:   c.name,
-			ToolCallID: toolCallIDs[c.name],
-			Duration:   toolElapsed,
-			Success:    true,
-		}
-
-		if err != nil {
-			r.getLogger().Error("tool error", err,
-				"session_id", sessionID,
-				"tool", c.name,
-				"elapsed_ms", toolElapsed.Milliseconds(),
-			)
-			endData.Success = false
-			endData.Error = err.Error()
-			tr.Success = false
-			tr.Error = err.Error()
-		} else {
-			resultSize := len(res.Result)
-			r.getLogger().Info("tool done",
-				"session_id", sessionID,
-				"tool", c.name,
-				"elapsed_ms", toolElapsed.Milliseconds(),
-				"result_size", resultSize,
-				"success", true,
-			)
-			endData.Result = res.Result
-			tr.Result = res.Result
-		}
-
-		*results = append(*results, tr)
-		ctx.EmitEvent(core.ToolExecEnd, endData)
+		tr := r.execToolHooksWithAbort(ctx, c)
+		*results = append(*results, *tr)
 	}
 }
 
-func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, start time.Time, sessionID string, toolCallIDs map[string]string, results *[]ToolResult) {
+func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, start time.Time, sessionID string, results *[]ToolResult) {
 	if len(asyncCalls) == 0 {
 		return
 	}
 
 	type asyncResult struct {
-		name        string
-		result      string
-		err         error
-		toolCallID  string
+		name       string
+		result     string
+		err        error
+		toolCallID string
 	}
 	asyncCh := make(chan asyncResult, len(asyncCalls))
 
 	for _, c := range asyncCalls {
 		c := c
-		go func(toolName string, params map[string]any) {
-			asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), 5*time.Minute)
+		go func(toolName string, params map[string]any, toolCallID string) {
+			asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), r.asyncToolTimeout)
 			defer cancel()
 
 			ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
@@ -414,7 +372,7 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 			case <-resultCh:
 				// normal completion or panic
 			case <-asyncCtx.Done():
-				execErr = fmt.Errorf("async tool %q timed out after 5m", toolName)
+				execErr = fmt.Errorf("async tool %q timed out after %v", toolName, r.asyncToolTimeout)
 			}
 
 			resultStr := ""
@@ -424,7 +382,7 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 
 			tr := ToolResult{
 				ToolName:   toolName,
-				ToolCallID: toolCallIDs[toolName],
+				ToolCallID: toolCallID,
 				Duration:   time.Since(start),
 				Success:    execErr == nil,
 				Result:     resultStr,
@@ -435,7 +393,7 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 
 			endData := core.ToolExecEndData{
 				ToolName:   toolName,
-				ToolCallID: toolCallIDs[toolName],
+				ToolCallID: toolCallID,
 				Duration:   time.Since(start),
 				Success:    execErr == nil,
 				Result:     resultStr,
@@ -445,8 +403,8 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 			}
 			ctx.EmitEvent(core.ToolExecEnd, endData)
 
-			asyncCh <- asyncResult{name: toolName, result: resultStr, err: execErr, toolCallID: toolCallIDs[toolName]}
-		}(c.name, c.params)
+			asyncCh <- asyncResult{name: toolName, result: resultStr, err: execErr, toolCallID: toolCallID}
+		}(c.name, c.params, c.toolCallID)
 	}
 
 	for remaining := len(asyncCalls); remaining > 0; {
@@ -484,14 +442,6 @@ func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, star
 		if r.Success {
 			successCount++
 		}
-	}
-
-	if len(calls) > 1 {
-		ctx.EmitEvent(core.ActionProgress, core.ActionProgressData{
-			CompletedCount: len(calls),
-			TotalCount:     len(calls),
-			Status:         "completed",
-		})
 	}
 
 	ctx.EmitEvent(core.ActionEnd, core.ActionEndData{
@@ -545,22 +495,24 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 }
 
 // Observe evaluates the result of the Act phase.
-// In Executor mode: analyzes tool execution results (existing logic).
-// In Coordinator mode: analyzes sub-task completion status, checks if all done.
+// It analyzes the Action results and produces an Observation with:
+//   - Success/failure status
+//   - Result summary for context
+//   - Insights for loop detection (e.g., "tools failed", "large result")
+//   - ShouldRetry flag for error recovery
+//
+// After building the Observation, it runs ObservationHook.After chain
+// which may modify the Observation or signal termination.
 func (r *Reactor) Observe(ctx *ReactContext) error {
-	observeStart := time.Now()
 	action := ctx.LastAction
 	if action == nil {
 		return fmt.Errorf("observe called without an action")
 	}
-	sessionID := r.resolveSessionID(ctx)
-	iter := ctx.CurrentIteration + 1
 
 	var obs *Observation
 
 	switch ctx.LastThought.Decision {
 	case DecisionAct:
-		// Count success/failure from Results, also check action.Error for legacy paths
 		successCount := 0
 		var failedTools []string
 		for _, tr := range action.Results {
@@ -570,63 +522,36 @@ func (r *Reactor) Observe(ctx *ReactContext) error {
 				failedTools = append(failedTools, tr.ToolName)
 			}
 		}
-		toolNames := make([]string, len(action.Results))
-		for i, tr := range action.Results {
-			toolNames[i] = tr.ToolName
-		}
 
 		switch {
 		case len(failedTools) > 0:
 			errMsg := fmt.Sprintf("tools failed: %s", strings.Join(failedTools, ", "))
 			obs = NewErrorObservation(fmt.Errorf("%s", errMsg), false)
 			obs.Insights = []string{fmt.Sprintf("%d/%d tools failed: %s", len(failedTools), len(action.Results), errMsg)}
-			r.getLogger().Warn("observe tool error",
-				"session_id", sessionID,
-				"iteration", iter,
-				"tools", toolNames,
-				"elapsed_ms", time.Since(observeStart).Milliseconds(),
-				"failed", len(failedTools),
-				"errors", strings.Join(failedTools, ","),
-			)
-
 		default:
 			insights := analyzeActionResult(action.Summary())
 			obs = NewSuccessObservation(action.Summary(), insights...)
-			r.getLogger().Info("observe tool success",
-				"session_id", sessionID,
-				"iteration", iter,
-				"tools", toolNames,
-				"elapsed_ms", time.Since(observeStart).Milliseconds(),
-				"insights", len(insights),
-			)
 		}
 
 	case DecisionAnswer:
 		obs = NewSuccessObservation(action.Summary(), "direct answer generated")
-		r.getLogger().Info("observe answer",
-			"session_id", sessionID,
-			"iteration", iter,
-			"elapsed_ms", time.Since(observeStart).Milliseconds(),
-		)
 
 	case DecisionClarify:
 		obs = NewSuccessObservation(action.Summary(), "clarification question generated")
-		r.getLogger().Info("observe clarify",
-			"session_id", sessionID,
-			"iteration", iter,
-			"elapsed_ms", time.Since(observeStart).Milliseconds(),
-		)
 
 	case DecisionDelegate:
 		obs = NewSuccessObservation(action.Summary(), "delegation executed")
-		r.getLogger().Info("observe delegate",
-			"session_id", sessionID,
-			"iteration", iter,
-			"elapsed_ms", time.Since(observeStart).Milliseconds(),
-		)
-
 	}
 
 	ctx.LastObservation = obs
+
+	// Observation After hooks (ObservationEvent, ObservationLogger, Convergence)
+	if hr := r.execObservationHooksAfter(ctx, obs); hr.IsTerminal() {
+		if hr.Error != nil {
+			return hr.Error
+		}
+		ctx.TerminationReason = hr.AbortReason
+	}
+
 	return nil
 }

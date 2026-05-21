@@ -34,7 +34,7 @@ type CallResult struct {
 	ToolCalls  []gochatcore.ToolCall // native function call results (non-streaming) or nil
 	TokenUsage core.TokenUsage
 	Error      error // non-nil when the LLM call itself failed (network, auth, timeout, etc.)
-	TimedOut   bool // true when the call was cancelled due to streamTimeout
+	TimedOut   bool  // true when the call was cancelled due to streamTimeout
 }
 
 // StreamChunkCallback is called for each content chunk during streaming.
@@ -75,7 +75,7 @@ type LLMCaller struct {
 	contextWindow  *core.ContextWindow
 	slideConfig    core.SlideConfig
 	sessionStore   core.SessionStore
-	logger           core.Logger // Unified logging interface
+	logger         core.Logger // Unified logging interface
 
 	// Token usage records for this session
 	records []core.TokenUsage
@@ -84,7 +84,7 @@ type LLMCaller struct {
 	slideHandler core.SlideHandler
 
 	// Testing support
-	mockLLM      MockLLMFunc
+	mockLLM       MockLLMFunc
 	streamTimeout time.Duration // per-call timeout for streaming (default 3min)
 }
 
@@ -467,8 +467,15 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 	}
 
 	outputTokens := 0
-	if usage := stream.Usage(); usage != nil && usage.TotalTokens > 0 {
-		outputTokens = usage.TotalTokens
+	if usage := stream.Usage(); usage != nil {
+		if usage.CompletionTokens > 0 {
+			outputTokens = usage.CompletionTokens
+		} else if usage.TotalTokens > 0 {
+			outputTokens = usage.TotalTokens - preciseInput
+			if outputTokens < 0 {
+				outputTokens = usage.TotalTokens
+			}
+		}
 	}
 
 	return c.recordResult(ctx, input, contentBuf.String(), preciseInput, outputTokens, messages, toolCalls)
@@ -655,8 +662,8 @@ func (c *LLMCaller) buildClient(messages []gochatcore.Message, tools []gochatcor
 	return builder
 }
 
-// calcPreciseTokens calculates the total tokens for a message sequence
-// by calling the token estimator on each message's text content.
+// calcPreciseTokens estimates the total token count for the given message sequence.
+// Uses TokenEstimator for each message and sums them up.
 func (c *LLMCaller) calcPreciseTokens(messages []gochatcore.Message) int {
 	var total int
 	for _, m := range messages {
@@ -758,5 +765,3 @@ func (c *LLMCaller) recordTokenUsage(ctx context.Context, input CallInput, input
 
 	return usage
 }
-
-

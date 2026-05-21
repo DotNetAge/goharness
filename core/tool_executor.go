@@ -22,8 +22,6 @@ type ToolExecutor interface {
 type toolExecutorConfig struct {
 	registry          ToolRegistry
 	permissionChecker ToolPermissionChecker
-	preHooks          []Hook
-	postHooks         []Hook
 	resultLimits      ToolResultLimits
 	eventEmitter      func(ReactEvent)
 	resultStore       *ResultStore
@@ -41,14 +39,6 @@ type ExecutorOption func(*toolExecutorConfig)
 
 func WithPermissionChecker(checker ToolPermissionChecker) ExecutorOption {
 	return func(c *toolExecutorConfig) { c.permissionChecker = checker }
-}
-
-func WithPreHooks(hooks ...Hook) ExecutorOption {
-	return func(c *toolExecutorConfig) { c.preHooks = hooks }
-}
-
-func WithPostHooks(hooks ...Hook) ExecutorOption {
-	return func(c *toolExecutorConfig) { c.postHooks = hooks }
 }
 
 func WithLogger(logger Logger) ExecutorOption {
@@ -181,29 +171,6 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 		}
 	}
 
-	for _, hook := range e.cfg.preHooks {
-		hookCtx := &HookContext{
-			ToolUseContext: useCtx,
-		}
-		hr := hook.Execute(hookCtx)
-		if hr.PreventContinuation {
-			return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q blocked by pre-tool-use hook: %s", name, hr.Message)}, nil
-		}
-		if hr.PermissionResult != nil {
-			if hr.PermissionResult.Behavior == PermissionDeny {
-				return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied by hook: %s", name, hr.PermissionResult.Message)}, nil
-			}
-			if hr.PermissionResult.UpdatedInput != nil {
-				params = hr.PermissionResult.UpdatedInput
-				useCtx.Params = params
-			}
-		}
-		if hr.UpdatedInput != nil {
-			params = hr.UpdatedInput
-			useCtx.Params = params
-		}
-	}
-
 	// Inject ToolContext so bridge tools (delegate, etc.) can access event bus
 	// Directory context is guaranteed by Agent layer (Design-time safety)
 	toolCtx := &ToolContext{
@@ -221,32 +188,6 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 	start := time.Now()
 	result, err := tool.Execute(execCtx, params)
 	duration := time.Since(start)
-
-	// Run post-tool-use hooks
-	if e.cfg.postHooks != nil {
-		var resultStr string
-		if err == nil {
-			resultStr, _ = result.(string)
-			if resultStr == "" {
-				b, _ := json.Marshal(result)
-				resultStr = string(b)
-			}
-		}
-		postToolCtx := &PostToolUseContext{
-			ToolUseContext: useCtx,
-			Result:         resultStr,
-			Err:            err,
-			Duration:       duration.Milliseconds(),
-		}
-		for _, hook := range e.cfg.postHooks {
-			if hook.EventType() == HookPostToolUse {
-				hookCtx := &HookContext{
-					PostToolUseContext: postToolCtx,
-				}
-				hook.Execute(hookCtx)
-			}
-		}
-	}
 
 	if err != nil {
 		return &ToolExecutionResult{ToolName: name, Duration: duration, Error: err}, nil

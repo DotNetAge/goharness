@@ -124,6 +124,7 @@ func (b *InProcessEventBus) SubscriberCount() int {
 	return len(b.subscribers)
 }
 
+// idStr converts an integer subscriber ID to its string representation for use as a map key.
 func idStr(n int) string {
 	return fmt.Sprintf("%d", n)
 }

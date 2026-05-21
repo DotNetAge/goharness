@@ -2,30 +2,40 @@ package reactor
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
 	"github.com/DotNetAge/goreact/core"
 )
 
+// DefaultToolRegistry is the default implementation of core.ToolRegistry.
+// It provides thread-safe tool registration, lookup, and filtering capabilities.
+//
+// The registry maintains a map of tools keyed by their name and supports:
+//   - Registration and removal of tools
+//   - Lookup by name
+//   - Filtering based on keywords, security level, allowed names, or search terms
+//   - Thread-safe concurrent access via sync.RWMutex
 type DefaultToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]core.FuncTool
+	mu     sync.RWMutex
+	tools  map[string]core.FuncTool
+	logger core.Logger
 }
 
 var _ core.ToolRegistry = (*DefaultToolRegistry)(nil)
 
+// NewDefaultToolRegistry creates a new empty DefaultToolRegistry with default logger.
+// The returned registry is ready for tool registration and concurrent use.
 func NewDefaultToolRegistry() *DefaultToolRegistry {
 	return &DefaultToolRegistry{
-		tools: make(map[string]core.FuncTool),
+		tools:  make(map[string]core.FuncTool),
+		logger: core.DefaultLogger(),
 	}
 }
 
-func NewToolRegistry() *DefaultToolRegistry {
-	return NewDefaultToolRegistry()
-}
-
+// Register adds a tool to the registry.
+// Returns an error if a tool with the same name is already registered.
+// The tool's Info().Name is used as the registry key.
 func (r *DefaultToolRegistry) Register(tool core.FuncTool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -37,6 +47,8 @@ func (r *DefaultToolRegistry) Register(tool core.FuncTool) error {
 	return nil
 }
 
+// Remove deletes a tool from the registry by name.
+// Returns an error if no tool with the given name is found.
 func (r *DefaultToolRegistry) Remove(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -47,6 +59,8 @@ func (r *DefaultToolRegistry) Remove(name string) error {
 	return nil
 }
 
+// Get retrieves a tool by name.
+// Returns the tool and true if found, or zero value and false if not found.
 func (r *DefaultToolRegistry) Get(name string) (core.FuncTool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -54,6 +68,8 @@ func (r *DefaultToolRegistry) Get(name string) (core.FuncTool, bool) {
 	return t, ok
 }
 
+// All returns a slice of all registered tools.
+// The order of tools is non-deterministic (map iteration order).
 func (r *DefaultToolRegistry) All() []core.FuncTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -64,6 +80,15 @@ func (r *DefaultToolRegistry) All() []core.FuncTool {
 	return out
 }
 
+// FindAvailable returns tools that match the given filter criteria.
+//
+// Filtering logic (in order of precedence):
+//   - If filter is nil or empty, returns all tools
+//   - If AllowedNames is specified, only tools in that list are returned (exact name match)
+//   - Otherwise, filters by Keywords (matched against tags, name, description),
+//     Security level, and Terms (searched in description and tags)
+//
+// If keyword/term filtering matches no tools, a warning is logged and all tools are returned.
 func (r *DefaultToolRegistry) FindAvailable(filter *core.ToolFilter) []core.FuncTool {
 	if filter == nil || (len(filter.Keywords) == 0 && len(filter.AllowedNames) == 0 && filter.Security == 0 && filter.Terms == "") {
 		return r.All()
@@ -99,12 +124,22 @@ func (r *DefaultToolRegistry) FindAvailable(filter *core.ToolFilter) []core.Func
 	}
 
 	if len(matched) == 0 {
-		log.Printf("tool registry: filter matched no tools, returning all %d tools (filter may be too restrictive)", len(allTools))
+		r.logger.Warn("tool registry: filter matched no tools, returning all tools",
+			"tool_count", len(allTools),
+		)
 		return allTools
 	}
 	return matched
 }
 
+// toolMatchesFilter checks if a tool's info matches the filter criteria.
+// All conditions are AND-combined: the tool must pass all non-zero filter fields.
+//
+// Matching rules:
+//   - Security: exact match required if specified
+//   - Keywords: matched case-insensitively against tags (any match = pass),
+//     then against name and description (substring match)
+//   - Terms: searched case-insensitively in description and tags
 func (r *DefaultToolRegistry) toolMatchesFilter(info *core.ToolInfo, filter *core.ToolFilter, keywords map[string]bool) bool {
 
 	if filter.Security != 0 && info.SecurityLevel != filter.Security {

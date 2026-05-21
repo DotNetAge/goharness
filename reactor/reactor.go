@@ -3,6 +3,7 @@ package reactor
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 )
 
 const (
+	// StreamChannelBufferSize is the buffer size for event bus subscriber channels.
+	// A larger buffer reduces the chance of dropping events during bursty emissions.
 	StreamChannelBufferSize = 256
 )
 
@@ -37,9 +40,19 @@ type ReactorConfig struct {
 
 	Logger core.Logger // Unified logging interface (optional, defaults to slog)
 
-	IsLocal bool
+	IsLocal          bool
+	AsyncToolTimeout time.Duration // Timeout for async tool execution (default 5 minutes)
 }
 
+// Merge combines two ReactorConfig values, using non-zero values from override
+// to replace the corresponding fields in the receiver.
+// This allows partial configuration overrides without affecting unset fields.
+//
+// Special cases:
+//   - Empty strings are not merged (preserves original)
+//   - Zero-value numeric fields are not merged (preserves original)
+//   - PresencePenalty and FrequencyPenalty: 0 is a valid value, so they use != 0 check
+//   - IsLocal and AsyncToolTimeout: always merged if explicitly set in override
 func (c ReactorConfig) Merge(override ReactorConfig) ReactorConfig {
 	if override.Model != "" {
 		c.Model = override.Model
@@ -74,6 +87,9 @@ func (c ReactorConfig) Merge(override ReactorConfig) ReactorConfig {
 	if override.IsLocal {
 		c.IsLocal = override.IsLocal
 	}
+	if override.AsyncToolTimeout > 0 {
+		c.AsyncToolTimeout = override.AsyncToolTimeout
+	}
 	return c
 }
 
@@ -92,35 +108,66 @@ type Runner interface {
 	Run(ctx context.Context, input string, history ConversationHistory) (*RunResult, error)
 }
 
-// TAORunner extends Runner with individual T-A-O phase access.
-// Used by test code and internal orchestration that needs fine-grained control.
-type TAORunner interface {
-	Runner
-	Think(ctx *ReactContext) (int, int, error)
-	Act(ctx *ReactContext) error
-	Observe(ctx *ReactContext) error
-	CheckTermination(ctx *ReactContext) (bool, string)
-}
+var _ Runner = (*Reactor)(nil)
 
-var _ TAORunner = (*Reactor)(nil)
-
+// Reactor is the core T-A-O (Think-Act-Observe) execution engine.
+// It implements the Runner, RegistryHub, SessionManager, and TAOExecutor interfaces.
+//
+// Reactor orchestrates the complete agent loop:
+//  1. Think: Call LLM with context → parse response into Thought
+//  2. Act: Execute tool calls or generate answer based on Thought
+//  3. Observe: Evaluate results → check termination conditions
+//  4. Repeat until termination or max iterations reached
+//
+// Thread Safety:
+//   - Public methods are safe for concurrent use where documented
+//   - Internal state uses RWMutex for cached data (cachedLLMTools)
+//   - Hook lists are immutable after construction (sort once at setup)
+//
+// Lifecycle:
+//
+//	Created via NewReactor() with ReactorConfig and ReactorOptions.
+//	Use Run() to execute a single user request through the T-A-O loop.
+//	Use CloneReactor() to create child reactors for sub-agent delegation.
 type Reactor struct {
-	config        ReactorConfig
-	toolRegistry  core.ToolRegistry
-	toolExecutor  core.ToolExecutor
+	// config holds the LLM generation parameters and operational settings.
+	config ReactorConfig
+
+	// toolRegistry stores all available tools (built-in + registered).
+	toolRegistry core.ToolRegistry
+
+	// toolExecutor executes tool calls with permission checking and result limits.
+	toolExecutor core.ToolExecutor
+
+	// skillRegistry stores loaded skills for domain-specific capabilities.
 	skillRegistry core.SkillRegistry
-	ruleRegistry  core.RuleRegistry
 
-	memory    core.Memory
+	// ruleRegistry stores behavioral rules injected into system prompt (optional).
+	ruleRegistry core.RuleRegistry
+
+	// memory provides knowledge retrieval for grounding LLM responses (optional).
+	memory core.Memory
+
+	// llmCaller handles all LLM API interactions including streaming and token management.
 	llmCaller *LLMCaller
-	prompt    *Prompt
 
-	askPermission      *tools.AskPermission
-	eventBus           EventBus
+	// prompt builds the structured system prompt from multiple sections.
+	prompt *Prompt
 
+	// askPermission manages user approval for sensitive tool operations.
+	askPermission *tools.AskPermission
+
+	// eventBus publishes ReactEvent messages to external subscribers (UI, loggers, etc.).
+	eventBus EventBus
+
+	// resultStore accumulates tool execution results for cross-reference.
 	resultStore *core.ResultStore
-	kvStore     core.KVStore
-	fileStore   core.FileStore
+
+	// kvStore provides session-scoped key-value storage for tool state sharing.
+	kvStore core.KVStore
+
+	// fileStore provides session-scoped file storage for temp files and drafts.
+	fileStore core.FileStore
 
 	// SpawnFunc creates sub-agents for the delegate tool.
 	// Set by Agent after Reactor creation to avoid circular deps.
@@ -132,26 +179,225 @@ type Reactor struct {
 	// Invalidated when RegisterTool is called after construction.
 	cachedLLMTools []gochatcore.Tool
 	cacheMu        sync.RWMutex
+
 	// Directory context (Design-time safety: set during initialization from setup)
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
 	sessionDir string // Layer 3: Session sandbox directory
 
-	contentReplacementState  *core.ContentReplacementState
+	// contentReplacementState tracks which tool results have been replaced with previews.
+	contentReplacementState *core.ContentReplacementState
+
+	// toolResultBudgetEnforcer applies size limits to tool results (Phase 1: per-tool, Phase 2: aggregate).
 	toolResultBudgetEnforcer *ToolResultBudgetEnforcer
+
+	// asyncToolTimeout is the timeout for async tool execution (default 5 minutes)
+	asyncToolTimeout time.Duration
+
+	// Hook 集合 — 构建时按 priority 排序，运行时只读
+	thoughtHooks     []ThoughtHook
+	toolHooks        []ToolHook
+	observationHooks []ObservationHook
 }
 
+// EventBus returns the event bus for subscribing to reactor events.
 func (r *Reactor) EventBus() EventBus { return r.eventBus }
 
-
+// Memory returns the memory instance for knowledge retrieval (may be nil if not configured).
 func (r *Reactor) Memory() core.Memory { return r.memory }
 
+// Prompt returns the prompt builder for system prompt generation.
 func (r *Reactor) Prompt() *Prompt { return r.prompt }
 
+// SetAskPermission replaces the permission checker instance.
+// Use this to inject a pre-configured AskPermission with custom responders.
 func (r *Reactor) SetAskPermission(p *tools.AskPermission) { r.askPermission = p }
 
 // PermissionResponder returns the PermissionResponder for the AskPermission checker,
 // which allows external code (e.g., TUI) to respond to pending permission requests.
 func (r *Reactor) PermissionResponder() core.PermissionResponder { return r.askPermission }
+
+// AskPermission returns the *tools.AskPermission instance for hook wiring.
+func (r *Reactor) AskPermission() *tools.AskPermission { return r.askPermission }
+
+// Logger returns the reactor's logger instance.
+func (r *Reactor) Logger() core.Logger { return r.getLogger() }
+
+// BudgetEnforcer returns the tool result budget enforcer.
+func (r *Reactor) BudgetEnforcer() *ToolResultBudgetEnforcer { return r.toolResultBudgetEnforcer }
+
+// RegisterThoughtHooks appends thought hooks and re-sorts by priority.
+func (r *Reactor) RegisterThoughtHooks(hooks ...ThoughtHook) {
+	r.thoughtHooks = append(r.thoughtHooks, hooks...)
+	sortByPriority(r.thoughtHooks)
+}
+
+// RegisterToolHooks appends tool hooks and re-sorts by priority.
+func (r *Reactor) RegisterToolHooks(hooks ...ToolHook) {
+	r.toolHooks = append(r.toolHooks, hooks...)
+	sortByPriority(r.toolHooks)
+}
+
+// RegisterObservationHooks appends observation hooks and re-sorts by priority.
+func (r *Reactor) RegisterObservationHooks(hooks ...ObservationHook) {
+	r.observationHooks = append(r.observationHooks, hooks...)
+	sortByPriority(r.observationHooks)
+}
+
+// sortByPriority 是按 priority 排序 hook 切片的泛型辅助函数。
+// 三条 hook 链各自独立调用此函数排序。
+func sortByPriority[T interface{ Priority() int }](hooks []T) {
+	sort.SliceStable(hooks, func(i, j int) bool {
+		return hooks[i].Priority() < hooks[j].Priority()
+	})
+}
+
+// ── Hook 执行器 ─────────────────────────────────────────────────────────────
+
+// execThoughtHooksBefore 串行执行所有 ThoughtHook.Before。
+func (r *Reactor) execThoughtHooksBefore(ctx *ReactContext, input *CallInput) (result HookResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.getLogger().Error("thought hook panicked", fmt.Errorf("%v", p))
+			result = HookResult{Error: fmt.Errorf("thought hook panic: %v", p)}
+		}
+	}()
+	for _, h := range r.thoughtHooks {
+		result = h.Before(ctx, input)
+		if result.IsTerminal() {
+			return result
+		}
+	}
+	return HookResult{}
+}
+
+// execThoughtHooksAfter 串行执行所有 ThoughtHook.After。
+func (r *Reactor) execThoughtHooksAfter(ctx *ReactContext, thought *Thought) (result HookResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.getLogger().Error("thought hook panicked", fmt.Errorf("%v", p))
+			result = HookResult{Error: fmt.Errorf("thought hook panic: %v", p)}
+		}
+	}()
+	for _, h := range r.thoughtHooks {
+		result = h.After(ctx, thought)
+		if result.IsTerminal() {
+			r.notifyThoughtAbort(ctx, result.AbortReason)
+			return result
+		}
+	}
+	return HookResult{}
+}
+
+// notifyThoughtAbort notifies all thought hooks in reverse priority order of an abort.
+// This allows hooks to clean up resources or undo partial changes.
+func (r *Reactor) notifyThoughtAbort(ctx *ReactContext, reason string) {
+	for i := len(r.thoughtHooks) - 1; i >= 0; i-- {
+		r.thoughtHooks[i].Abort(ctx, reason)
+	}
+}
+
+// notifyToolAbort notifies all tool hooks in reverse priority order of an abort.
+// ToolHook.Abort only skips the current tool, not the entire loop.
+func (r *Reactor) notifyToolAbort(ctx *ReactContext, reason string) {
+	for i := len(r.toolHooks) - 1; i >= 0; i-- {
+		r.toolHooks[i].Abort(ctx, reason)
+	}
+}
+
+// execToolHooksWithAbort 对单个工具调用执行完整的 ToolHook.Before → 执行 → After 链。
+// ToolHook 的 Abort 只跳过当前工具，不终止整个循环。
+func (r *Reactor) execToolHooksWithAbort(ctx *ReactContext, call toolCall) (ret *ToolResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.getLogger().Error("tool hook panicked", fmt.Errorf("%v", p))
+			if ret == nil {
+				ret = &ToolResult{
+					ToolName: call.name,
+					Success:  false,
+					Error:    fmt.Sprintf("tool hook panic: %v", p),
+				}
+			}
+		}
+	}()
+
+	// Before 链
+	for _, h := range r.toolHooks {
+		result := h.Before(ctx, call.name, call.params)
+		if result.Abort {
+			r.notifyToolAbort(ctx, result.AbortReason)
+			return &ToolResult{
+				ToolName: call.name,
+				Success:  false,
+				Error:    "aborted: " + result.AbortReason,
+			}
+		}
+		if result.Error != nil {
+			return &ToolResult{ToolName: call.name, Error: result.Error.Error()}
+		}
+	}
+
+	// 执行
+	res, execErr := r.toolExecutor.Execute(ctx.Ctx(), call.name, call.params)
+	tr := ToolResult{
+		ToolName:   call.name,
+		ToolCallID: call.toolCallID,
+	}
+	if execErr != nil {
+		tr.Error = execErr.Error()
+		tr.Success = false
+	} else {
+		tr.Result = res.Result
+		tr.Duration = res.Duration
+		tr.Success = res.Error == nil
+		if res.Error != nil {
+			tr.Error = res.Error.Error()
+		}
+	}
+
+	// After 链
+	for _, h := range r.toolHooks {
+		result := h.After(ctx, &tr)
+		if result.Abort {
+			tr.Success = false
+			tr.Error = "aborted: " + result.AbortReason
+			r.notifyToolAbort(ctx, result.AbortReason)
+			break
+		}
+		if result.Error != nil {
+			tr.Error = result.Error.Error()
+			break
+		}
+	}
+
+	ret = &tr
+	return
+}
+
+// execObservationHooksAfter 串行执行所有 ObservationHook.After。
+// Observation hooks can modify the Observation and signal termination.
+func (r *Reactor) execObservationHooksAfter(ctx *ReactContext, obs *Observation) (result HookResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.getLogger().Error("observation hook panicked", fmt.Errorf("%v", p))
+			result = HookResult{Error: fmt.Errorf("observation hook panic: %v", p)}
+		}
+	}()
+	for _, h := range r.observationHooks {
+		result = h.After(ctx, obs)
+		if result.IsTerminal() {
+			r.notifyObservationAbort(ctx, result.AbortReason)
+			return result
+		}
+	}
+	return HookResult{}
+}
+
+// notifyObservationAbort notifies all observation hooks in reverse priority order of an abort.
+func (r *Reactor) notifyObservationAbort(ctx *ReactContext, reason string) {
+	for i := len(r.observationHooks) - 1; i >= 0; i-- {
+		r.observationHooks[i].Abort(ctx, reason)
+	}
+}
 
 // getLogger returns the injected Logger or default slog-based logger.
 func (r *Reactor) getLogger() core.Logger {
@@ -161,6 +407,10 @@ func (r *Reactor) getLogger() core.Logger {
 	return core.DefaultLogger()
 }
 
+// reactorSetup holds all optional configuration for Reactor construction.
+// Populated by ReactorOption functions before being applied in NewReactor().
+//
+// This struct is internal — external configuration uses ReactorOption functions.
 type reactorSetup struct {
 	systemPrompt   string
 	skipTools      map[string]bool
@@ -188,8 +438,15 @@ type reactorSetup struct {
 
 	// Sandbox management (Agent Native Design: 4-Layer Architecture)
 	sandboxMgr *tools.SessionSandboxManager // Manages session-scoped sandbox isolation
+
+	// Hook 注入
+	thoughtHooks     []ThoughtHook
+	toolHooks        []ToolHook
+	observationHooks []ObservationHook
 }
 
+// applyDefaults sets reasonable defaults for zero-value config fields.
+// Called at the start of NewReactor before options are applied.
 func (r *Reactor) applyDefaults(config *ReactorConfig) {
 	if config.MaxIterations <= 0 {
 		config.MaxIterations = core.DefaultMaxSteps
@@ -287,8 +544,6 @@ func (r *Reactor) discoverAndLoadSkills(setup *reactorSetup) {
 		}
 	}
 }
-
-
 
 func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 	r.toolExecutor = core.NewToolExecutor(
@@ -437,6 +692,12 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.config = config
 	r.memory = setup.memory
 	r.prompt = setup.prompt
+	// Initialize async tool timeout (default 5 minutes if not configured)
+	if config.AsyncToolTimeout > 0 {
+		r.asyncToolTimeout = config.AsyncToolTimeout
+	} else {
+		r.asyncToolTimeout = 5 * time.Minute
+	}
 	// Directory context (Design-time safety: copy from setup to Reactor)
 	r.projectDir = setup.projectDir
 	r.sessionDir = setup.sessionDir
@@ -510,6 +771,16 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 		r.cacheMu.Unlock()
 	}
 
+	// ── Hook 初始化 ──
+	// 用户 hooks — 通过 Option 追加
+	r.thoughtHooks = append(r.thoughtHooks, setup.thoughtHooks...)
+	r.toolHooks = append(r.toolHooks, setup.toolHooks...)
+	r.observationHooks = append(r.observationHooks, setup.observationHooks...)
+
+	// 按 priority 排序（per-chain）
+	sortByPriority(r.thoughtHooks)
+	sortByPriority(r.toolHooks)
+	sortByPriority(r.observationHooks)
 
 	return r
 }
@@ -608,19 +879,27 @@ func (r *Reactor) getLLMTools() []gochatcore.Tool {
 // and execution pipeline from the parent, but with an independent config, task manager,
 // LLM client, and conversation context.
 //
-// Shared (same reference as parent):
-//   - toolRegistry, skillRegistry (tool/skill definitions)
-//   - toolExecutor (permission chain, hooks, result limits)
-//   - memory, eventBus (persistence & events)
-//   - llmCaller fields: tokenEstimator, sessionStore, mockLLM
+// Thread Safety Guarantee:
+//
+//	Safe for concurrent use (parent + child running simultaneously):
+//	  - toolRegistry, skillRegistry: read-only after setup ✅
+//	  - eventBus: internally synchronized (InProcessEventBus uses RWMutex) ✅
+//	  - kvStore, fileStore: externally synchronized ✅
+//	  - thoughtHooks, toolHooks, observationHooks: immutable after setup ✅
+//
+//	Requires caution (shared mutable state):
+//	  - toolExecutor: may contain internal state (permission checks, result limits).
+//	    If parent/child execute tools concurrently, ensure the implementation is thread-safe.
+//	  - toolResultBudgetEnforcer: shares ContentReplacementState reference.
+//	    The state is cloned at creation time, but runtime mutations are shared.
+//	    For complete isolation, consider recreating the enforcer for the child.
 //
 // Independent (new instances for child):
 //   - config (Model, SystemPrompt, Temperature, etc. — can override)
-//   - taskManager (child's own task tracking)
 //   - llmCaller (child's own LLM caller with independent context window)
 //   - contextWindow (child's own conversation history)
-//   - pendingTasks (child's own async task channels)
-//   - askUser, askPermission (child's own interaction tools)
+//   - askPermission (child's own permission checker with independent event emitter)
+//   - asyncToolTimeout (copied from parent config, can be overridden)
 //
 // Use case: SubAgent creation where the child needs parent's tools/skills/memory
 // but runs its own T-A-O loop with possibly a different model or system prompt.
@@ -641,8 +920,12 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		eventBus:                 r.eventBus,
 		kvStore:                  r.kvStore,
 		fileStore:                r.fileStore,
-		contentReplacementState: r.contentReplacementState.Clone(),
+		contentReplacementState:  r.contentReplacementState.Clone(),
 		toolResultBudgetEnforcer: r.toolResultBudgetEnforcer,
+		thoughtHooks:             r.thoughtHooks,
+		toolHooks:                r.toolHooks,
+		observationHooks:         r.observationHooks,
+		asyncToolTimeout:         r.asyncToolTimeout,
 	}
 
 	// Clone LLMCaller with parent's shared infrastructure but independent client/context
@@ -854,7 +1137,6 @@ func (r *Reactor) abortCycle(reactCtx *ReactContext, phase string, err error,
 	)
 }
 
-
 func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart time.Time) (ret *RunResult, retErr error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -872,27 +1154,23 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 	r.getLogger().Info("run loop start",
 		"session_id", sessionID,
 		"max_iterations", reactCtx.MaxIterations,
-		"input_preview", truncate(reactCtx.Input, 80),
+		"input_preview", Truncate(reactCtx.Input, 80),
 	)
 
 	for reactCtx.CurrentIteration < reactCtx.MaxIterations {
-		if terminated, reason := r.CheckTermination(reactCtx); terminated {
+		// TerminationReason 由 hook (PreCheckHook / ConvergenceHook) 设置
+		if reactCtx.TerminationReason != "" {
 			reactCtx.IsTerminated = true
-			reactCtx.TerminationReason = reason
 			r.getLogger().Info("run loop terminated",
 				"session_id", sessionID,
 				"iteration", reactCtx.CurrentIteration+1,
-				"reason", reason,
+				"reason", reactCtx.TerminationReason,
 			)
 			break
 		}
 
 		cycleStart := time.Now()
 		cycleNum := reactCtx.CurrentIteration + 1
-		r.getLogger().Info("cycle start",
-			"session_id", sessionID,
-			"iteration", cycleNum,
-		)
 		r.toolExecutor.ResetCycle()
 
 		inputTokens, outputTokens, err := r.Think(reactCtx)
@@ -903,11 +1181,15 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			r.abortCycle(reactCtx, "think", err, cycleStart, cycleNum, sessionID)
 			break
 		}
-
-		thoughtMap := reactCtx.LastThought.ToMap()
-		thoughtMap["tokens_in"] = inputTokens
-		thoughtMap["tokens_out"] = 0
-		reactCtx.EmitEvent(core.ThinkingDone, thoughtMap)
+		// PreCheckHook 中止（ctx cancelled/已达上限）→ 跳过 Act/Observe
+		if reactCtx.TerminationReason != "" {
+			reactCtx.IsTerminated = true
+			r.getLogger().Info("run loop terminated",
+				"session_id", sessionID,
+				"reason", reactCtx.TerminationReason,
+			)
+			break
+		}
 
 		if err := r.Act(reactCtx); err != nil {
 			r.abortCycle(reactCtx, "act", err, cycleStart, cycleNum, sessionID)
@@ -918,7 +1200,6 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			r.abortCycle(reactCtx, "observe", err, cycleStart, cycleNum, sessionID)
 			break
 		}
-		reactCtx.EmitEvent(core.ObservationDone, reactCtx.LastObservation)
 
 		r.persistStep(reactCtx, cycleStart)
 		reactCtx.CurrentIteration++
@@ -939,7 +1220,6 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		"total_elapsed_ms", time.Since(runStart).Milliseconds(),
 		"termination_reason", result.TerminationReason,
 	)
-
 
 	return result, nil
 }

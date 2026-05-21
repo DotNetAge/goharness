@@ -103,6 +103,9 @@ func WithMockLLM(fn MockLLMFunc) ReactorOption {
 	}
 }
 
+// WithSystemPrompt sets a custom system prompt string for the reactor.
+// This is the legacy approach — prefer WithPrompt() which uses the structured Prompt type.
+// If both WithSystemPrompt and WithPrompt are set, WithPrompt takes precedence.
 func WithSystemPrompt(prompt string) ReactorOption {
 	return func(rs *reactorSetup) {
 		rs.systemPrompt = prompt
@@ -224,5 +227,29 @@ func WithSessionDir(dir string) ReactorOption {
 func WithSessionSandboxManager(mgr *tools.SessionSandboxManager) ReactorOption {
 	return func(s *reactorSetup) {
 		s.sandboxMgr = mgr
+	}
+}
+
+// ── Hook 注入 Option ───────────────────────────────────────────────────────
+
+// WithThoughtHooks 注入思考阶段 hooks。
+// 用户 hooks 在 NewReactor 中追加到内置 hooks 后统一排序。
+func WithThoughtHooks(hooks ...ThoughtHook) ReactorOption {
+	return func(s *reactorSetup) {
+		s.thoughtHooks = append(s.thoughtHooks, hooks...)
+	}
+}
+
+// WithToolHooks 注入工具执行阶段 hooks。
+func WithToolHooks(hooks ...ToolHook) ReactorOption {
+	return func(s *reactorSetup) {
+		s.toolHooks = append(s.toolHooks, hooks...)
+	}
+}
+
+// WithObservationHooks 注入观察阶段 hooks。
+func WithObservationHooks(hooks ...ObservationHook) ReactorOption {
+	return func(s *reactorSetup) {
+		s.observationHooks = append(s.observationHooks, hooks...)
 	}
 }

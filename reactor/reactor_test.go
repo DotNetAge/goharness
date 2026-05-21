@@ -10,6 +10,74 @@ import (
 	"github.com/DotNetAge/goreact/core"
 )
 
+// ── Test hook stubs (replicate essential built-in hook behaviors) ──
+
+type testPreCheckHook struct{}
+
+func (h *testPreCheckHook) Priority() int { return PriorityPreCheck }
+
+func (h *testPreCheckHook) Before(ctx *ReactContext, input *CallInput) HookResult {
+	if ctx.TerminationReason != "" {
+		return HookResult{Abort: true, AbortReason: ctx.TerminationReason}
+	}
+	if ctx.CurrentIteration >= ctx.MaxIterations {
+		return HookResult{Abort: true, AbortReason: "reached max iterations"}
+	}
+	if ctx.Ctx().Err() != nil {
+		return HookResult{Abort: true, AbortReason: "request cancelled"}
+	}
+	return HookResult{}
+}
+
+func (h *testPreCheckHook) After(ctx *ReactContext, thought *Thought) HookResult {
+	return HookResult{}
+}
+
+func (h *testPreCheckHook) Abort(ctx *ReactContext, reason string) {}
+
+type testConvergenceHook struct{}
+
+func (h *testConvergenceHook) Priority() int { return PriorityConvergence }
+
+func (h *testConvergenceHook) After(ctx *ReactContext, obs *Observation) HookResult {
+	thought := ctx.LastThought
+	if thought != nil {
+		if thought.IsFinal {
+			return HookResult{Abort: true, AbortReason: "thinker produced final answer"}
+		}
+		if thought.Decision == DecisionAnswer {
+			return HookResult{Abort: true, AbortReason: "direct answer produced"}
+		}
+		if thought.Decision == DecisionClarify {
+			return HookResult{Abort: true, AbortReason: "clarification needed"}
+		}
+	}
+	if !obs.Success && !obs.ShouldRetry && obs.Error != "" {
+		return HookResult{Abort: true, AbortReason: "irrecoverable tool error: " + obs.Error}
+	}
+	if IsDestructiveLoop(ctx.History) {
+		return HookResult{Abort: true, AbortReason: "destructive loop detected"}
+	}
+	if IsAgentStuck(ctx.History) {
+		return HookResult{Abort: true, AbortReason: "agent stuck"}
+	}
+	if IsResultConverged(ctx.History) {
+		return HookResult{Abort: true, AbortReason: "result converged"}
+	}
+	if IsDuplicateAction(ctx.History) {
+		return HookResult{Abort: true, AbortReason: "duplicate action detected"}
+	}
+	return HookResult{}
+}
+
+func (h *testConvergenceHook) Abort(ctx *ReactContext, reason string) {}
+
+func registerTestDefaultHooks(r *Reactor) {
+	r.RegisterThoughtHooks(&testPreCheckHook{})
+	r.RegisterToolHooks()
+	r.RegisterObservationHooks(&testConvergenceHook{})
+}
+
 // ============================================================================
 // Prompt System Tests (KV Cache, Dynamic Boundary, CloneForSkill)
 // ============================================================================
@@ -156,7 +224,9 @@ func newTestReactor(mockFn MockLLMFunc, opts ...ReactorOption) *Reactor {
 		WithMockLLM(mockFn),
 	}
 	allOpts = append(allOpts, opts...)
-	return NewReactor(cfg, allOpts...)
+	r := NewReactor(cfg, allOpts...)
+	registerTestDefaultHooks(r)
+	return r
 }
 
 func TestReactor_Run_MockLLM_AnswerImmediately(t *testing.T) {
@@ -432,156 +502,6 @@ func TestReactor_Observe_NoAction(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Termination Detection Tests
-// ============================================================================
-
-func TestCheckTermination_MaxIterations(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 3)
-	ctx.CurrentIteration = 3
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination at max iterations")
-	}
-	if reason != "reached max iterations" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_ContextCancelled(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	reactCtx := NewReactContext(ctx, "Test", nil, 10)
-
-	terminated, reason := r.CheckTermination(reactCtx)
-	if !terminated {
-		t.Error("expected termination on cancelled context")
-	}
-	if reason != "request cancelled" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_FinalAnswer(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastThought = &Thought{
-		Decision: DecisionAnswer,
-		IsFinal:  true,
-	}
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination on final answer")
-	}
-	if reason != "thinker produced final answer" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_DirectAnswer(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastAction = &Action{}
-	ctx.LastThought = &Thought{Decision: DecisionAnswer}
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination on direct answer")
-	}
-	if reason != "direct answer produced" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_Clarification(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastAction = &Action{}
-	ctx.LastThought = &Thought{Decision: DecisionClarify}
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination on clarification")
-	}
-	if reason != "clarification needed" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_DestructiveLoop(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.History = []Step{
-		{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
-		{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
-		{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
-	}
-
-	terminated, _ := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination on destructive loop")
-	}
-}
-
-func TestCheckTermination_AgentStuck(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	// 4 consecutive answer iterations (no tool calls)
-	for i := 0; i < 4; i++ {
-		ctx.History = append(ctx.History, Step{
-			Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck answer", Success: true}}},
-		})
-	}
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination when agent is stuck")
-	}
-	if reason != "agent stuck: no tool progress in recent iterations" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_ResultConverged(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	// 3 identical action results
-	for i := 0; i < 3; i++ {
-		ctx.History = append(ctx.History, Step{
-			Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same result", Success: true}}},
-		})
-	}
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination on result convergence")
-	}
-	if reason != "result converged" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
-func TestCheckTermination_DuplicateAction(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.History = []Step{
-		{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}, Thought: Thought{Decision: DecisionAct}},
-		{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}, Thought: Thought{Decision: DecisionAct}},
-	}
-
-	terminated, reason := r.CheckTermination(ctx)
-	if !terminated {
-		t.Error("expected termination on duplicate action")
-	}
-	if reason != "duplicate action detected" {
-		t.Errorf("unexpected reason: %s", reason)
-	}
-}
-
 // -- Negative cases: conditions that should NOT trigger termination --
 
 func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
@@ -591,8 +511,8 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "permission denied"}},
 			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "permission denied"}},
 		}
-		if isDestructiveLoop(history) {
-			t.Error("isDestructiveLoop should return false: different params per call")
+		if IsDestructiveLoop(history) {
+			t.Error("IsDestructiveLoop should return false: different params per call")
 		}
 	})
 
@@ -601,8 +521,8 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "denied"}},
 			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "denied"}},
 		}
-		if isDestructiveLoop(history) {
-			t.Error("isDestructiveLoop should return false: only 2 calls")
+		if IsDestructiveLoop(history) {
+			t.Error("IsDestructiveLoop should return false: only 2 calls")
 		}
 	})
 
@@ -612,8 +532,8 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}},
 			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}},
 		}
-		if isDestructiveLoop(history) {
-			t.Error("isDestructiveLoop should return false: no tool calls")
+		if IsDestructiveLoop(history) {
+			t.Error("IsDestructiveLoop should return false: no tool calls")
 		}
 	})
 }
@@ -625,8 +545,8 @@ func TestCheckTermination_AgentStuck_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck", Success: true}}}},
 			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "stuck", Success: true}}}},
 		}
-		if isAgentStuck(history) {
-			t.Error("isAgentStuck should return false: only 3 answers, need 4")
+		if IsAgentStuck(history) {
+			t.Error("IsAgentStuck should return false: only 3 answers, need 4")
 		}
 	})
 
@@ -637,8 +557,8 @@ func TestCheckTermination_AgentStuck_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}, Thought: Thought{Decision: DecisionAnswer}},
 			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "ok", Success: true}}}, Thought: Thought{Decision: DecisionAnswer}},
 		}
-		if isAgentStuck(history) {
-			t.Error("isAgentStuck should return false: the first entry of the window is a tool call")
+		if IsAgentStuck(history) {
+			t.Error("IsAgentStuck should return false: the first entry of the window is a tool call")
 		}
 	})
 }
@@ -650,8 +570,8 @@ func TestCheckTermination_ResultConverged_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "grep", Result: "", Success: true}}}},
 			{Action: Action{Results: []ToolResult{{ToolName: "write", Result: "", Success: true}}}},
 		}
-		if isResultConverged(history) {
-			t.Error("isResultConverged should return false: empty results are skipped by guard")
+		if IsResultConverged(history) {
+			t.Error("IsResultConverged should return false: empty results are skipped by guard")
 		}
 	})
 
@@ -660,39 +580,12 @@ func TestCheckTermination_ResultConverged_NotTriggered(t *testing.T) {
 			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}},
 			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "same", Success: true}}}},
 		}
-		if isResultConverged(history) {
-			t.Error("isResultConverged should return false: need at least 3 steps")
+		if IsResultConverged(history) {
+			t.Error("IsResultConverged should return false: need at least 3 steps")
 		}
 	})
 }
 
-func TestCheckTermination_DuplicateAction_NotTriggered(t *testing.T) {
-	r := newTestReactor(nil)
-
-	t.Run("different targets should not trigger", func(t *testing.T) {
-		ctx := NewReactContext(context.Background(), "Test", nil, 10)
-		ctx.History = []Step{
-			{Action: Action{Results: []ToolResult{{ToolName: "read", Result: "abc", Success: true}}}},
-			{Action: Action{Results: []ToolResult{{ToolName: "write", Result: "abc", Success: true}}}},
-		}
-		terminated, _ := r.CheckTermination(ctx)
-		if terminated {
-			t.Error("should NOT terminate: different tool targets")
-		}
-	})
-
-	t.Run("answer actions should not trigger", func(t *testing.T) {
-		ctx := NewReactContext(context.Background(), "Test", nil, 10)
-		ctx.History = []Step{
-			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "hello", Success: true}}}},
-			{Action: Action{Results: []ToolResult{{ToolName: "answer", Result: "hello", Success: true}}}},
-		}
-		terminated, _ := r.CheckTermination(ctx)
-		if terminated {
-			t.Error("should NOT terminate: Answer actions are not tool calls")
-		}
-	})
-}
 
 // ============================================================================
 // ParseThinkResponse — JSON Format Noise Tests
@@ -805,7 +698,7 @@ func TestParseThinkResponse_DirectTextAnswer(t *testing.T) {
 			t.Error("expected IsFinal to be true for direct answer")
 		}
 		if !strings.Contains(thought.FinalAnswer, "OpenAI") {
-			t.Errorf("expected FinalAnswer to contain 'OpenAI', got: %s", truncate(thought.FinalAnswer, 100))
+			t.Errorf("expected FinalAnswer to contain 'OpenAI', got: %s", Truncate(thought.FinalAnswer, 100))
 		}
 	})
 
@@ -892,7 +785,7 @@ func TestLooksLikeDirectAnswer(t *testing.T) {
 			result := looksLikeDirectAnswer(tc.content)
 			if result != tc.expected {
 				t.Errorf("looksLikeDirectAnswer() = %v, expected %v for content: %q",
-					result, tc.expected, truncate(tc.content, 50))
+					result, tc.expected, Truncate(tc.content, 50))
 			}
 		})
 	}
