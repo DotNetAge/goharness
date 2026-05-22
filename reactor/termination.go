@@ -111,7 +111,15 @@ func toolSignature(step Step) string {
 	var parts []string
 	for _, name := range names {
 		paramStr := ""
-		if step.Thought.ToolCalls != nil {
+		// Prefer ToolCallList for parameter lookup (ordered)
+		if len(step.Thought.ToolCallList) > 0 {
+			for _, item := range step.Thought.ToolCallList {
+				if item.Name == name {
+					paramStr = fmt.Sprintf("%v", item.Arguments)
+					break
+				}
+			}
+		} else if step.Thought.ToolCalls != nil {
 			if params, ok := step.Thought.ToolCalls[name]; ok {
 				paramStr = fmt.Sprintf("%v", params)
 			}

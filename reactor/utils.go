@@ -25,9 +25,10 @@ func coalesce(s, fallback string) string {
 // lookUpToolCallID returns the tool_call_id for the given target tool name.
 //
 // Lookup priority:
-//  1. Exact match in thought.ToolCallIDs map (most reliable)
-//  2. If target is empty, returns first non-empty ID from ToolCallIDs (deterministic: sorted by key)
-//  3. Fallback to target itself (may be empty or synthetic)
+//  1. ToolCallList — first matching item by name (supports parallel same-name calls)
+//  2. ToolCallIDs map — direct name→ID lookup
+//  3. Empty target — first non-empty ID from ToolCallList or ToolCallIDs
+//  4. Fallback to target itself (may be empty or synthetic)
 //
 // This function is used to maintain OpenAI-compatible tool_call_id references
 // when persisting tool messages to conversation history.
@@ -36,22 +37,40 @@ func lookUpToolCallID(thought *Thought, target string) string {
 		return target
 	}
 
-	// Priority 1: Exact match for named target
+	// Priority 1: ToolCallList (ordered, supports same-name parallel calls)
+	if len(thought.ToolCallList) > 0 && target != "" {
+		for _, item := range thought.ToolCallList {
+			if item.Name == target && item.ID != "" {
+				return item.ID
+			}
+		}
+	}
+
+	// Priority 2: Exact match in thought.ToolCallIDs map
 	if thought.ToolCallIDs != nil && target != "" {
 		if id, ok := thought.ToolCallIDs[target]; ok && id != "" {
 			return id
 		}
 	}
 
-	// Priority 2: Empty target — return first available ID (sorted keys for determinism)
-	if target == "" && len(thought.ToolCallIDs) > 0 {
-		keys := make([]string, 0, len(thought.ToolCallIDs))
-		for k := range thought.ToolCallIDs {
-			keys = append(keys, k)
+	// Priority 3: Empty target — return first available ID
+	if target == "" {
+		if len(thought.ToolCallList) > 0 {
+			for _, item := range thought.ToolCallList {
+				if item.ID != "" {
+					return item.ID
+				}
+			}
 		}
-		for _, k := range keys { // Go map iteration order is random, but we use sorted keys
-			if id := thought.ToolCallIDs[k]; id != "" {
-				return id
+		if len(thought.ToolCallIDs) > 0 {
+			keys := make([]string, 0, len(thought.ToolCallIDs))
+			for k := range thought.ToolCallIDs {
+				keys = append(keys, k)
+			}
+			for _, k := range keys {
+				if id := thought.ToolCallIDs[k]; id != "" {
+					return id
+				}
 			}
 		}
 	}

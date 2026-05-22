@@ -571,10 +571,44 @@ func (r *Reactor) discoverAndLoadSkills(setup *reactorSetup) {
 	}
 }
 
+// askUserPermissionFilter wraps AskPermission so the executor-level permission
+// checker only activates for the AskUser tool. All other tools are auto-allowed
+// because the PermissionHook (registered via toolHooks by action.Defaults or user
+// code) is the authoritative permission decision point for non-AskUser tools.
+//
+// Without this filter, the executor's internal AskPermission would independently
+// return PermissionAsk for LevelSensitive/LevelHighRisk tools, triggering
+// BlockAndWait() — which deadlocks in headless/integration-test environments
+// where no external Responder is connected.
+type askUserPermissionFilter struct {
+	inner *tools.AskPermission
+}
+
+func (f *askUserPermissionFilter) CheckPermissions(ctx *core.ToolUseContext) core.PermissionResult {
+	if ctx.ToolName == "AskUser" {
+		return f.inner.CheckPermissions(ctx)
+	}
+	return core.PermissionResult{Behavior: core.PermissionAllow}
+}
+
+// BlockAndWait delegates to AskPermission for the AskUser tool path.
+func (f *askUserPermissionFilter) BlockAndWait(ctx *core.ToolUseContext) core.PermissionResult {
+	return f.inner.BlockAndWait(ctx)
+}
+
+func (f *askUserPermissionFilter) IsWaiting() bool                                          { return f.inner.IsWaiting() }
+func (f *askUserPermissionFilter) Respond(result core.PermissionResult) error               { return f.inner.Respond(result) }
+func (f *askUserPermissionFilter) RespondError(err error) error                             { return f.inner.RespondError(err) }
+
 func (r *Reactor) initToolExecutor(setup *reactorSetup) {
+	// Use askUserPermissionFilter so the executor only asks for AskUser tools.
+	// Non-AskUser permission decisions are handled by PermissionHook in the
+	// ToolHook chain, not by the executor's internal permission checker.
+	permissionChecker := core.ToolPermissionChecker(&askUserPermissionFilter{inner: r.askPermission})
+
 	r.toolExecutor = core.NewToolExecutor(
 		r.toolRegistry,
-		core.WithPermissionChecker(r.askPermission),
+		core.WithPermissionChecker(permissionChecker),
 		core.WithResultLimits(setup.resultLimits),
 		core.WithEventEmitter(func(e core.ReactEvent) {
 			if r.eventBus != nil {

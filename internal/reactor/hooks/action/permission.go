@@ -32,6 +32,10 @@ func (h *PermissionHook) Before(ctx *reactor.ReactContext, toolName string, para
 		return reactor.HookResult{Error: fmt.Errorf("permission check failed: %w", err)}
 	}
 	if decision.Behavior == core.PermissionDeny {
+		// Emit PermissionDenied event at the Hook level so subscribers
+		// see it even though the tool never reaches defaultToolExecutor.Execute
+		// (which also emits PermissionDenied for its own internal check).
+		ctx.EmitEvent(core.PermissionDenied, decision.Message)
 		return reactor.HookResult{Abort: true, AbortReason: "permission denied: " + decision.Message}
 	}
 	return reactor.HookResult{}

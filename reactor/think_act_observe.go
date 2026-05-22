@@ -150,8 +150,10 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 // the Act phase. This bridges native function calling (non-streaming) with the
 // Thought-based execution pipeline.
 //
-// Native tool calls are converted to DecisionAct with the ToolCalls map populated.
-// The tool name → parameter map structure matches what executeToolCalls expects.
+// Native tool calls populate BOTH ToolCalls (map, backward-compatible JSON) and
+// ToolCallList (ordered slice with duplicate-name support). Code that consumes
+// tool calls should prefer ToolCallList for execution — ToolCalls map is retained
+// only for existing JSON deserialization compatibility.
 func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 	if len(tcs) == 0 {
 		return nil
@@ -159,6 +161,7 @@ func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 
 	toolCalls := make(map[string]map[string]any, len(tcs))
 	toolCallIDs := make(map[string]string, len(tcs))
+	toolCallList := make([]ToolCallItem, 0, len(tcs))
 	for _, tc := range tcs {
 		var params map[string]any
 		if tc.Arguments != "" {
@@ -166,15 +169,23 @@ func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 				params = map[string]any{"raw_args": tc.Arguments}
 			}
 		}
+		// ToolCalls map: last writer wins for duplicate names (backward compat)
 		toolCalls[tc.Name] = params
 		toolCallIDs[tc.Name] = tc.ID
+		// ToolCallList: every entry preserved in original order
+		toolCallList = append(toolCallList, ToolCallItem{
+			Name:      tc.Name,
+			Arguments: params,
+			ID:        tc.ID,
+		})
 	}
 
 	return &Thought{
-		Decision:    DecisionAct,
-		ToolCalls:   toolCalls,
-		ToolCallIDs: toolCallIDs,
-		Reasoning:   "LLM returned native tool calls",
+		Decision:     DecisionAct,
+		ToolCalls:    toolCalls,
+		ToolCallIDs:  toolCallIDs,
+		ToolCallList: toolCallList,
+		Reasoning:    "LLM returned native tool calls",
 	}
 }
 
@@ -284,9 +295,26 @@ type toolCall struct {
 	toolCallID string         // Original tool_call_id from LLM response (for OpenAI compatibility)
 }
 
-// parseToolCalls converts Thought.ToolCalls map into a slice of toolCall structs.
-// Each entry in the map becomes one toolCall with resolved toolCallID.
+// parseToolCalls converts Thought.ToolCallList (preferred) or ToolCalls map
+// into a slice of toolCall structs for execution. ToolCallList preserves
+// ordering and supports duplicate tool names in parallel calls.
 func (r *Reactor) parseToolCalls(thought *Thought) []toolCall {
+	// ToolCallList is preferred: ordered, supports same-name parallel calls
+	if len(thought.ToolCallList) > 0 {
+		calls := make([]toolCall, 0, len(thought.ToolCallList))
+		for _, item := range thought.ToolCallList {
+			calls = append(calls, toolCall{
+				name:       item.Name,
+				params:     item.Arguments,
+				toolCallID: item.ID,
+			})
+		}
+		return calls
+	}
+
+	// Fallback to ToolCalls map for backward compatibility (e.g. deserialized
+	// JSON from old persistence that only has the map field).
+	// NOTE: map key deduplicates same-named tools — only the last survives.
 	var calls []toolCall
 	for name, params := range thought.ToolCalls {
 		calls = append(calls, toolCall{

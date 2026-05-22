@@ -19,6 +19,15 @@ const (
 	DecisionDelegate = "delegate"  // Delegate to a sub-agent
 )
 
+// ToolCallItem represents a single tool call with its name, parameters, and ID.
+// Used in Thought.ToolCallList to preserve ordering and support duplicate tool names
+// across parallel calls (unlike ToolCalls map which deduplicates by key).
+type ToolCallItem struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	ID        string         `json:"id,omitempty"`
+}
+
 // Thought represents the output of the Think (reasoning) phase in the T-A-O cycle.
 // It encapsulates the LLM's reasoning process, decision, and any associated data
 // needed for the subsequent Act or Answer phases.
@@ -41,8 +50,14 @@ type Thought struct {
 	ToolCalls map[string]map[string]any `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`
 	// ToolCalls holds multiple tool calls for batch parallel execution (v2).
 	// Map key = tool name, value = parameter map.
-	// When set, Act executes all tools in parallel: sync tools wait for result,
-	// async tools (IsAsync=true) run in goroutines and return {task_id, status: "running"}.
+	// NOTE: map key deduplicates same-named parallel calls. Prefer ToolCallList
+	// for execution — ToolCalls is retained for JSON backward compatibility.
+
+	ToolCallList []ToolCallItem `json:"tool_call_list,omitempty" yaml:"tool_call_list,omitempty"`
+	// ToolCallList preserves the original tool call ordering and supports
+	// parallel calls with the same tool name (no key deduplication).
+	// Populated by nativeToolCallsToThought; preferred by parseToolCalls
+	// and ToolEventHook over the ToolCalls map.
 
 	ClarificationQuestion string `json:"clarification_question,omitempty" yaml:"clarification_question"`
 	// ClarificationQuestion stores the question to ask the user when Decision is DecisionClarify.
@@ -59,6 +74,8 @@ type Thought struct {
 	ToolCallIDs map[string]string `json:"tool_call_ids,omitempty" yaml:"tool_call_ids,omitempty"`
 	// ToolCallIDs maps tool name → original tool_call_id from the LLM response.
 	// Populated by nativeToolCallsToThought; used when persisting tool results.
+	// NOTE: same-name parallel calls only retain the last ID in this map.
+	// Prefer ToolCallList[].ID for per-call ID resolution.
 }
 
 // jsonBlockRegex matches ```json ... ``` code blocks.

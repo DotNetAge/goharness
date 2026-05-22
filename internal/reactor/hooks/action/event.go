@@ -23,18 +23,36 @@ func (h *ToolEventHook) Before(ctx *reactor.ReactContext, toolName string, param
 		h.completed = 0
 		h.emitStartFor = 0
 	}
-	if h.emitStartFor == 0 && ctx.LastThought != nil && len(ctx.LastThought.ToolCalls) > 0 {
-		h.totalTools = len(ctx.LastThought.ToolCalls)
-		h.emitStartFor = h.totalTools
-		toolNames := make([]string, 0, h.totalTools)
-		for name := range ctx.LastThought.ToolCalls {
-			toolNames = append(toolNames, name)
+	if h.emitStartFor == 0 && ctx.LastThought != nil {
+		toolCount := 0
+		var toolNames []string
+
+		// Prefer ToolCallList (ordered, supports same-name parallel calls)
+		if len(ctx.LastThought.ToolCallList) > 0 {
+			toolCount = len(ctx.LastThought.ToolCallList)
+			toolNames = make([]string, 0, toolCount)
+			for _, item := range ctx.LastThought.ToolCallList {
+				toolNames = append(toolNames, item.Name)
+			}
+		} else if len(ctx.LastThought.ToolCalls) > 0 {
+			// Fallback to ToolCalls map (backward compat for deserialized JSON)
+			toolCount = len(ctx.LastThought.ToolCalls)
+			toolNames = make([]string, 0, toolCount)
+			for name := range ctx.LastThought.ToolCalls {
+				toolNames = append(toolNames, name)
+			}
 		}
-		ctx.EmitEvent(core.ActionStart, core.ActionStartData{
-			ToolCount: h.totalTools,
-			ToolNames: toolNames,
-			Iteration: iter,
-		})
+
+		h.totalTools = toolCount
+		h.emitStartFor = toolCount
+
+		if toolCount > 0 {
+			ctx.EmitEvent(core.ActionStart, core.ActionStartData{
+				ToolCount: toolCount,
+				ToolNames: toolNames,
+				Iteration: iter,
+			})
+		}
 	}
 
 	ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{
