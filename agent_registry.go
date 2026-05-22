@@ -237,7 +237,6 @@ func (r *AgentRegistry) SaveTo(agent *core.AgentConfig) error {
 	fileName := strings.ToLower(agent.Name) + ".md"
 	filePath := filepath.Join(r.path, fileName)
 
-	// prepare frontmatter
 	meta := make(map[string]any)
 	meta["name"] = agent.Name
 	if agent.Role != "" {
@@ -252,6 +251,12 @@ func (r *AgentRegistry) SaveTo(agent *core.AgentConfig) error {
 	if len(agent.Skills) > 0 {
 		meta["skills"] = agent.Skills
 	}
+	if agent.EnableOrchestration {
+		meta["enable_orchestration"] = agent.EnableOrchestration
+	}
+	if agent.MaxDecomposeDepth > 0 {
+		meta["max_decompose_depth"] = agent.MaxDecomposeDepth
+	}
 	if len(agent.Meta) > 0 {
 		meta["meta"] = agent.Meta
 	}
@@ -261,7 +266,11 @@ func (r *AgentRegistry) SaveTo(agent *core.AgentConfig) error {
 		return fmt.Errorf("failed to marshal YAML frontmatter: %w", err)
 	}
 
-	content := fmt.Sprintf("---\n%s---\n%s", string(yamlData), agent.Introduction)
+	body := agent.Body
+	if body == "" {
+		body = agent.Introduction
+	}
+	content := fmt.Sprintf("---\n%s---\n%s", string(yamlData), body)
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}

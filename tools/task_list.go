@@ -68,6 +68,16 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 			"created_at":  task.CreatedAt.Format("2006-01-02 15:04:05"),
 		}
 
+		if len(task.DependsOn) > 0 {
+			taskInfo["depends_on"] = task.DependsOn
+			blockedBy, err := IsTaskBlocked(task, func(id string) (*Task, error) {
+				return GetTask(ctx, tc.SessionID, id)
+			})
+			if err == nil && len(blockedBy) > 0 {
+				taskInfo["blocked_by"] = blockedBy
+			}
+		}
+
 		if task.AgentName != "" {
 			taskInfo["agent_name"] = task.AgentName
 		}

@@ -69,6 +69,18 @@ func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, 
 		"created_at":  task.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
 
+	if len(task.DependsOn) > 0 {
+		result["depends_on"] = task.DependsOn
+
+		// Compute blocked_by — dependencies that haven't reached a terminal state
+		blockedBy, err := IsTaskBlocked(task, func(id string) (*Task, error) {
+			return GetTask(ctx, tc.SessionID, id)
+		})
+		if err == nil && len(blockedBy) > 0 {
+			result["blocked_by"] = blockedBy
+		}
+	}
+
 	if task.AgentName != "" {
 		result["agent_name"] = task.AgentName
 	}

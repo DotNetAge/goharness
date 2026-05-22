@@ -31,6 +31,7 @@ type Task struct {
 	Type        TaskType   `json:"type"`
 	Description string     `json:"description"`
 	Status      TaskStatus `json:"status"`
+	DependsOn   []string   `json:"depends_on,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
@@ -49,6 +50,61 @@ type Team struct {
 	TaskIDs     []string  `json:"task_ids"`
 	CreatedAt   time.Time `json:"created_at"`
 	Status      string    `json:"status"`
+}
+
+// validTransitions defines the allowed status state machine.
+var validTransitions = map[TaskStatus][]TaskStatus{
+	TaskPending:   {TaskRunning, TaskStopped},
+	TaskRunning:   {TaskCompleted, TaskFailed, TaskStopped},
+	TaskCompleted: {},
+	TaskFailed:    {},
+	TaskStopped:   {},
+}
+
+// ValidTaskTransition reports whether moving from current to next is allowed.
+func ValidTaskTransition(current, next TaskStatus) bool {
+	allowed, ok := validTransitions[current]
+	if !ok {
+		return false
+	}
+	for _, s := range allowed {
+		if s == next {
+			return true
+		}
+	}
+	return false
+}
+
+// TaskDependency holds the status of a single dependency for reporting.
+type TaskDependency struct {
+	TaskID string     `json:"task_id"`
+	Status TaskStatus `json:"status"`
+}
+
+// IsTaskBlocked checks whether any of the task's dependencies have not yet
+// reached a completed/failed/stopped terminal state. It returns the list of
+// unresolved dependencies (empty slice = not blocked).
+func IsTaskBlocked(task *Task, getTask func(id string) (*Task, error)) ([]TaskDependency, error) {
+	if len(task.DependsOn) == 0 {
+		return nil, nil
+	}
+	var blockedBy []TaskDependency
+	for _, depID := range task.DependsOn {
+		dep, err := getTask(depID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read dependency %q: %w", depID, err)
+		}
+		if dep == nil {
+			return nil, fmt.Errorf("dependency %q not found", depID)
+		}
+		switch dep.Status {
+		case TaskCompleted, TaskFailed, TaskStopped:
+			// resolved — skip
+		default:
+			blockedBy = append(blockedBy, TaskDependency{TaskID: depID, Status: dep.Status})
+		}
+	}
+	return blockedBy, nil
 }
 
 const (
