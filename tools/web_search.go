@@ -171,7 +171,8 @@ func (t *WebSearchTool) AddAdapter(adapter SearchAdapter) {
 
 func (t *WebSearchTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
-		Name: "WebSearch",
+		Name:               "WebSearch",
+		MaxResultSizeChars: 30000,
 		Description: `Search the web for real-time information. Returns a list of {title, url} results.
 Use this tool when you need up-to-date information beyond your training data.`,
 		Prompt: `Search the web for real-time information. Returns search result information formatted as search result blocks, including links as markdown hyperlinks.

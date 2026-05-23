@@ -13,6 +13,7 @@ import (
 
 // buildCallInput assembles the CallInput for an LLM call.
 // It resolves session ID, builds system prompt sections from Prompt,
+// applies micro-compaction to remove old read-only tool results,
 // and includes conversation history and tool definitions.
 func (r *Reactor) buildCallInput(ctx *ReactContext) *CallInput {
 	sessionID := r.resolveSessionID(ctx)
@@ -31,11 +32,16 @@ func (r *Reactor) buildCallInput(ctx *ReactContext) *CallInput {
 		sections = r.prompt.ToSectionedMessages(sessionID, sessionDir, r.projectDir)
 	}
 
+	// Apply micro-compaction: remove old read-only tool results
+	// while preserving the most recent 2 assistant-turns' worth.
+	// The original ConversationHistory is not modified.
+	compactHistory := core.MicroCompact(ctx.ConversationHistory, 2)
+
 	return &CallInput{
 		SessionID:            sessionID,
 		SystemPromptSections: sections,
 		UserMessage:          ctx.Input,
-		History:              ctx.ConversationHistory,
+		History:              compactHistory,
 		Tools:                llmTools,
 	}
 }

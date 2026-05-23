@@ -5,10 +5,11 @@ import (
 	"fmt"
 )
 
-// MicroCompact performs a quick, non-LLM compaction by truncating large
+// BudgetCompact performs a quick, non-LLM compaction by truncating large
 // observation/tool-result messages while preserving small messages intact.
-// This is ClueCode's "microCompact" equivalent.
-func MicroCompact(messages []Message, estimateFn func(string) int, targetTokens int64) []Message {
+// Unlike MicroCompact (which removes read-only tool results by round),
+// BudgetCompact trims message content to fit within a token budget.
+func BudgetCompact(messages []Message, estimateFn func(string) int, targetTokens int64) []Message {
 	if estimateFn == nil {
 		estimateFn = EstimateTokens
 	}

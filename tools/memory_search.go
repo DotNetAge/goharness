@@ -25,8 +25,9 @@ func NewMemorySearch(memory core.Memory) core.FuncTool {
 
 func (t *MemorySearch) Info() *core.ToolInfo {
 	return &core.ToolInfo{
-		Name:        "MemorySearch",
-		Description: "Search long-term memory for relevant past knowledge, experiences, or data. Use this when you need information from previous interactions, user preferences, historical context, or domain-specific knowledge that may have been stored in memory.",
+		Name:               "MemorySearch",
+		MaxResultSizeChars: 30000,
+		Description:        "Search long-term memory for relevant past knowledge, experiences, or data. Use this when you need information from previous interactions, user preferences, historical context, or domain-specific knowledge that may have been stored in memory.",
 		Prompt: `Search long-term memory for relevant past knowledge, experiences, or data.
 Use this when you need information from previous interactions, user preferences, historical context, or domain-specific knowledge.
 This should be your FIRST source of external information before searching the internet.`,

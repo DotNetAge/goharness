@@ -24,8 +24,9 @@ func NewGlobTool() core.FuncTool {
 
 func (t *GlobTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
-		Name:        "Glob",
-		Description: "Find files",
+		Name:               "Glob",
+		MaxResultSizeChars: 30000,
+		Description:        "Find files",
 		Prompt: `- Fast file pattern matching tool that works with any codebase size
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths sorted by modification time

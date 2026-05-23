@@ -7,30 +7,30 @@ import (
 	"testing"
 )
 
-func TestMicroCompact_NilEstimateFn(t *testing.T) {
+func TestBudgetCompact_NilEstimateFn(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "short"},
 		{Role: "assistant", Content: "also short"},
 	}
-	result := MicroCompact(messages, nil, 10)
+	result := BudgetCompact(messages, nil, 10)
 	if len(result) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(result))
 	}
 }
 
-func TestMicroCompact_WithinBudget(t *testing.T) {
+func TestBudgetCompact_WithinBudget(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there"},
 		{Role: "user", Content: "how are you"},
 	}
-	result := MicroCompact(messages, func(s string) int { return len(s) }, 1000)
+	result := BudgetCompact(messages, func(s string) int { return len(s) }, 1000)
 	if len(result) != 3 {
 		t.Errorf("expected all 3 messages preserved when within budget")
 	}
 }
 
-func TestMicroCompact_TruncatesLargeMessages(t *testing.T) {
+func TestBudgetCompact_TruncatesLargeMessages(t *testing.T) {
 	largeContent := make([]byte, 9000)
 	for i := range largeContent {
 		largeContent[i] = 'A'
@@ -41,7 +41,7 @@ func TestMicroCompact_TruncatesLargeMessages(t *testing.T) {
 		{Role: "assistant", Content: string(largeContent)},
 		{Role: "user", Content: "small msg 2"},
 	}
-	result := MicroCompact(messages, func(s string) int { return len(s) / 3 }, 500)
+	result := BudgetCompact(messages, func(s string) int { return len(s) / 3 }, 500)
 
 	found := false
 	for _, m := range result {
@@ -62,14 +62,14 @@ func TestMicroCompact_TruncatesLargeMessages(t *testing.T) {
 	}
 }
 
-func TestMicroCompact_PreservesOrder(t *testing.T) {
+func TestBudgetCompact_PreservesOrder(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "msg-001-first"},
 		{Role: "assistant", Content: "msg-002-second"},
 		{Role: "user", Content: "msg-003-third"},
 		{Role: "assistant", Content: "msg-004-fourth"},
 	}
-	result := MicroCompact(messages, func(s string) int { return len(s) }, 20)
+	result := BudgetCompact(messages, func(s string) int { return len(s) }, 20)
 	if len(result) == 0 {
 		t.Fatal("expected at least some messages")
 	}
@@ -80,14 +80,14 @@ func TestMicroCompact_PreservesOrder(t *testing.T) {
 	}
 }
 
-func TestMicroCompact_ShortInput(t *testing.T) {
+func TestBudgetCompact_ShortInput(t *testing.T) {
 	messages := []Message{{Role: "user", Content: "only one"}}
-	result := MicroCompact(messages, nil, 1)
+	result := BudgetCompact(messages, nil, 1)
 	if len(result) != 1 {
 		t.Errorf("single message should pass through")
 	}
 	messages2 := []Message{}
-	result2 := MicroCompact(messages2, nil, 1)
+	result2 := BudgetCompact(messages2, nil, 1)
 	if len(result2) != 0 {
 		t.Errorf("empty input should return empty")
 	}

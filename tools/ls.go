@@ -19,8 +19,9 @@ type LS struct {
 func NewLsTool() core.FuncTool {
 	return &LS{
 		info: &core.ToolInfo{
-			Name:        "Ls",
-			Description: "List directory contents with file metadata — size, type, permissions, modification time. Supports recursive tree view and hidden files.",
+			Name:               "Ls",
+			MaxResultSizeChars: 30000,
+			Description:        "List directory contents with file metadata — size, type, permissions, modification time. Supports recursive tree view and hidden files.",
 			Prompt: `List the contents of a directory to browse the filesystem structure. Use this when you need to see what files exist in a directory, check file sizes, or explore the project layout before reading or editing files.
 
 ## Operations
@@ -53,6 +54,10 @@ Set show_hidden=true to include dot-files (.gitignore, .env, .config, etc.). Hid
 func (l *LS) Info() *core.ToolInfo {
 	return l.info
 }
+
+// maxLsItems is the maximum number of directory entries to return.
+// Directories with more entries are truncated at this limit.
+const maxLsItems = 500
 
 func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	// Get ToolContext for directory awareness (Design-time safety)
@@ -103,6 +108,10 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	var items []map[string]any
 
 	for _, entry := range entries {
+		if len(items) >= maxLsItems {
+			break
+		}
+
 		// Skip hidden files unless show_hidden is set
 		if !showHidden && strings.HasPrefix(entry.Name(), ".") {
 			continue

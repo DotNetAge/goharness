@@ -29,8 +29,9 @@ func NewSkillTool(lookup SkillLookupFunc) *SkillTool {
 
 func (t *SkillTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
-		Name:        "Skill",
-		Description: "Load a specialized skill by name. Skills are listed in the system prompt with their descriptions. Call this tool when a skill can help with the current task.",
+		Name:               "Skill",
+		MaxResultSizeChars: 50000,
+		Description:        "Load a specialized skill by name. Skills are listed in the system prompt with their descriptions. Call this tool when a skill can help with the current task.",
 		Prompt: `Load a specialized capability (skill) by name.
 
 When you identify a skill from the available capabilities list that matches the current task, call this tool to load its full instructions. The skill's instructions will be provided in the tool result.
