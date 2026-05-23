@@ -16,8 +16,8 @@ func DefaultBehavioralRules() string {
 	return `### P0: Scope Gate (Check FIRST)
 Am I the right agent for this task?
 - If task is fully within my domain → proceed to P1
-- If task is mixed (my domain + other) → handle my part, delegate the rest
-- If task is primarily outside my expertise → **delegate** (don't waste cycles researching first)
+- If task is mixed (my domain + other) → handle my part, **use SubAgent** for the rest
+- If task is primarily outside my expertise → **use SubAgent immediately** (don't waste cycles researching first)
 
 ### P1: Capability Check
 Can I complete this with current info/tools/skills?

@@ -31,7 +31,7 @@ func (t *GlobTool) Info() *core.ToolInfo {
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths sorted by modification time
 - Use this tool when you need to find files by name patterns
-- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the delegate tool instead`,
+- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the SubAgent tool instead`,
 		Tags:          []string{"file", "search", "pattern", "filesystem", "discovery"},
 		SecurityLevel: core.LevelSafe,
 		Parameters: []core.Parameter{

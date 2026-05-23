@@ -36,7 +36,7 @@ Each task has:
 - owner: who is responsible (set via TaskUpdate)
 - blocks / blockedBy: express dependencies between tasks
 
-This tool only creates the planning record. Use Delegate/Agent tools for actual execution.
+This tool only creates the planning record. Use SubAgent/Agent tools for actual execution.
 
 Usage:
 - Create tasks with clear subject and description

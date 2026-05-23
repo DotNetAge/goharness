@@ -181,7 +181,7 @@ type Reactor struct {
 	// fileStore provides session-scoped file storage for temp files and drafts.
 	fileStore core.FileStore
 
-	// SpawnFunc creates sub-agents for the delegate tool.
+	// SpawnFunc creates sub-agents for the SubAgent tool.
 	// Set by Agent after Reactor creation to avoid circular deps.
 	SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
 
@@ -699,11 +699,11 @@ func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
 		name string
 		tool core.FuncTool
 	}{
-		{"Delegate", tools.NewDelegateTool(func(ctx context.Context, agentName, task string) (string, error) {
+		{"SubAgent", tools.NewSubAgentTool(func(ctx context.Context, agentName, task string) (string, error) {
 			if r.SpawnFunc != nil {
 				return r.SpawnFunc(ctx, agentName, task)
 			}
-			return "", fmt.Errorf("delegate: SpawnFunc not configured on reactor")
+			return "", fmt.Errorf("subagent: SpawnFunc not configured on reactor")
 		})},
 		{"TaskCreate", tools.NewTaskCreateTool()},
 		{"TeamCreate", tools.NewTeamCreateTool(func(ctx context.Context, agentName, task string) (string, error) {

@@ -32,7 +32,7 @@ Use this when:
 - You want to organize parallel work streams with coordination
 
 The team creation is immediate. After creating the team, use TaskCreate to
-create planning entries and Delegate/Agent tools to dispatch work to members.
+create planning entries and SubAgent/Agent tools to dispatch work to members.
 
 Required parameters:
 - team_name: short, unique name for the team (kebab-case, e.g. "data-analysis-team")

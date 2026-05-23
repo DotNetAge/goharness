@@ -656,7 +656,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 		}
 	}
 
-	// Set SpawnFunc so delegate tool can create sub-agents
+	// Set SpawnFunc so SubAgent tool can create sub-agents
 	r.SpawnFunc = func(ctx context.Context, agentName, task string) (string, error) {
 		subConfig := *config
 		subConfig.Name = agentName

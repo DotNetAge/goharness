@@ -220,7 +220,7 @@ func nativeToolCallsToThought(tcs []gochatcore.ToolCall) *Thought {
 //   - Generates a direct answer (DecisionAnswer)
 //   - Asks a clarification question (DecisionClarify)
 //   - Executes tool calls (DecisionAct)
-//   - Delegates to a sub-agent (DecisionDelegate)
+//   - Delegates to a sub-agent (DecisionSubAgent)
 //
 // On success, ctx.LastAction is populated with the execution results.
 // Returns error if the decision is unknown or execution fails.
@@ -269,13 +269,13 @@ func (r *Reactor) Act(ctx *ReactContext) error {
 		)
 		return r.executeToolCalls(ctx, thought, start)
 
-	case DecisionDelegate:
-		r.getLogger().Info("act delegate",
+	case DecisionSubAgent:
+		r.getLogger().Info("act subagent",
 			"session_id", sessionID,
 			"iteration", iter,
-			"delegate_target", thought.DelegateTarget,
+			"subagent_target", thought.SubAgentTarget,
 		)
-		return r.executeDelegate(ctx, thought, start)
+		return r.executeSubAgent(ctx, thought, start)
 
 	default:
 		r.getLogger().Warn("act unknown decision",
@@ -514,13 +514,13 @@ func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, star
 	return nil
 }
 
-func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start time.Time) error {
-	target := thought.DelegateTarget
-	prompt := thought.DelegatePrompt
+func (r *Reactor) executeSubAgent(ctx *ReactContext, thought *Thought, start time.Time) error {
+	target := thought.SubAgentTarget
+	prompt := thought.SubAgentPrompt
 
 	if target == "" {
 		ctx.LastAction = &Action{
-			Results:   []ToolResult{{ToolName: "delegate", Result: "delegate failed: no target agent specified", Success: false}},
+			Results:   []ToolResult{{ToolName: "subagent", Result: "subagent failed: no target agent specified", Success: false}},
 			Timestamp: start,
 		}
 		return nil
@@ -528,7 +528,7 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 
 	if r.SpawnFunc == nil {
 		ctx.LastAction = &Action{
-			Results:   []ToolResult{{ToolName: "delegate", Result: fmt.Sprintf("delegate to %q failed: sub-agent spawning is not configured", target), Success: false}},
+			Results:   []ToolResult{{ToolName: "subagent", Result: fmt.Sprintf("subagent to %q failed: sub-agent spawning is not configured", target), Success: false}},
 			Timestamp: start,
 		}
 		return nil
@@ -537,14 +537,14 @@ func (r *Reactor) executeDelegate(ctx *ReactContext, thought *Thought, start tim
 	result, err := r.SpawnFunc(ctx.Ctx(), target, prompt)
 	if err != nil {
 		ctx.LastAction = &Action{
-			Results:   []ToolResult{{ToolName: "delegate", Result: fmt.Sprintf("[delegate:%s] error: %s", target, err.Error()), Success: false}},
+			Results:   []ToolResult{{ToolName: "subagent", Result: fmt.Sprintf("[subagent:%s] error: %s", target, err.Error()), Success: false}},
 			Timestamp: start,
 		}
 		return nil
 	}
 
 	ctx.LastAction = &Action{
-		Results:   []ToolResult{{ToolName: "delegate", Result: fmt.Sprintf("[delegate:%s] %s", target, result), Success: true}},
+		Results:   []ToolResult{{ToolName: "subagent", Result: fmt.Sprintf("[subagent:%s] %s", target, result), Success: true}},
 		Timestamp: start,
 	}
 	return nil
@@ -595,8 +595,8 @@ func (r *Reactor) Observe(ctx *ReactContext) error {
 	case DecisionClarify:
 		obs = NewSuccessObservation(action.Summary(), "clarification question generated")
 
-	case DecisionDelegate:
-		obs = NewSuccessObservation(action.Summary(), "delegation executed")
+	case DecisionSubAgent:
+		obs = NewSuccessObservation(action.Summary(), "subagent executed")
 	}
 
 	ctx.LastObservation = obs

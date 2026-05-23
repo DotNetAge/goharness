@@ -16,7 +16,7 @@ const (
 	DecisionAct      = "act"       // Execute tool calls
 	DecisionAnswer   = "answer"    // Return a final answer to the user
 	DecisionClarify  = "clarify"   // Ask the user a clarification question
-	DecisionDelegate = "delegate"  // Delegate to a sub-agent
+	DecisionSubAgent = "subagent"  // Delegate to a sub-agent
 )
 
 // ToolCallItem represents a single tool call with its name, parameters, and ID.
@@ -36,7 +36,7 @@ type Thought struct {
 	// Reasoning contains the LLM's step-by-step reasoning explanation.
 
 	Decision string `json:"decision" yaml:"decision"`
-	// Decision indicates the chosen action: "act", "answer", "clarify", or "delegate".
+	// Decision indicates the chosen action: "act", "answer", "clarify", or "subagent".
 
 	Confidence float64 `json:"confidence" yaml:"confidence"`
 	// Confidence is the LLM's confidence level in its decision (0.0–1.0).
@@ -62,11 +62,11 @@ type Thought struct {
 	ClarificationQuestion string `json:"clarification_question,omitempty" yaml:"clarification_question"`
 	// ClarificationQuestion stores the question to ask the user when Decision is DecisionClarify.
 
-	DelegateTarget string `json:"delegate_target,omitempty" yaml:"delegate_target"`
-	// DelegateTarget identifies the sub-agent or service to delegate to.
+	SubAgentTarget string `json:"subagent_target,omitempty" yaml:"subagent_target"`
+	// SubAgentTarget identifies the sub-agent or service to delegate to.
 
-	DelegatePrompt string `json:"delegate_prompt,omitempty" yaml:"delegate_prompt"`
-	// DelegatePrompt contains the task description forwarded to the delegate target.
+	SubAgentPrompt string `json:"subagent_prompt,omitempty" yaml:"subagent_prompt"`
+	// SubAgentPrompt contains the task description forwarded to the sub-agent target.
 
 	Timestamp time.Time `json:"timestamp" yaml:"timestamp"`
 	// Timestamp records when this thought was produced.
@@ -124,7 +124,7 @@ func ParseThinkResponse(content string, logger core.Logger) (*Thought, error) {
 	// Normalize decision
 	thought.Decision = strings.ToLower(strings.TrimSpace(thought.Decision))
 	switch thought.Decision {
-	case DecisionAct, DecisionAnswer, DecisionClarify, DecisionDelegate:
+	case DecisionAct, DecisionAnswer, DecisionClarify, DecisionSubAgent:
 		// valid
 	default:
 		thought.Decision = DecisionAnswer

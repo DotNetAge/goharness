@@ -20,7 +20,7 @@ func TestIsReadOnlyToolResult(t *testing.T) {
 		{"Bash tool", "[Bash] command output", false},
 		{"Write tool", "[Write] file written", false},
 		{"Edit tool", "[Edit] changes applied", false},
-		{"Delegate tool", "[Delegate] subagent result", false},
+		{"SubAgent tool", "[SubAgent] subagent result", false},
 		{"no bracket prefix", "plain text", false},
 		{"empty string", "", false},
 		{"open bracket only", "[no close", false},

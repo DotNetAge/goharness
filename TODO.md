@@ -26,7 +26,7 @@ GoReact = Agent Operating System。所有待办事项基于此定位组织。
 
 ### 编排工具
 
-- [x] **delegate 工具** — 异步创建子 Agent，共享 EventBus
+- [x] **SubAgent 工具** — 异步创建子 Agent，共享 EventBus
 - [x] **collect_results 工具** — 阻塞等待异步结果
 - [x] **find_agent 工具** — 按领域查找已注册的专家 Agent
 - [x] **rank 工具** — 记录子 Agent 绩效评分
@@ -48,7 +48,7 @@ GoReact = Agent Operating System。所有待办事项基于此定位组织。
 
 ## P3: 迁移与清理
 
-- [x] 旧 Task/Skill/SubAgent 工具迁移到 delegate/collect_results 模式
+- [x] 旧 Task/Skill/SubAgent 工具迁移到 SubAgent/CollectResults 模式
 - [x] 废弃 core/orchestrator.go 中的 AgentOrchestrator 接口
 - [x] 删除无用的 coordination.go 协调器代码
 - [x] RunResult 移除 Intent、ClarificationNeeded 等遗留字段

@@ -187,7 +187,7 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 		e.cfg.logger.Debug("[executor] executing tool", "tool", name, "params", params)
 	}
 
-	// Inject ToolContext so bridge tools (delegate, etc.) can access event bus
+	// Inject ToolContext so bridge tools (subagent, etc.) can access event bus
 	// Directory context is guaranteed by Agent layer (Design-time safety)
 	toolCtx := &ToolContext{
 		EmitEvent:   e.cfg.eventEmitter,

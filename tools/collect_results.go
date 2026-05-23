@@ -21,20 +21,20 @@ func (t *CollectResultsTool) Info() *core.ToolInfo {
 		Name:        "CollectResults",
 		MaxResultSizeChars: 50000,
 		Description: "Wait for one or more async tasks to complete and return their results. Blocks until all specified tasks are done.",
-		Prompt: `Wait for async tasks (started by Delegate) to finish and collect their results.
+		Prompt: `Wait for async tasks (started by SubAgent) to finish and collect their results.
 
-This tool blocks until ALL specified task_ids have completed. Use it after Delegate() to retrieve results.
+This tool blocks until ALL specified task_ids have completed. Use it after SubAgent() to retrieve results.
 
 Behavior:
-- Takes a list of task_ids from previous Delegate calls
+- Takes a list of task_ids from previous SubAgent calls
 - Blocks until every task is complete
 - Returns all results at once
 - Progress events are emitted as each task completes
 
 Usage:
-- Pass task_ids returned by Delegate() calls
-- Multiple parallel delegates results can be collected in one call
-- Sequential tasks should be chained: Delegate → Collect → Delegate → Collect`,
+- Pass task_ids returned by SubAgent() calls
+- Multiple parallel sub-agent results can be collected in one call
+- Sequential tasks should be chained: SubAgent → Collect → SubAgent → Collect`,
 		Tags:      []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []core.Parameter{

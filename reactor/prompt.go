@@ -486,7 +486,7 @@ func BuildDefaultRules() string {
 
 // BuildOutputFormat returns the response protocol with tool-first routing.
 // Path A: native function calling for tools (no JSON wrapper needed).
-// Path B: JSON schema for answer/delegate decisions.
+// Path B: JSON schema for answer/subagent decisions.
 // AskUser: use the dedicated AskUser tool for clarification (not Path C JSON).
 // Plain text answers are also accepted as fallback (auto-detected by ParseThinkResponse).
 func BuildOutputFormat() string {
@@ -513,17 +513,17 @@ Return a JSON object (plain text also works as fallback):
 Don't use the JSON "clarify" path. Use the **AskUser** tool (available in your tool list).
 It supports options, multi-select, and free-form questions, and blocks until you get an answer.
 
-### Path D: Outside Your Expertise
+### Path D: Outside Your Expertise — Spawn a Sub-Agent
 {
-  "decision": "delegate",
+  "decision": "subagent",
   "reasoning": "<why not your domain>",
-  "delegate_target": "<agent name>",
-  "delegate_prompt": "<task description>",
+  "subagent_target": "<agent name>",
+  "subagent_prompt": "<task description>",
   "is_final": false
 }
 
 ### Key Fields
-- **decision**: Routes your response (act/answer/delegate)
+- **decision**: Routes your response (act/answer/subagent)
 - **reasoning**: Written to history for next cycle's reflection. Keep it brief and factual. **MUST match the user's language.**
   Good: "Factual query, no tools needed."
   Bad: "I think the user might want to know about this topic which I happen to have information about..."
@@ -535,5 +535,5 @@ It supports options, multi-select, and free-form questions, and blocks until you
 ### Examples
 {"decision":"answer","reasoning":"Direct factual answer.","final_answer":"REST stands for Representational State Transfer.","is_final":true}
 
-{"decision":"delegate","reasoning":"API design is a backend engineering task.","delegate_target":"backend-engineer","delegate_prompt":"Design REST API for user auth","is_final":false}`
+{"decision":"subagent","reasoning":"API design is a backend engineering task.","subagent_target":"backend-engineer","subagent_prompt":"Design REST API for user auth","is_final":false}`
 }

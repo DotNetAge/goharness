@@ -13,54 +13,54 @@ import (
 // Returns the sub-agent's result and any error.
 type SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
 
-// DelegateTool lets the LLM delegate tasks to sub-agents.
+// SubAgentTool lets the LLM spawn sub-agents for delegated tasks.
 // IsAsync=true — returns {task_id, status: "running"} immediately.
 // Results are collected via CollectResultsTool (reads from ResultStore).
-type DelegateTool struct {
+type SubAgentTool struct {
 	spawn   SpawnFunc
 	counter atomic.Int64
 }
 
-// NewDelegateTool creates a DelegateTool.
+// NewSubAgentTool creates a SubAgentTool.
 // spawn is provided by the reactor to avoid circular imports.
-func NewDelegateTool(spawn SpawnFunc) *DelegateTool {
-	return &DelegateTool{spawn: spawn}
+func NewSubAgentTool(spawn SpawnFunc) *SubAgentTool {
+	return &SubAgentTool{spawn: spawn}
 }
 
-func (t *DelegateTool) Info() *core.ToolInfo {
+func (t *SubAgentTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
-		Name:        "Delegate",
-		Description: "Delegate a task to a sub-agent. Returns immediately with a task_id. Use CollectResults to retrieve the result later.",
-		Prompt: `Dispatch a task to another agent. Use this for two scenarios:
+		Name:        "SubAgent",
+		Description: "Spawn a sub-agent for a task. Returns immediately with a task_id. Use CollectResults to retrieve the result later.",
+		Prompt: `Spawn a sub-agent to handle a task. Use this for two scenarios:
 
 1. **Expertise handoff** — the task falls outside your role, and a specialist agent is better suited.
 2. **Parallelization** — the workload is large and can be split into independent sub-tasks that run concurrently to save time.
 
 Returns {task_id, status: "running"} immediately. The actual result must be collected later using the CollectResults tool.
 
-When to delegate:
+When to spawn:
 - The task is outside your defined area of expertise — do your own work first.
 - A specialist agent exists whose role matches the task.
 - The user explicitly asks for another agent to handle the task.
-- The task has many independent parts — spawn multiple agents in parallel to finish faster.
+- The task has many independent parts — spawn multiple sub-agents in parallel to finish faster.
 
 Usage:
 - Name the sub-agent based on its role (e.g., "code_reviewer", "data_analyst") or reuse your own role for parallel workers.
 - The task description should be clear and self-contained.
-- Multiple delegates called in the same Act phase run in parallel.
-- For sequential sub-tasks, call delegate one per round, waiting for CollectResults between rounds.
+- Multiple SubAgent calls in the same Act phase run in parallel.
+- For sequential sub-tasks, call SubAgent one per round, waiting for CollectResults between rounds.
 
-Don't race: After launching a delegate, you know nothing about what the sub-agent found until you call CollectResults.`,
-		Tags:    []string{"orchestration", "delegate", "sub-agent"},
+Don't race: After spawning a sub-agent, you know nothing about what it found until you call CollectResults.`,
+		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
 		Parameters: []core.Parameter{
-			{Name: "agent_name", Type: "string", Description: "Name of the sub-agent to delegate to.", Required: true},
+			{Name: "agent_name", Type: "string", Description: "Name of the sub-agent to spawn.", Required: true},
 			{Name: "task", Type: "string", Description: "Task description for the sub-agent.", Required: true},
 		},
 	}
 }
 
-func (t *DelegateTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	agentName, _ := params["agent_name"].(string)
 	if agentName == "" {
 		return nil, fmt.Errorf("agent_name is required")
@@ -74,18 +74,18 @@ func (t *DelegateTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	tc := core.GetToolContext(ctx)
 	if tc == nil || tc.EmitEvent == nil {
-		return nil, fmt.Errorf("delegate tool requires ToolContext with EventBus")
+		return nil, fmt.Errorf("subagent tool requires ToolContext with EventBus")
 	}
 	if t.spawn == nil {
-		return nil, fmt.Errorf("delegate tool: SpawnFunc not configured")
+		return nil, fmt.Errorf("subagent tool: SpawnFunc not configured")
 	}
 
-	logger.Info("delegating task to sub-agent",
+	logger.Info("spawning sub-agent",
 		"agent_name", agentName,
 		"task", truncateForLog(task, 100),
 	)
 
-	taskID := fmt.Sprintf("delegate-%d", t.counter.Add(1))
+	taskID := fmt.Sprintf("subagent-%d", t.counter.Add(1))
 
 	tc.EmitEvent(core.ReactEvent{
 		AgentID: "main",

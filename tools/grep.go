@@ -36,7 +36,7 @@ Usage:
 - Supports full regex syntax (e.g., "log.*Error", "function\s+\w+")
 - Filter files with include parameter (e.g., "*.js", "**/*.tsx")
 - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
-- Use delegate tool for open-ended searches requiring multiple rounds
+- Use SubAgent tool for open-ended searches requiring multiple rounds
 - Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use interface\{\} to find interface{} in Go code)
 - Multiline matching: By default patterns match within single lines only. For cross-line patterns like struct \{[\s\S]*?field, use multiline: true`,
 		Tags: []string{"file", "search", "content", "regex", "text"},

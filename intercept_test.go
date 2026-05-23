@@ -550,18 +550,18 @@ func TestAgentWithDeclaredSkillsOnly(t *testing.T) {
 	}
 }
 
-func TestToolOrchestration_DelegateCollect(t *testing.T) {
-	// Scenario: Agent delegates task, then collects results.
-	// Round 1: LLM returns thought with DecisionAct to call Delegate
+func TestToolOrchestration_SubAgentCollect(t *testing.T) {
+	// Scenario: Agent spawns sub-agent, then collects results.
+	// Round 1: LLM returns thought with DecisionAct to call SubAgent
 	// Round 2: LLM returns thought with DecisionAct to call CollectResults
 	// Round 3: LLM returns thought with DecisionAnswer
 	server, captured, _ := captureHTTPServerWithResponses(t, []mockResponse{
 		{
 			Thought: &thoughtJSON{
 				Decision:  "act",
-				Reasoning: "I need to delegate the code review task.",
+				Reasoning: "I need to spawn a sub-agent for the code review task.",
 				ToolCalls: map[string]map[string]any{
-					"Delegate": {
+					"SubAgent": {
 						"agent_name": "code-reviewer",
 						"task":       "Review the main.go file",
 					},
@@ -589,7 +589,7 @@ func TestToolOrchestration_DelegateCollect(t *testing.T) {
 	})
 	agent := setupTestAgent(t, server)
 
-	result, err := agent.Ask("test-delegate", "让代码审查员审查 main.go")
+	result, err := agent.Ask("test-subagent", "让代码审查员审查 main.go")
 	if err != nil {
 		t.Logf("agent error (expected with mock): %v", err)
 	}
@@ -602,11 +602,11 @@ func TestToolOrchestration_DelegateCollect(t *testing.T) {
 		t.Skipf("mock tool calls caused early exit, got %d requests (expected 3)", len(*captured))
 	}
 
-	// Verify round 1: should contain Delegate thought in history
+	// Verify round 1: should contain SubAgent thought in history
 	msgs1 := parseMessagesAt(t, captured, 0)
-	t.Logf("Round 1 (Delegate): %d messages", len(msgs1))
+	t.Logf("Round 1 (SubAgent): %d messages", len(msgs1))
 
-	// Verify round 2: should contain Delegate result + CollectResults call
+	// Verify round 2: should contain SubAgent result + CollectResults call
 	msgs2 := parseMessagesAt(t, captured, 1)
 	t.Logf("Round 2 (CollectResults): %d messages", len(msgs2))
 
@@ -614,16 +614,16 @@ func TestToolOrchestration_DelegateCollect(t *testing.T) {
 	for _, m := range msgs2 {
 		if role, _ := m["role"].(string); role == "tool" {
 			toolName, _ := m["name"].(string)
-			if toolName == "Delegate" {
+			if toolName == "SubAgent" {
 				hasDelegateResult = true
 				break
 			}
 		}
 	}
 	if hasDelegateResult {
-		t.Log("PASS: Delegate tool result found in round 2 history")
+		t.Log("PASS: SubAgent tool result found in round 2 history")
 	} else {
-		t.Log("WARN: Delegate tool result not explicitly found (may be in different format)")
+		t.Log("WARN: SubAgent tool result not explicitly found (may be in different format)")
 	}
 
 	// Verify round 3: should contain complete history including both tool results
@@ -638,7 +638,7 @@ func TestToolOrchestration_DelegateCollect(t *testing.T) {
 	}
 	t.Logf("Final round has %d tool results in history", toolResultsInFinal)
 	if toolResultsInFinal < 2 {
-		t.Logf("WARN: expected at least 2 tool results (Delegate + CollectResults), got %d", toolResultsInFinal)
+		t.Logf("WARN: expected at least 2 tool results (SubAgent + CollectResults), got %d", toolResultsInFinal)
 	}
 }
 

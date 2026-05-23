@@ -670,10 +670,10 @@ func TestIntegration_Clarify_AmbiguousInputThenContinue(t *testing.T) {
 // ============================================================================
 // SCENARIO E: Multi-Agent Delegation — Parent Spawns Child Tasks
 // 场景：SaaS平台全面安全审计（依赖CVE/认证授权/API注入/基础设施4个子任务）
-// 验证：父Agent发起多次delegate调用、每次ActionStart包含delegate工具名、最终聚合报告
+// 验证：父Agent发起多次SubAgent调用、每次ActionStart包含subagent工具名、最终聚合报告
 // ============================================================================
 
-func TestIntegration_Delegate_MultiAgentSecurityAudit(t *testing.T) {
+func TestIntegration_SubAgent_MultiAgentSecurityAudit(t *testing.T) {
 	userQuestion := "对我们的SaaS平台做全面安全审计：1)依赖库漏洞(CVE) 2)认证授权安全(OAuth2/JWT) 3)API注入防护(SQL/XSS/CSRF) 4)基础设施安全(TLS/K8s/VPC)。每个方面给出CVE编号、风险等级、修复建议，输出汇总风险评估报告。"
 
 	parentIter := 0
@@ -682,22 +682,22 @@ func TestIntegration_Delegate_MultiAgentSecurityAudit(t *testing.T) {
 		switch parentIter {
 		case 1:
 			return &gochatcore.Response{Message: gochatcore.Message{
-				ToolCalls: []gochatcore.ToolCall{{Name: "delegate", Arguments: "{\"task_id\":\"child-depscan\",\"agent_name\":\"security-scanner\",\"description\":\"Scan package.json/requirements.txt/pom.xml for CVEs\"}"}},
+				ToolCalls: []gochatcore.ToolCall{{Name: "subagent", Arguments: "{\"task_id\":\"child-depscan\",\"agent_name\":\"security-scanner\",\"description\":\"Scan package.json/requirements.txt/pom.xml for CVEs\"}"}},
 			}}, nil
 		case 2:
 			return &gochatcore.Response{Message: gochatcore.Message{
-				ToolCalls: []gochatcore.ToolCall{{Name: "delegate", Arguments: "{\"task_id\":\"child-codeaudit\",\"agent_name\":\"code-reviewer\",\"description\":\"Review auth middleware and JWT/OAuth2 flows\"}"}},
+				ToolCalls: []gochatcore.ToolCall{{Name: "subagent", Arguments: "{\"task_id\":\"child-codeaudit\",\"agent_name\":\"code-reviewer\",\"description\":\"Review auth middleware and JWT/OAuth2 flows\"}"}},
 			}}, nil
 		case 3:
 			return &gochatcore.Response{Message: gochatcore.Message{
-				ToolCalls: []gochatcore.ToolCall{{Name: "delegate", Arguments: "{\"task_id\":\"child-infrascan\",\"agent_name\":\"infra-auditor\",\"description\":\"Audit TLS certs, K8s RBAC, VPC ACLs, WAF rules\"}"}},
+				ToolCalls: []gochatcore.ToolCall{{Name: "subagent", Arguments: "{\"task_id\":\"child-infrascan\",\"agent_name\":\"infra-auditor\",\"description\":\"Audit TLS certs, K8s RBAC, VPC ACLs, WAF rules\"}"}},
 			}}, nil
 		case 4:
 			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"# SaaS Platform Security Audit Report\\n\\nOverall Risk: MEDIUM-HIGH\\n\\n## 1. Dependency Vulnerabilities\\nFound 47 issues (3 CRITICAL, 5 HIGH). Top: CVE-2024-1234 lodash.prototype.polluted, CVE-2024-5678 express-jwt weak key entropy.\\n\\n## 2. Auth Security\\nFound 27 issues (1 CRITICAL, 3 HIGH). Session fixation risk, JWT none algorithm accepted.\\n\\n## 3. Infra Security\\nFound 19 issues (0 CRITICAL, 2 HIGH). TLS 1.0 enabled on ingress, missing CSP headers.\\n\\n## Summary Matrix\\n| Category | Critical | High | Medium | Low | Total |\\n|----------|----------|------|--------|-----|-------|\\n| Deps      | 2        | 5    | 12     | 28  | 47    |\\n| Code     | 1        | 3    | 8      | 15  | 27    |\\n| Infra     | 0        | 2    | 6      | 11  | 19    |\\n| Total    | 3        | 10   | 26     | 54  | 93    |\\n\\nTop 5 Fixes:\\n1. Upgrade lodash to v4.17.21\\n2. Switch JWT to RS256\\n3. Regenerate session ID after login\\n4. Disable TLSv1.0/1.1 on K8s ingress\\n5. Add Content-Security-Policy headers\"}"}, nil
 		default:
 			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"Done.\"}"}, nil
 		}
-	}, &intMockTool{name: "delegate"})
+	}, &intMockTool{name: "subagent"})
 
 	result, err := r.Run(context.Background(), userQuestion, nil)
 	if err != nil {
@@ -711,16 +711,16 @@ func TestIntegration_Delegate_MultiAgentSecurityAudit(t *testing.T) {
 	t.Logf("Parent iterations: %d, reported: %d, answer len: %d", parentIter, result.TotalIterations, len(result.Answer))
 
 	if result.TotalIterations < 3 {
-		t.Errorf("expected >=3 iterations (3 delegate + answer), got %d", result.TotalIterations)
+		t.Errorf("expected >=3 iterations (3 subagent + answer), got %d", result.TotalIterations)
 	}
 	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 	t.Logf("ActionStart=%d, ToolExecStart=%d", asCount, tsCount)
 	if asCount != 3 {
-		t.Errorf("expected 3 ActionStart (one per delegation iteration), got %d", asCount)
+		t.Errorf("expected 3 ActionStart (one per subagent iteration), got %d", asCount)
 	}
 	if tsCount != 3 {
-		t.Errorf("expected 3 ToolExecStart (one delegate call each), got %d", tsCount)
+		t.Errorf("expected 3 ToolExecStart (one subagent call each), got %d", tsCount)
 	}
 	if !strings.Contains(result.Answer, "Summary") || !strings.Contains(result.Answer, "Total") {
 		t.Error("Final answer should contain aggregated summary from child audits")
@@ -729,12 +729,12 @@ func TestIntegration_Delegate_MultiAgentSecurityAudit(t *testing.T) {
 	actionStarts := collector.getByType(core.ActionStart)
 	for i, as := range actionStarts {
 		data := as.Data.(core.ActionStartData)
-		t.Logf("  Delegate[%d]: Iter=%d, Tools=%d, Names=%v", i, data.Iteration, data.ToolCount, data.ToolNames)
-		if data.ToolNames[0] != "delegate" {
-			t.Errorf("Delegate[%d]: expected tool='delegate', got %v", i, data.ToolNames)
+		t.Logf("  SubAgent[%d]: Iter=%d, Tools=%d, Names=%v", i, data.Iteration, data.ToolCount, data.ToolNames)
+		if data.ToolNames[0] != "subagent" {
+			t.Errorf("SubAgent[%d]: expected tool='subagent', got %v", i, data.ToolNames)
 		}
 		if data.ToolCount != 1 {
-			t.Errorf("Delegate[%d]: expected 1 tool per delegation, got %d", i, data.ToolCount)
+			t.Errorf("SubAgent[%d]: expected 1 tool per delegation, got %d", i, data.ToolCount)
 		}
 	}
 }
