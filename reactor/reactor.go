@@ -185,6 +185,12 @@ type Reactor struct {
 	// Set by Agent after Reactor creation to avoid circular deps.
 	SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
 
+	// AgentTalkFunc sends a message to another agent in a specific session and returns the reply.
+	// Unlike SpawnFunc (one-shot delegation), AgentTalk maintains a conversation thread
+	// via sessionID — the target agent sees the full history when the same ID is reused.
+	// Set by Agent after Reactor creation to avoid circular deps.
+	AgentTalkFunc func(ctx context.Context, to, sessionID, message string) (string, error)
+
 	// cachedLLMTools caches the LLM-ready tool definitions.
 	// The full tool registry is converted once after all tools are registered
 	// and reused across T-A-O cycles to avoid per-round conversion overhead.
@@ -704,6 +710,12 @@ func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
 				return r.SpawnFunc(ctx, agentName, task)
 			}
 			return "", fmt.Errorf("subagent: SpawnFunc not configured on reactor")
+		})},
+		{"AgentTalk", tools.NewAgentTalkTool(func(ctx context.Context, to, sessionID, message string) (string, error) {
+			if r.AgentTalkFunc != nil {
+				return r.AgentTalkFunc(ctx, to, sessionID, message)
+			}
+			return "", fmt.Errorf("agent_talk: AgentTalkFunc not configured on reactor")
 		})},
 		{"TaskCreate", tools.NewTaskCreateTool()},
 		{"TeamGetTasks", tools.NewTeamGetTasksTool()},

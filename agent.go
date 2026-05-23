@@ -676,6 +676,27 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 		return result.Answer, nil
 	}
 
+	// Set AgentTalkFunc so AgentTalk tool can message other agents
+	r.AgentTalkFunc = func(ctx context.Context, to, sessionID, message string) (string, error) {
+		subConfig := *config
+		subConfig.Name = to
+		sub, err := NewAgent(
+			WithConfig(&subConfig),
+			WithModel(model),
+			WithEventBus(r.EventBus()),
+			WithMemory(setup.memory),
+		)
+		if err != nil {
+			return "", fmt.Errorf("create agent %q for talk: %w", to, err)
+		}
+		prefixed := fmt.Sprintf("[AgentTalk from %s] %s", config.Name, message)
+		result, err := sub.Ask(sessionID, prefixed)
+		if err != nil {
+			return "", fmt.Errorf("agent talk to %q: %w", to, err)
+		}
+		return result.Answer, nil
+	}
+
 	a := &Agent{
 		config:       config,
 		model:        model,
