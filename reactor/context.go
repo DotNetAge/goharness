@@ -178,6 +178,33 @@ func (c *ReactContext) Ctx() context.Context {
 	return context.Background()
 }
 
+// withToolTimeout creates a shallow copy of ReactContext with a timeout-wrapped context.
+// The original ReactContext is not modified. This is used by executeSyncTools to
+// prevent a hanging tool from blocking the entire T-A-O loop indefinitely.
+func (c *ReactContext) withToolTimeout(timeout time.Duration) (*ReactContext, context.CancelFunc) {
+	toolCtx, cancel := context.WithTimeout(c.Ctx(), timeout)
+	return &ReactContext{
+		SessionID:             c.SessionID,
+		TaskID:                c.TaskID,
+		ParentID:              c.ParentID,
+		ctx:                   toolCtx,
+		cancel:                cancel,
+		CurrentIteration:      c.CurrentIteration,
+		MaxIterations:         c.MaxIterations,
+		Input:                 c.Input,
+		ConversationHistory:   c.ConversationHistory,
+		LastThought:           c.LastThought,
+		LastAction:            c.LastAction,
+		LastObservation:       c.LastObservation,
+		History:               c.History,
+		CurrentInputTokens:    c.CurrentInputTokens,
+		IsTerminated:          c.IsTerminated,
+		TerminationReason:     c.TerminationReason,
+		Mode:                  c.Mode,
+		emitEvent:             c.emitEvent,
+	}, cancel
+}
+
 // Cancel triggers cancellation of the run's context, signaling all
 // long-running operations (LLM calls, tool executions) to stop.
 func (c *ReactContext) Cancel() {
@@ -199,13 +226,18 @@ func (c *ReactContext) AppendHistory(step Step) {
 // Parameters:
 //   - role: the message role (e.g., "user", "assistant", "system").
 //   - content: the message body text.
-func (c *ReactContext) AddMessage(role, content string) {
+func (c *ReactContext) AddMessage(role, content string, toolCalls ...core.ToolCall) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var tc []core.ToolCall
+	if len(toolCalls) > 0 {
+		tc = toolCalls
+	}
 	c.ConversationHistory = append(c.ConversationHistory, core.Message{
 		Role:      role,
 		Content:   content,
 		Timestamp: time.Now().Unix(),
+		ToolCalls: tc,
 	})
 }
 

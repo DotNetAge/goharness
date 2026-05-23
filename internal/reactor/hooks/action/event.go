@@ -48,9 +48,10 @@ func (h *ToolEventHook) Before(ctx *reactor.ReactContext, toolName string, param
 
 		if toolCount > 0 {
 			ctx.EmitEvent(core.ActionStart, core.ActionStartData{
-				ToolCount: toolCount,
-				ToolNames: toolNames,
-				Iteration: iter,
+				ToolCount:            toolCount,
+				ToolNames:            toolNames,
+				TotalPredictedTokens: ctx.CurrentInputTokens,
+				Iteration:            iter,
 			})
 		}
 	}

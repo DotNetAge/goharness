@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/DotNetAge/goreact/core"
 )
@@ -31,19 +30,12 @@ func TestTaskCreateTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	spawnFunc := func(ctx context.Context, agentName, task string) (string, error) {
-		time.Sleep(50 * time.Millisecond)
-		return "result for " + task, nil
-	}
-
-	tool := NewTaskCreateTool(spawnFunc)
-
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-1")
+	tool := NewTaskCreateTool()
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-1")
 
 	params := map[string]any{
-		"task_description": "Analyze data",
-		"agent_name":       "data-analyst",
+		"subject":     "Analyze data",
+		"description": "Run data analysis on the customer dataset",
 	}
 
 	result, err := tool.Execute(ctx, params)
@@ -59,21 +51,22 @@ func TestTaskCreateTool_Execute(t *testing.T) {
 	if _, ok := resultMap["task_id"]; !ok {
 		t.Errorf("Execute() missing task_id")
 	}
-	if status, _ := resultMap["status"].(string); status != "running" {
-		t.Errorf("Execute() status = %q, want 'running'", status)
+	if status, _ := resultMap["status"].(string); status != "pending" {
+		t.Errorf("Execute() status = %q, want 'pending'", status)
 	}
-
-	time.Sleep(200 * time.Millisecond)
+	if subj, _ := resultMap["subject"].(string); subj != "Analyze data" {
+		t.Errorf("Execute() subject = %q, want 'Analyze data'", subj)
+	}
 
 	task, err := GetTask(ctx, "test-session-1", resultMap["task_id"].(string))
 	if err != nil {
 		t.Fatalf("GetTask() error = %v", err)
 	}
-	if task.Status != TaskCompleted {
-		t.Errorf("Task status = %v, want %v", task.Status, TaskCompleted)
+	if task.Status != TaskPending {
+		t.Errorf("Task status = %v, want %v", task.Status, TaskPending)
 	}
-	if task.Result != "result for Analyze data" {
-		t.Errorf("Task result = %q, want 'result for Analyze data'", task.Result)
+	if task.Subject != "Analyze data" {
+		t.Errorf("Task subject = %q, want 'Analyze data'", task.Subject)
 	}
 }
 
@@ -81,22 +74,21 @@ func TestTaskListTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-2")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-2")
 
 	task1 := &Task{
 		ID:          "task-1",
-		Type:        TaskTypeAgent,
-		Description: "Task one",
+		Subject:     "Task one",
+		Description: "First task",
 		Status:      TaskCompleted,
-		AgentName:   "agent-a",
+		Owner:       "agent-a",
 	}
 	task2 := &Task{
 		ID:          "task-2",
-		Type:        TaskTypeAgent,
-		Description: "Task two",
-		Status:      TaskRunning,
-		AgentName:   "agent-b",
+		Subject:     "Task two",
+		Description: "Second task",
+		Status:      TaskPending,
+		Owner:       "agent-b",
 	}
 
 	if err := CreateTask(ctx, "test-session-2", task1); err != nil {
@@ -123,16 +115,14 @@ func TestTaskGetTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-3")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-3")
 
 	task := &Task{
 		ID:          "task-abc",
-		Type:        TaskTypeAgent,
-		Description: "Test task",
+		Subject:     "Test task",
+		Description: "A test task",
 		Status:      TaskCompleted,
-		AgentName:   "agent-x",
-		Result:      "done",
+		Owner:       "agent-x",
 	}
 	if err := CreateTask(ctx, "test-session-3", task); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
@@ -153,29 +143,34 @@ func TestTaskGetTool_Execute(t *testing.T) {
 	if resultMap["status"] != "completed" {
 		t.Errorf("status = %v, want 'completed'", resultMap["status"])
 	}
+	if resultMap["subject"] != "Test task" {
+		t.Errorf("subject = %v, want 'Test task'", resultMap["subject"])
+	}
 }
 
 func TestTaskUpdateTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-4")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-4")
 
 	task := &Task{
 		ID:          "task-update",
-		Type:        TaskTypeAgent,
+		Subject:     "Original subject",
 		Description: "Original description",
-		Status:      TaskRunning,
+		Status:      TaskPending,
 	}
 	if err := CreateTask(ctx, "test-session-4", task); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
 
 	tool := NewTaskUpdateTool()
+
+	// Test updating description and status
 	params := map[string]any{
 		"task_id":     "task-update",
 		"description": "Updated description",
+		"status":      "in_progress",
 	}
 
 	result, err := tool.Execute(ctx, params)
@@ -195,20 +190,22 @@ func TestTaskUpdateTool_Execute(t *testing.T) {
 	if task.Description != "Updated description" {
 		t.Errorf("Description = %q, want 'Updated description'", task.Description)
 	}
+	if task.Status != TaskInProgress {
+		t.Errorf("Status = %v, want %v", task.Status, TaskInProgress)
+	}
 }
 
 func TestTaskStopTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-5")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-5")
 
 	task := &Task{
 		ID:          "task-stop",
-		Type:        TaskTypeAgent,
-		Description: "Stop me",
-		Status:      TaskRunning,
+		Subject:     "Stop me",
+		Description: "Task to be stopped",
+		Status:      TaskPending,
 	}
 	if err := CreateTask(ctx, "test-session-5", task); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
@@ -231,8 +228,8 @@ func TestTaskStopTool_Execute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask() error = %v", err)
 	}
-	if task.Status != TaskStopped {
-		t.Errorf("Status = %v, want %v", task.Status, TaskStopped)
+	if task != nil {
+		t.Errorf("Task should be deleted after stop, but still exists")
 	}
 }
 
@@ -245,9 +242,7 @@ func TestTeamCreateTool_Execute(t *testing.T) {
 	}
 
 	tool := NewTeamCreateTool(spawnFunc)
-
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-6")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-6")
 
 	params := map[string]any{
 		"team_name":   "data-team",
@@ -274,8 +269,7 @@ func TestTeamListTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-7")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-7")
 
 	team1 := &Team{
 		Name:    "team-alpha",
@@ -314,8 +308,7 @@ func TestTeamDeleteTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-8")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-8")
 
 	team := &Team{
 		Name:    "team-to-delete",
@@ -358,8 +351,8 @@ func TestTaskSessionIsolation(t *testing.T) {
 
 	task := &Task{
 		ID:          "shared-task",
-		Type:        TaskTypeAgent,
-		Description: "Isolation test",
+		Subject:     "Isolation test",
+		Description: "Testing session isolation",
 		Status:      TaskPending,
 	}
 
@@ -385,8 +378,8 @@ func TestConcurrentTaskOperations(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		task := &Task{
 			ID:          fmt.Sprintf("task-concurrent-%d", i),
-			Type:        TaskTypeAgent,
-			Description: "Concurrent task",
+			Subject:     "Concurrent task",
+			Description: "Testing concurrent operations",
 			Status:      TaskPending,
 		}
 		if err := CreateTask(ctx, "test-session-concurrent", task); err != nil {
@@ -403,52 +396,11 @@ func TestConcurrentTaskOperations(t *testing.T) {
 	}
 }
 
-func TestTaskCreateTool_SpawnError(t *testing.T) {
-	kv, cleanup := newTestKVStore(t)
-	defer cleanup()
-
-	spawnFunc := func(ctx context.Context, agentName, task string) (string, error) {
-		time.Sleep(50 * time.Millisecond)
-		return "", fmt.Errorf("agent execution failed")
-	}
-
-	tool := NewTaskCreateTool(spawnFunc)
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-error")
-
-	params := map[string]any{
-		"task_description": "Failing task",
-		"agent_name":       "broken-agent",
-	}
-
-	result, err := tool.Execute(ctx, params)
-	if err != nil {
-		t.Fatalf("Execute() error = %v (should return immediately with running status)", err)
-	}
-
-	resultMap := result.(map[string]any)
-	taskID := resultMap["task_id"].(string)
-
-	time.Sleep(200 * time.Millisecond)
-
-	task, err := GetTask(ctx, "test-session-error", taskID)
-	if err != nil {
-		t.Fatalf("GetTask() error = %v", err)
-	}
-	if task.Status != TaskFailed {
-		t.Errorf("Task status = %v, want %v", task.Status, TaskFailed)
-	}
-	if task.Error == "" {
-		t.Error("Expected error message in task")
-	}
-}
-
 func TestTaskGetNotFound(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-get")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-get")
 
 	tool := NewTaskGetTool()
 	params := map[string]any{"task_id": "nonexistent"}
@@ -463,8 +415,7 @@ func TestTaskStopNotFound(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-stop")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-stop")
 
 	tool := NewTaskStopTool()
 	params := map[string]any{"task_id": "nonexistent"}
@@ -479,8 +430,7 @@ func TestTaskUpdateNotFound(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-update")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-update")
 
 	tool := NewTaskUpdateTool()
 	params := map[string]any{
@@ -498,18 +448,12 @@ func TestTaskCreateDuplicateIDs(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	spawnFunc := func(ctx context.Context, agentName, task string) (string, error) {
-		time.Sleep(50 * time.Millisecond)
-		return "ok", nil
-	}
-
-	tool := NewTaskCreateTool(spawnFunc)
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, kv, "test-session-dup")
+	tool := NewTaskCreateTool()
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-dup")
 
 	params := map[string]any{
-		"task_description": "Task A",
-		"agent_name":       "agent1",
+		"subject":     "Task A",
+		"description": "First task",
 	}
 
 	result1, err := tool.Execute(ctx, params)
@@ -518,7 +462,7 @@ func TestTaskCreateDuplicateIDs(t *testing.T) {
 	}
 	taskID1 := result1.(map[string]any)["task_id"].(string)
 
-	params["task_description"] = "Task B"
+	params["subject"] = "Task B"
 	result2, err := tool.Execute(ctx, params)
 	if err != nil {
 		t.Fatalf("second create failed: %v", err)
@@ -529,8 +473,6 @@ func TestTaskCreateDuplicateIDs(t *testing.T) {
 		t.Error("expected unique task IDs")
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
 	taskIDs, err := ListTasks(ctx, "test-session-dup")
 	if err != nil {
 		t.Fatalf("ListTasks error = %v", err)
@@ -540,34 +482,159 @@ func TestTaskCreateDuplicateIDs(t *testing.T) {
 	}
 }
 
-func TestTaskCreateEmptyDescription(t *testing.T) {
-	tool := NewTaskCreateTool(nil)
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, nil, "test-session-empty")
+func TestTaskCreateEmptySubject(t *testing.T) {
+	tool := NewTaskCreateTool()
+	ctx := withKVStoreContext(context.Background(), nil, "test-session-empty")
 
 	params := map[string]any{
-		"task_description": "",
-		"agent_name":       "agent1",
+		"subject":     "",
+		"description": "Some description",
 	}
 
 	_, err := tool.Execute(ctx, params)
 	if err == nil {
-		t.Fatal("expected error when task_description is empty")
+		t.Fatal("expected error when subject is empty")
 	}
 }
 
-func TestTaskCreateEmptyAgentName(t *testing.T) {
-	tool := NewTaskCreateTool(nil)
-	ctx := context.Background()
-	ctx = withKVStoreContext(ctx, nil, "test-session-empty")
+func TestTaskUpdate_StatusTransition(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-status")
+
+	task := &Task{
+		ID:          "task-status",
+		Subject:     "Status test",
+		Description: "Test status transitions",
+		Status:      TaskPending,
+	}
+	if err := CreateTask(ctx, "test-session-status", task); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	tool := NewTaskUpdateTool()
+
+	// pending → in_progress (valid)
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id": "task-status",
+		"status":  "in_progress",
+	})
+	if err != nil {
+		t.Fatalf("pending → in_progress should be valid: %v", err)
+	}
+
+	// in_progress → completed (valid)
+	_, err = tool.Execute(ctx, map[string]any{
+		"task_id": "task-status",
+		"status":  "completed",
+	})
+	if err != nil {
+		t.Fatalf("in_progress → completed should be valid: %v", err)
+	}
+
+	// completed → in_progress (invalid)
+	_, err = tool.Execute(ctx, map[string]any{
+		"task_id": "task-status",
+		"status":  "in_progress",
+	})
+	if err == nil {
+		t.Fatal("completed → in_progress should be invalid")
+	}
+}
+
+func TestTaskUpdate_Blocks(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-blocks")
+
+	taskA := &Task{ID: "task-a", Subject: "Task A", Status: TaskPending}
+	taskB := &Task{ID: "task-b", Subject: "Task B", Status: TaskPending}
+	CreateTask(ctx, "test-session-blocks", taskA)
+	CreateTask(ctx, "test-session-blocks", taskB)
+
+	tool := NewTaskUpdateTool()
+
+	// A blocks B → B.blockedBy += A, A.blocks += B
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id":   "task-a",
+		"addBlocks": []any{"task-b"},
+	})
+	if err != nil {
+		t.Fatalf("addBlocks error = %v", err)
+	}
+
+	updatedA, _ := GetTask(ctx, "test-session-blocks", "task-a")
+	if len(updatedA.Blocks) != 1 || updatedA.Blocks[0] != "task-b" {
+		t.Errorf("Task A blocks = %v, want ['task-b']", updatedA.Blocks)
+	}
+
+	updatedB, _ := GetTask(ctx, "test-session-blocks", "task-b")
+	if len(updatedB.BlockedBy) != 1 || updatedB.BlockedBy[0] != "task-a" {
+		t.Errorf("Task B blockedBy = %v, want ['task-a']", updatedB.BlockedBy)
+	}
+}
+
+func TestTaskUpdate_Deleted(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-delete")
+
+	task := &Task{ID: "task-del", Subject: "Delete me", Status: TaskPending}
+	CreateTask(ctx, "test-session-delete", task)
+
+	tool := NewTaskUpdateTool()
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id": "task-del",
+		"status":  "deleted",
+	})
+	if err != nil {
+		t.Fatalf("delete error = %v", err)
+	}
+
+	got, _ := GetTask(ctx, "test-session-delete", "task-del")
+	if got != nil {
+		t.Error("Task should be deleted")
+	}
+}
+
+func TestTaskUpdate_Owner(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-owner")
+
+	task := &Task{ID: "task-owner", Subject: "Owner test", Status: TaskPending}
+	CreateTask(ctx, "test-session-owner", task)
+
+	tool := NewTaskUpdateTool()
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id": "task-owner",
+		"owner":   "agent-x",
+	})
+	if err != nil {
+		t.Fatalf("set owner error = %v", err)
+	}
+
+	updated, _ := GetTask(ctx, "test-session-owner", "task-owner")
+	if updated.Owner != "agent-x" {
+		t.Errorf("Owner = %q, want 'agent-x'", updated.Owner)
+	}
+}
+
+func TestTaskCreateEmptyDescription(t *testing.T) {
+	tool := NewTaskCreateTool()
+	ctx := withKVStoreContext(context.Background(), nil, "test-session-empty")
 
 	params := map[string]any{
-		"task_description": "Test task",
-		"agent_name":       "",
+		"subject":     "Test subject",
+		"description": "",
 	}
 
 	_, err := tool.Execute(ctx, params)
 	if err == nil {
-		t.Fatal("expected error when agent_name is empty")
+		t.Fatal("expected error when description is empty")
 	}
 }

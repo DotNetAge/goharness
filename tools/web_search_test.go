@@ -41,14 +41,14 @@ func TestHtmlUnescape(t *testing.T) {
 }
 
 // ============================================================
-// htmlToText — HTML → Plain Text Conversion
+// htmlToMarkdown — HTML → Plain Text Conversion
 // ============================================================
 
 func TestHtmlToText_ScriptStyleStripped(t *testing.T) {
 	input := `<html><head><script>alert("xss")</script>
 <style>.hidden { display:none }</style></head>
 <body><p>Hello World</p></body></html>`
-	got := htmlToText(input)
+	got := htmlToMarkdown(input)
 	if strings.Contains(got, "alert") || strings.Contains(got, "xss") {
 		t.Error("script content should be stripped")
 	}
@@ -62,7 +62,7 @@ func TestHtmlToText_ScriptStyleStripped(t *testing.T) {
 
 func TestHtmlToText_BlockElements(t *testing.T) {
 	input := `<div>line1</div><p>line2</p><br/>line3<h1>Title</h1><ul><li>item</li></ul>`
-	got := htmlToText(input)
+	got := htmlToMarkdown(input)
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	if len(lines) < 3 {
 		t.Errorf("expected multiple lines from block elements, got %d lines: %q", len(lines), got)
@@ -71,7 +71,7 @@ func TestHtmlToText_BlockElements(t *testing.T) {
 
 func TestHtmlToText_NestedTags(t *testing.T) {
 	input := `<p><strong>Bold</strong> and <em>italic</em> text</p>`
-	got := htmlToText(input)
+	got := htmlToMarkdown(input)
 	if !strings.Contains(got, "Bold") || !strings.Contains(got, "italic") {
 		t.Errorf("should preserve text content in nested tags, got: %q", got)
 	}
@@ -79,14 +79,14 @@ func TestHtmlToText_NestedTags(t *testing.T) {
 
 func TestHtmlToText_EntityDecoding(t *testing.T) {
 	input := `<p>Price: &amp;euro;100 &lt; $200&gt;</p>`
-	got := htmlToText(input)
+	got := htmlToMarkdown(input)
 	if !strings.Contains(got, "$200") {
 		t.Errorf("should decode entities, got: %q", got)
 	}
 }
 
 func TestHtmlToText_EmptyInput(t *testing.T) {
-	got := htmlToText("")
+	got := htmlToMarkdown("")
 	if got != "" {
 		t.Errorf("empty input should return empty, got: %q", got)
 	}
@@ -94,102 +94,12 @@ func TestHtmlToText_EmptyInput(t *testing.T) {
 
 func TestHtmlToText_WhitespaceNormalization(t *testing.T) {
 	input := `<p>   spaced   out   </p>\n\n<p>   more   </p>`
-	got := htmlToText(input)
+	got := htmlToMarkdown(input)
 	lines := strings.Split(got, "\n")
 	for _, line := range lines {
 		if line != "" && (strings.HasPrefix(line, " ") || strings.HasSuffix(line, " ")) {
 			t.Errorf("lines should be trimmed, got: %q", line)
 		}
-	}
-}
-
-// ============================================================
-// parseDuckDuckGoHTML — Real-ish HTML Parsing
-// ============================================================
-
-func TestParseDuckDuckGoHTML_SingleResult(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<div class="results">
-<a rel="nofollow" class="result__a" href="https://example.com/page?uddg=https%3A%2F%2Fexample.com%2Freal">Example Page Title</a>
-<a class="result__snippet">This is a snippet about example page.</a>
-</div>
-</body></html>`)
-
-	results := parseDuckDuckGoHTML(htmlBody)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Title != "Example Page Title" {
-		t.Errorf("Title = %q, want %q", results[0].Title, "Example Page Title")
-	}
-	if results[0].URL != "https://example.com/real" {
-		t.Errorf("URL = %q (should extract real URL from uddg redirect)", results[0].URL)
-	}
-	if results[0].Snippet != "This is a snippet about example page." {
-		t.Errorf("Snippet = %q", results[0].Snippet)
-	}
-}
-
-func TestParseDuckDuckGoHTML_MultipleResults(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<a rel="nofollow" class="result__a" href="/?uddg=https%3A%2F%2Fsite1.com">Site One</a>
-<a class="result__snippet">First result snippet.</a>
-<a rel="nofollow" class="result__a" href="/?uddg=https%3A%2F%2Fsite2.com">Site Two</a>
-<a class="result__snippet">Second result snippet with more detail here.</a>
-<a rel="nofollow" class="result__a" href="/?uddg=https%3A%2F%2Fsite3.com">Site Three</a>
-</body></html>`)
-
-	results := parseDuckDuckGoHTML(htmlBody)
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
-	}
-	for i, r := range results {
-		if r.Title == "" {
-			t.Errorf("result[%d] Title is empty", i)
-		}
-		if r.URL == "" {
-			t.Errorf("result[%d] URL is empty", i)
-		}
-	}
-}
-
-func TestParseDuckDuckGoHTML_NoResults(t *testing.T) {
-	htmlBody := []byte(`<html><body><h1>No Results Found</h1><p>Your search returned nothing.</p></body></html>`)
-	results := parseDuckDuckGoHTML(htmlBody)
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for no-result HTML, got %d", len(results))
-	}
-}
-
-func TestParseDuckDuckGoHTML_HtmlEntitiesInTitle(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<a rel="nofollow" class="result__a" href="https://example.com">&quot;Quoted Title&quot; &amp; More</a>
-<a class="result__snippet">&lt;code&gt; snippet</a>
-</body></html>`)
-
-	results := parseDuckDuckGoHTML(htmlBody)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if !strings.Contains(results[0].Title, `"`) {
-		t.Errorf("entities should be decoded in title, got: %q", results[0].Title)
-	}
-	if !strings.Contains(results[0].Snippet, "<") {
-		t.Errorf("entities should be decoded in snippet, got: %q", results[0].Snippet)
-	}
-}
-
-func TestParseDuckDuckGoHTML_MissingSnippet(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<a rel="nofollow" class="result__a" href="https://example.com">Title Only</a>
-</body></html>`)
-
-	results := parseDuckDuckGoHTML(htmlBody)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Snippet != "" {
-		t.Errorf("Snippet should be empty when not present, got: %q", results[0].Snippet)
 	}
 }
 
@@ -283,10 +193,6 @@ func TestFilterResults_InvalidURLSkipped(t *testing.T) {
 	}
 }
 
-// ============================================================
-// WebSearchTool — Real DuckDuckGo Search Tests
-// ============================================================
-
 func TestWebSearchTool_Info(t *testing.T) {
 	tool := NewWebSearchTool()
 	info := tool.Info()
@@ -298,55 +204,6 @@ func TestWebSearchTool_Info(t *testing.T) {
 	}
 	if len(info.Parameters) == 0 {
 		t.Error("expected parameters")
-	}
-}
-
-func TestWebSearchTool_Real_DuckDuckGo(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tool := NewWebSearchTool()
-	result, err := tool.Execute(ctx, map[string]any{
-		"query": "golang programming language",
-	})
-	if err != nil {
-		t.Skipf("DuckDuckGo unreachable (network/GFW): %v", err)
-	}
-	s := result.(string)
-	if s == "" {
-		t.Fatal("expected non-empty search result")
-	}
-	if !strings.Contains(s, "Web search results") {
-		t.Errorf("result should contain header, got: %.150s...", s)
-	}
-	if !strings.Contains(s, "http") {
-		t.Error("result should contain at least one URL")
-	}
-}
-
-func TestWebSearchTool_Real_SpecificQuery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tool := NewWebSearchTool()
-	result, err := tool.Execute(ctx, map[string]any{
-		"query":       "example.com",
-		"max_results": float64(3),
-	})
-	if err != nil {
-		t.Skipf("DuckDuckGo unreachable (network/GFW): %v", err)
-	}
-	s := result.(string)
-	if !strings.Contains(s, "example.com") || !strings.Contains(s, "Example") {
-		t.Errorf("search for 'example.com' should return relevant results, got: %.200s...", s)
 	}
 }
 
@@ -382,7 +239,7 @@ func TestWebSearchTool_CacheBehavior(t *testing.T) {
 		"query": "cache test unique query",
 	})
 	if err != nil {
-		t.Skipf("DuckDuckGo unreachable (network/GFW): %v", err)
+		t.Skipf("search unreachable: %v", err)
 	}
 
 	result2, err := tool.Execute(ctx, map[string]any{
@@ -471,27 +328,5 @@ func TestSearchResult_JSONMarshal(t *testing.T) {
 	s := string(data)
 	if !strings.Contains(s, `"title"`) || !strings.Contains(s, `"url"`) {
 		t.Errorf("JSON should contain title and url fields, got: %s", s)
-	}
-}
-
-// ============================================================
-// DuckDuckGoAdapter Unit Tests
-// ============================================================
-
-func TestDuckDuckGoAdapter_Name(t *testing.T) {
-	a := NewDuckDuckGoAdapter()
-	if a.Name() != "duckduckgo" {
-		t.Errorf("Name() = %q, want %q", a.Name(), "duckduckgo")
-	}
-}
-
-func TestDuckDuckGoAdapter_Search_ContextCancelled(t *testing.T) {
-	a := NewDuckDuckGoAdapter()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := a.Search(ctx, "test query", SearchOptions{})
-	if err == nil {
-		t.Error("expected error when context is already cancelled")
 	}
 }

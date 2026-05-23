@@ -16,26 +16,25 @@ func NewTaskGetTool() *TaskGetTool {
 func (t *TaskGetTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "TaskGet",
-		MaxResultSizeChars: 50000,
-		Description: "Get detailed information about a specific task including its status, output, and any errors.",
+		Description: "Get detailed information about a specific task, including its status, owner, and dependency relationships.",
 		Prompt: `Get detailed information about a specific task by task_id.
 
 Use this to:
-- Check the current status of a task (pending, running, completed, failed, stopped)
-- Retrieve the task's result/output when it completes
-- See error messages for failed tasks
-- Monitor task progress
+- Check the current status of a task (pending, in_progress, completed)
+- See who owns a task
+- Check what tasks block this one (blockedBy) or are blocked by it (blocks)
+- Get the full description of what needs to be done
 
 Required parameter:
 - task_id: the unique identifier of the task (from TaskCreate or TaskList)
 
 Returns:
-- task_id, status, type, description
-- result: the task's output (when completed)
-- error: error message (when failed)
-- created_at, started_at, completed_at timestamps
-- agent_name: which agent ran the task`,
-		Tags: []string{"task", "get", "status", "output", "orchestration"},
+- task_id, subject, description, status
+- owner: who is responsible
+- blocks: tasks that depend on this one (this must complete first)
+- blocked_by: tasks that this one depends on (they must complete first)
+- created_at: when the task was created`,
+		Tags: []string{"task", "get", "status", "planning"},
 		Parameters: []core.Parameter{
 			{Name: "task_id", Type: "string", Description: "The unique identifier of the task to retrieve.", Required: true},
 		},
@@ -63,44 +62,27 @@ func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, 
 
 	result := map[string]any{
 		"task_id":     task.ID,
-		"status":      string(task.Status),
-		"type":        string(task.Type),
+		"subject":     task.Subject,
 		"description": task.Description,
+		"status":      string(task.Status),
 		"created_at":  task.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
 
-	if len(task.DependsOn) > 0 {
-		result["depends_on"] = task.DependsOn
-
-		// Compute blocked_by — dependencies that haven't reached a terminal state
-		blockedBy, err := IsTaskBlocked(task, func(id string) (*Task, error) {
-			return GetTask(ctx, tc.SessionID, id)
-		})
-		if err == nil && len(blockedBy) > 0 {
-			result["blocked_by"] = blockedBy
-		}
+	if task.ActiveForm != "" {
+		result["active_form"] = task.ActiveForm
+	}
+	if len(task.Metadata) > 0 {
+		result["metadata"] = task.Metadata
 	}
 
-	if task.AgentName != "" {
-		result["agent_name"] = task.AgentName
+	if task.Owner != "" {
+		result["owner"] = task.Owner
 	}
-	if task.Prompt != "" {
-		result["prompt"] = task.Prompt
+	if len(task.Blocks) > 0 {
+		result["blocks"] = task.Blocks
 	}
-	if task.StartedAt != nil {
-		result["started_at"] = task.StartedAt.Format("2006-01-02 15:04:05")
-	}
-	if task.CompletedAt != nil {
-		result["completed_at"] = task.CompletedAt.Format("2006-01-02 15:04:05")
-	}
-	if task.Result != "" {
-		result["result"] = task.Result
-	}
-	if task.Error != "" {
-		result["error"] = task.Error
-	}
-	if task.OutputPath != "" {
-		result["output_path"] = task.OutputPath
+	if len(task.BlockedBy) > 0 {
+		result["blocked_by"] = task.BlockedBy
 	}
 
 	return result, nil

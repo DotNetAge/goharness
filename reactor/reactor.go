@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -43,6 +44,7 @@ type ReactorConfig struct {
 
 	IsLocal          bool
 	AsyncToolTimeout time.Duration // Timeout for async tool execution (default 5 minutes)
+	SyncToolTimeout  time.Duration // Timeout for sync tool execution (default 5 minutes)
 }
 
 // Merge combines two ReactorConfig values, using non-zero values from override
@@ -202,6 +204,8 @@ type Reactor struct {
 
 	// asyncToolTimeout is the timeout for async tool execution (default 5 minutes)
 	asyncToolTimeout time.Duration
+	// syncToolTimeout is the timeout for sync tool execution (default 5 minutes)
+	syncToolTimeout time.Duration
 
 	// Hook 集合 — 构建时按 priority 排序，运行时只读
 	thoughtHooks     []ThoughtHook
@@ -436,9 +440,9 @@ type reactorSetup struct {
 	eventBus       EventBus
 	skillDirs      []string
 	skills         []string
-	memory          core.Memory
-	sessionMemory   core.Memory
-	mockLLM         MockLLMFunc
+	memory         core.Memory
+	sessionMemory  core.Memory
+	mockLLM        MockLLMFunc
 	sessionStore   core.SessionStore
 	kvStore        core.KVStore
 	fileStore      core.FileStore
@@ -450,8 +454,6 @@ type reactorSetup struct {
 	// Directory context (Design-time safety: guaranteed by Agent layer)
 	projectDir string // Layer 2: Set via WithProjectDir() ReactorOption
 	sessionDir string // Layer 3: Auto-resolved from SessionStore or set via WithSessionDir()
-
-
 
 	// Hook 注入
 	thoughtHooks     []ThoughtHook
@@ -493,6 +495,10 @@ func (r *Reactor) initRegistries(setup *reactorSetup) {
 	} else {
 		r.eventBus = NewEventBus()
 	}
+	// Wire logger into EventBus for observability (subscribe/emit/drop tracing)
+	if bus, ok := r.eventBus.(*InProcessEventBus); ok {
+		bus.SetLogger(r.getLogger())
+	}
 
 	r.resultStore = core.NewResultStore()
 }
@@ -514,6 +520,7 @@ func (r *Reactor) initLLMCaller(config ReactorConfig, setup *reactorSetup) {
 	client := gochat.Client().Config(
 		gochat.WithAPIKey(config.APIKey),
 		gochat.WithBaseURL(config.BaseURL),
+		gochat.WithTimeout(4*time.Minute),
 	)
 
 	estimator := setup.tokenEstimator
@@ -596,9 +603,11 @@ func (f *askUserPermissionFilter) BlockAndWait(ctx *core.ToolUseContext) core.Pe
 	return f.inner.BlockAndWait(ctx)
 }
 
-func (f *askUserPermissionFilter) IsWaiting() bool                                          { return f.inner.IsWaiting() }
-func (f *askUserPermissionFilter) Respond(result core.PermissionResult) error               { return f.inner.Respond(result) }
-func (f *askUserPermissionFilter) RespondError(err error) error                             { return f.inner.RespondError(err) }
+func (f *askUserPermissionFilter) IsWaiting() bool { return f.inner.IsWaiting() }
+func (f *askUserPermissionFilter) Respond(result core.PermissionResult) error {
+	return f.inner.Respond(result)
+}
+func (f *askUserPermissionFilter) RespondError(err error) error { return f.inner.RespondError(err) }
 
 func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 	// Use askUserPermissionFilter so the executor only asks for AskUser tools.
@@ -646,9 +655,6 @@ var defaultBundledTools = []toolRegistration{
 	}, "PowerShell"},
 	{"WebSearch", func() core.FuncTool { return tools.NewWebSearchTool() }, "WebSearch"},
 	{"WebFetch", func() core.FuncTool { return tools.NewWebFetchTool() }, "WebFetch"},
-	{"TodoWrite", func() core.FuncTool { return tools.NewTodoWriteTool() }, "TodoWrite"},
-	{"TodoRead", func() core.FuncTool { return tools.NewTodoReadTool() }, "TodoRead"},
-	{"TodoExecute", func() core.FuncTool { return tools.NewTodoExecuteTool() }, "TodoExecute"},
 	{"AskUser", func() core.FuncTool { return tools.NewAskUserTool() }, "AskUser"},
 	{"Ls", func() core.FuncTool { return tools.NewLsTool() }, "Ls"},
 	{"CollectResults", func() core.FuncTool { return tools.NewCollectResultsTool() }, "CollectResults"},
@@ -700,12 +706,7 @@ func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
 			}
 			return "", fmt.Errorf("delegate: SpawnFunc not configured on reactor")
 		})},
-		{"TaskCreate", tools.NewTaskCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
-			if spawn != nil {
-				return spawn(ctx, agentName, task)
-			}
-			return "", fmt.Errorf("task_create: SpawnFunc not configured on reactor")
-		})},
+		{"TaskCreate", tools.NewTaskCreateTool()},
 		{"TeamCreate", tools.NewTeamCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
 			if spawn != nil {
 				return spawn(ctx, agentName, task)
@@ -745,6 +746,12 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 		r.asyncToolTimeout = config.AsyncToolTimeout
 	} else {
 		r.asyncToolTimeout = 5 * time.Minute
+	}
+	// Initialize sync tool timeout (default 5 minutes if not configured)
+	if config.SyncToolTimeout > 0 {
+		r.syncToolTimeout = config.SyncToolTimeout
+	} else {
+		r.syncToolTimeout = 5 * time.Minute
 	}
 	// Directory context (Design-time safety: copy from setup to Reactor)
 	r.projectDir = setup.projectDir
@@ -897,6 +904,7 @@ func (r *Reactor) SetModelConfig(model core.ModelConfig) {
 	client := gochat.Client().Config(
 		gochat.WithAPIKey(r.config.APIKey),
 		gochat.WithBaseURL(r.config.BaseURL),
+		gochat.WithTimeout(4*time.Minute),
 	)
 	r.llmCaller.SetClient(client)
 
@@ -1030,6 +1038,7 @@ func (r *Reactor) cloneLLMCallerForChild(childConfig ReactorConfig) *LLMCaller {
 	client := gochat.Client().Config(
 		gochat.WithAPIKey(childConfig.APIKey),
 		gochat.WithBaseURL(childConfig.BaseURL),
+		gochat.WithTimeout(4*time.Minute),
 	)
 
 	parentCaller := r.llmCaller
@@ -1090,10 +1099,28 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 		Duration:  time.Since(cycleStart),
 	})
 
-	// Structured assistant message: thought content
+	// Structured assistant message: thought content with tool calls (required by strict APIs like DeepSeek)
 	thoughtMsg := fmt.Sprintf("Thought: %s\nDecision: %s", reactCtx.LastThought.Reasoning, reactCtx.LastThought.Decision)
-	reactCtx.AddMessage("assistant", thoughtMsg)
-	r.persistStepToStore(reactCtx.Ctx(), "assistant", thoughtMsg)
+	var toolCalls []core.ToolCall
+	if reactCtx.LastThought.Decision == DecisionAct && len(reactCtx.LastThought.ToolCallList) > 0 {
+		toolCalls = make([]core.ToolCall, len(reactCtx.LastThought.ToolCallList))
+		for i, tc := range reactCtx.LastThought.ToolCallList {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			toolCalls[i] = core.ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Name,
+				Arguments: string(argsJSON),
+			}
+		}
+	}
+	reactCtx.AddMessage("assistant", thoughtMsg, toolCalls...)
+	assistantMsg := core.Message{
+		Role:      "assistant",
+		Content:   thoughtMsg,
+		Timestamp: time.Now().Unix(),
+		ToolCalls: toolCalls,
+	}
+	r.persistStepToStore(reactCtx.Ctx(), assistantMsg)
 
 	// Structured tool messages: one per tool result (with correct tool_call_id)
 	if reactCtx.LastThought.Decision == DecisionAct {
@@ -1101,7 +1128,12 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 			toolCallID := lookUpToolCallID(reactCtx.LastThought, tr.ToolName)
 			toolMsg := tr.ToolResultSummary()
 			reactCtx.AddToolMessage("tool", toolMsg, toolCallID)
-			r.persistStepToStore(reactCtx.Ctx(), "tool", toolMsg)
+			r.persistStepToStore(reactCtx.Ctx(), core.Message{
+				Role:       "tool",
+				Content:    toolMsg,
+				Timestamp:  time.Now().Unix(),
+				ToolCallID: toolCallID,
+			})
 		}
 	}
 }
@@ -1327,19 +1359,18 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 
 // persistStepToStore persists an intermediate step message to the session store
 // and tracks it in the LLMCaller's context window for token budget management.
-func (r *Reactor) persistStepToStore(ctx context.Context, role, content string) {
+func (r *Reactor) persistStepToStore(ctx context.Context, msg core.Message) {
 	ss := r.llmCaller.SessionStore()
 	cw := r.llmCaller.ContextWindow()
 	if ss == nil || cw == nil {
-		r.llmCaller.AddContextMessage(role, content)
+		r.llmCaller.AddContextMessage(msg.Role, msg.Content)
 		return
 	}
 
 	agentName := cw.Role
-	msg := core.Message{Role: role, Content: content, Timestamp: time.Now().Unix()}
-	r.llmCaller.AddContextMessage(role, content)
+	r.llmCaller.AddContextMessage(msg.Role, msg.Content)
 	if err := ss.Append(ctx, cw.SessionID, agentName, msg); err != nil {
-		r.getLogger().Warn("failed to persist step to session store", "session_id", cw.SessionID, "role", role, "error", err)
+		r.getLogger().Warn("failed to persist step to session store", "session_id", cw.SessionID, "role", msg.Role, "error", err)
 	}
 }
 

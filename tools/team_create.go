@@ -31,7 +31,8 @@ Use this when:
 - Multiple specialized agents need to collaborate
 - You want to organize parallel work streams with coordination
 
-The team creation is immediate — no async execution. After creating the team, use TaskCreate to dispatch tasks to team members.
+The team creation is immediate. After creating the team, use TaskCreate to
+create planning entries and Delegate/Agent tools to dispatch work to members.
 
 Required parameters:
 - team_name: short, unique name for the team (kebab-case, e.g. "data-analysis-team")
@@ -40,18 +41,18 @@ Required parameters:
 - members: array of agent names who will be team members
 
 Optional parameters:
-- tasks: array of task descriptions to immediately dispatch to team members
+- tasks: array of task descriptions to create planning entries for each member
 
 Returns:
 - team_name, leader, members list
-- task_ids if tasks were dispatched`,
+- task_ids if tasks were created`,
 		Tags: []string{"team", "create", "swarm", "orchestration", "collaboration"},
 		Parameters: []core.Parameter{
 			{Name: "team_name", Type: "string", Description: "Short, unique name for the team (kebab-case).", Required: true},
 			{Name: "description", Type: "string", Description: "What the team is working on.", Required: true},
 			{Name: "leader", Type: "string", Description: "Name of the team leader agent.", Required: true},
 			{Name: "members", Type: "array", Description: "Array of agent names who will be team members.", Required: true},
-			{Name: "tasks", Type: "array", Description: "Array of task descriptions to immediately dispatch to team members.", Required: false},
+			{Name: "tasks", Type: "array", Description: "Array of task descriptions to create planning entries for team members.", Required: false},
 		},
 	}
 }
@@ -99,7 +100,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	var taskIDs []string
-	if rawTasks, ok := params["tasks"].([]any); ok && t.spawn != nil {
+	if rawTasks, ok := params["tasks"].([]any); ok {
 		for _, rawTask := range rawTasks {
 			taskDesc, _ := rawTask.(string)
 			if taskDesc == "" {
@@ -112,51 +113,16 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 
 			task := &Task{
 				ID:          taskID,
-				Type:        TaskTypeAgent,
+				Subject:     taskDesc,
 				Description: taskDesc,
 				Status:      TaskPending,
-				AgentName:   memberName,
-				Prompt:      taskDesc,
+				Owner:       memberName,
+				CreatedAt:   time.Now(),
 			}
 
 			if err := CreateTask(ctx, tc.SessionID, task); err != nil {
 				continue
 			}
-
-			go func(desc, mName, tID string) {
-				localTask := &Task{
-					ID:          tID,
-					Type:        TaskTypeAgent,
-					Description: desc,
-					Status:      TaskRunning,
-					AgentName:   mName,
-					Prompt:      desc,
-				}
-				now := time.Now()
-				localTask.StartedAt = &now
-				_ = UpdateTask(ctx, tc.SessionID, localTask)
-
-				result, err := t.spawn(ctx, mName, desc)
-				completedAt := time.Now()
-				localTask.CompletedAt = &completedAt
-				if err != nil {
-					localTask.Status = TaskFailed
-					localTask.Error = err.Error()
-				} else {
-					localTask.Status = TaskCompleted
-					localTask.Result = result
-				}
-				_ = UpdateTask(ctx, tc.SessionID, localTask)
-
-				if tc.ResultStore != nil {
-					tc.ResultStore.Store(tID, &core.TaskResult{
-						TaskID: tID,
-						Result: result,
-						Done:   true,
-					})
-				}
-			}(taskDesc, memberName, taskID)
-
 			taskIDs = append(taskIDs, taskID)
 		}
 	}
@@ -170,7 +136,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 
 	if len(taskIDs) > 0 {
 		result["task_ids"] = taskIDs
-		result["message"] = fmt.Sprintf("Team %q created with %d members and %d tasks dispatched", teamName, len(members), len(taskIDs))
+		result["message"] = fmt.Sprintf("Team %q created with %d members and %d tasks created", teamName, len(members), len(taskIDs))
 	}
 
 	return result, nil

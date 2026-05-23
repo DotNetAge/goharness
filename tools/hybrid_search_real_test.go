@@ -64,7 +64,6 @@ func TestHybridSearch_AdapterPerformance(t *testing.T) {
 		NewBaiduAdapter(),
 		NewHaosouAdapter(),
 		NewSogouAdapter(),
-		NewDuckDuckGoAdapter(),
 	}
 
 	query := "Agentic应用2026的趋势"

@@ -17,8 +17,7 @@ import (
 //   go test ./tools/... -v -count=1 -run "TestIntegration" -timeout 300s
 //
 // This test suite exercises both WebFetchTool (simple) and
-// WebFetchTool (Claude-style) against REAL internet targets,
-// plus WebSearchTool with real DuckDuckGo queries.
+// WebFetchTool (Claude-style) against REAL internet targets.
 // ============================================================
 
 var (
@@ -324,7 +323,7 @@ func TestIntegration_WebFetch_BinaryLikeContent(t *testing.T) {
 }
 
 // ============================================================
-// SECTION 3: WebSearchTool — Real DuckDuckGo Search
+// SECTION 3: WebSearchTool — Real Hybrid Search
 // ============================================================
 
 func TestIntegration_Search_GolangOfficial(t *testing.T) {

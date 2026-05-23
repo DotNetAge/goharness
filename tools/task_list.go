@@ -16,21 +16,22 @@ func NewTaskListTool() *TaskListTool {
 func (t *TaskListTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "TaskList",
-		Description: "List all tasks in the current session with their status. Returns task IDs, descriptions, types, and current status.",
+		Description: "List all tasks in the current session with their status, owner, and dependency information.",
 		Prompt: `List all tasks in the current session.
 
 Use this to:
-- See all running, pending, completed, or failed tasks
-- Find task IDs to use with TaskGet or TaskStop
-- Monitor overall task progress
+- See the full task list and current progress
+- Find task IDs to use with TaskGet or TaskUpdate
+- Identify blocked tasks and who they depend on
+- See which tasks are assigned to whom
 
-Returns a summary table with:
+Returns a list with:
 - task_id: unique identifier for each task
-- status: pending, running, completed, failed, or stopped
-- type: agent or shell
-- description: what the task is doing
-- agent_name: which agent is running the task (for agent tasks)`,
-		Tags: []string{"task", "list", "status", "orchestration"},
+- subject: short title
+- status: pending, in_progress, or completed
+- owner: who is responsible (if assigned)
+- blocked_by: tasks blocking this one (if any)`,
+		Tags: []string{"task", "list", "status", "planning"},
 		Parameters: []core.Parameter{},
 	}
 }
@@ -61,34 +62,23 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 		}
 
 		taskInfo := map[string]any{
-			"task_id":     task.ID,
-			"status":      string(task.Status),
-			"type":        string(task.Type),
-			"description": task.Description,
-			"created_at":  task.CreatedAt.Format("2006-01-02 15:04:05"),
+			"task_id":    task.ID,
+			"subject":    task.Subject,
+			"status":     string(task.Status),
+			"created_at": task.CreatedAt.Format("2006-01-02 15:04:05"),
 		}
 
-		if len(task.DependsOn) > 0 {
-			taskInfo["depends_on"] = task.DependsOn
-			blockedBy, err := IsTaskBlocked(task, func(id string) (*Task, error) {
-				return GetTask(ctx, tc.SessionID, id)
-			})
-			if err == nil && len(blockedBy) > 0 {
-				taskInfo["blocked_by"] = blockedBy
-			}
+		if task.Owner != "" {
+			taskInfo["owner"] = task.Owner
 		}
-
-		if task.AgentName != "" {
-			taskInfo["agent_name"] = task.AgentName
+		if task.ActiveForm != "" {
+			taskInfo["active_form"] = task.ActiveForm
 		}
-		if task.StartedAt != nil {
-			taskInfo["started_at"] = task.StartedAt.Format("2006-01-02 15:04:05")
+		if len(task.Metadata) > 0 {
+			taskInfo["metadata"] = task.Metadata
 		}
-		if task.CompletedAt != nil {
-			taskInfo["completed_at"] = task.CompletedAt.Format("2006-01-02 15:04:05")
-		}
-		if task.Error != "" {
-			taskInfo["error"] = task.Error
+		if len(task.BlockedBy) > 0 {
+			taskInfo["blocked_by"] = task.BlockedBy
 		}
 
 		tasks = append(tasks, taskInfo)

@@ -27,7 +27,7 @@ func NewCrontabTool() core.FuncTool {
 			Description: `System crontab manager for Linux/Unix/macOS. Operations: 'list'|'add'|'remove'|'validate'|'raw'. Params: {operation: string, expression: 'cron_expr', command: string, comment: string, line_number: number}. Security level: HighRisk — modifies system scheduling.`,
 			Prompt: `Schedule recurring tasks on Linux and macOS using system cron. Use this when the user wants something to run automatically at fixed times or intervals — periodic backups, cleanup jobs, health checks, report generation, or any recurring maintenance task.
 
-When NOT to use: For one-off delayed execution, use systemd timers or 'at' instead. For task scheduling within the current session, use todo tools. On Windows, this tool is unavailable.
+When NOT to use: For one-off delayed execution, use systemd timers or 'at' instead. For task scheduling within the current session, use Task tools (TaskCreate/TaskUpdate/TaskList). On Windows, this tool is unavailable.
 
 ## When this tool fits into a workflow
 

@@ -135,6 +135,49 @@ func TestEventBus_FullChannelDrops(t *testing.T) {
 	}
 }
 
+func TestEventBus_CriticalEventNotDropped(t *testing.T) {
+	bus := NewEventBus()
+	defer bus.Close()
+
+	ch, cancel := bus.Subscribe()
+	defer cancel()
+
+	// Fill subscriber channel to capacity with non-critical events
+	for i := 0; i < StreamChannelBufferSize; i++ {
+		bus.Emit(core.NewReactEvent("s", "main", "", core.ThinkingDelta, "fill"))
+	}
+
+	// Emit critical event — will block on the full channel
+	permDone := make(chan struct{})
+	go func() {
+		bus.Emit(core.NewReactEvent("s", "main", "", core.PermissionRequest, "critical"))
+		close(permDone)
+	}()
+
+	// Drain all events (256 fill + 1 critical = 257). The critical event
+	// must arrive — Emit blocks (not drops) until we free a slot.
+	events := make([]core.ReactEvent, 0, StreamChannelBufferSize+1)
+	for i := 0; i < StreamChannelBufferSize+1; i++ {
+		select {
+		case ev := <-ch:
+			events = append(events, ev)
+		case <-time.After(time.Second):
+			t.Fatalf("only read %d/%d events — critical event was dropped", i, StreamChannelBufferSize+1)
+		}
+	}
+
+	last := events[len(events)-1]
+	if last.Type != core.PermissionRequest {
+		t.Errorf("expected PermissionRequest, got %s", last.Type)
+	}
+
+	select {
+	case <-permDone:
+	case <-time.After(time.Second):
+		t.Fatal("critical Emit never returned")
+	}
+}
+
 func TestReactContext_EmitEvent(t *testing.T) {
 	bus := NewEventBus()
 	defer bus.Close()

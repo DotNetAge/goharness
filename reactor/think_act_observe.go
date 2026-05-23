@@ -54,6 +54,11 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 	sessionID := r.resolveSessionID(ctx)
 	iter := ctx.CurrentIteration + 1
 
+	r.getLogger().Info("[think] start",
+		"session_id", sessionID,
+		"iteration", iter,
+	)
+
 	callInput := r.buildCallInput(ctx)
 
 	// 防御性检查：确保 LLMCaller 已初始化
@@ -81,6 +86,11 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 	}
 
 	var contentBuf strings.Builder
+
+	r.getLogger().Info("[think] llm call start",
+		"session_id", sessionID,
+		"iteration", iter,
+	)
 
 	result := r.llmCaller.CallStream(ctx.Ctx(), *callInput,
 		func(chunk string) {
@@ -142,6 +152,16 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 		}
 		ctx.TerminationReason = hr.AbortReason
 	}
+
+	r.getLogger().Info("[think] done",
+		"session_id", sessionID,
+		"iteration", iter,
+		"decision", thought.Decision,
+		"tool_count", len(thought.ToolCalls),
+		"elapsed_ms", time.Since(thinkStart).Milliseconds(),
+		"input_tokens", int(result.TokenUsage.InputTokens),
+		"output_tokens", int(result.TokenUsage.OutputTokens),
+	)
 
 	return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), nil
 }
@@ -354,7 +374,9 @@ func (r *Reactor) partitionByAsync(calls []toolCall) (syncCalls, asyncCalls []to
 
 func (r *Reactor) executeSyncTools(ctx *ReactContext, syncCalls []toolCall, results *[]ToolResult) {
 	for _, c := range syncCalls {
-		tr := r.execToolHooksWithAbort(ctx, c)
+		toolCtx, cancel := ctx.withToolTimeout(r.syncToolTimeout)
+		tr := r.execToolHooksWithAbort(toolCtx, c)
+		cancel()
 		*results = append(*results, *tr)
 	}
 }
@@ -573,12 +595,31 @@ func (r *Reactor) Observe(ctx *ReactContext) error {
 
 	ctx.LastObservation = obs
 
+	sessionID := r.resolveSessionID(ctx)
+	iter := ctx.CurrentIteration + 1
+	r.getLogger().Info("[observe] result",
+		"session_id", sessionID,
+		"iteration", iter,
+		"decision", ctx.LastThought.Decision,
+		"success", obs.Success,
+		"insights", obs.Insights,
+	)
+
 	// Observation After hooks (ObservationEvent, ObservationLogger, Convergence)
 	if hr := r.execObservationHooksAfter(ctx, obs); hr.IsTerminal() {
 		if hr.Error != nil {
+			r.getLogger().Error("[observe] hook error", hr.Error,
+				"session_id", sessionID,
+				"iteration", iter,
+			)
 			return hr.Error
 		}
 		ctx.TerminationReason = hr.AbortReason
+		r.getLogger().Info("[observe] terminated by hook",
+			"session_id", sessionID,
+			"iteration", iter,
+			"reason", hr.AbortReason,
+		)
 	}
 
 	return nil

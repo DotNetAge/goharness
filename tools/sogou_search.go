@@ -45,7 +45,7 @@ func (a *SogouAdapter) Search(ctx context.Context, query string, opts SearchOpti
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 
@@ -77,7 +77,10 @@ func parseSogouHTML(html []byte) []SearchResult {
 	content := string(html)
 	var results []SearchResult
 
-	parts := strings.Split(content, `class="vrwrap"`)
+	parts := strings.Split(content, `class="vrResult"`)
+	if len(parts) <= 1 {
+		parts = strings.Split(content, `class="vrwrap"`)
+	}
 	if len(parts) <= 1 {
 		parts = strings.Split(content, `class="rb"`)
 	}
@@ -99,9 +102,9 @@ func parseSogouHTML(html []byte) []SearchResult {
 		}
 
 		results = append(results, SearchResult{
-			Title:   htmlUnescape(stripTags(title)),
+			Title:   normalizeHTML(title),
 			URL:     finalURL,
-			Snippet: htmlUnescape(stripTags(snippet)),
+			Snippet: normalizeHTML(snippet),
 		})
 	}
 
@@ -110,43 +113,49 @@ func parseSogouHTML(html []byte) []SearchResult {
 
 // extractSogouTitle extracts the title text and href from a result block.
 func extractSogouTitle(part string) (title, href string) {
-	h3Start := strings.Index(part, `<h3`)
-	if h3Start < 0 {
-		h3Start = strings.Index(part, `<h4`)
-	}
-	if h3Start < 0 {
-		return "", ""
-	}
-	h3Part := part[h3Start:]
-	h3End := strings.Index(h3Part, `</h3>`)
-	if h3End < 0 {
-		h3End = strings.Index(h3Part, `</h4>`)
-	}
-	if h3End < 0 {
-		h3End = len(h3Part)
-	}
-
-	aPart := h3Part[:h3End]
-
-	if idx := strings.Index(aPart, `href="`); idx >= 0 {
-		hrefPart := aPart[idx+6:]
-		if end := strings.Index(hrefPart, `"`); end >= 0 {
-			href = htmlUnescape(hrefPart[:end])
+	for _, tag := range []string{"h3", "h4"} {
+		tagStart := strings.Index(part, "<"+tag)
+		if tagStart < 0 {
+			continue
 		}
-	}
-	if idx := strings.Index(aPart, `href='`); idx >= 0 && href == "" {
-		hrefPart := aPart[idx+6:]
-		if end := strings.Index(hrefPart, `'`); end >= 0 {
-			href = htmlUnescape(hrefPart[:end])
+		tagPart := part[tagStart:]
+		tagEnd := strings.Index(tagPart, "</"+tag+">")
+		if tagEnd < 0 {
+			tagEnd = len(tagPart)
 		}
-	}
 
-	if gt := strings.Index(aPart, ">"); gt >= 0 {
-		textPart := aPart[gt+1:]
-		if end := strings.Index(textPart, "</a>"); end >= 0 {
-			title = strings.TrimSpace(textPart[:end])
-		} else {
-			title = strings.TrimSpace(textPart)
+		aPart := tagPart[:tagEnd]
+
+		// Extract href from <a> tag
+		if idx := strings.Index(aPart, `href="`); idx >= 0 {
+			hrefPart := aPart[idx+6:]
+			if end := strings.Index(hrefPart, `"`); end >= 0 {
+				href = htmlUnescape(hrefPart[:end])
+			}
+		}
+		if idx := strings.Index(aPart, `href='`); idx >= 0 && href == "" {
+			hrefPart := aPart[idx+6:]
+			if end := strings.Index(hrefPart, `'`); end >= 0 {
+				href = htmlUnescape(hrefPart[:end])
+			}
+		}
+
+		// Extract title text inside <a> tag (not the full element)
+		aTagStart := strings.Index(aPart, "<a")
+		if aTagStart >= 0 {
+			afterA := aPart[aTagStart:]
+			// Find the > that closes the <a> opening tag
+			aClose := strings.Index(afterA, ">")
+			if aClose >= 0 {
+				innerText := afterA[aClose+1:]
+				if end := strings.Index(innerText, "</a>"); end >= 0 {
+					title = strings.TrimSpace(innerText[:end])
+				}
+			}
+		}
+
+		if title != "" || href != "" {
+			break
 		}
 	}
 
@@ -178,21 +187,30 @@ func extractSogouSnippet(part string) string {
 }
 
 // resolveSogouURL resolves the final URL from Sogou search result href.
+// Handles both:
+//   - Direct URLs: https://example.com
+//   - Sogou redirect URLs: https://www.sogou.com/link?url=...
+//   - Mobile relative redirect URLs: ./id=.../tc?url=...
 func resolveSogouURL(href string) string {
+	if href == "" {
+		return ""
+	}
+
+	// Try to extract url parameter from any redirect format (supports ./id=.../tc?url=... as well)
+	if encodedURL := extractURLParam(href); encodedURL != "" {
+		return encodedURL
+	}
+
+	// Direct URL
 	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-		if realURL := decodeSogouRedirectURL(href); realURL != "" {
-			return realURL
-		}
 		return href
 	}
+
 	return ""
 }
 
-// decodeSogouRedirectURL extracts the real URL from a Sogou redirect link if present.
-func decodeSogouRedirectURL(href string) string {
-	if !strings.Contains(href, "sogou.com/link") && !strings.Contains(href, "sogou.com/web") {
-		return ""
-	}
+// extractURLParam attempts to extract a url query parameter from any href.
+func extractURLParam(href string) string {
 	u, err := url.Parse(href)
 	if err != nil {
 		return ""

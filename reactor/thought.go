@@ -107,7 +107,7 @@ func ParseThinkResponse(content string, logger core.Logger) (*Thought, error) {
 			if logger != nil {
 				logger.Info("parsing non-JSON response as direct answer",
 					"content_length", len(trimmed),
-					"preview", Truncate(trimmed, 100),
+					"preview", Truncate(trimmed, 80),
 				)
 			}
 			return &Thought{

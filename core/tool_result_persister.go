@@ -31,7 +31,12 @@ func (d *DiskResultPersister) Persist(toolName, toolUseID, result string) *Persi
 		return nil
 	}
 	if d.sessionDir == "" {
-		return nil
+		return &PersistedToolResult{
+			ToolName: toolName,
+			FullSize: charCount,
+			Preview:  buildPreview(result),
+			FilePath: "",
+		}
 	}
 
 	persistDir := filepath.Join(d.sessionDir, toolResultsDir)

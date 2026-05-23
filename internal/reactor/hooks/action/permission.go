@@ -10,7 +10,8 @@ import (
 // PermissionHook 对每个工具调用执行 Allow/Deny 权限检查。
 // 实现 ToolHook，只在 Before 中有实际逻辑。
 type PermissionHook struct {
-	Chain core.PermissionChain
+	Chain  core.PermissionChain
+	Logger core.Logger // optional: for tracing permission decisions
 }
 
 func (h *PermissionHook) Priority() int { return reactor.PriorityPermission }
@@ -29,7 +30,13 @@ func (h *PermissionHook) Before(ctx *reactor.ReactContext, toolName string, para
 	}
 	decision, err := h.Chain.Check(toolCtx)
 	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("[permission_hook] check failed", err, "tool", toolName)
+		}
 		return reactor.HookResult{Error: fmt.Errorf("permission check failed: %w", err)}
+	}
+	if h.Logger != nil {
+		h.Logger.Debug("[permission_hook] decision", "tool", toolName, "behavior", decision.Behavior, "msg", decision.Message)
 	}
 	if decision.Behavior == core.PermissionDeny {
 		// Emit PermissionDenied event at the Hook level so subscribers

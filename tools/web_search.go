@@ -8,12 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/DotNetAge/goreact/core"
+	md "github.com/JohannesKaufmann/html-to-markdown"
 )
 
 // --- WebSearch Tool (Claude-style adapter pattern) ---
@@ -23,6 +23,7 @@ type SearchResult struct {
 	Title   string `json:"title"`
 	URL     string `json:"url"`
 	Snippet string `json:"snippet,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 // SearchAdapter is the interface for web search providers.
@@ -42,121 +43,6 @@ type SearchOptions struct {
 	BlockedDomains []string
 }
 
-// --- DuckDuckGo Adapter (zero-config fallback, like Claude's Bing adapter) ---
-
-// DuckDuckGoAdapter implements SearchAdapter using DuckDuckGo HTML search.
-// This is the zero-configuration fallback (always available, no API key needed),
-// similar to Claude Code's BingSearchAdapter.
-type DuckDuckGoAdapter struct {
-	client *http.Client
-}
-
-// NewDuckDuckGoAdapter creates a new DuckDuckGo search adapter.
-func NewDuckDuckGoAdapter() *DuckDuckGoAdapter {
-	return &DuckDuckGoAdapter{
-		client: &http.Client{Timeout: 8 * time.Second},
-	}
-}
-
-func (a *DuckDuckGoAdapter) Name() string { return "duckduckgo" }
-
-func (a *DuckDuckGoAdapter) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
-	params := url.Values{}
-	params.Set("q", query)
-	params.Set("kl", "wt-wt") // no region bias
-	params.Set("num", strconv.Itoa(opts.MaxResults))
-
-	reqURL := "https://html.duckduckgo.com/html/?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("search request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	results := parseDuckDuckGoHTML(body)
-	return filterResults(results, opts), nil
-}
-
-// parseDuckDuckGoHTML extracts search results from DuckDuckGo HTML response.
-// DuckDuckGo HTML results use class="result" containers with anchor links.
-func parseDuckDuckGoHTML(html []byte) []SearchResult {
-	content := string(html)
-	var results []SearchResult
-
-	// DuckDuckGo HTML format: each result is in a <a class="result__a" href="...">
-	// and the snippet is in <a class="result__snippet">
-	type resultEntry struct {
-		Title   string
-		URL     string
-		Snippet string
-	}
-
-	// Simple parsing strategy: find all result blocks
-	parts := strings.Split(content, `<a rel="nofollow" class="result__a"`)
-	for _, part := range parts[1:] {
-		entry := resultEntry{}
-
-		// Extract URL from href
-		if idx := strings.Index(part, `href="`); idx >= 0 {
-			hrefPart := part[idx+6:]
-			if end := strings.Index(hrefPart, `"`); end >= 0 {
-				entry.URL = htmlUnescape(hrefPart[:end])
-				// DuckDuckGo uses redirect URLs, extract actual URL
-				if uddg := strings.Index(entry.URL, "uddg="); uddg >= 0 {
-					encoded := entry.URL[uddg+5:]
-					if amp := strings.Index(encoded, "&"); amp >= 0 {
-						encoded = encoded[:amp]
-					}
-					if decoded, err := url.QueryUnescape(encoded); err == nil {
-						entry.URL = decoded
-					}
-				}
-			}
-		}
-
-		// Extract title (text between > and </a>)
-		if gt := strings.Index(part, ">"); gt >= 0 {
-			if end := strings.Index(part[gt:], "</a>"); end >= 0 {
-				entry.Title = htmlUnescape(strings.TrimSpace(part[gt+1 : gt+end]))
-			}
-		}
-
-		// Extract snippet
-		if idx := strings.Index(part, `class="result__snippet"`); idx >= 0 {
-			snippetPart := part[idx:]
-			if gt := strings.Index(snippetPart, ">"); gt >= 0 {
-				snippetPart = snippetPart[gt+1:]
-				if end := strings.Index(snippetPart, "</a>"); end >= 0 {
-					entry.Snippet = htmlUnescape(strings.TrimSpace(snippetPart[:end]))
-				}
-			}
-		}
-
-		if entry.Title != "" && entry.URL != "" {
-			results = append(results, SearchResult{
-				Title:   entry.Title,
-				URL:     entry.URL,
-				Snippet: entry.Snippet,
-			})
-		}
-	}
-
-	return results
-}
-
 func htmlUnescape(s string) string {
 	s = strings.ReplaceAll(s, "&amp;", "&")
 	s = strings.ReplaceAll(s, "&lt;", "<")
@@ -165,6 +51,38 @@ func htmlUnescape(s string) string {
 	s = strings.ReplaceAll(s, "&#39;", "'")
 	s = strings.ReplaceAll(s, "&nbsp;", " ")
 	return s
+}
+
+var mdConverter = md.NewConverter("", true, nil)
+
+func normalizeHTML(rawHTML string) string {
+	if rawHTML == "" {
+		return ""
+	}
+	result, err := mdConverter.ConvertString(rawHTML)
+	if err != nil || len(result) == 0 {
+		return htmlUnescape(stripTagsFast(rawHTML))
+	}
+	return strings.TrimSpace(result)
+}
+
+func stripTagsFast(s string) string {
+	var buf strings.Builder
+	inTag := false
+	for _, r := range s {
+		if r == '<' {
+			inTag = true
+			continue
+		}
+		if r == '>' {
+			inTag = false
+			continue
+		}
+		if !inTag {
+			buf.WriteRune(r)
+		}
+	}
+	return buf.String()
 }
 
 func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
@@ -228,7 +146,7 @@ type cachedSearch struct {
 }
 
 // NewWebSearchTool creates a WebSearchTool with multiple search adapters for hybrid search.
-// Uses parallel execution: Baidu + 360 (Haosou) + Sogou + DuckDuckGo.
+// Uses parallel execution: Baidu + 360 (Haosou) + Sogou.
 // Each adapter returns top 5 results, which are then merged and deduplicated.
 func NewWebSearchTool() core.FuncTool {
 	t := &WebSearchTool{
@@ -238,7 +156,6 @@ func NewWebSearchTool() core.FuncTool {
 		NewBaiduAdapter(),
 		NewHaosouAdapter(),
 		NewSogouAdapter(),
-		NewDuckDuckGoAdapter(),
 	}
 	return t
 }
@@ -410,6 +327,9 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	successCount := 0
 	for result := range resultCh {
 		if result.err == nil && len(result.results) > 0 {
+			for i := range result.results {
+				result.results[i].Source = result.adapter
+			}
 			allResults = append(allResults, result.results...)
 			successCount++
 			logger.Info("search adapter succeeded in hybrid mode",
@@ -466,20 +386,41 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 
 func formatSearchResults(query string, results []SearchResult) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Web search results for query: %q\n\n", query)
+	sb.WriteString("## 搜索结果\n\n")
+	sb.WriteString(fmt.Sprintf("**查询**: %s\n\n", query))
 
-	for i, r := range results {
-		fmt.Fprintf(&sb, "%d. [%s](%s)\n", i+1, r.Title, r.URL)
-		if r.Snippet != "" {
-			snippet := r.Snippet
-			if len([]rune(snippet)) > 200 {
-				snippet = string([]rune(snippet)[:200]) + "..."
-			}
-			fmt.Fprintf(&sb, "   %s\n", snippet)
-		}
+	if len(results) == 0 {
+		sb.WriteString("*无搜索结果*\n")
+		return sb.String()
 	}
 
-	fmt.Fprintln(&sb, "\nUse WebFetch to read the full content of any URL above.")
+	for i, r := range results {
+		sb.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, r.Title))
+		if r.Snippet != "" {
+			snippet := r.Snippet
+			if len([]rune(snippet)) > 250 {
+				snippet = string([]rune(snippet)[:250]) + "..."
+			}
+			sb.WriteString(fmt.Sprintf("> %s\n\n", snippet))
+		}
+		sb.WriteString(fmt.Sprintf("- **URL**: <%s>\n", r.URL))
+		if r.Source != "" {
+			sourceLabel := r.Source
+			switch r.Source {
+			case "baidu":
+				sourceLabel = "百度"
+			case "haosou":
+				sourceLabel = "360搜索"
+			case "sogou":
+				sourceLabel = "搜狗"
+			}
+			sb.WriteString(fmt.Sprintf("- **来源**: %s\n", sourceLabel))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("---\n")
+	sb.WriteString("使用 `WebFetch` 工具可获取上述任意 URL 的完整内容。\n")
 	return sb.String()
 }
 
@@ -570,9 +511,9 @@ func NewWebFetchTool() core.FuncTool {
 
 func (t *WebFetchTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
-		Name:        "WebFetch",
+		Name:               "WebFetch",
 		MaxResultSizeChars: 50000,
-		Description: "Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.",
+		Description:        "Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.",
 		Prompt: `Read the full content of a specific URL. Unlike WebSearch which only returns titles and URLs, WebFetch retrieves the actual page content.
 
 Architecture:
@@ -655,7 +596,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 
 	// Process content
-	content := htmlToText(string(body))
+	content := htmlToMarkdown(string(body))
 	content = TruncateString(content, 50000) // 50K chars max
 
 	// Cache
@@ -676,103 +617,75 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	return sb.String(), nil
 }
 
-// htmlToText converts HTML to plain text, stripping tags and normalizing whitespace.
-// This is a simplified version - a production implementation would use a proper
-// HTML-to-Markdown converter (like Turndown in Claude Code).
-func htmlToText(html string) string {
-	// Remove script and style blocks
-	html = stripTag(html, "script")
-	html = stripTag(html, "style")
-	html = stripTag(html, "nav")
-	html = stripTag(html, "header")
-	html = stripTag(html, "footer")
-	html = stripTag(html, "noscript")
-
-	// Convert common block elements to newlines
-	html = blockToNewline(html, "p")
-	html = blockToNewline(html, "div")
-	html = blockToNewline(html, "br")
-	html = blockToNewline(html, "h1")
-	html = blockToNewline(html, "h2")
-	html = blockToNewline(html, "h3")
-	html = blockToNewline(html, "h4")
-	html = blockToNewline(html, "h5")
-	html = blockToNewline(html, "h6")
-	html = blockToNewline(html, "li")
-	html = blockToNewline(html, "tr")
-	html = blockToNewline(html, "pre")
-	html = blockToNewline(html, "blockquote")
-
-	// Remove all remaining HTML tags
-	result := stripAllTags(html)
-
-	// Decode HTML entities
-	result = htmlUnescape(result)
-
-	// Normalize whitespace
-	lines := strings.Split(result, "\n")
-	var cleaned []string
-	for _, line := range lines {
+// htmlToMarkdown converts HTML to clean Markdown using html-to-markdown library.
+func htmlToMarkdown(htmlStr string) string {
+	converter := md.NewConverter("", true, nil)
+	mdResult, err := converter.ConvertString(htmlStr)
+	if err != nil || len(mdResult) == 0 {
+		return fallbackHtmlToText(htmlStr)
+	}
+	var lines []string
+	for _, line := range strings.Split(mdResult, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
-			cleaned = append(cleaned, line)
+			lines = append(lines, line)
 		}
 	}
-
-	return strings.Join(cleaned, "\n")
+	return strings.Join(lines, "\n")
 }
 
-func stripTag(html, tag string) string {
-	// Remove opening and closing tags and everything between them
-	for {
-		start := strings.Index(strings.ToLower(html), "<"+tag)
-		if start == -1 {
-			break
-		}
-		end := strings.Index(html[start:], ">")
-		if end == -1 {
-			break
-		}
-		closeTag := "</" + tag
-		closeIdx := strings.Index(strings.ToLower(html[start:]), closeTag)
-		if closeIdx == -1 {
-			html = html[:start] + html[start+end+1:]
-			continue
-		}
-		closeEnd := strings.Index(html[start+closeIdx:], ">")
-		if closeEnd == -1 {
-			html = html[:start] + html[start+end+1:]
-			continue
-		}
-		html = html[:start] + html[start+closeIdx+closeEnd+1:]
-	}
-	return html
-}
+// fallbackHtmlToText is the old stripTags-based converter used when htmltomarkdown fails.
+func fallbackHtmlToText(s string) string {
+	s = strings.ReplaceAll(s, "<script", "\n<script")
+	s = strings.ReplaceAll(s, "</script>", "</script>\n")
+	s = strings.ReplaceAll(s, "<style", "\n<style")
+	s = strings.ReplaceAll(s, "</style>", "</style>\n")
 
-func blockToNewline(html, tag string) string {
-	html = strings.ReplaceAll(html, "<"+tag+">", "\n")
-	html = strings.ReplaceAll(html, "<"+tag+" ", "\n")
-	html = strings.ReplaceAll(html, "</"+tag+">", "\n")
-	return html
-}
-
-func stripAllTags(s string) string {
 	var result strings.Builder
 	inTag := false
+	inScriptOrStyle := false
 	for _, r := range s {
-		if r == '<' {
+		switch r {
+		case '<':
 			inTag = true
-			continue
-		}
-		if r == '>' {
+			if len(result.String()) > 0 && result.String()[len(result.String())-1] == '\n' && !inScriptOrStyle {
+				continue
+			}
+		case '>':
 			inTag = false
+			lower := strings.ToLower(strings.TrimSpace(result.String()))
+			if strings.HasSuffix(lower, "script") || strings.HasSuffix(lower, "style") {
+				inScriptOrStyle = true
+				result.WriteRune(r)
+				continue
+			}
+			if inScriptOrStyle && (strings.Contains(lower, "/script") || strings.Contains(lower, "/style")) {
+				inScriptOrStyle = false
+				result.WriteRune(r)
+				continue
+			}
+			if !inScriptOrStyle {
+				result.WriteByte(' ')
+			}
 			continue
-		}
-		if !inTag {
-			result.WriteRune(r)
+		default:
+			if !inTag && !inScriptOrStyle {
+				result.WriteRune(r)
+			} else if r == '/' && inTag {
+				result.WriteRune(r)
+			}
 		}
 	}
-	return result.String()
+
+	cleaned := strings.Join(strings.Fields(result.String()), " ")
+	var finalLines []string
+	for _, line := range strings.Split(cleaned, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && len(line) > 1 {
+			finalLines = append(finalLines, line)
+		}
+	}
+	return strings.Join(finalLines, "\n")
 }
 
 // MarshalJSON for SearchResult

@@ -132,10 +132,16 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 
 	if e.cfg.permissionChecker != nil {
 		permResult := e.cfg.permissionChecker.CheckPermissions(useCtx)
+		if e.cfg.logger != nil {
+			e.cfg.logger.Debug("[executor] permission check", "tool", name, "behavior", permResult.Behavior, "msg", permResult.Message)
+		}
 		switch permResult.Behavior {
 		case PermissionDeny:
 			if e.cfg.eventEmitter != nil {
 				e.cfg.eventEmitter(NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", PermissionDenied, permResult.Message))
+			}
+			if e.cfg.logger != nil {
+				e.cfg.logger.Info("[executor] tool denied", "tool", name, "reason", permResult.Message)
 			}
 			return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied: %s", name, permResult.Message)}, nil
 		case PermissionAsk:
@@ -148,8 +154,14 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 					Questions:     permResult.Questions,
 				}))
 			}
+			if e.cfg.logger != nil {
+				e.cfg.logger.Info("[executor] awaiting user permission", "tool", name)
+			}
 			if responder, ok := e.cfg.permissionChecker.(PermissionResponder); ok {
 				finalResult := responder.BlockAndWait(useCtx)
+				if e.cfg.logger != nil {
+					e.cfg.logger.Debug("[executor] permission response received", "tool", name, "behavior", finalResult.Behavior)
+				}
 				switch finalResult.Behavior {
 				case PermissionDeny:
 					if e.cfg.eventEmitter != nil {
@@ -171,6 +183,10 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 		}
 	}
 
+	if e.cfg.logger != nil {
+		e.cfg.logger.Debug("[executor] executing tool", "tool", name, "params", params)
+	}
+
 	// Inject ToolContext so bridge tools (delegate, etc.) can access event bus
 	// Directory context is guaranteed by Agent layer (Design-time safety)
 	toolCtx := &ToolContext{
@@ -188,6 +204,14 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 	start := time.Now()
 	result, err := tool.Execute(execCtx, params)
 	duration := time.Since(start)
+
+	if e.cfg.logger != nil {
+		if err != nil {
+			e.cfg.logger.Debug("[executor] tool execution error", "tool", name, "duration_ms", duration.Milliseconds(), "error", err.Error())
+		} else {
+			e.cfg.logger.Debug("[executor] tool execution completed", "tool", name, "duration_ms", duration.Milliseconds())
+		}
+	}
 
 	if err != nil {
 		return &ToolExecutionResult{ToolName: name, Duration: duration, Error: err}, nil

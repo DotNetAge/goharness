@@ -842,6 +842,7 @@ func (a *Agent) AskWithSession(question string) (*Result, error) {
 // such as request-scoped deadlines or graceful shutdown.
 func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question string) (*Result, error) {
 	runCtx, cancel := context.WithCancel(ctx)
+	askStart := time.Now()
 
 	a.interruptMu.Lock()
 	a.cancelFunc = cancel
@@ -862,6 +863,12 @@ func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question s
 		effectiveSessionID = a.SessionID()
 	}
 
+	logger := a.reactor.Logger()
+	logger.Info("[agent] ask start",
+		"session_id", effectiveSessionID,
+		"question_preview", reactor.Truncate(question, 80),
+	)
+
 	// Ensure ContextWindow is set with the correct sessionID before execution
 	cw := a.reactor.ContextWindow()
 	if cw == nil || cw.SessionID != effectiveSessionID {
@@ -871,12 +878,28 @@ func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question s
 
 	// 1. Build conversation history from SessionStore (does NOT include current question)
 	history := a.buildHistory(ctx, effectiveSessionID)
+	logger.Info("[agent] history built",
+		"session_id", effectiveSessionID,
+		"history_msg_count", len(history),
+	)
 
 	// 2. Execute via Reactor — user message is added by assembleMessages via UserMessage
 	runResult, err := a.reactor.Run(runCtx, question, reactor.ConversationHistory(history))
+
+	elapsedMs := time.Since(askStart).Milliseconds()
 	if err != nil {
+		logger.Error("[agent] ask failed", err,
+			"session_id", effectiveSessionID,
+			"elapsed_ms", elapsedMs,
+		)
 		return nil, err
 	}
+	logger.Info("[agent] ask done",
+		"session_id", effectiveSessionID,
+		"elapsed_ms", elapsedMs,
+		"total_iterations", runResult.TotalIterations,
+		"total_tokens", runResult.TokensUsed,
+	)
 
 	// 3. Persist user message and assistant response after execution
 	if runResult.Answer != "" {
@@ -904,8 +927,8 @@ func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question s
 // For fine-grained timeout control, use AskStreamWithContext instead.
 func (a *Agent) AskStream(sessionID string, question string) (<-chan string, func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAskTimeout)
-	defer cancel()
-	return a.AskStreamWithContext(ctx, sessionID, question)
+	textCh, innerCancel, _ := a.AskStreamWithContext(ctx, sessionID, question)
+	return textCh, func() { innerCancel(); cancel() }, nil
 }
 
 // AskStreamWithSession is a convenience alias using the currently bound session.

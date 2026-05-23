@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/DotNetAge/goreact/core"
 )
@@ -17,24 +16,20 @@ func NewTaskStopTool() *TaskStopTool {
 func (t *TaskStopTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:        "TaskStop",
-		Description: "Stop a running or pending task. The task's status will be set to 'stopped' and no further work will be done.",
-		Prompt: `Stop a running or pending task by task_id.
+		Description: "Abort/cancel a task. The task is permanently removed from the task list.",
+		Prompt: `Abort a task that is no longer needed.
 
 Use this to:
-- Terminate a task that is no longer needed
-- Cancel a task that has been running too long
-- Clean up before starting a different approach
+- Cancel a task that has been superseded
+- Remove a task created by mistake
+- Abort a task that is no longer relevant
 
-The task's status will change to "stopped". A stopped task cannot be restarted.
+Note: TaskStop permanently removes the task. Use TaskUpdate to change status
+gracefully (e.g., mark as completed normally).
 
 Required parameter:
-- task_id: the unique identifier of the task to stop
-
-Returns:
-- success: whether the task was stopped
-- message: status message
-- task_id: the stopped task's ID`,
-		Tags: []string{"task", "stop", "cancel", "orchestration"},
+- task_id: the unique identifier of the task to stop`,
+		Tags: []string{"task", "stop", "cancel", "abort"},
 		Parameters: []core.Parameter{
 			{Name: "task_id", Type: "string", Description: "The unique identifier of the task to stop.", Required: true},
 		},
@@ -60,33 +55,13 @@ func (t *TaskStopTool) Execute(ctx context.Context, params map[string]any) (any,
 		return nil, fmt.Errorf("task %q not found", taskID)
 	}
 
-	if task.Status == TaskCompleted || task.Status == TaskFailed || task.Status == TaskStopped {
-		return map[string]any{
-			"success": false,
-			"message": fmt.Sprintf("Task %q is already %s, cannot stop", taskID, task.Status),
-			"task_id": taskID,
-		}, nil
-	}
-
-	task.Status = TaskStopped
-	now := time.Now()
-	task.CompletedAt = &now
-
-	if err := UpdateTask(ctx, tc.SessionID, task); err != nil {
+	if err := DeleteTask(ctx, tc.SessionID, taskID); err != nil {
 		return nil, fmt.Errorf("failed to stop task: %w", err)
-	}
-
-	if tc.EmitEvent != nil {
-		tc.EmitEvent(core.ReactEvent{
-			AgentID: "main",
-			Type:    core.SubtaskCompleted,
-			Data:    map[string]any{"task_id": taskID, "success": false, "stopped": true},
-		})
 	}
 
 	return map[string]any{
 		"success": true,
-		"message": fmt.Sprintf("Task %q stopped successfully", taskID),
+		"message": fmt.Sprintf("Task %q stopped and removed", taskID),
 		"task_id": taskID,
 	}, nil
 }

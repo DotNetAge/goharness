@@ -380,8 +380,9 @@ func BuildToolUsageGuidelines() string {
    Example: Read 3 files simultaneously; Search and Fetch in same round. Reduces cycle count.
 2. **Prefer dedicated tools**: Use Read/Glob/Grep/FileEdit over Bash cat/find/grep/sed.
    (Each tool's description has specifics.)
-3. **Track progress**: Use TodoWrite for multi-step tasks. Mark items complete IMMEDIATELY
-   after finishing each one. Enables progress estimation across cycles.
+3. **Track progress**: Use TaskCreate/TaskUpdate to break down and track multi-step tasks.
+   Create tasks with subject/description, update status as you go. Mark items complete
+   IMMEDIATELY after finishing each one. Enables progress estimation across cycles.
 4. **Read efficiently**: When you Read a file, extract ONLY relevant portions with file path and line numbers, then summarize them concisely in your thinking. Do NOT copy large file blocks
   verbatim — reference and summarize instead. This avoids redundant re-reads and preserves context space.`
 }

@@ -156,7 +156,7 @@ func TestWebSearchTool_HybridAdaptersRegistered(t *testing.T) {
 		names[adapter.Name()] = true
 	}
 
-	expectedNames := []string{"baidu", "haosou", "sogou", "duckduckgo"}
+	expectedNames := []string{"baidu", "haosou", "sogou"}
 	for _, name := range expectedNames {
 		if !names[name] {
 			t.Errorf("missing adapter: %s", name)

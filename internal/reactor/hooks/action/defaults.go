@@ -18,7 +18,7 @@ func Defaults(askPermission *tools.AskPermission, ruleStore core.PermissionRuleS
 	checkers = append(checkers, askPermission)
 
 	return []reactor.ToolHook{
-		&PermissionHook{Chain: core.NewPermissionChain(checkers...)},
+		&PermissionHook{Chain: core.NewPermissionChain(checkers...), Logger: logger},
 		&ToolEventHook{},
 		&ToolLoggerHook{Logger: logger},
 		&BudgetHook{Enforcer: enforcer},

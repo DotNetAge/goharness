@@ -626,6 +626,16 @@ func (c *LLMCaller) assembleMessages(input CallInput) []gochatcore.Message {
 		if m.ToolCallID != "" {
 			msg.ToolCallID = m.ToolCallID
 		}
+		// Propagate ToolCalls for role="assistant" messages (required by strict APIs like DeepSeek)
+		if len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				msg.ToolCalls = append(msg.ToolCalls, gochatcore.ToolCall{
+					ID:        tc.ID,
+					Name:      tc.Name,
+					Arguments: tc.Arguments,
+				})
+			}
+		}
 		msgs = append(msgs, msg)
 	}
 

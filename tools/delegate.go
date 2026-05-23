@@ -14,11 +14,11 @@ import (
 type SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
 
 // DelegateTool lets the LLM delegate tasks to sub-agents.
-// It is async (IsAsync=true) — returns {task_id, status: "running"} immediately.
-// Now also persists task state in KVStore for unified tracking with Task tools.
+// IsAsync=true — returns {task_id, status: "running"} immediately.
+// Results are collected via CollectResultsTool (reads from ResultStore).
 type DelegateTool struct {
-	spawn     SpawnFunc
-	counter   atomic.Int64
+	spawn   SpawnFunc
+	counter atomic.Int64
 }
 
 // NewDelegateTool creates a DelegateTool.
@@ -85,23 +85,8 @@ func (t *DelegateTool) Execute(ctx context.Context, params map[string]any) (any,
 		"task", truncateForLog(task, 100),
 	)
 
-	// Use unified task ID format
-	taskID := fmt.Sprintf("task-%d", t.counter.Add(1))
+	taskID := fmt.Sprintf("delegate-%d", t.counter.Add(1))
 
-	// Persist task in KVStore for unified tracking with Task tools
-	if tc.SessionID != "" && tc.KVStore != nil {
-		taskRecord := &Task{
-			ID:          taskID,
-			Type:        TaskTypeAgent,
-			Description: task,
-			Status:      TaskPending,
-			AgentName:   agentName,
-			Prompt:      task,
-		}
-		_ = CreateTask(ctx, tc.SessionID, taskRecord)
-	}
-
-	// Emit event notification
 	tc.EmitEvent(core.ReactEvent{
 		AgentID: "main",
 		Type:    core.SubtaskSpawned,
@@ -110,43 +95,24 @@ func (t *DelegateTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	// Run sub-agent in background
 	go func() {
-		localTask := &Task{
-			ID:          taskID,
-			Type:        TaskTypeAgent,
-			Description: task,
-			Status:      TaskRunning,
-			AgentName:   agentName,
-			Prompt:      task,
-		}
-		now := time.Now()
-		localTask.StartedAt = &now
-		if tc.SessionID != "" && tc.KVStore != nil {
-			_ = UpdateTask(ctx, tc.SessionID, localTask)
-		}
+		startedAt := time.Now()
 
 		result, err := t.spawn(ctx, agentName, task)
 		completedAt := time.Now()
-		localTask.CompletedAt = &completedAt
+
 		if err != nil {
-			localTask.Status = TaskFailed
-			localTask.Error = err.Error()
 			logger.Error("sub-agent task failed", err,
 				"agent_name", agentName,
 				"task_id", taskID,
-				"elapsed_ms", completedAt.Sub(*localTask.StartedAt).Milliseconds(),
+				"elapsed_ms", completedAt.Sub(startedAt).Milliseconds(),
 			)
 		} else {
-			localTask.Status = TaskCompleted
-			localTask.Result = result
 			logger.Info("sub-agent task completed",
 				"agent_name", agentName,
 				"task_id", taskID,
-				"elapsed_ms", completedAt.Sub(*localTask.StartedAt).Milliseconds(),
+				"elapsed_ms", completedAt.Sub(startedAt).Milliseconds(),
 				"result_len", len(result),
 			)
-		}
-		if tc.SessionID != "" && tc.KVStore != nil {
-			_ = UpdateTask(ctx, tc.SessionID, localTask)
 		}
 
 		var taskResult *core.TaskResult

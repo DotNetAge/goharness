@@ -34,6 +34,14 @@ type InProcessEventBus struct {
 	subscribers map[string]*subscriber
 	closed      bool
 	nextID      int
+	logger      core.Logger // optional: set via SetLogger for observability
+}
+
+// SetLogger attaches a logger for tracing subscribe/unsubscribe/emit/drop events.
+func (b *InProcessEventBus) SetLogger(logger core.Logger) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.logger = logger
 }
 
 // NewEventBus creates a new InProcessEventBus.
@@ -43,27 +51,63 @@ func NewEventBus() *InProcessEventBus {
 	}
 }
 
+// isCriticalEvent returns true for event types that MUST NOT be dropped.
+// These events carry permission decisions that block tool execution.
+func isCriticalEvent(eventType core.ReactEventType) bool {
+	return eventType == core.PermissionRequest || eventType == core.PermissionDenied
+}
+
+// emitTargets is the snapshot of subscribers collected under lock, sent without lock held.
+type emitTarget struct {
+	ch     chan core.ReactEvent
+	filter func(core.ReactEvent) bool
+}
+
 // Emit publishes an event to all active subscribers.
-// Events that don't match a subscriber's filter are silently dropped.
-// If a subscriber's channel is full, the event is dropped (non-blocking send)
-// to prevent slow consumers from blocking the publisher.
+//
+// Non-critical events: non-blocking send with silent drop on full channel.
+// Critical events (PermissionRequest, PermissionDenied): blocking send
+// — guarantees delivery to prevent tool-execution hang.
+//
+// The subscribers map is snapshotted under RLock, then the lock is released
+// before any channel send, eliminating deadlock risk between Emit and unsubscribe/Close.
 func (b *InProcessEventBus) Emit(event core.ReactEvent) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	if b.closed {
+		b.mu.RUnlock()
+		if b.logger != nil && event.Type != core.ThinkingDelta {
+			b.logger.Debug("[eventbus] emit skipped — bus closed", "type", event.Type, "session_id", event.SessionID)
+		}
 		return
 	}
 
+	if b.logger != nil && event.Type != core.ThinkingDelta {
+		b.logger.Debug("[eventbus] emit", "type", event.Type, "session_id", event.SessionID, "subscribers", len(b.subscribers))
+	}
+
+	targets := make([]emitTarget, 0, len(b.subscribers))
 	for _, sub := range b.subscribers {
 		if sub.filter != nil && !sub.filter(event) {
 			continue
 		}
+		targets = append(targets, emitTarget{ch: sub.ch, filter: sub.filter})
+	}
+	b.mu.RUnlock()
+
+	if isCriticalEvent(event.Type) {
+		for _, t := range targets {
+			t.ch <- event
+		}
+		return
+	}
+
+	for _, t := range targets {
 		select {
-		case sub.ch <- event:
+		case t.ch <- event:
 		default:
-			// Channel full, drop event to avoid blocking publisher.
-			// This is acceptable: UI consumers should have a buffered enough channel.
+			if b.logger != nil {
+				b.logger.Warn("[eventbus] event dropped — subscriber channel full", "type", event.Type, "session_id", event.SessionID)
+			}
 		}
 	}
 }
@@ -81,23 +125,34 @@ func (b *InProcessEventBus) SubscribeFiltered(filter func(core.ReactEvent) bool)
 	if b.closed {
 		ch := make(chan core.ReactEvent)
 		close(ch)
+		if b.logger != nil {
+			b.logger.Warn("[eventbus] subscribe failed — bus closed")
+		}
 		return ch, func() {}
 	}
 
 	id := b.nextID
 	b.nextID++
+	idStr := idStr(id)
 
 	sub := &subscriber{
 		ch:     make(chan core.ReactEvent, StreamChannelBufferSize), // buffer for burst events
 		filter: filter,
 	}
-	b.subscribers[idStr(id)] = sub
+	b.subscribers[idStr] = sub
+
+	if b.logger != nil {
+		b.logger.Debug("[eventbus] subscriber added", "id", idStr, "buffer_cap", StreamChannelBufferSize)
+	}
 
 	unsubscribe := func() {
 		b.mu.Lock()
-		if sub, exists := b.subscribers[idStr(id)]; exists {
-			delete(b.subscribers, idStr(id))
+		if sub, exists := b.subscribers[idStr]; exists {
+			delete(b.subscribers, idStr)
 			close(sub.ch)
+			if b.logger != nil {
+				b.logger.Debug("[eventbus] subscriber removed", "id", idStr)
+			}
 		}
 		b.mu.Unlock()
 	}
@@ -111,10 +166,17 @@ func (b *InProcessEventBus) Close() {
 	defer b.mu.Unlock()
 
 	b.closed = true
-	for _, sub := range b.subscribers {
+	count := len(b.subscribers)
+	for id, sub := range b.subscribers {
 		close(sub.ch)
+		if b.logger != nil {
+			b.logger.Debug("[eventbus] closing subscriber", "id", id)
+		}
 	}
 	b.subscribers = make(map[string]*subscriber)
+	if b.logger != nil {
+		b.logger.Debug("[eventbus] bus closed", "subscribers_closed", count)
+	}
 }
 
 // SubscriberCount returns the current number of active subscribers.

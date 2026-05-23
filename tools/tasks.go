@@ -12,34 +12,22 @@ import (
 type TaskStatus string
 
 const (
-	TaskPending   TaskStatus = "pending"
-	TaskRunning   TaskStatus = "running"
-	TaskCompleted TaskStatus = "completed"
-	TaskFailed    TaskStatus = "failed"
-	TaskStopped   TaskStatus = "stopped"
-)
-
-type TaskType string
-
-const (
-	TaskTypeAgent TaskType = "agent"
-	TaskTypeShell TaskType = "shell"
+	TaskPending    TaskStatus = "pending"
+	TaskInProgress TaskStatus = "in_progress"
+	TaskCompleted  TaskStatus = "completed"
 )
 
 type Task struct {
-	ID          string     `json:"id"`
-	Type        TaskType   `json:"type"`
-	Description string     `json:"description"`
-	Status      TaskStatus `json:"status"`
-	DependsOn   []string   `json:"depends_on,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	AgentName   string     `json:"agent_name,omitempty"`
-	Prompt      string     `json:"prompt,omitempty"`
-	Result      string     `json:"result,omitempty"`
-	Error       string     `json:"error,omitempty"`
-	OutputPath  string     `json:"output_path,omitempty"`
+	ID          string         `json:"id"`
+	Subject     string         `json:"subject"`
+	Description string         `json:"description"`
+	ActiveForm  string         `json:"active_form,omitempty"`
+	Status      TaskStatus     `json:"status"`
+	Owner       string         `json:"owner,omitempty"`
+	Blocks      []string       `json:"blocks,omitempty"`
+	BlockedBy   []string       `json:"blocked_by,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 type Team struct {
@@ -52,13 +40,11 @@ type Team struct {
 	Status      string    `json:"status"`
 }
 
-// validTransitions defines the allowed status state machine.
+// validTransitions defines the allowed status state machine for planning tasks.
 var validTransitions = map[TaskStatus][]TaskStatus{
-	TaskPending:   {TaskRunning, TaskStopped},
-	TaskRunning:   {TaskCompleted, TaskFailed, TaskStopped},
-	TaskCompleted: {},
-	TaskFailed:    {},
-	TaskStopped:   {},
+	TaskPending:    {TaskInProgress, TaskCompleted},
+	TaskInProgress: {TaskCompleted},
+	TaskCompleted:  {},
 }
 
 // ValidTaskTransition reports whether moving from current to next is allowed.
@@ -73,38 +59,6 @@ func ValidTaskTransition(current, next TaskStatus) bool {
 		}
 	}
 	return false
-}
-
-// TaskDependency holds the status of a single dependency for reporting.
-type TaskDependency struct {
-	TaskID string     `json:"task_id"`
-	Status TaskStatus `json:"status"`
-}
-
-// IsTaskBlocked checks whether any of the task's dependencies have not yet
-// reached a completed/failed/stopped terminal state. It returns the list of
-// unresolved dependencies (empty slice = not blocked).
-func IsTaskBlocked(task *Task, getTask func(id string) (*Task, error)) ([]TaskDependency, error) {
-	if len(task.DependsOn) == 0 {
-		return nil, nil
-	}
-	var blockedBy []TaskDependency
-	for _, depID := range task.DependsOn {
-		dep, err := getTask(depID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read dependency %q: %w", depID, err)
-		}
-		if dep == nil {
-			return nil, fmt.Errorf("dependency %q not found", depID)
-		}
-		switch dep.Status {
-		case TaskCompleted, TaskFailed, TaskStopped:
-			// resolved — skip
-		default:
-			blockedBy = append(blockedBy, TaskDependency{TaskID: depID, Status: dep.Status})
-		}
-	}
-	return blockedBy, nil
 }
 
 const (
@@ -208,6 +162,28 @@ func UpdateTask(ctx context.Context, sessionID string, task *Task) error {
 	}
 
 	return kv.Set(ctx, sessionID, taskKey(sessionID, task.ID), data, 0)
+}
+
+func DeleteTask(ctx context.Context, sessionID, taskID string) error {
+	kv := getKVStore(ctx)
+	if kv == nil {
+		return fmt.Errorf("KVStore not available")
+	}
+
+	if err := kv.Delete(ctx, sessionID, taskKey(sessionID, taskID)); err != nil {
+		return fmt.Errorf("failed to delete task: %w", err)
+	}
+
+	// Remove from list
+	list, _ := getTaskList(ctx, sessionID)
+	newList := make([]string, 0, len(list))
+	for _, id := range list {
+		if id != taskID {
+			newList = append(newList, id)
+		}
+	}
+	listData, _ := json.Marshal(newList)
+	return kv.Set(ctx, sessionID, taskListKey(sessionID), listData, 0)
 }
 
 func ListTasks(ctx context.Context, sessionID string) ([]string, error) {

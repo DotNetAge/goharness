@@ -362,7 +362,7 @@ func TestSystemPromptStructure(t *testing.T) {
 
 func TestToolCallMultiTurn(t *testing.T) {
 	// Scenario: Agent calls a tool, gets result, then responds with final answer.
-	// Round 1: LLM returns thought with DecisionAct to call TodoWrite
+	// Round 1: LLM returns thought with DecisionAct to call TaskCreate
 	// Round 2: LLM responds with final answer
 	server, captured, _ := captureHTTPServerWithResponses(t, []mockResponse{
 		{
@@ -370,11 +370,10 @@ func TestToolCallMultiTurn(t *testing.T) {
 				Decision:  "act",
 				Reasoning: "I'll create a todo plan for the AI system.",
 				ToolCalls: map[string]map[string]any{
-					"TodoWrite": {
-						"todos": []map[string]any{
-							{"content": "Plan AI system", "id": "1", "status": "pending", "priority": "high"},
+						"TaskCreate": {
+							"subject":     "规划AI系统",
+							"description": "为AI系统创建开发计划",
 						},
-					},
 				},
 			},
 		},
@@ -645,20 +644,18 @@ func TestToolOrchestration_DelegateCollect(t *testing.T) {
 
 func TestToolOrchestration_MultiToolSingleRound(t *testing.T) {
 	// Scenario: Agent calls multiple tools in a single round (parallel tool execution).
-	// Round 1: LLM returns thought with DecisionAct calling TodoWrite
-	// Round 2: LLM returns thought with DecisionAct calling TodoRead
+	// Round 1: LLM returns thought with DecisionAct calling TaskCreate
+	// Round 2: LLM returns thought with DecisionAct calling TaskGet
 	// Round 3: LLM returns thought with DecisionAnswer
 	server, captured, _ := captureHTTPServerWithResponses(t, []mockResponse{
 		{
 			Thought: &thoughtJSON{
 				Decision:  "act",
-				Reasoning: "I'll create a todo list first.",
+				Reasoning: "I'll create a task list first.",
 				ToolCalls: map[string]map[string]any{
-					"TodoWrite": {
-						"todos": []map[string]any{
-							{"content": "Research requirements", "id": "1", "status": "pending", "priority": "high"},
-							{"content": "Design architecture", "id": "2", "status": "pending", "priority": "medium"},
-						},
+					"TaskCreate": {
+						"subject":     "Research requirements",
+						"description": "Research requirements for the project",
 					},
 				},
 			},
@@ -666,9 +663,11 @@ func TestToolOrchestration_MultiToolSingleRound(t *testing.T) {
 		{
 			Thought: &thoughtJSON{
 				Decision:  "act",
-				Reasoning: "Now I'll read back the todo list to verify.",
+				Reasoning: "Now I'll read back the task list to verify.",
 				ToolCalls: map[string]map[string]any{
-					"TodoRead": {},
+						"TaskGet": {
+							"task_id": "task-1",
+						},
 				},
 			},
 		},
