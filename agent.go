@@ -445,7 +445,7 @@ func buildReactorConfig(model *core.ModelConfig, systemPrompt string) reactor.Re
 		TopP:             model.TopP,
 		TopK:             int(model.TopK),
 		PresencePenalty:  model.RepetitionPenalty,
-		FrequencyPenalty: model.RepetitionPenalty,
+		FrequencyPenalty: model.FrequencyPenalty,
 		MaxTokens:        int(model.MaxTokens),
 		MaxIterations:    model.MaxTurns,
 	}

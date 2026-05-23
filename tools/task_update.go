@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/DotNetAge/goreact/core"
 )
@@ -131,14 +132,17 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 				if canReach(ctx, tc.SessionID, blockID, taskID) {
 					return nil, fmt.Errorf("adding block %q would create a circular dependency", blockID)
 				}
-				if !strContains(task.Blocks, blockID) {
+				if !slices.Contains(task.Blocks, blockID) {
 					task.Blocks = append(task.Blocks, blockID)
 				}
 				blockedTask, err := GetTask(ctx, tc.SessionID, blockID)
 				if err == nil && blockedTask != nil {
-					if !strContains(blockedTask.BlockedBy, taskID) {
+					if !slices.Contains(blockedTask.BlockedBy, taskID) {
 						blockedTask.BlockedBy = append(blockedTask.BlockedBy, taskID)
-						_ = UpdateTask(ctx, tc.SessionID, blockedTask)
+						if err := UpdateTask(ctx, tc.SessionID, blockedTask); err != nil {
+							getLogger(ctx).Warn("failed to update inverse dependency",
+								"task_id", blockID, "error", err)
+						}
 					}
 				}
 			}
@@ -153,14 +157,17 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 				if canReach(ctx, tc.SessionID, taskID, depID) {
 					return nil, fmt.Errorf("adding blockedBy %q would create a circular dependency", depID)
 				}
-				if !strContains(task.BlockedBy, depID) {
+				if !slices.Contains(task.BlockedBy, depID) {
 					task.BlockedBy = append(task.BlockedBy, depID)
 				}
 				blockingTask, err := GetTask(ctx, tc.SessionID, depID)
 				if err == nil && blockingTask != nil {
-					if !strContains(blockingTask.Blocks, taskID) {
+					if !slices.Contains(blockingTask.Blocks, taskID) {
 						blockingTask.Blocks = append(blockingTask.Blocks, taskID)
-						_ = UpdateTask(ctx, tc.SessionID, blockingTask)
+						if err := UpdateTask(ctx, tc.SessionID, blockingTask); err != nil {
+							getLogger(ctx).Warn("failed to update inverse dependency",
+								"task_id", depID, "error", err)
+						}
 					}
 				}
 			}
@@ -228,11 +235,4 @@ func canReach(ctx context.Context, sessionID, from, to string) bool {
 	return false
 }
 
-func strContains(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
+

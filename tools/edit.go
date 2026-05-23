@@ -27,7 +27,7 @@ Usage:
 - You must use your Read tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
 - When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- The edit will FAIL if old_string is not unique in the file. Use replace_all=true or set a limit to replace every occurrence of old_string.
+- The edit will FAIL if old_string is not found in the file, or if it appears multiple times without replace_all=true or limit set.
 - Use replace_all=true to rename a variable or change a string everywhere in the file.
 - Use limit=N to replace the first N occurrences only (e.g. limit=2 replaces the first 2 matches).
 - Use last_read_time to prevent stale writes — pass the file's modification timestamp from your last Read result.`,
@@ -131,8 +131,15 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 
 	fileContent := string(content)
-	if !strings.Contains(fileContent, oldStr) && oldStr != "" {
+	if oldStr == "" {
+		return nil, fmt.Errorf("old_string must not be empty")
+	}
+	if !strings.Contains(fileContent, oldStr) {
 		return nil, fmt.Errorf("old_string not found in file")
+	}
+	if !replaceAll && limit <= 0 && strings.Count(fileContent, oldStr) > 1 {
+		return nil, fmt.Errorf("old_string appears %d times in file. Use replace_all=true or limit=N to replace multiple occurrences",
+			strings.Count(fileContent, oldStr))
 	}
 
 	var updatedContent string

@@ -154,7 +154,7 @@ type SearchOptions struct {
 const searchCacheTTL = 48 * time.Hour
 
 // cacheSessionID is a virtual session ID for KVStore-scoped search cache entries.
-const cacheSessionID = "__opencode_search_cache__"
+const cacheSessionID = "__goreact_search_cache__"
 
 type cachedSearch struct {
 	Results   []SearchResult `json:"results"`
@@ -171,7 +171,7 @@ func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, ex
 	}
 	req.Header.Set("User-Agent", randomUA())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}
@@ -687,7 +687,7 @@ func formatSearchResults(query string, results []SearchResult) string {
 			case "weixin":
 				sourceLabel = "WeChat"
 			}
-			sb.WriteString(fmt.Sprintf("- **来源**: %s\n", sourceLabel))
+			sb.WriteString(fmt.Sprintf("- **Source**: %s\n", sourceLabel))
 		}
 		sb.WriteString("\n")
 	}

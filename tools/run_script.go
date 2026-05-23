@@ -490,7 +490,7 @@ Usage:
 - For batch files, you can just pass the .bat path directly.
 - For PowerShell scripts, include "powershell" or "pwsh" prefix.
 - For VBScript, include "cscript" or "wscript" prefix.
-- The working_dir defaults to the skill's base directory.
+- The working_dir defaults to the project directory.
 - Use the args parameter for additional arguments.
 
 Notes:
@@ -513,7 +513,7 @@ Usage:
 - Include the interpreter if needed (e.g. "python scripts/analyze.py").
 - For AppleScript, use "osascript scripts/myscript.scpt" or just the .scpt path.
 - Shell scripts run in zsh by default (macOS standard).
-- The working_dir defaults to the skill's base directory.
+- The working_dir defaults to the project directory.
 - Use the args parameter for additional arguments.
 
 Notes:
@@ -535,7 +535,7 @@ Usage:
 - Pass the command exactly as specified in the skill's instructions.
 - Include the interpreter if needed (e.g. "python scripts/analyze.py").
 - Shell scripts run in bash by default.
-- The working_dir defaults to the skill's base directory.
+- The working_dir defaults to the project directory.
 - Use the args parameter for additional arguments.
 
 Notes:
@@ -547,7 +547,7 @@ Notes:
 Usage:
 - Pass the command exactly as specified in the skill's instructions.
 - Include the interpreter if needed (e.g. "python scripts/analyze.py --input data.json").
-- The working_dir defaults to the skill's base directory.
+- The working_dir defaults to the project directory.
 - Use the args parameter for additional arguments.`
 	}
 

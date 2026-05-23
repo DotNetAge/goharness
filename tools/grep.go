@@ -53,6 +53,12 @@ Usage:
 				Description: "File glob pattern to include (e.g., '*.go').",
 				Required:    false,
 			},
+			{
+				Name:        "output_mode",
+				Type:        "string",
+				Description: "Output format: 'content' (matching lines with context), 'files_with_matches' (file paths only), 'count' (match counts per file). Default: 'content'.",
+				Required:    false,
+			},
 		},
 	}
 }
@@ -60,8 +66,17 @@ Usage:
 func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	pattern, _ := params["pattern"].(string)
 	include, _ := params["include"].(string)
+	outputMode, _ := params["output_mode"].(string)
 
-	args := []string{"--column", "--line-number", "--no-heading", "--color", "never", "--smart-case"}
+	args := []string{"--no-heading", "--color", "never", "--smart-case"}
+	switch outputMode {
+	case "files_with_matches":
+		args = append(args, "--files-with-matches")
+	case "count":
+		args = append(args, "--count")
+	default:
+		args = append(args, "--column", "--line-number")
+	}
 	if include != "" {
 		args = append(args, "-g", include)
 	}

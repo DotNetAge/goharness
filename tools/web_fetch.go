@@ -16,7 +16,7 @@ import (
 )
 
 const webFetchCacheTTL = 15 * time.Minute
-const webFetchCacheSessionID = "__opencode_webfetch_cache__"
+const webFetchCacheSessionID = "__goreact_webfetch_cache__"
 const webFetchMaxContentChars = 50000
 
 type cachedFetch struct {

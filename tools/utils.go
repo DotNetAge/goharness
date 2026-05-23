@@ -78,11 +78,9 @@ func ValidateFileSafety(path string, projectDir string) error {
 
 	// Step 6: Check for sensitive system files
 	baseName := filepath.Base(realPath)
-	restrictedFiles := []string{".env", "id_rsa", "id_ed25519", "passwd", "shadow", "sudoers"}
-	for _, restricted := range restrictedFiles {
-		if strings.Contains(baseName, restricted) {
-			return fmt.Errorf("access to %s is restricted for security reasons", baseName)
-		}
+	if baseName == ".env" || baseName == "id_rsa" || baseName == "id_ed25519" ||
+		baseName == "passwd" || baseName == "shadow" || baseName == "sudoers" {
+		return fmt.Errorf("access to %s is restricted for security reasons", baseName)
 	}
 
 	return nil
