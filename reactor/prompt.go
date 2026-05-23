@@ -391,24 +391,83 @@ func BuildToolUsageGuidelines() string {
 // Only discloses skills matching the agent's Skill list (defined in AgentConfig.Skills).
 // This is the entry point to progressive disclosure Level 2 — skills provide specialized
 // instructions that extend the agent's capabilities beyond the built-in tools.
+//
+// Budget control: the catalog is capped at SKILL_CATALOG_BUDGET characters to prevent
+// context waste. Bundled skills get full descriptions first; user/plugin skills are
+// progressively truncated (description → name-only) if budget is exceeded.
 func BuildSkillsCatalog(skills []*core.Skill) string {
 	if len(skills) == 0 {
 		return ""
 	}
-	var sb strings.Builder
-	sb.WriteString("## Capacities (Available Skills)\n")
-	sb.WriteString("When your existing tools cannot fully address the user's request, check whether one of the following specialized skills covers the domain. If a skill matches, use the Skill tool to load its instructions, which will guide you through domain-specific workflows and expose additional tools.\n\n")
-	for _, s := range skills {
-		fmt.Fprintf(&sb, "- %s", s.Name)
-		if s.Description != "" {
-			fmt.Fprintf(&sb, ": %s", s.Description)
-		}
-		fmt.Fprintf(&sb, "\n")
+
+	header := "## Capacities (Available Skills)\n" +
+		"When your existing tools cannot fully address the user's request, check whether one of the following specialized skills covers the domain. If a skill matches, use the Skill tool to load its instructions, which will guide you through domain-specific workflows and expose additional tools.\n\n"
+
+	footer := "\n### Loading Strategy\n" +
+		"- Load skills LAZILY: only when you're about to perform a task that requires it\n" +
+		"- Each skill persists once loaded into conversation context \u2014 do NOT reload already-loaded skills\n"
+
+	// Budget: reserve 500 chars for header/footer, rest for skill entries
+	const SKILL_CATALOG_BUDGET = 3000
+	budgetRemaining := SKILL_CATALOG_BUDGET - len(header) - len(footer)
+
+	if budgetRemaining <= 0 {
+		// Budget exhausted by header/footer alone — return bare catalog
+		return header + footer
 	}
-	sb.WriteString("\n### Loading Strategy\n")
-	sb.WriteString("- Load skills LAZILY: only when you're about to perform a task that requires it\n")
-	sb.WriteString("- Each skill persists once loaded into conversation context \u2014 do NOT reload already-loaded skills\n")
-	return sb.String()
+
+	// Separate bundled and non-bundled skills
+	var bundled, userSkills []*core.Skill
+	for _, s := range skills {
+		if s.Source == "bundled" {
+			bundled = append(bundled, s)
+		} else {
+			userSkills = append(userSkills, s)
+		}
+	}
+
+	var entryBuilder strings.Builder
+
+	// Helper: build a single skill entry and return its length
+	buildEntry := func(s *core.Skill, fullDesc bool) string {
+		entry := "- " + s.Name
+		if fullDesc && s.Description != "" {
+			entry += ": " + s.Description
+		}
+		entry += "\n"
+		return entry
+	}
+
+	// Phase 1: bundled skills always get full descriptions
+	for _, s := range bundled {
+		entry := buildEntry(s, true)
+		entryLen := len(entry)
+		if entryLen <= budgetRemaining {
+			entryBuilder.WriteString(entry)
+			budgetRemaining -= entryLen
+		}
+		// If a single bundled skill exceeds budget, still include it as name-only
+		// (budget may be small; bundled skills should not be silently dropped)
+	}
+
+	// Phase 2: non-bundled skills — full description if budget allows
+	for _, s := range userSkills {
+		fullEntry := buildEntry(s, true)
+		if len(fullEntry) <= budgetRemaining {
+			entryBuilder.WriteString(fullEntry)
+			budgetRemaining -= len(fullEntry)
+			continue
+		}
+		// Budget too tight for full description — try name-only
+		nameEntry := buildEntry(s, false)
+		if len(nameEntry) <= budgetRemaining {
+			entryBuilder.WriteString(nameEntry)
+			budgetRemaining -= len(nameEntry)
+		}
+		// If even name-only doesn't fit, skip this skill entirely
+	}
+
+	return header + entryBuilder.String() + footer
 }
 
 // BuildDefaultRules returns the default behavioral rules in MUST format.

@@ -421,6 +421,7 @@ func formatSearchResults(query string, results []SearchResult) string {
 
 	sb.WriteString("---\n")
 	sb.WriteString("使用 `WebFetch` 工具可获取上述任意 URL 的完整内容。\n")
+	sb.WriteString("注意：WebFetch 有 50,000 字符的内容预算。对大页面使用 prompt 参数精确定位所需部分。\n")
 	return sb.String()
 }
 
@@ -512,17 +513,21 @@ func NewWebFetchTool() core.FuncTool {
 func (t *WebFetchTool) Info() *core.ToolInfo {
 	return &core.ToolInfo{
 		Name:               "WebFetch",
-		MaxResultSizeChars: 50000,
+		MaxResultSizeChars: 25000,
 		Description:        "Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.",
-		Prompt: `Read the full content of a specific URL. Unlike WebSearch which only returns titles and URLs, WebFetch retrieves the actual page content.
+		Prompt: `Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.
 
 Architecture:
 1. Validates URL and checks for SSRF risks (blocks private IPs).
 2. Fetches the page content locally via HTTP.
-3. Strips HTML tags (scripts, styles, nav, etc.) for clean text.
-4. Returns the extracted content for the LLM to process.
+3. Strips HTML tags (scripts, styles, nav, etc.) for clean Markdown.
+4. Returns the extracted content.
 
-Use this after WebSearch to read specific URLs that look relevant. The prompt parameter helps focus the extraction on relevant details.`,
+Content Budget:
+- Maximum returned content: 50,000 characters (~16K tokens)
+- If a page exceeds this, the output will note how many chars were omitted
+- Use the prompt parameter to narrow the fetch to relevant sections (e.g., prompt="extract pricing information")
+- If you need more of a truncated page, re-fetch with a more specific prompt`,
 		Tags:       []string{"web", "fetch", "url", "content", "http"},
 		IsReadOnly: true,
 		Parameters: []core.Parameter{
@@ -596,21 +601,36 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 
 	// Process content
-	content := htmlToMarkdown(string(body))
-	content = TruncateString(content, 50000) // 50K chars max
+	rawContent := htmlToMarkdown(string(body))
+	originalLen := len([]rune(rawContent))
+	const maxContentChars = 50000
 
-	// Cache
+	// Truncate content for output (cache stores the truncated version to avoid
+	// re-truncation, but retains the original size for metadata)
+	content := rawContent
+	truncated := false
+	if originalLen > maxContentChars {
+		content = string([]rune(rawContent[:maxContentChars]))
+		truncated = true
+	}
+
+	// Cache the truncated version
 	t.cache.Store(rawURL, cachedFetch{
 		content:   content,
 		timestamp: time.Now(),
 	})
 
-	// Format output
+	// Format output with size metadata
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- Web Fetch: %s ---\n", rawURL)
-	fmt.Fprintf(&sb, "Status: %d | Size: %d chars\n", resp.StatusCode, len(content))
+	fmt.Fprintf(&sb, "Status: %d | Original size: %d chars | Returned: %d chars\n",
+		resp.StatusCode, originalLen, len(content))
 	if prompt != "" {
 		fmt.Fprintf(&sb, "Prompt: %s\n", prompt)
+	}
+	if truncated {
+		fmt.Fprintf(&sb, "Note: Content was truncated (%d chars omitted).\n", originalLen-maxContentChars)
+		fmt.Fprintf(&sb, "To focus on specific sections, re-fetch with a descriptive `prompt` parameter (e.g., prompt=\"extract the section about pricing\").\n")
 	}
 	fmt.Fprintf(&sb, "\n%s\n", content)
 

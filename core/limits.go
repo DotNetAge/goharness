@@ -26,23 +26,30 @@ func DefaultFileReadingLimits() FileReadingLimits {
 
 // ToolResultLimits defines limits for tool execution results to prevent context explosion.
 // Inspired by ClueCode's cludecode/utils/toolResultStorage.ts
+//
+// Threshold sizing rationale:
+//   25K chars ≈ 8.3K tokens ≈ 4% of a 200K context window per tool result.
+//   100K chars ≈ 33K tokens ≈ 16% of a 200K context window per cycle.
+//   These are intentionally conservative because GoReact (unlike Claude Code)
+//   does NOT have micro-compaction to silently remove old tool results between
+//   turns — results accumulate until the sliding window fires at 65% usage.
 type ToolResultLimits struct {
 	// MaxResultSizeChars is the per-tool result size threshold in characters.
 	// Results exceeding this will be persisted to disk.
-	// Default: 50,000 characters.
+	// Default: 25,000 characters (~8K tokens).
 	MaxResultSizeChars int `json:"max_result_size_chars" yaml:"max_result_size_chars"`
 
 	// MaxToolResultsPerMessageChars is the total size of all tool results
 	// within a single message cycle, in characters.
-	// Default: 200,000 characters.
+	// Default: 100,000 characters (~33K tokens).
 	MaxToolResultsPerMessageChars int `json:"max_tool_results_per_message_chars" yaml:"max_tool_results_per_message_chars"`
 }
 
 // DefaultToolResultLimits returns the default tool result limits.
 func DefaultToolResultLimits() ToolResultLimits {
 	return ToolResultLimits{
-		MaxResultSizeChars:           50000,
-		MaxToolResultsPerMessageChars: 200000,
+		MaxResultSizeChars:           25000,
+		MaxToolResultsPerMessageChars: 100000,
 	}
 }
 

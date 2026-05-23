@@ -39,7 +39,9 @@ Usage:
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges
 - This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs
 - This tool can only read files, not directories. To read a directory, use an ls command via the bash tool
-- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path`,
+- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path
+
+Skills may expose a "Base directory" in their Skill tool result. When a skill says "Base directory: <path>", use Read to access reference files in that directory — the skill instructions are a guide, not the full reference.`,
 			Tags:               []string{"file", "filesystem", "read", "content"},
 			SecurityLevel:      core.LevelSafe,
 			IsReadOnly:         true,
@@ -155,20 +157,46 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		linesRead++
 	}
 
-	// Token budget check (post-read)
+	// Track whether token budget truncated content (distinct from line-limit truncation)
+	tokenTruncated := false
+
+	// Token budget check (post-read).
+	// When truncation occurs, prepend the note to the content so it's visible
+	// both in the raw result AND in the persisted preview (first 2000 bytes).
 	outputChars := content.Len()
 	estimatedTokens := outputChars / 3
 	if r.limits.MaxTokens > 0 && estimatedTokens > r.limits.MaxTokens {
 		targetChars := r.limits.MaxTokens * 3
 		runes := []rune(content.String())
 		if len(runes) > targetChars {
+			truncationNote := fmt.Sprintf(
+				"\n[... content truncated: token budget of %d tokens exceeded."+
+					" Remaining lines: %d-%d of %d."+
+					" Use offset and limit to narrow the range. ...]\n",
+				r.limits.MaxTokens, endLine+1, totalLines, totalLines)
 			content.Reset()
+			content.WriteString(truncationNote)
 			content.WriteString(string(runes[:targetChars]))
-			content.WriteString("\n... [truncated: output exceeds token budget] ...")
+			tokenTruncated = true
 		}
 	}
 
+	// Build a top-level note field. Go sorts map keys alphabetically, so
+	// "_note" sorts before all letter keys and appears first in JSON output —
+	// critical for visibility in persisted-result previews (<persisted-output>,
+	// first 2000 bytes).
+	hasRemainingLines := linesRead >= maxLines && lineNum < totalLines
+	noteParts := ""
+	if tokenTruncated {
+		noteParts = fmt.Sprintf("Truncated at %d tokens. Lines %d-%d remain. Use narrower offset/limit.",
+			r.limits.MaxTokens, endLine+1, totalLines)
+	} else if hasRemainingLines {
+		noteParts = fmt.Sprintf("More content available at offset %d (lines %d-%d of %d).",
+			endLine+1, endLine+1, totalLines, totalLines)
+	}
+
 	result := map[string]any{
+		"_note":       noteParts,
 		"success":     true,
 		"path":        resolvedPath,
 		"scope":       scope,
@@ -178,9 +206,15 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		"content":     content.String(),
 		"start_line":  startLine,
 	}
-	if linesRead >= maxLines && lineNum < totalLines {
+
+	if hasRemainingLines || tokenTruncated {
 		result["has_more"] = true
-		result["next_offset"] = endLine + 1
+		if tokenTruncated && !hasRemainingLines {
+			result["next_offset"] = startLine
+			result["suggestion"] = "narrow_range"
+		} else {
+			result["next_offset"] = endLine + 1
+		}
 	}
 
 	return result, nil

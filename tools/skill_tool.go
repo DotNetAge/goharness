@@ -37,7 +37,9 @@ When you identify a skill from the available capabilities list that matches the 
 
 Always load a skill before attempting tasks that require its domain expertise.
 
-Available skills are listed in the system prompt under "## Available Skills".`,
+Skills may expose a "Base directory" in their result. When present, Use the Read tool to access files in that directory for detailed reference material — the Skill instructions are a guide, not the full reference.
+
+Available skills are listed in the system prompt under "## Capacities (Available Skills)".`,
 		Tags: []string{"skill", "capability"},
 		Parameters: []core.Parameter{
 			{
@@ -62,16 +64,18 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 		return nil, fmt.Errorf("skill %q not found: %w", name, err)
 	}
 
-	// Build a comprehensive skill description for the tool result
-	result := fmt.Sprintf("=== Skill: %s ===\n\nDescription: %s\n\nInstructions:\n%s",
-		skill.Name, skill.Description, skill.Instructions)
+	// Build a comprehensive skill description for the tool result.
+	// Resources section (RootDir) comes BEFORE Instructions so it's visible
+	// in persisted-result previews (first 2000 bytes of <persisted-output>).
+	result := fmt.Sprintf("=== Skill: %s ===\n\nDescription: %s\n", skill.Name, skill.Description)
 
-	if skill.AllowedTools != "" {
-		result += fmt.Sprintf("\n\nAllowed tools: %s", skill.AllowedTools)
-	}
 	if skill.RootDir != "" {
-		result += fmt.Sprintf("\n\nResource base path: %s", skill.RootDir)
+		result += fmt.Sprintf("\n=== Resources ===\nBase directory: %s\nUse the Read tool to access files in this directory for detailed reference material, examples, or configuration templates.\n", skill.RootDir)
 	}
+	if skill.AllowedTools != "" {
+		result += fmt.Sprintf("\nAllowed tools: %s\n", skill.AllowedTools)
+	}
+	result += fmt.Sprintf("\nInstructions:\n%s", skill.Instructions)
 
 	return map[string]any{
 		"skill_name":  skill.Name,
