@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -60,12 +61,12 @@ func (t *BashTool) Info() *core.ToolInfo {
 		Description: "Execute shell commands and return their output. Use dedicated tools instead of bash when available.",
 		Prompt: `Executes a given bash command and returns its output. The project directory persists between commands, but shell state does not.
 
-IMPORTANT: Avoid using this tool to run cat, head, tail, sed, awk, or echo commands. Instead, use dedicated tools:
-- File search: Use Glob (NOT find or ls)
-- Content search: Use Grep (NOT grep or rg)
+IMPORTANT: The following commands are blocked by the Bash tool whitelist — use dedicated tools instead:
+- File search: Use Glob (NOT find)
+- Content search: Use Grep
 - Read files: Use Read (NOT cat/head/tail)
 - Edit files: Use FileEdit (NOT sed/awk)
-- Write files: Use Write (NOT echo/cat heredoc)
+- Write files: Use Write
 
 Dedicated tools provide a better user experience and make it easier to review tool calls.
 
@@ -77,10 +78,11 @@ Dedicated tools provide a better user experience and make it easier to review to
   - If independent and can run in parallel, make multiple tool calls in one message.
   - If dependent, use && to chain them.
   - Use ; only when you don't care if earlier commands fail.
-  - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
+   - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
 - For git commands:
-  - Prefer new commits over amending existing ones.
-  - Before destructive operations (git reset --hard, git push --force), consider safer alternatives.`,
+   - Prefer new commits over amending existing ones.
+   - Before destructive operations (git reset --hard, git push --force), consider safer alternatives.
+- Use working_dir to run commands in a specific directory.`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: core.LevelHighRisk,
 		Parameters: []core.Parameter{
@@ -94,6 +96,12 @@ Dedicated tools provide a better user experience and make it easier to review to
 				Name:        "timeout",
 				Type:        "number",
 				Description: "Optional timeout in milliseconds. Default is 30000ms.",
+				Required:    false,
+			},
+			{
+				Name:        "working_dir",
+				Type:        "string",
+				Description: "Working directory for command execution. Defaults to the process current directory.",
 				Required:    false,
 			},
 		},
@@ -163,10 +171,16 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", command)
 
+	if wd, ok := params["working_dir"].(string); ok && wd != "" {
+		wd = filepath.Clean(wd)
+		cmd.Dir = wd
+	}
+
 	logger.Info("executing bash command",
 		"command", truncateForLog(command, 200),
 		"session_id", sessionID,
 		"timeout_ms", timeoutMs,
+		"working_dir", cmd.Dir,
 	)
 
 	var stdout, stderr strings.Builder
@@ -242,60 +256,39 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// dangerousPatterns defines commands that are too destructive to allow even with permission.
-// This is defense-in-depth on top of the AskPermission tool.
+// dangerousPatterns defines regex patterns for commands that are too destructive to allow.
 var dangerousPatterns = []struct {
-	pattern string
+	pattern *regexp.Regexp
 	reason  string
 }{
-	{`rm\s+-rf\s+/\s*`, "destructive: rm -rf / would erase the entire filesystem"},
-	{`rm\s+-rf\s+/\*`, "destructive: rm -rf /* would erase the entire filesystem"},
-	{`rm\s+-rf\s+/[a-z]*\s*$`, "destructive: recursive root-level removal is blocked"},
-	{`>\s*/dev/sd[a-z]\b`, "dangerous: writing to raw disk device"},
-	{`dd\s+if=.*of=/dev/sd`, "dangerous: raw disk overwrite via dd"},
-	{`mkfs\.`, "dangerous: disk formatting command"},
-	{`:.*\|.*:&\s*;:\s*}`, "dangerous: fork bomb detected"},
-	{`(curl|wget)\s+.*\|\s*(sh|bash)`, "dangerous: remote code execution pipe (curl|sh)"},
-	{`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`, "dangerous: remote binary download to system path"},
-	{`chmod\s+-R\s+777\s+/`, "dangerous: world-writable root filesystem"},
-	{`chown\s+-R.*\s+/`, "dangerous: recursive root ownership change"},
-	{`shutdown\s+(now|-h|-r)`, "dangerous: system shutdown command"},
-	{`reboot\b`, "dangerous: system reboot command"},
+	{regexp.MustCompile(`^rm\s+-rf\s+/\s*$`), "destructive: rm -rf / would erase the entire filesystem"},
+	{regexp.MustCompile(`^rm\s+-rf\s+/\*\s*$`), "destructive: rm -rf /* would erase the entire filesystem"},
+	{regexp.MustCompile(`>\s*/dev/sd[a-z]\b`), "dangerous: writing to raw disk device"},
+	{regexp.MustCompile(`dd\s+if=.*of=/dev/sd`), "dangerous: raw disk overwrite via dd"},
+	{regexp.MustCompile(`mkfs\.`), "dangerous: disk formatting command"},
+	{regexp.MustCompile(`:\(\)\{\s*\|.*:\s*&\s*;:\s*\}$`), "dangerous: fork bomb detected"},
+	{regexp.MustCompile(`(curl|wget)\s+.*\|\s*(sh|bash)\b`), "dangerous: remote code execution pipe (curl|sh)"},
+	{regexp.MustCompile(`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`), "dangerous: remote binary download to system path"},
+	{regexp.MustCompile(`chmod\s+-R\s+777\s+/`), "dangerous: world-writable root filesystem"},
+	{regexp.MustCompile(`chown\s+-R.*\s+/`), "dangerous: recursive root ownership change"},
+	{regexp.MustCompile(`shutdown\s+(now|-h|-r)\b`), "dangerous: system shutdown command"},
+	{regexp.MustCompile(`^reboot\s*$`), "dangerous: system reboot command"},
 }
 
-// detectDangerousCommand checks a shell command against known dangerous patterns.
-// Returns an empty string if safe, or a block reason if matched.
 func detectDangerousCommand(command string) string {
 	lower := strings.ToLower(strings.TrimSpace(command))
 	for _, dp := range dangerousPatterns {
-		if matchPattern(lower, dp.pattern) {
+		if dp.pattern.MatchString(lower) {
 			return dp.reason
 		}
 	}
 	return ""
 }
 
-// matchPattern performs a simple substring check for the given pattern.
-// Uses case-insensitive matching for ASCII patterns.
-func matchPattern(s, pattern string) bool {
-	lowerS := strings.ToLower(s)
-	lowerP := strings.ToLower(pattern)
-	if len(lowerP) > len(lowerS) {
-		return false
-	}
-	for i := 0; i <= len(lowerS)-len(lowerP); i++ {
-		if lowerS[i:i+len(lowerP)] == lowerP {
-			return true
-		}
-	}
-	return false
-}
-
 // getDefaultWhitelist returns the default allowed commands for the bash tool.
 func getDefaultWhitelist() []string {
 	return []string{
-		"ls", "cat", "head", "tail", "wc", "grep", "find",
-		"echo", "printf", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
+		"ls", "wc", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
 		"chmod", "chown", "ln", "tar", "gzip", "gunzip", "zip", "unzip",
 		"git", "svn", "hg",
 		"python", "python3", "pip", "pip3", "node", "npm", "npx",
@@ -306,7 +299,7 @@ func getDefaultWhitelist() []string {
 		"ps", "top", "htop", "kill", "killall", "pgrep", "pkill",
 		"df", "du", "free", "uname", "date", "whoami", "id",
 		"env", "export", "source", "alias", "which", "type", "file",
-		"sed", "awk", "sort", "uniq", "cut", "tr", "tee", "xargs",
+		"sort", "uniq", "cut", "tr", "tee", "xargs",
 		"jq", "yq",
 		"test", "[[", "true", "false", "exit", "return",
 		"sleep", "wait", "bg", "fg", "jobs", "nohup", "disown",

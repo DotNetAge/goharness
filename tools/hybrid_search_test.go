@@ -12,8 +12,8 @@ import (
 
 func TestWebSearchTool_HybridAdaptersRegistered(t *testing.T) {
 	tool := NewWebSearchTool().(*WebSearchTool)
-	if len(tool.adapters) != 3 {
-		t.Errorf("expected 3 adapters in hybrid mode, got %d", len(tool.adapters))
+	if len(tool.adapters) != 2 {
+		t.Errorf("expected 2 adapters in hybrid mode, got %d", len(tool.adapters))
 	}
 
 	names := make(map[string]bool)
@@ -21,7 +21,7 @@ func TestWebSearchTool_HybridAdaptersRegistered(t *testing.T) {
 		names[adapter.Name()] = true
 	}
 
-	expectedNames := []string{"baidu", "sogou", "weixin"}
+	expectedNames := []string{"sogou", "weixin"}
 	for _, name := range expectedNames {
 		if !names[name] {
 			t.Errorf("missing adapter: %s", name)

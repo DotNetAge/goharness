@@ -107,14 +107,22 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 
 
 	start := time.Now()
-	stdout, err := cmd.Output()
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
 	duration := time.Since(start).String()
+
+	stdoutStr := stdout.String()
+	stderrStr := stderr.String()
 
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		exitCode := exitErr.ExitCode()
 
-		stdoutStr := truncateOutput(string(stdout), t.maxOutput)
-		stderrStr := truncateOutput(string(exitErr.Stderr), t.maxOutput)
+		stdoutStr = truncateOutput(stdoutStr, t.maxOutput)
+		stderrStr = truncateOutput(stderrStr, t.maxOutput)
 
 		stderrStr = applyPowerShellCommandSemantics(exitCode, stderrStr)
 
@@ -133,7 +141,8 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 
 	return &PowerShellResult{
 		ExitCode: 0,
-		Stdout:   truncateOutput(string(stdout), t.maxOutput),
+		Stdout:   truncateOutput(stdoutStr, t.maxOutput),
+		Stderr:   stderrStr,
 		Duration: duration,
 	}, nil
 }

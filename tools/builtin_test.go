@@ -80,6 +80,21 @@ func TestBash(t *testing.T) {
 			t.Errorf("Expected HighRisk, got %v", info.SecurityLevel)
 		}
 	})
+
+	t.Run("working_dir parameter", func(t *testing.T) {
+		result, err := bash.Execute(context.Background(), map[string]any{
+			"command":     "pwd",
+			"working_dir": "/tmp",
+		})
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		resultMap := result.(map[string]any)
+		stdout := resultMap["stdout"].(string)
+		if !strings.Contains(stdout, "/tmp") {
+			t.Errorf("Expected pwd to show /tmp, got %q", stdout)
+		}
+	})
 }
 
 func TestLS(t *testing.T) {

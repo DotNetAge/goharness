@@ -707,6 +707,8 @@ func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
 		})},
 		{"TaskCreate", tools.NewTaskCreateTool()},
 		{"TeamGetTasks", tools.NewTeamGetTasksTool()},
+		{"TeamList", tools.NewTeamListTool()},
+		{"TeamDelete", tools.NewTeamDeleteTool()},
 		{"TeamCreate", tools.NewTeamCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
 			if r.SpawnFunc != nil {
 				return r.SpawnFunc(ctx, agentName, task)
