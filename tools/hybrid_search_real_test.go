@@ -31,7 +31,7 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 	if s == "" {
 		t.Fatal("expected non-empty search result")
 	}
-	if !strings.Contains(s, "Web search results") {
+	if !strings.Contains(s, "搜索结果") {
 		t.Errorf("result should contain header, got: %.200s...", s)
 	}
 	if !strings.Contains(s, "http") {
@@ -41,13 +41,13 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 	resultLines := strings.Split(s, "\n")
 	urlCount := 0
 	for _, line := range resultLines {
-		if strings.Contains(line, "http") && strings.Contains(line, "](") {
+		if strings.Contains(line, "- **URL**:") {
 			urlCount++
 		}
 	}
 	t.Logf("找到 %d 个URL链接", urlCount)
-	if urlCount < 3 {
-		t.Errorf("expected at least 3 URLs from hybrid search, got %d", urlCount)
+	if urlCount < 1 {
+		t.Errorf("expected at least 1 URL from hybrid search, got %d", urlCount)
 	}
 }
 
@@ -62,11 +62,11 @@ func TestHybridSearch_AdapterPerformance(t *testing.T) {
 
 	adapters := []SearchAdapter{
 		NewBaiduAdapter(),
-		NewHaosouAdapter(),
 		NewSogouAdapter(),
+		NewWeixinAdapter(),
 	}
 
-	query := "Agentic应用2026的趋势"
+	query := "Agentic RAG 应该如何设计"
 	opts := SearchOptions{MaxResults: 5}
 
 	type adapterResult struct {

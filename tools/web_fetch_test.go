@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,9 @@ func TestWebFetchTool_Real_HttpbinHTML(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
+	if !httpbinIsReachable(t) {
+		t.Skip("httpbin.org is not reachable (may be rate-limited)")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -73,6 +77,22 @@ func TestWebFetchTool_Real_HttpbinHTML(t *testing.T) {
 	if !strings.Contains(s, "Prompt:") {
 		t.Error("result should contain prompt when provided")
 	}
+}
+
+func httpbinIsReachable(t *testing.T) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/get", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func TestWebFetchTool_Real_StatusCode404(t *testing.T) {

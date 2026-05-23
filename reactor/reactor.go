@@ -695,21 +695,20 @@ func (r *Reactor) registerBundledTools(setup *reactorSetup) {
 }
 
 func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
-	spawn := r.SpawnFunc
 	orchestrationTools := []struct {
 		name string
 		tool core.FuncTool
 	}{
 		{"Delegate", tools.NewDelegateTool(func(ctx context.Context, agentName, task string) (string, error) {
-			if spawn != nil {
-				return spawn(ctx, agentName, task)
+			if r.SpawnFunc != nil {
+				return r.SpawnFunc(ctx, agentName, task)
 			}
 			return "", fmt.Errorf("delegate: SpawnFunc not configured on reactor")
 		})},
 		{"TaskCreate", tools.NewTaskCreateTool()},
 		{"TeamCreate", tools.NewTeamCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
-			if spawn != nil {
-				return spawn(ctx, agentName, task)
+			if r.SpawnFunc != nil {
+				return r.SpawnFunc(ctx, agentName, task)
 			}
 			return "", fmt.Errorf("team_create: SpawnFunc not configured on reactor")
 		})},

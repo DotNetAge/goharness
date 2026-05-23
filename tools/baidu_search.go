@@ -3,17 +3,39 @@ package tools
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DotNetAge/goreact/core"
 )
 
 // --- Baidu Search Adapter ---
+
+var baiduCookies = []string{
+	"BAIDUID=0B12E3F4A5B6C7D8:FG=1; BIDUPSID=0B12E3F4A5B6C7D8;",
+	"BAIDUID=1C23D4E5F6A7B8C9:FG=1; BIDUPSID=1C23D4E5F6A7B8C9;",
+	"BAIDUID=2D34E5F6A7B8C9D0:FG=1; BIDUPSID=2D34E5F6A7B8C9D0;",
+	"BAIDUID=3E45F6A7B8C9D0E1:FG=1; BIDUPSID=3E45F6A7B8C9D0E1;",
+	"BAIDUID=4F56A7B8C9D0E1F2:FG=1; BIDUPSID=4F56A7B8C9D0E1F2;",
+	"BAIDUID=5A67B8C9D0E1F2A3:FG=1; BIDUPSID=5A67B8C9D0E1F2A3;",
+	"BAIDUID=6B78C9D0E1F2A3B4:FG=1; BIDUPSID=6B78C9D0E1F2A3B4;",
+	"BAIDUID=7C89D0E1F2A3B4C5:FG=1; BIDUPSID=7C89D0E1F2A3B4C5;",
+}
+
+var baiduCookieMu sync.Mutex
+var baiduCookieIdx int
+
+func nextBaiduCookie() string {
+	baiduCookieMu.Lock()
+	defer baiduCookieMu.Unlock()
+	c := baiduCookies[baiduCookieIdx]
+	baiduCookieIdx = (baiduCookieIdx + 1) % len(baiduCookies)
+	return c
+}
 
 // BaiduAdapter implements SearchAdapter using Baidu HTML search.
 // This provides a search provider optimized for Chinese-language content.
@@ -33,207 +55,41 @@ func NewBaiduAdapter() *BaiduAdapter {
 func (a *BaiduAdapter) Name() string { return "baidu" }
 
 func (a *BaiduAdapter) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
+	results, err := a.searchOnce(ctx, query, opts)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) > 0 {
+		return filterResults(results, opts), nil
+	}
+
+	// Retry once with different cookie + UA on empty result (rate-limit recovery)
+	results, err = a.searchOnce(ctx, query, opts)
+	if err != nil {
+		return nil, err
+	}
+	return filterResults(results, opts), nil
+}
+
+func (a *BaiduAdapter) searchOnce(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
 	params := url.Values{}
 	params.Set("wd", query)
 	params.Set("rn", strconv.Itoa(opts.MaxResults))
 	params.Set("ie", "utf-8")
 
 	reqURL := "https://www.baidu.com/s?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	md, err := fetchAndExtract(ctx, a.client, reqURL, map[string]string{"Cookie": nextBaiduCookie()})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("search request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, err
 	}
 
-	results := parseBaiduHTML(body)
-	return filterResults(results, opts), nil
-}
-
-// parseBaiduHTML extracts search results from Baidu HTML response.
-//
-// Baidu search result HTML structure (subject to change):
-//
-//	<div class="result c-container" ...>
-//	    <h3 class="t"><a href="REDIRECT_URL" ...>TITLE</a></h3>
-//	    <div class="c-abstract">SNIPPET</div>
-//	    <span class="c-showurl">DISPLAY_URL</span>
-//	</div>
-func parseBaiduHTML(html []byte) []SearchResult {
-	content := string(html)
-	var results []SearchResult
-
-	// Split by result containers. Baidu uses "result c-container" as the class.
-	// Try multiple patterns to be robust.
-	parts := splitBaiduResults(content)
-	if len(parts) <= 1 {
-		return nil
-	}
-
-	for _, part := range parts[1:] {
-		title, href := extractBaiduTitle(part)
-		snippet := extractBaiduSnippet(part)
-		displayURL := extractBaiduShowURL(part)
-
-		if title == "" {
-			continue
-		}
-
-		finalURL := resolveBaiduURL(href, displayURL)
-		if finalURL == "" {
-			continue
-		}
-
-		results = append(results, SearchResult{
-			Title:   normalizeHTML(title),
-			URL:     finalURL,
-			Snippet: normalizeHTML(snippet),
-		})
-	}
-
-	return results
-}
-
-// splitBaiduResults splits HTML into result blocks.
-func splitBaiduResults(content string) []string {
-	// Try primary pattern: class="result c-container"
-	parts := strings.Split(content, `class="result`)
-	if len(parts) > 1 {
-		return parts
-	}
-	// Try fallback: class="c-container"
-	return strings.Split(content, `class="c-container"`)
-}
-
-// extractBaiduTitle extracts the title text and href from a result block.
-func extractBaiduTitle(part string) (title, href string) {
-	// Find the h3 with class "t"
-	h3Start := strings.Index(part, `<h3`)
-	if h3Start < 0 {
-		return "", ""
-	}
-	h3Part := part[h3Start:]
-	h3End := strings.Index(h3Part, `</h3>`)
-	if h3End < 0 {
-		h3End = len(h3Part)
-	}
-
-	// Extract href from <a> inside h3
-	aPart := h3Part[:h3End]
-	if idx := strings.Index(aPart, `href="`); idx >= 0 {
-		hrefPart := aPart[idx+6:]
-		if end := strings.Index(hrefPart, `"`); end >= 0 {
-			href = htmlUnescape(hrefPart[:end])
+	results := extractSearchResultsFromMarkdown(md, opts.MaxResults)
+	for i := range results {
+		if resolved := decodeBaiduRedirectURL(results[i].URL); resolved != "" {
+			results[i].URL = resolved
 		}
 	}
-	if idx := strings.Index(aPart, `href='`); idx >= 0 && href == "" {
-		hrefPart := aPart[idx+6:]
-		if end := strings.Index(hrefPart, `'`); end >= 0 {
-			href = htmlUnescape(hrefPart[:end])
-		}
-	}
-
-	// Extract text content between > and </a>
-	if gt := strings.Index(aPart, ">"); gt >= 0 {
-		textPart := aPart[gt+1:]
-		// Remove nested tags like <em>, <span> etc. but keep the text
-		if end := strings.Index(textPart, "</a>"); end >= 0 {
-			title = strings.TrimSpace(textPart[:end])
-		} else {
-			title = strings.TrimSpace(textPart)
-		}
-	}
-
-	return title, href
-}
-
-// extractBaiduSnippet extracts the snippet from a result block.
-func extractBaiduSnippet(part string) string {
-	// Try multiple possible snippet class names
-	for _, class := range []string{
-		`class="c-abstract"`,
-		`class="c-span-last"`,
-		`class="content-right_`,
-	} {
-		if idx := strings.Index(part, class); idx >= 0 {
-			snippetPart := part[idx+len(class):]
-			if gt := strings.Index(snippetPart, ">"); gt >= 0 {
-				snippetPart = snippetPart[gt+1:]
-				endTags := []string{"</div>", "</span>"}
-				for _, endTag := range endTags {
-					if end := strings.Index(snippetPart, endTag); end >= 0 {
-						return strings.TrimSpace(snippetPart[:end])
-					}
-				}
-				return strings.TrimSpace(snippetPart)
-			}
-		}
-	}
-	return ""
-}
-
-// extractBaiduShowURL extracts the display URL from a result block.
-func extractBaiduShowURL(part string) string {
-	for _, class := range []string{
-		`class="c-showurl"`,
-		`class="c-color-gray"`,
-	} {
-		if idx := strings.Index(part, class); idx >= 0 {
-			urlPart := part[idx+len(class):]
-			if gt := strings.Index(urlPart, ">"); gt >= 0 {
-				urlPart = urlPart[gt+1:]
-				if end := strings.Index(urlPart, "</span>"); end >= 0 {
-					return strings.TrimSpace(urlPart[:end])
-				}
-				if end := strings.Index(urlPart, "<"); end >= 0 {
-					return strings.TrimSpace(urlPart[:end])
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// resolveBaiduURL resolves the final URL from href and display URL.
-func resolveBaiduURL(href, displayURL string) string {
-	// If href is already a valid URL (not a raw token), use it
-	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-		if realURL := decodeBaiduRedirectURL(href); realURL != "" {
-			return realURL
-		}
-		return href
-	}
-
-	// href might be a raw Baidu redirect token (e.g., "wtYPKHW...")
-	// Try to construct and decode a Baidu redirect URL from it
-	if len(href) > 10 && !strings.Contains(href, " ") {
-		constructed := "http://www.baidu.com/link?url=" + href
-		if realURL := decodeBaiduRedirectURL(constructed); realURL != "" {
-			return realURL
-		}
-	}
-
-	// Use display URL as fallback
-	if displayURL != "" {
-		if !strings.HasPrefix(displayURL, "http") {
-			return "https://" + displayURL
-		}
-		return displayURL
-	}
-
-	return ""
+	return results, nil
 }
 
 // decodeBaiduRedirectURL extracts the real URL from a Baidu redirect link.

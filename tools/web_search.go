@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,112 @@ import (
 	"github.com/DotNetAge/goreact/core"
 	md "github.com/JohannesKaufmann/html-to-markdown"
 )
+
+var uaPool = []string{
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
+}
+
+var uaMu sync.Mutex
+
+func randomUA() string {
+	uaMu.Lock()
+	defer uaMu.Unlock()
+	return uaPool[rand.Intn(len(uaPool))]
+}
+
+var mdLinkRe = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+
+func extractSearchResultsFromMarkdown(md string, maxResults int) []SearchResult {
+	var results []SearchResult
+	seen := make(map[string]bool)
+
+	lines := strings.Split(md, "\n")
+
+	for i := 0; i < len(lines) && len(results) < maxResults; i++ {
+		line := lines[i]
+
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		m := mdLinkRe.FindStringSubmatch(line)
+		if len(m) < 3 {
+			continue
+		}
+		title := strings.TrimSpace(m[1])
+		rawURL := strings.TrimSpace(m[2])
+		if title == "" || rawURL == "" || seen[rawURL] {
+			continue
+		}
+		seen[rawURL] = true
+
+		cleanTitle := stripMarkdownEmphasis(title)
+
+		snippet := extractSnippet(lines, i+1)
+
+		if !isResultQualityOK(cleanTitle, snippet, rawURL) {
+			continue
+		}
+
+		results = append(results, SearchResult{
+			Title:   cleanTitle,
+			URL:     rawURL,
+			Snippet: snippet,
+		})
+	}
+
+	return results
+}
+
+var adPatterns = []string{"广告", "推广", "赞助", "ad", "sponsored", "promoted"}
+
+func isResultQualityOK(title, snippet, rawURL string) bool {
+	if len(title) < 2 || len(rawURL) < 4 {
+		return false
+	}
+	lower := strings.ToLower(title + " " + snippet)
+	for _, p := range adPatterns {
+		if strings.Contains(lower, p) {
+			return false
+		}
+	}
+	return true
+}
+
+func stripMarkdownEmphasis(s string) string {
+	s = strings.ReplaceAll(s, "_", "")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.ReplaceAll(s, "`", "")
+	return s
+}
+
+func extractSnippet(lines []string, start int) string {
+	var parts []string
+	for j := start; j < len(lines) && len(parts) < 3; j++ {
+		l := strings.TrimSpace(lines[j])
+		if l == "" {
+			continue
+		}
+		if strings.HasPrefix(l, "#") {
+			break
+		}
+		if mdLinkRe.MatchString(l) || strings.Contains(l, "![") {
+			continue
+		}
+		parts = append(parts, l)
+	}
+	joined := strings.Join(parts, " ")
+	joined = stripMarkdownEmphasis(joined)
+	return strings.TrimSpace(joined)
+}
 
 // --- WebSearch Tool (Claude-style adapter pattern) ---
 
@@ -43,46 +151,50 @@ type SearchOptions struct {
 	BlockedDomains []string
 }
 
-func htmlUnescape(s string) string {
-	s = strings.ReplaceAll(s, "&amp;", "&")
-	s = strings.ReplaceAll(s, "&lt;", "<")
-	s = strings.ReplaceAll(s, "&gt;", ">")
-	s = strings.ReplaceAll(s, "&quot;", "\"")
-	s = strings.ReplaceAll(s, "&#39;", "'")
-	s = strings.ReplaceAll(s, "&nbsp;", " ")
-	return s
+// searchCacheTTL is the lifetime of cached search results (2 days).
+const searchCacheTTL = 48 * time.Hour
+
+// cacheSessionID is a virtual session ID for KVStore-scoped search cache entries.
+const cacheSessionID = "__opencode_search_cache__"
+
+type cachedSearch struct {
+	Results   []SearchResult `json:"results"`
+	Timestamp time.Time      `json:"timestamp"`
+	Query     string         `json:"query"`
 }
 
 var mdConverter = md.NewConverter("", true, nil)
 
-func normalizeHTML(rawHTML string) string {
-	if rawHTML == "" {
-		return ""
+// fetchAndExtract fetches a URL with standard headers and converts HTML to Markdown.
+// Each adapter is responsible for building the request URL and resolving result URLs.
+func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, extraHeaders map[string]string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
-	result, err := mdConverter.ConvertString(rawHTML)
-	if err != nil || len(result) == 0 {
-		return htmlUnescape(stripTagsFast(rawHTML))
+	req.Header.Set("User-Agent", randomUA())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
 	}
-	return strings.TrimSpace(result)
-}
 
-func stripTagsFast(s string) string {
-	var buf strings.Builder
-	inTag := false
-	for _, r := range s {
-		if r == '<' {
-			inTag = true
-			continue
-		}
-		if r == '>' {
-			inTag = false
-			continue
-		}
-		if !inTag {
-			buf.WriteRune(r)
-		}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("search request failed: %w", err)
 	}
-	return buf.String()
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	md, err := mdConverter.ConvertString(string(body))
+	if err != nil || len(md) == 0 {
+		return "", fmt.Errorf("failed to convert HTML to Markdown: %w", err)
+	}
+	return md, nil
 }
 
 func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
@@ -94,6 +206,15 @@ func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
 	for _, r := range results {
 		u, err := url.Parse(r.URL)
 		if err != nil {
+			// Allow relative paths like /link?url=..., skip truly broken URLs like ://invalid
+			if strings.HasPrefix(r.URL, "/") || strings.HasPrefix(r.URL, "./") {
+				filtered = append(filtered, r)
+			}
+			continue
+		}
+		if !u.IsAbs() {
+			// Relative path (no scheme) — bypass hostname-based domain filtering
+			filtered = append(filtered, r)
 			continue
 		}
 		// Check blocked domains
@@ -136,26 +257,18 @@ func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
 type WebSearchTool struct {
 	adapters  []SearchAdapter
 	adapterMu sync.RWMutex
-	cache     sync.Map // map[string]cachedSearch
-	cacheTTL  time.Duration
-}
-
-type cachedSearch struct {
-	results   []SearchResult
-	timestamp time.Time
 }
 
 // NewWebSearchTool creates a WebSearchTool with multiple search adapters for hybrid search.
-// Uses parallel execution: Baidu + 360 (Haosou) + Sogou.
-// Each adapter returns top 5 results, which are then merged and deduplicated.
+// Uses parallel execution: Baidu + Sogou + Weixin.
+// Each adapter returns top results, which are then merged and deduplicated.
+// Results are cached via the KVStore interface (2-day TTL) for speed and knowledge reuse.
 func NewWebSearchTool() core.FuncTool {
-	t := &WebSearchTool{
-		cacheTTL: 15 * time.Minute,
-	}
+	t := &WebSearchTool{}
 	t.adapters = []SearchAdapter{
 		NewBaiduAdapter(),
-		NewHaosouAdapter(),
 		NewSogouAdapter(),
+		NewWeixinAdapter(),
 	}
 	return t
 }
@@ -199,7 +312,7 @@ Usage notes:
 			{
 				Name:        "max_results",
 				Type:        "integer",
-				Description: "Maximum number of results to return (default: 10, max: 20).",
+				Description: "Maximum number of results to return (default: 5, max: 20). Early exit threshold — once enough results are collected, faster engines' results are returned immediately without waiting for slower ones.",
 				Required:    false,
 			},
 			{
@@ -227,7 +340,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		return nil, fmt.Errorf("query must be at least 2 characters")
 	}
 
-	maxResults := 10
+	maxResults := 5
 	if raw, ok := params["max_results"]; ok {
 		if v, ok := ToFloat64(raw); ok && v > 0 {
 			maxResults = int(v)
@@ -253,14 +366,19 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 	}
 
-	// Check cache
+	// Check KVStore cache (2-day TTL)
 	cacheKey := query + "|" + strings.Join(allowedDomains, ",") + "|" + strings.Join(blockedDomains, ",")
-	if cached, ok := t.cache.Load(cacheKey); ok {
-		entry := cached.(cachedSearch)
-		if time.Since(entry.timestamp) < t.cacheTTL {
-			return formatSearchResults(query, entry.results), nil
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs != nil {
+		if data, err := kvs.Get(ctx, cacheSessionID, cacheKey); err == nil && len(data) > 0 {
+			var entry cachedSearch
+			if json.Unmarshal(data, &entry) == nil && time.Since(entry.Timestamp) < searchCacheTTL {
+				return formatSearchResults(query, entry.Results), nil
+			}
+			if data != nil {
+				kvs.Delete(ctx, cacheSessionID, cacheKey)
+			}
 		}
-		t.cache.Delete(cacheKey)
 	}
 
 	// Hybrid parallel search: run all adapters concurrently, merge results
@@ -320,25 +438,45 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}(adapter)
 	}
 
-	wg.Wait()
-	close(resultCh)
+	deadline := time.After(8 * time.Second)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
 	var allResults []SearchResult
 	var failedAdapters []string
 	successCount := 0
-	for result := range resultCh {
-		if result.err == nil && len(result.results) > 0 {
-			for i := range result.results {
-				result.results[i].Source = result.adapter
+	collected := 0
+
+collectLoop:
+	for collected < len(adapters) {
+		select {
+		case result := <-resultCh:
+			collected++
+			if result.err == nil && len(result.results) > 0 {
+				for i := range result.results {
+					result.results[i].Source = result.adapter
+				}
+				allResults = append(allResults, result.results...)
+				successCount++
+				logger.Info("search adapter succeeded in hybrid mode",
+					"adapter", result.adapter,
+					"result_count", len(result.results),
+				)
+				if len(allResults) >= maxResults {
+					break collectLoop
+				}
+			} else if result.err != nil {
+				failedAdapters = append(failedAdapters, fmt.Sprintf("%s (%v)", result.adapter, result.err))
 			}
-			allResults = append(allResults, result.results...)
-			successCount++
-			logger.Info("search adapter succeeded in hybrid mode",
-				"adapter", result.adapter,
-				"result_count", len(result.results),
-			)
-		} else if result.err != nil {
-			failedAdapters = append(failedAdapters, fmt.Sprintf("%s (%v)", result.adapter, result.err))
+		case <-done:
+			break collectLoop
+		case <-deadline:
+			break collectLoop
+		case <-ctx.Done():
+			break collectLoop
 		}
 	}
 
@@ -376,13 +514,153 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		adapterNote = fmt.Sprintf("\n\n[Search Status] All %d engines succeeded.", len(adapters))
 	}
 
-	// Cache results
-	t.cache.Store(cacheKey, cachedSearch{
-		results:   results,
-		timestamp: time.Now(),
-	})
+	// Cache results in KVStore (2-day TTL)
+	if kvs != nil {
+		if data, err := json.Marshal(cachedSearch{
+			Results:   results,
+			Timestamp: time.Now(),
+			Query:     query,
+		}); err == nil {
+			kvs.Set(ctx, cacheSessionID, cacheKey, data, int(searchCacheTTL.Seconds()))
+		}
+	}
 
 	return formatSearchResults(query, results) + adapterNote, nil
+}
+
+// ---- Cache query API (knowledge reuse via KVStore) ----
+
+// CachedQueryCount returns how many unique queries are in the KVStore cache.
+func (t *WebSearchTool) CachedQueryCount(ctx context.Context) int {
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs == nil {
+		return 0
+	}
+	keys, err := kvs.ListKeys(ctx, cacheSessionID)
+	if err != nil {
+		return 0
+	}
+	return len(keys)
+}
+
+// AllCachedQueries returns all cache keys (query strings) stored in KVStore.
+func (t *WebSearchTool) AllCachedQueries(ctx context.Context) []string {
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs == nil {
+		return nil
+	}
+	keys, err := kvs.ListKeys(ctx, cacheSessionID)
+	if err != nil {
+		return nil
+	}
+	return keys
+}
+
+// AllCachedResults returns every unique URL across all cached queries in KVStore.
+func (t *WebSearchTool) AllCachedResults(ctx context.Context) []SearchResult {
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs == nil {
+		return nil
+	}
+	keys, err := kvs.ListKeys(ctx, cacheSessionID)
+	if err != nil {
+		return nil
+	}
+	var all []SearchResult
+	seen := make(map[string]bool)
+	for _, key := range keys {
+		data, err := kvs.Get(ctx, cacheSessionID, key)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		var entry cachedSearch
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		for _, r := range entry.Results {
+			if !seen[r.URL] {
+				seen[r.URL] = true
+				all = append(all, r)
+			}
+		}
+	}
+	return all
+}
+
+// SearchCache searches all cached KVStore entries by keyword. Title, snippet,
+// and the original query are all matched. Returns deduplicated results.
+// This enables other mechanisms (memory, checks) to reuse externally
+// collected knowledge without making a new network request.
+func (t *WebSearchTool) SearchCache(ctx context.Context, keyword string) []SearchResult {
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs == nil {
+		return nil
+	}
+	keys, err := kvs.ListKeys(ctx, cacheSessionID)
+	if err != nil {
+		return nil
+	}
+	kw := strings.ToLower(keyword)
+	var matches []SearchResult
+	seen := make(map[string]bool)
+	for _, key := range keys {
+		data, err := kvs.Get(ctx, cacheSessionID, key)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		var entry cachedSearch
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(entry.Query), kw) {
+			for _, r := range entry.Results {
+				if !seen[r.URL] {
+					seen[r.URL] = true
+					matches = append(matches, r)
+				}
+			}
+			continue
+		}
+		for _, r := range entry.Results {
+			if seen[r.URL] {
+				continue
+			}
+			if strings.Contains(strings.ToLower(r.Title), kw) ||
+				strings.Contains(strings.ToLower(r.Snippet), kw) {
+				seen[r.URL] = true
+				matches = append(matches, r)
+			}
+		}
+	}
+	return matches
+}
+
+// EvictExpiredCache removes entries older than the TTL from KVStore.
+func (t *WebSearchTool) EvictExpiredCache(ctx context.Context) {
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs == nil {
+		return
+	}
+	keys, err := kvs.ListKeys(ctx, cacheSessionID)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, key := range keys {
+		data, err := kvs.Get(ctx, cacheSessionID, key)
+		if err != nil || len(data) == 0 {
+			kvs.Delete(ctx, cacheSessionID, key)
+			continue
+		}
+		var entry cachedSearch
+		if json.Unmarshal(data, &entry) != nil {
+			kvs.Delete(ctx, cacheSessionID, key)
+			continue
+		}
+		if now.Sub(entry.Timestamp) > searchCacheTTL {
+			kvs.Delete(ctx, cacheSessionID, key)
+		}
+	}
 }
 
 func formatSearchResults(query string, results []SearchResult) string {
@@ -410,10 +688,10 @@ func formatSearchResults(query string, results []SearchResult) string {
 			switch r.Source {
 			case "baidu":
 				sourceLabel = "百度"
-			case "haosou":
-				sourceLabel = "360搜索"
 			case "sogou":
 				sourceLabel = "搜狗"
+			case "weixin":
+				sourceLabel = "微信"
 			}
 			sb.WriteString(fmt.Sprintf("- **来源**: %s\n", sourceLabel))
 		}

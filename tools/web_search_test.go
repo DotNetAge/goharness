@@ -9,38 +9,6 @@ import (
 )
 
 // ============================================================
-// htmlUnescape — HTML Entity Decoding
-// ============================================================
-
-func TestHtmlUnescape(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"&amp;", "&"},
-		{"&lt;", "<"},
-		{"&gt;", ">"},
-		{"&quot;", "\""},
-		{"&#39;", "'"},
-		{"&nbsp;", " "},
-		{"Hello &amp; World", "Hello & World"},
-		{"a &lt; b &gt; c", "a < b > c"},
-		{"&quot;quoted&quot;", "\"quoted\""},
-		{"no entities here", "no entities here"},
-		{"mixed &amp; &lt; &gt;", "mixed & < >"},
-		{"&amp;amp;", "&amp;"}, // single-pass decode: &amp; → &
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := htmlUnescape(tt.input)
-			if got != tt.want {
-				t.Errorf("htmlUnescape(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-// ============================================================
 // htmlToMarkdown — HTML → Plain Text Conversion
 // ============================================================
 
@@ -314,6 +282,140 @@ func TestFormatSearchResults_Empty(t *testing.T) {
 // ============================================================
 // SearchResult JSON Marshaling
 // ============================================================
+
+// ============================================================
+// extractSearchResultsFromMarkdown — Markdown Search Parser
+// ============================================================
+
+func TestExtractSearchResults_MarkdownLinkInH3(t *testing.T) {
+	md := `一些导航内容
+
+### [2026年Agentic AI趋势](http://www.baidu.com/link?url=abc)
+
+这是描述文本
+
+### [另一个结果](https://example.com/page)
+
+另一个描述
+更多详情`
+
+	results := extractSearchResultsFromMarkdown(md, 10)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Title != "2026年Agentic AI趋势" {
+		t.Errorf("Title[0] = %q", results[0].Title)
+	}
+	if !strings.Contains(results[0].URL, "baidu.com/link") {
+		t.Errorf("URL[0] = %q", results[0].URL)
+	}
+	if results[1].Title != "另一个结果" {
+		t.Errorf("Title[1] = %q", results[1].Title)
+	}
+}
+
+func TestExtractSearchResults_StripsMarkdownEmphasis(t *testing.T) {
+	md := `### [_2026_ 年 *Agentic* AI趋势](http://example.com)`
+	results := extractSearchResultsFromMarkdown(md, 5)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Title != "2026 年 Agentic AI趋势" {
+		t.Errorf("Title should strip emphasis markers, got: %q", results[0].Title)
+	}
+}
+
+func TestExtractSearchResults_HandlesMultipleHeadingLevels(t *testing.T) {
+	md := `## [H2 Title](http://h2.com)
+some text
+# [H1 Title](http://h1.com)
+other text
+#### [H4 Title](http://h4.com)
+more text`
+	results := extractSearchResultsFromMarkdown(md, 10)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+}
+
+func TestExtractSearchResults_DeduplicatesByURL(t *testing.T) {
+	md := `### [First](http://same.com/page)
+desc
+### [Second](http://same.com/page)
+other desc`
+	results := extractSearchResultsFromMarkdown(md, 5)
+	if len(results) != 1 {
+		t.Errorf("expected 1 deduplicated result, got %d", len(results))
+	}
+}
+
+func TestExtractSearchResults_ExtractsSnippet(t *testing.T) {
+	md := `### [Title](http://example.com)
+
+这是摘要文本
+包含多行内容`
+
+	results := extractSearchResultsFromMarkdown(md, 5)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Snippet == "" {
+		t.Error("snippet should not be empty")
+	}
+	if !strings.Contains(results[0].Snippet, "摘要文本") {
+		t.Errorf("snippet should contain extracted text, got: %q", results[0].Snippet)
+	}
+}
+
+func TestExtractSearchResults_EmptyInput(t *testing.T) {
+	results := extractSearchResultsFromMarkdown("", 10)
+	if len(results) != 0 {
+		t.Errorf("empty input should return 0 results, got %d", len(results))
+	}
+	results = extractSearchResultsFromMarkdown("   ", 10)
+	if len(results) != 0 {
+		t.Errorf("whitespace input should return 0 results, got %d", len(results))
+	}
+}
+
+func TestExtractSearchResults_NoHeadingShowsNoResults(t *testing.T) {
+	md := `这只是普通文本链接 [title](http://example.com) 但没有标题`
+	results := extractSearchResultsFromMarkdown(md, 5)
+	if len(results) != 0 {
+		t.Errorf("links without heading prefix should be skipped, got %d", len(results))
+	}
+}
+
+func TestExtractSearchResults_RespectsMaxResults(t *testing.T) {
+	md := `### [Result A](http://example-a.com)
+### [Result B](http://example-b.com)
+### [Result C](http://example-c.com)
+### [Result D](http://example-d.com)`
+	results := extractSearchResultsFromMarkdown(md, 2)
+	if len(results) != 2 {
+		t.Errorf("maxResults=2 should return 2, got %d", len(results))
+	}
+}
+
+func TestRandomUA_ReturnsNonEmpty(t *testing.T) {
+	ua := randomUA()
+	if ua == "" {
+		t.Error("randomUA() should not return empty")
+	}
+	if !strings.Contains(ua, "Mozilla") {
+		t.Errorf("UA should contain Mozilla, got: %s", ua)
+	}
+}
+
+func TestRandomUA_Varies(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 20; i++ {
+		seen[randomUA()] = true
+	}
+	if len(seen) < 2 {
+		t.Error("randomUA() should produce at least 2 different values over 20 calls")
+	}
+}
 
 func TestSearchResult_JSONMarshal(t *testing.T) {
 	r := SearchResult{

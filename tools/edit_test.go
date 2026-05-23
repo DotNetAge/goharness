@@ -37,7 +37,10 @@ func TestEdit(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected string result, got %T", result)
 	}
-	if str != "File "+filePath+" updated successfully." {
+	cwd, _ := os.Getwd()
+	absPath := filepath.Join(cwd, filePath)
+	expected := "File " + absPath + " updated successfully. [scope: project]"
+	if str != expected {
 		t.Errorf("unexpected result: %q", str)
 	}
 
@@ -45,8 +48,8 @@ func TestEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read file: %v", err)
 	}
-	expected := "line 1\nline 2 replaced\nline 3\n"
-	if string(newContent) != expected {
+	want := "line 1\nline 2 replaced\nline 3\n"
+	if string(newContent) != want {
 		t.Errorf("unexpected content: got %q, want %q", string(newContent), expected)
 	}
 
@@ -61,8 +64,8 @@ func TestEdit(t *testing.T) {
 	}
 
 	newContent2, _ := os.ReadFile(filePath)
-	expected2 := "first line\nline 2 replaced\nline 3\n"
-	if string(newContent2) != expected2 {
+	want2 := "first line\nline 2 replaced\nline 3\n"
+	if string(newContent2) != want2 {
 		t.Errorf("unexpected content after second replace: %q", string(newContent2))
 	}
 }

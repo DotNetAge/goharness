@@ -29,120 +29,7 @@ func TestBaiduAdapter_Search_ContextCancelled(t *testing.T) {
 	}
 }
 
-// ============================================================
-// parseBaiduHTML — Unit Tests
-// ============================================================
 
-func TestParseBaiduHTML_SingleResult(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<div class="result c-container" id="1">
-	<h3 class="t">
-		<a href="http://www.baidu.com/link?url=https%3A%2F%2Fwww.example.com%2Fpage" target="_blank">Example Page Title</a>
-	</h3>
-	<div class="c-abstract">This is a snippet about the example page.</div>
-	<span class="c-showurl">www.example.com</span>
-</div>
-</body></html>`)
-
-	results := parseBaiduHTML(htmlBody)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Title != "Example Page Title" {
-		t.Errorf("Title = %q, want %q", results[0].Title, "Example Page Title")
-	}
-	if !strings.Contains(results[0].URL, "example.com") {
-		t.Errorf("URL should contain example.com, got: %q", results[0].URL)
-	}
-	if results[0].Snippet != "This is a snippet about the example page." {
-		t.Errorf("Snippet = %q", results[0].Snippet)
-	}
-}
-
-func TestParseBaiduHTML_MultipleResults(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<div class="result c-container" id="1">
-	<h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fsite1.com">Site One</a></h3>
-	<div class="c-abstract">First result snippet.</div>
-</div>
-<div class="result c-container" id="2">
-	<h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fsite2.com">Site Two</a></h3>
-	<div class="c-abstract">Second result snippet.</div>
-</div>
-<div class="result c-container" id="3">
-	<h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fsite3.com">Site Three</a></h3>
-	<div class="c-abstract">Third result snippet.</div>
-</div>
-</body></html>`)
-
-	results := parseBaiduHTML(htmlBody)
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
-	}
-	for i, r := range results {
-		if r.Title == "" {
-			t.Errorf("result[%d] Title is empty", i)
-		}
-		if r.URL == "" {
-			t.Errorf("result[%d] URL is empty", i)
-		}
-	}
-}
-
-func TestParseBaiduHTML_NoResults(t *testing.T) {
-	htmlBody := []byte(`<html><body><div class="no-result"><p>No results found for your query.</p></div></body></html>`)
-	results := parseBaiduHTML(htmlBody)
-	if len(results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(results))
-	}
-}
-
-func TestParseBaiduHTML_EmptyInput(t *testing.T) {
-	results := parseBaiduHTML(nil)
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for nil input, got %d", len(results))
-	}
-	results = parseBaiduHTML([]byte(""))
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for empty input, got %d", len(results))
-	}
-}
-
-func TestParseBaiduHTML_HtmlEntitiesInTitle(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<div class="result c-container">
-	<h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fexample.com">&quot;Quoted Title&quot; &amp; More</a></h3>
-	<div class="c-abstract">&lt;code&gt; snippet here</div>
-</div>
-</body></html>`)
-
-	results := parseBaiduHTML(htmlBody)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if !strings.Contains(results[0].Title, `"`) {
-		t.Errorf("entities should be decoded in title, got: %q", results[0].Title)
-	}
-	if !strings.Contains(results[0].Snippet, "<") {
-		t.Errorf("entities should be decoded in snippet, got: %q", results[0].Snippet)
-	}
-}
-
-func TestParseBaiduHTML_MissingSnippet(t *testing.T) {
-	htmlBody := []byte(`<html><body>
-<div class="result c-container">
-	<h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fexample.com">Title Only</a></h3>
-</div>
-</body></html>`)
-
-	results := parseBaiduHTML(htmlBody)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Snippet != "" {
-		t.Errorf("Snippet should be empty when not present, got: %q", results[0].Snippet)
-	}
-}
 
 // ============================================================
 // decodeBaiduRedirectURL
@@ -254,7 +141,7 @@ func TestBaiduSearchTool_Real_BasicSearch(t *testing.T) {
 	if s == "" {
 		t.Fatal("expected non-empty search result")
 	}
-	if !strings.Contains(s, "Web search results") {
+	if !strings.Contains(s, "搜索结果") {
 		t.Errorf("result should contain header, got: %.150s...", s)
 	}
 	if !strings.Contains(s, "http") {
@@ -281,7 +168,7 @@ func TestBaiduSearchTool_Real_ChineseQuery(t *testing.T) {
 	}
 	s := result.(string)
 	skipIfBaiduUnavailable(t, s)
-	if !strings.Contains(s, "Web search results") {
+	if !strings.Contains(s, "搜索结果") {
 		t.Errorf("result should contain header, got: %.150s...", s)
 	}
 	t.Logf("Chinese search results: %.500s...", s)
@@ -305,9 +192,9 @@ func TestBaiduSearchTool_Real_MaxResults(t *testing.T) {
 	}
 	s := result.(string)
 	skipIfBaiduUnavailable(t, s)
-	count := strings.Count(s, "\n1. [")
-	count += strings.Count(s, "\n2. [")
-	count += strings.Count(s, "\n3. [")
+	count := strings.Count(s, "### 1.")
+	count += strings.Count(s, "### 2.")
+	count += strings.Count(s, "### 3.")
 	if count < 1 {
 		t.Errorf("expected at least 1 result, got: %.200s...", s)
 	}

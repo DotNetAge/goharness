@@ -40,7 +40,11 @@ type SlogAdapter struct {
 }
 
 // NewSlogAdapter creates a new SlogAdapter wrapping slog.Logger.
+// Falls back to slog.Default() if logger is nil.
 func NewSlogAdapter(logger *slog.Logger) *SlogAdapter {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &SlogAdapter{logger: logger}
 }
 

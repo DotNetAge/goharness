@@ -58,6 +58,7 @@ func TestDebug_AgentHTTPRequestBody(t *testing.T) {
 			BaseURL:   server.URL,
 			APIKey:    "sk-test",
 			MaxTokens: 4096,
+			Enabled:   true,
 		}),
 	)
 	if err != nil {

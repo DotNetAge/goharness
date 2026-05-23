@@ -174,6 +174,8 @@ type agentSetup struct {
 	permissionRuleStore core.PermissionRuleStore
 
 	observationHooks []reactor.ObservationHook
+
+	kvStore core.KVStore
 }
 
 // AgentOption configures an Agent during creation via NewAgent.
@@ -416,6 +418,15 @@ func WithLogger(logger core.Logger) AgentOption {
 	}
 }
 
+// WithKVStore sets a KVStore for session-scoped key-value data sharing.
+// If not set, the default FileSystemKVStore at os.TempDir()/goreact/kvstore is used.
+// Callers can override this to use a persistent directory (e.g. ~/.mindx/data/cache).
+func WithKVStore(store core.KVStore) AgentOption {
+	return func(s *agentSetup) {
+		s.kvStore = store
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
@@ -567,6 +578,11 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	// Inject SessionDir if explicitly provided (Layer 3 safety)
 	if setup.sessionDir != "" {
 		reactorOpts = append(reactorOpts, reactor.WithSessionDir(setup.sessionDir))
+	}
+
+	// Inject KVStore if explicitly provided (overrides default temp-dir)
+	if setup.kvStore != nil {
+		reactorOpts = append(reactorOpts, reactor.WithKVStore(setup.kvStore))
 	}
 
 	// Hook 注入
