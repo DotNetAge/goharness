@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/DotNetAge/goreact/core"
@@ -15,6 +16,7 @@ const (
 	TaskPending    TaskStatus = "pending"
 	TaskInProgress TaskStatus = "in_progress"
 	TaskCompleted  TaskStatus = "completed"
+	TaskCancelled  TaskStatus = "cancelled"
 )
 
 type Task struct {
@@ -40,14 +42,13 @@ type Team struct {
 	Status      string    `json:"status"`
 }
 
-// validTransitions defines the allowed status state machine for planning tasks.
 var validTransitions = map[TaskStatus][]TaskStatus{
-	TaskPending:    {TaskInProgress, TaskCompleted},
-	TaskInProgress: {TaskCompleted},
+	TaskPending:    {TaskInProgress, TaskCompleted, TaskCancelled},
+	TaskInProgress: {TaskCompleted, TaskCancelled},
 	TaskCompleted:  {},
+	TaskCancelled:  {},
 }
 
-// ValidTaskTransition reports whether moving from current to next is allowed.
 func ValidTaskTransition(current, next TaskStatus) bool {
 	allowed, ok := validTransitions[current]
 	if !ok {
@@ -62,24 +63,16 @@ func ValidTaskTransition(current, next TaskStatus) bool {
 }
 
 const (
-	taskKeyPrefix = "tasks:"
-	teamKeyPrefix = "teams:"
+	taskKeyPrefix = "tasks_"
+	teamKeyPrefix = "teams_"
 )
 
 func taskKey(sessionID, taskID string) string {
-	return fmt.Sprintf("%s%s:%s", taskKeyPrefix, sessionID, taskID)
+	return fmt.Sprintf("%s%s_%s", taskKeyPrefix, sessionID, taskID)
 }
 
 func teamKey(sessionID, teamName string) string {
-	return fmt.Sprintf("%s%s:%s", teamKeyPrefix, sessionID, teamName)
-}
-
-func taskListKey(sessionID string) string {
-	return fmt.Sprintf("%s%s:__list__", taskKeyPrefix, sessionID)
-}
-
-func teamListKey(sessionID string) string {
-	return fmt.Sprintf("%s%s:__list__", teamKeyPrefix, sessionID)
+	return fmt.Sprintf("%s%s_%s", teamKeyPrefix, sessionID, teamName)
 }
 
 func CreateTask(ctx context.Context, sessionID string, task *Task) error {
@@ -101,32 +94,7 @@ func CreateTask(ctx context.Context, sessionID string, task *Task) error {
 	}
 
 	key := taskKey(sessionID, task.ID)
-	if err := kv.Set(ctx, sessionID, key, data, 0); err != nil {
-		return fmt.Errorf("failed to save task: %w", err)
-	}
-
-	// Atomic append to list using a single read-modify-write within the KVStore lock
-	const maxRetries = 5
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		list, err := getTaskList(ctx, sessionID)
-		if err != nil {
-			return fmt.Errorf("failed to read task list: %w", err)
-		}
-		// Check for duplicate
-		for _, existing := range list {
-			if existing == task.ID {
-				return nil
-			}
-		}
-		list = append(list, task.ID)
-		listData, _ := json.Marshal(list)
-		if err := kv.Set(ctx, sessionID, taskListKey(sessionID), listData, 0); err == nil {
-			return nil
-		}
-		// Retry on conflict (simple optimistic retry)
-		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
-	}
-	return fmt.Errorf("failed to append task %s to list after %d attempts", task.ID, maxRetries)
+	return kv.Set(ctx, sessionID, key, data, 0)
 }
 
 func GetTask(ctx context.Context, sessionID, taskID string) (*Task, error) {
@@ -169,25 +137,28 @@ func DeleteTask(ctx context.Context, sessionID, taskID string) error {
 	if kv == nil {
 		return fmt.Errorf("KVStore not available")
 	}
-
-	if err := kv.Delete(ctx, sessionID, taskKey(sessionID, taskID)); err != nil {
-		return fmt.Errorf("failed to delete task: %w", err)
-	}
-
-	// Remove from list
-	list, _ := getTaskList(ctx, sessionID)
-	newList := make([]string, 0, len(list))
-	for _, id := range list {
-		if id != taskID {
-			newList = append(newList, id)
-		}
-	}
-	listData, _ := json.Marshal(newList)
-	return kv.Set(ctx, sessionID, taskListKey(sessionID), listData, 0)
+	return kv.Delete(ctx, sessionID, taskKey(sessionID, taskID))
 }
 
 func ListTasks(ctx context.Context, sessionID string) ([]string, error) {
-	return getTaskList(ctx, sessionID)
+	kv := getKVStore(ctx)
+	if kv == nil {
+		return nil, fmt.Errorf("KVStore not available")
+	}
+
+	keys, err := kv.ListKeys(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var ids []string
+	prefix := taskKeyPrefix + sessionID + "_"
+	for _, k := range keys {
+		if strings.HasPrefix(k, prefix) {
+			ids = append(ids, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return ids, nil
 }
 
 func CreateTeam(ctx context.Context, sessionID string, team *Team) error {
@@ -204,14 +175,7 @@ func CreateTeam(ctx context.Context, sessionID string, team *Team) error {
 		return fmt.Errorf("failed to marshal team: %w", err)
 	}
 
-	if err := kv.Set(ctx, sessionID, teamKey(sessionID, team.Name), data, 0); err != nil {
-		return fmt.Errorf("failed to save team: %w", err)
-	}
-
-	list, _ := getTeamList(ctx, sessionID)
-	list = append(list, team.Name)
-	listData, _ := json.Marshal(list)
-	return kv.Set(ctx, sessionID, teamListKey(sessionID), listData, 0)
+	return kv.Set(ctx, sessionID, teamKey(sessionID, team.Name), data, 0)
 }
 
 func GetTeam(ctx context.Context, sessionID, teamName string) (*Team, error) {
@@ -236,7 +200,24 @@ func GetTeam(ctx context.Context, sessionID, teamName string) (*Team, error) {
 }
 
 func ListTeams(ctx context.Context, sessionID string) ([]string, error) {
-	return getTeamList(ctx, sessionID)
+	kv := getKVStore(ctx)
+	if kv == nil {
+		return nil, fmt.Errorf("KVStore not available")
+	}
+
+	keys, err := kv.ListKeys(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+	prefix := teamKeyPrefix + sessionID + "_"
+	for _, k := range keys {
+		if strings.HasPrefix(k, prefix) {
+			names = append(names, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return names, nil
 }
 
 func DeleteTeam(ctx context.Context, sessionID, teamName string) error {
@@ -244,62 +225,7 @@ func DeleteTeam(ctx context.Context, sessionID, teamName string) error {
 	if kv == nil {
 		return fmt.Errorf("KVStore not available")
 	}
-
-	if err := kv.Delete(ctx, sessionID, teamKey(sessionID, teamName)); err != nil {
-		return fmt.Errorf("failed to delete team: %w", err)
-	}
-
-	list, _ := getTeamList(ctx, sessionID)
-	newList := make([]string, 0, len(list))
-	for _, name := range list {
-		if name != teamName {
-			newList = append(newList, name)
-		}
-	}
-	listData, _ := json.Marshal(newList)
-	return kv.Set(ctx, sessionID, teamListKey(sessionID), listData, 0)
-}
-
-func getTaskList(ctx context.Context, sessionID string) ([]string, error) {
-	kv := getKVStore(ctx)
-	if kv == nil {
-		return nil, fmt.Errorf("KVStore not available")
-	}
-
-	data, err := kv.Get(ctx, sessionID, taskListKey(sessionID))
-	if err != nil {
-		return nil, err
-	}
-	if data == nil {
-		return nil, nil
-	}
-
-	var list []string
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal task list: %w", err)
-	}
-	return list, nil
-}
-
-func getTeamList(ctx context.Context, sessionID string) ([]string, error) {
-	kv := getKVStore(ctx)
-	if kv == nil {
-		return nil, fmt.Errorf("KVStore not available")
-	}
-
-	data, err := kv.Get(ctx, sessionID, teamListKey(sessionID))
-	if err != nil {
-		return nil, err
-	}
-	if data == nil {
-		return nil, nil
-	}
-
-	var list []string
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal team list: %w", err)
-	}
-	return list, nil
+	return kv.Delete(ctx, sessionID, teamKey(sessionID, teamName))
 }
 
 func getKVStore(ctx context.Context) core.KVStore {

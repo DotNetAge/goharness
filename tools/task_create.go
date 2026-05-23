@@ -3,15 +3,13 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/DotNetAge/goreact/core"
+	"github.com/google/uuid"
 )
 
-type TaskCreateTool struct {
-	counter atomic.Int64
-}
+type TaskCreateTool struct{}
 
 func NewTaskCreateTool() *TaskCreateTool {
 	return &TaskCreateTool{}
@@ -49,7 +47,7 @@ Usage:
 		Parameters: []core.Parameter{
 			{Name: "subject", Type: "string", Description: "Short title for the task.", Required: true},
 			{Name: "description", Type: "string", Description: "Detailed description of what needs to be done.", Required: true},
-			{Name: "activeForm", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
+			{Name: "active_form", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
 			{Name: "metadata", Type: "object", Description: "Arbitrary metadata key-value pairs to attach to the task.", Required: false},
 		},
 	}
@@ -70,7 +68,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		return nil, fmt.Errorf("TaskCreate requires ToolContext with SessionID")
 	}
 
-	taskID := fmt.Sprintf("task-%d", t.counter.Add(1))
+	taskID := uuid.NewString()
 
 	task := &Task{
 		ID:          taskID,
@@ -80,7 +78,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		CreatedAt:   time.Now(),
 	}
 
-	if activeForm, ok := params["activeForm"].(string); ok && activeForm != "" {
+	if activeForm, ok := params["active_form"].(string); ok && activeForm != "" {
 		task.ActiveForm = activeForm
 	}
 	if meta, ok := params["metadata"].(map[string]any); ok && len(meta) > 0 {

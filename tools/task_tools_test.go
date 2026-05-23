@@ -105,9 +105,17 @@ func TestTaskListTool_Execute(t *testing.T) {
 	}
 
 	resultMap := result.(map[string]any)
-	tasks := resultMap["tasks"].([]map[string]any)
-	if len(tasks) != 2 {
-		t.Errorf("List returned %d tasks, want 2", len(tasks))
+	tasksRaw := resultMap["tasks"]
+	taskSlice, ok := tasksRaw.([]map[string]any)
+	if !ok {
+		taskSlice2 := tasksRaw.([]any)
+		taskSlice = make([]map[string]any, len(taskSlice2))
+		for i, v := range taskSlice2 {
+			taskSlice[i] = v.(map[string]any)
+		}
+	}
+	if len(taskSlice) != 2 {
+		t.Errorf("List returned %d tasks, want 2", len(taskSlice))
 	}
 }
 
@@ -195,44 +203,6 @@ func TestTaskUpdateTool_Execute(t *testing.T) {
 	}
 }
 
-func TestTaskStopTool_Execute(t *testing.T) {
-	kv, cleanup := newTestKVStore(t)
-	defer cleanup()
-
-	ctx := withKVStoreContext(context.Background(), kv, "test-session-5")
-
-	task := &Task{
-		ID:          "task-stop",
-		Subject:     "Stop me",
-		Description: "Task to be stopped",
-		Status:      TaskPending,
-	}
-	if err := CreateTask(ctx, "test-session-5", task); err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-
-	tool := NewTaskStopTool()
-	params := map[string]any{"task_id": "task-stop"}
-
-	result, err := tool.Execute(ctx, params)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	resultMap := result.(map[string]any)
-	if resultMap["success"] != true {
-		t.Errorf("success = %v, want true", resultMap["success"])
-	}
-
-	task, err = GetTask(ctx, "test-session-5", "task-stop")
-	if err != nil {
-		t.Fatalf("GetTask() error = %v", err)
-	}
-	if task != nil {
-		t.Errorf("Task should be deleted after stop, but still exists")
-	}
-}
-
 func TestTeamCreateTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
@@ -298,9 +268,17 @@ func TestTeamListTool_Execute(t *testing.T) {
 	}
 
 	resultMap := result.(map[string]any)
-	teams := resultMap["teams"].([]map[string]any)
-	if len(teams) != 2 {
-		t.Errorf("List returned %d teams, want 2", len(teams))
+	teamsRaw := resultMap["teams"]
+	teamSlice, ok := teamsRaw.([]map[string]any)
+	if !ok {
+		teamSlice2 := teamsRaw.([]any)
+		teamSlice = make([]map[string]any, len(teamSlice2))
+		for i, v := range teamSlice2 {
+			teamSlice[i] = v.(map[string]any)
+		}
+	}
+	if len(teamSlice) != 2 {
+		t.Errorf("List returned %d teams, want 2", len(teamSlice))
 	}
 }
 
@@ -411,21 +389,6 @@ func TestTaskGetNotFound(t *testing.T) {
 	}
 }
 
-func TestTaskStopNotFound(t *testing.T) {
-	kv, cleanup := newTestKVStore(t)
-	defer cleanup()
-
-	ctx := withKVStoreContext(context.Background(), kv, "test-session-stop")
-
-	tool := NewTaskStopTool()
-	params := map[string]any{"task_id": "nonexistent"}
-
-	_, err := tool.Execute(ctx, params)
-	if err == nil {
-		t.Fatal("expected error when stopping nonexistent task")
-	}
-}
-
 func TestTaskUpdateNotFound(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
@@ -473,12 +436,12 @@ func TestTaskCreateDuplicateIDs(t *testing.T) {
 		t.Error("expected unique task IDs")
 	}
 
-	taskIDs, err := ListTasks(ctx, "test-session-dup")
+	ids, err := ListTasks(ctx, "test-session-dup")
 	if err != nil {
 		t.Fatalf("ListTasks error = %v", err)
 	}
-	if len(taskIDs) != 2 {
-		t.Errorf("Expected 2 tasks, got %d", len(taskIDs))
+	if len(ids) != 2 {
+		t.Errorf("Expected 2 tasks, got %d", len(ids))
 	}
 }
 
@@ -576,27 +539,135 @@ func TestTaskUpdate_Blocks(t *testing.T) {
 	}
 }
 
-func TestTaskUpdate_Deleted(t *testing.T) {
+func TestTaskUpdate_Cancelled(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	ctx := withKVStoreContext(context.Background(), kv, "test-session-delete")
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-cancel")
 
-	task := &Task{ID: "task-del", Subject: "Delete me", Status: TaskPending}
-	CreateTask(ctx, "test-session-delete", task)
+	task := &Task{ID: "task-cancel", Subject: "Cancel me", Status: TaskPending}
+	CreateTask(ctx, "test-session-cancel", task)
 
 	tool := NewTaskUpdateTool()
 	_, err := tool.Execute(ctx, map[string]any{
-		"task_id": "task-del",
-		"status":  "deleted",
+		"task_id": "task-cancel",
+		"status":  "cancelled",
 	})
 	if err != nil {
-		t.Fatalf("delete error = %v", err)
+		t.Fatalf("cancel error = %v", err)
 	}
 
-	got, _ := GetTask(ctx, "test-session-delete", "task-del")
-	if got != nil {
-		t.Error("Task should be deleted")
+	got, _ := GetTask(ctx, "test-session-cancel", "task-cancel")
+	if got == nil {
+		t.Fatal("Task should still exist after cancellation")
+	}
+	if got.Status != TaskCancelled {
+		t.Errorf("Task status = %v, want %v", got.Status, TaskCancelled)
+	}
+}
+
+func TestTaskUpdate_CycleDetection(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-cycle")
+
+	taskA := &Task{ID: "cycle-a", Subject: "A", Status: TaskPending}
+	taskB := &Task{ID: "cycle-b", Subject: "B", Status: TaskPending}
+	CreateTask(ctx, "test-session-cycle", taskA)
+	CreateTask(ctx, "test-session-cycle", taskB)
+
+	tool := NewTaskUpdateTool()
+
+	// A blocks B (valid)
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id":   "cycle-a",
+		"addBlocks": []any{"cycle-b"},
+	})
+	if err != nil {
+		t.Fatalf("A→B should be valid: %v", err)
+	}
+
+	// B blocks A (would create cycle B→A→B, rejected)
+	_, err = tool.Execute(ctx, map[string]any{
+		"task_id":   "cycle-b",
+		"addBlocks": []any{"cycle-a"},
+	})
+	if err == nil {
+		t.Fatal("B→A should be rejected as circular dependency")
+	}
+	t.Logf("Cycle detection correctly rejected: %v", err)
+}
+
+func TestTaskUpdate_CycleDetection_BlockedBy(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-cycle-bb")
+
+	taskA := &Task{ID: "bb-a", Subject: "A", Status: TaskPending}
+	taskB := &Task{ID: "bb-b", Subject: "B", Status: TaskPending}
+	CreateTask(ctx, "test-session-cycle-bb", taskA)
+	CreateTask(ctx, "test-session-cycle-bb", taskB)
+
+	tool := NewTaskUpdateTool()
+
+	// A blockedBy B (B blocks A, valid)
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id":      "bb-a",
+		"addBlockedBy": []any{"bb-b"},
+	})
+	if err != nil {
+		t.Fatalf("A blockedBy B should be valid: %v", err)
+	}
+
+	// B blockedBy A (would create cycle A→B→A via blockedBy, rejected)
+	_, err = tool.Execute(ctx, map[string]any{
+		"task_id":      "bb-b",
+		"addBlockedBy": []any{"bb-a"},
+	})
+	if err == nil {
+		t.Fatal("B blockedBy A should be rejected as circular dependency")
+	}
+	t.Logf("BlockedBy cycle detection correctly rejected: %v", err)
+}
+
+func TestTaskUpdate_CycleDetection_Transitive(t *testing.T) {
+	kv, cleanup := newTestKVStore(t)
+	defer cleanup()
+
+	ctx := withKVStoreContext(context.Background(), kv, "test-session-cycle-tran")
+
+	taskA := &Task{ID: "tran-a", Subject: "A", Status: TaskPending}
+	taskB := &Task{ID: "tran-b", Subject: "B", Status: TaskPending}
+	taskC := &Task{ID: "tran-c", Subject: "C", Status: TaskPending}
+	CreateTask(ctx, "test-session-cycle-tran", taskA)
+	CreateTask(ctx, "test-session-cycle-tran", taskB)
+	CreateTask(ctx, "test-session-cycle-tran", taskC)
+
+	tool := NewTaskUpdateTool()
+
+	// A blocks B, B blocks C (chain: A→B→C)
+	mustUpdate(t, tool, ctx, "tran-a", map[string]any{"addBlocks": []any{"tran-b"}})
+	mustUpdate(t, tool, ctx, "tran-b", map[string]any{"addBlocks": []any{"tran-c"}})
+
+	// C blocks A (would create C→A→B→C, rejected)
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_id":   "tran-c",
+		"addBlocks": []any{"tran-a"},
+	})
+	if err == nil {
+		t.Fatal("C→A should be rejected as transitive circular dependency")
+	}
+	t.Logf("Transitive cycle detection correctly rejected: %v", err)
+}
+
+func mustUpdate(t *testing.T, tool *TaskUpdateTool, ctx context.Context, taskID string, params map[string]any) {
+	t.Helper()
+	params["task_id"] = taskID
+	_, err := tool.Execute(ctx, params)
+	if err != nil {
+		t.Fatalf("update %s failed: %v", taskID, err)
 	}
 }
 

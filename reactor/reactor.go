@@ -661,7 +661,7 @@ var defaultBundledTools = []toolRegistration{
 	{"TaskList", func() core.FuncTool { return tools.NewTaskListTool() }, "TaskList"},
 	{"TaskGet", func() core.FuncTool { return tools.NewTaskGetTool() }, "TaskGet"},
 	{"TaskUpdate", func() core.FuncTool { return tools.NewTaskUpdateTool() }, "TaskUpdate"},
-	{"TaskStop", func() core.FuncTool { return tools.NewTaskStopTool() }, "TaskStop"},
+
 }
 
 func (r *Reactor) registerBundledTools(setup *reactorSetup) {
@@ -706,6 +706,7 @@ func (r *Reactor) registerOrchestrationTools(setup *reactorSetup) {
 			return "", fmt.Errorf("subagent: SpawnFunc not configured on reactor")
 		})},
 		{"TaskCreate", tools.NewTaskCreateTool()},
+		{"TeamGetTasks", tools.NewTeamGetTasksTool()},
 		{"TeamCreate", tools.NewTeamCreateTool(func(ctx context.Context, agentName, task string) (string, error) {
 			if r.SpawnFunc != nil {
 				return r.SpawnFunc(ctx, agentName, task)

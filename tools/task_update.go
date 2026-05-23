@@ -23,33 +23,34 @@ Use cases:
 - Update subject or description to clarify what needs to be done
 - Mark a task as in_progress when starting work
 - Mark a task as completed when finished
+- Cancel a task that is no longer needed
 - Assign a task to yourself or a teammate via owner
 - Express dependencies between tasks with blocks/blockedBy
-- Delete a task that is no longer needed
 
 Status transitions:
 - pending → in_progress (start working)
 - pending → completed (skip)
+- pending → cancelled (abandon)
 - in_progress → completed (finish)
+- in_progress → cancelled (abandon)
 
 Dependencies:
 - Use addBlocks to say "this task blocks the listed tasks"
 - Use addBlockedBy to say "this task is blocked by the listed tasks"
 - Example: Task A blocks Task B → B can't start until A is completed
+- Cycle detection is automatic: if A depends on B and B already depends on A, the update is rejected
 
-At least one of subject, description, status, owner, addBlocks, or addBlockedBy must be provided.
-
-Use status="deleted" to permanently remove a task.`,
+At least one of subject, description, status, owner, addBlocks, or addBlockedBy must be provided.`,
 		Tags: []string{"task", "update", "status", "planning"},
 		Parameters: []core.Parameter{
 			{Name: "task_id", Type: "string", Description: "The ID of the task to update.", Required: true},
 			{Name: "subject", Type: "string", Description: "New subject (short title) for the task.", Required: false},
 			{Name: "description", Type: "string", Description: "New detailed description of what needs to be done.", Required: false},
-			{Name: "status", Type: "string", Description: "New status: pending, in_progress, completed, or deleted (removes task).", Required: false},
+			{Name: "status", Type: "string", Description: "New status: pending, in_progress, completed, or cancelled.", Required: false},
 			{Name: "owner", Type: "string", Description: "Assign the task to an agent (by name).", Required: false},
 			{Name: "addBlocks", Type: "array", Description: "Task IDs that this task now blocks (depend on this one).", Required: false},
 			{Name: "addBlockedBy", Type: "array", Description: "Task IDs that this task is now blocked by (depends on them).", Required: false},
-			{Name: "activeForm", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
+			{Name: "active_form", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
 			{Name: "metadata", Type: "object", Description: "Arbitrary metadata to merge into the task. Set a key to null to delete it.", Required: false},
 		},
 	}
@@ -76,19 +77,6 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 
 	updated := false
 
-	// Handle deletion
-	if statusStr, ok := params["status"].(string); ok && statusStr == "deleted" {
-		if err := DeleteTask(ctx, tc.SessionID, taskID); err != nil {
-			return nil, fmt.Errorf("failed to delete task: %w", err)
-		}
-		return map[string]any{
-			"success": true,
-			"message": fmt.Sprintf("Task %q deleted", taskID),
-			"task_id": taskID,
-			"status":  "deleted",
-		}, nil
-	}
-
 	// Update basic fields
 	if subj, ok := params["subject"].(string); ok && subj != "" && subj != task.Subject {
 		task.Subject = subj
@@ -103,8 +91,8 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		updated = true
 	}
 
-	// Update activeForm
-	if activeForm, ok := params["activeForm"].(string); ok && activeForm != "" && activeForm != task.ActiveForm {
+	// Update active_form
+	if activeForm, ok := params["active_form"].(string); ok && activeForm != "" && activeForm != task.ActiveForm {
 		task.ActiveForm = activeForm
 		updated = true
 	}
@@ -140,11 +128,12 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	if rawBlocks, ok := params["addBlocks"].([]any); ok && len(rawBlocks) > 0 {
 		for _, raw := range rawBlocks {
 			if blockID, ok := raw.(string); ok && blockID != "" {
-				// Update this task's blocks
+				if canReach(ctx, tc.SessionID, blockID, taskID) {
+					return nil, fmt.Errorf("adding block %q would create a circular dependency", blockID)
+				}
 				if !strContains(task.Blocks, blockID) {
 					task.Blocks = append(task.Blocks, blockID)
 				}
-				// Update blocked task's blockedBy
 				blockedTask, err := GetTask(ctx, tc.SessionID, blockID)
 				if err == nil && blockedTask != nil {
 					if !strContains(blockedTask.BlockedBy, taskID) {
@@ -161,11 +150,12 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	if rawBlockedBy, ok := params["addBlockedBy"].([]any); ok && len(rawBlockedBy) > 0 {
 		for _, raw := range rawBlockedBy {
 			if depID, ok := raw.(string); ok && depID != "" {
-				// Update this task's blockedBy
+				if canReach(ctx, tc.SessionID, taskID, depID) {
+					return nil, fmt.Errorf("adding blockedBy %q would create a circular dependency", depID)
+				}
 				if !strContains(task.BlockedBy, depID) {
 					task.BlockedBy = append(task.BlockedBy, depID)
 				}
-				// Update blocking task's blocks
 				blockingTask, err := GetTask(ctx, tc.SessionID, depID)
 				if err == nil && blockingTask != nil {
 					if !strContains(blockingTask.Blocks, taskID) {
@@ -181,7 +171,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	if !updated {
 		return map[string]any{
 			"success": false,
-			"message": "No changes provided. Provide at least one of: subject, description, status, owner, activeForm, metadata, addBlocks, addBlockedBy.",
+			"message": "No changes provided. Provide at least one of: subject, description, status, owner, active_form, metadata, addBlocks, addBlockedBy.",
 		}, nil
 	}
 
@@ -212,6 +202,30 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	return result, nil
+}
+
+func canReach(ctx context.Context, sessionID, from, to string) bool {
+	visited := map[string]bool{}
+	stack := []string{from}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if current == to {
+			return true
+		}
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+		t, _ := GetTask(ctx, sessionID, current)
+		if t == nil {
+			continue
+		}
+		for _, id := range t.Blocks {
+			stack = append(stack, id)
+		}
+	}
+	return false
 }
 
 func strContains(slice []string, s string) bool {

@@ -25,14 +25,21 @@ Use this to:
 - Identify blocked tasks and who they depend on
 - See which tasks are assigned to whom
 
+Optional filters:
+- status_filter: only show tasks with this status (pending, in_progress, completed, cancelled)
+- owner_filter: only show tasks assigned to this agent
+
 Returns a list with:
 - task_id: unique identifier for each task
 - subject: short title
-- status: pending, in_progress, or completed
+- status: pending, in_progress, completed, or cancelled
 - owner: who is responsible (if assigned)
 - blocked_by: tasks blocking this one (if any)`,
 		Tags: []string{"task", "list", "status", "planning"},
-		Parameters: []core.Parameter{},
+		Parameters: []core.Parameter{
+			{Name: "status_filter", Type: "string", Description: "Optional: filter by status (pending, in_progress, completed, cancelled).", Required: false},
+			{Name: "owner_filter", Type: "string", Description: "Optional: filter by assigned owner.", Required: false},
+		},
 	}
 }
 
@@ -41,6 +48,9 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TaskList requires ToolContext with SessionID")
 	}
+
+	statusFilter, _ := params["status_filter"].(string)
+	ownerFilter, _ := params["owner_filter"].(string)
 
 	taskIDs, err := ListTasks(ctx, tc.SessionID)
 	if err != nil {
@@ -58,6 +68,13 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 	for _, id := range taskIDs {
 		task, err := GetTask(ctx, tc.SessionID, id)
 		if err != nil || task == nil {
+			continue
+		}
+
+		if statusFilter != "" && string(task.Status) != statusFilter {
+			continue
+		}
+		if ownerFilter != "" && task.Owner != ownerFilter {
 			continue
 		}
 
