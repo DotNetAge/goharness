@@ -165,6 +165,17 @@ type cachedSearch struct {
 
 var mdConverter = md.NewConverter("", true, nil)
 
+// WebFetch cache constants
+const webFetchCacheTTL = 15 * time.Minute
+const webFetchCacheSessionID = "__opencode_webfetch_cache__"
+const webFetchMaxContentChars = 50000
+
+type cachedFetch struct {
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+	URL       string    `json:"url"`
+}
+
 // fetchAndExtract fetches a URL with standard headers and converts HTML to Markdown.
 // Each adapter is responsible for building the request URL and resolving result URLs.
 func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, extraHeaders map[string]string) (string, error) {
@@ -765,27 +776,24 @@ func validateURL(rawURL string) error {
 // WebFetchTool implements intelligent web content fetching:
 // URL validation + SSRF protection → HTTP fetch → HTML→Text extraction.
 //
-// Features:
-// 1. Validates URL and checks for SSRF risks (blocks private IPs).
-// 2. Fetches the page content locally via HTTP.
-// 3. Strips HTML tags (scripts, styles, nav, etc.) for clean text.
-// 4. Returns processed content with metadata for the LLM to process.
+// Caching: L1 in-memory (sync.Map, process-lifetime), L2 KVStore (persistent, cross-session).
 type WebFetchTool struct {
-	client   *http.Client
-	cache    sync.Map // map[string]cachedFetch
-	cacheTTL time.Duration
+	client  *http.Client
+	memCache sync.Map // map[string]cachedFetch — L1 fast path
 }
 
-type cachedFetch struct {
-	content   string
-	timestamp time.Time
-}
-
-// NewWebFetchTool creates a WebFetch tool.
+// NewWebFetchTool creates a WebFetch tool with SSRF-safe redirect handling.
 func NewWebFetchTool() core.FuncTool {
 	return &WebFetchTool{
-		client:   &http.Client{Timeout: 15 * time.Second},
-		cacheTTL: 15 * time.Minute,
+		client: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return fmt.Errorf("too many redirects")
+				}
+				return validateURL(req.URL.String())
+			},
+		},
 	}
 }
 
@@ -842,24 +850,35 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		rawURL = "https://" + rawURL
 	}
 
-	// SSRF protection
+	// SSRF protection (pre-request)
 	if err := validateURL(rawURL); err != nil {
 		return nil, err
 	}
 
-	// Check cache
-	if cached, ok := t.cache.Load(rawURL); ok {
+	// ---- L1 cache: in-memory (fastest) ----
+	wfCacheKey := rawURL
+	if cached, ok := t.memCache.Load(wfCacheKey); ok {
 		entry := cached.(cachedFetch)
-		if time.Since(entry.timestamp) < t.cacheTTL {
-			if prompt != "" {
-				return fmt.Sprintf("--- Web Fetch: %s ---\nPrompt: %s\n\n%s", rawURL, prompt, entry.content), nil
-			}
-			return fmt.Sprintf("--- Web Fetch: %s ---\n\n%s", rawURL, entry.content), nil
+		if time.Since(entry.Timestamp) < webFetchCacheTTL {
+			return formatWebFetchOutput(rawURL, prompt, entry.Content, len([]rune(entry.Content)), entry.Content, false), nil
 		}
-		t.cache.Delete(rawURL)
+		t.memCache.Delete(wfCacheKey)
 	}
 
-	// Fetch
+	// ---- L2 cache: KVStore (persistent, cross-session) ----
+	kvs := core.GetToolContext(ctx).KVStore
+	if kvs != nil {
+		if data, err := kvs.Get(ctx, webFetchCacheSessionID, wfCacheKey); err == nil && len(data) > 0 {
+			var entry cachedFetch
+			if json.Unmarshal(data, &entry) == nil && time.Since(entry.Timestamp) < webFetchCacheTTL {
+				t.memCache.Store(wfCacheKey, entry)
+				return formatWebFetchOutput(rawURL, prompt, entry.Content, len([]rune(entry.Content)), entry.Content, false), nil
+			}
+			kvs.Delete(ctx, webFetchCacheSessionID, wfCacheKey)
+		}
+	}
+
+	// ---- Fetch ----
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -874,6 +893,17 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 	defer resp.Body.Close()
 
+	// Pre-check response headers before reading body (zero extra latency)
+	ct := resp.Header.Get("Content-Type")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("HTTP %d fetching %s: %s", resp.StatusCode, rawURL, strings.TrimSpace(string(body)))
+	}
+	if !isHTMLContentType(ct) {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return formatNonHTML(rawURL, prompt, resp.StatusCode, ct, string(body)), nil
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB limit
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
@@ -882,55 +912,98 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	// Process content
 	rawContent := htmlToMarkdown(string(body))
 	originalLen := len([]rune(rawContent))
-	const maxContentChars = 50000
 
-	// Truncate content for output (cache stores the truncated version to avoid
-	// re-truncation, but retains the original size for metadata)
 	content := rawContent
 	truncated := false
-	if originalLen > maxContentChars {
-		content = string([]rune(rawContent[:maxContentChars]))
+	if originalLen > webFetchMaxContentChars {
+		content = string([]rune(rawContent[:webFetchMaxContentChars]))
 		truncated = true
 	}
 
-	// Cache the truncated version
-	t.cache.Store(rawURL, cachedFetch{
-		content:   content,
-		timestamp: time.Now(),
-	})
+	// Save to L1 + L2 cache
+	entry := cachedFetch{
+		Content:   content,
+		Timestamp: time.Now(),
+		URL:       rawURL,
+	}
+	t.memCache.Store(wfCacheKey, entry)
+	if kvs != nil {
+		if data, err := json.Marshal(entry); err == nil {
+			kvs.Set(ctx, webFetchCacheSessionID, wfCacheKey, data, int(webFetchCacheTTL.Seconds()))
+		}
+	}
 
-	// Format output with size metadata
+	return formatWebFetchOutput(rawURL, prompt, content, originalLen, rawContent, truncated), nil
+}
+
+func formatWebFetchOutput(rawURL, prompt, content string, originalLen int, rawContent string, truncated bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- Web Fetch: %s ---\n", rawURL)
-	fmt.Fprintf(&sb, "Status: %d | Original size: %d chars | Returned: %d chars\n",
-		resp.StatusCode, originalLen, len(content))
+	fmt.Fprintf(&sb, "Status: 200 | Original size: %d chars | Returned: %d chars\n",
+		originalLen, len(content))
 	if prompt != "" {
 		fmt.Fprintf(&sb, "Prompt: %s\n", prompt)
 	}
 	if truncated {
-		fmt.Fprintf(&sb, "Note: Content was truncated (%d chars omitted).\n", originalLen-maxContentChars)
+		fmt.Fprintf(&sb, "Note: Content was truncated (%d chars omitted).\n", originalLen-webFetchMaxContentChars)
 		fmt.Fprintf(&sb, "To focus on specific sections, re-fetch with a descriptive `prompt` parameter (e.g., prompt=\"extract the section about pricing\").\n")
 	}
 	fmt.Fprintf(&sb, "\n%s\n", content)
-
-	return sb.String(), nil
+	return sb.String()
 }
 
-// htmlToMarkdown converts HTML to clean Markdown using html-to-markdown library.
+// isHTMLContentType reports whether the Content-Type indicates parseable HTML.
+func isHTMLContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "text/html") ||
+		strings.Contains(ct, "application/xhtml") ||
+		strings.Contains(ct, "text/plain") ||
+		ct == ""
+}
+
+// formatNonHTML returns a metadata-only output for non-HTML responses (PDFs, images, etc.).
+func formatNonHTML(rawURL, prompt string, statusCode int, contentType, preview string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- Web Fetch: %s ---\n", rawURL)
+	fmt.Fprintf(&sb, "Status: %d | Content-Type: %s\n", statusCode, contentType)
+	if prompt != "" {
+		fmt.Fprintf(&sb, "Prompt: %s\n", prompt)
+	}
+	fmt.Fprintf(&sb, "\nNon-HTML content. Body preview (%d bytes):\n", len(preview))
+	if len(preview) > 0 {
+		fmt.Fprintf(&sb, "%s...\n", preview)
+	}
+	return sb.String()
+}
+
+// htmlToMarkdown converts HTML to clean Markdown using the shared singleton converter.
 func htmlToMarkdown(htmlStr string) string {
-	converter := md.NewConverter("", true, nil)
-	mdResult, err := converter.ConvertString(htmlStr)
+	mdResult, err := mdConverter.ConvertString(htmlStr)
 	if err != nil || len(mdResult) == 0 {
 		return fallbackHtmlToText(htmlStr)
 	}
-	var lines []string
-	for _, line := range strings.Split(mdResult, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			lines = append(lines, line)
+	return trimLines(mdResult)
+}
+
+// trimLines splits on newlines, trims whitespace, drops empties, and rejoins.
+func trimLines(s string) string {
+	var result strings.Builder
+	result.Grow(len(s))
+	for start := 0; start < len(s); {
+		end := strings.IndexByte(s[start:], '\n')
+		if end == -1 {
+			end = len(s) - start
 		}
+		line := strings.TrimSpace(s[start : start+end])
+		if line != "" {
+			if result.Len() > 0 {
+				result.WriteByte('\n')
+			}
+			result.WriteString(line)
+		}
+		start += end + 1
 	}
-	return strings.Join(lines, "\n")
+	return result.String()
 }
 
 // fallbackHtmlToText is the old stripTags-based converter used when htmltomarkdown fails.
