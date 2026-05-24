@@ -98,6 +98,8 @@ type Agent struct {
 	lastResult   *Result
 	sessionStore core.SessionStore
 
+	providerRegistry core.ProviderRegistry
+
 	interruptMu sync.Mutex
 	cancelFunc  context.CancelFunc
 	isRunning   bool
@@ -166,6 +168,8 @@ type agentSetup struct {
 	sessionDir string // Layer 3: Session directory (from SessionStore or explicit)
 
 	skillNames []string // Registered skill names for all agent
+
+	providerRegistry core.ProviderRegistry
 
 	// Hook 注入
 	thoughtHooks     []reactor.ThoughtHook
@@ -373,6 +377,16 @@ func WithRuleRegistry(reg core.RuleRegistry) AgentOption {
 	}
 }
 
+// WithProviderRegistry sets the ProviderRegistry for resolving provider-level
+// configuration (APIKey, BaseURL, AuthToken) referenced by ModelConfig.Provider.
+// When set, buildReactorConfig automatically resolves provider fields before
+// creating the reactor.
+func WithProviderRegistry(reg core.ProviderRegistry) AgentOption {
+	return func(s *agentSetup) {
+		s.providerRegistry = reg
+	}
+}
+
 // WithLogger sets a unified logging interface for the Agent and all its internal components
 // (Reactor, ToolExecutor, Tools). This enables external log management (Zap, Logrus, etc.).
 //
@@ -432,15 +446,21 @@ func WithKVStore(store core.KVStore) AgentOption {
 // ---------------------------------------------------------------------------
 
 // buildReactorConfig creates a ReactorConfig from ModelConfig and AgentConfig.
+// If a ProviderRegistry is provided and the model references a provider, 
+// provider-level fields (APIKey, BaseURL, AuthToken) are resolved automatically.
 // This centralizes the field mapping to avoid duplication across NewAgent, Clone, and Switch.
-func buildReactorConfig(model *core.ModelConfig, systemPrompt string) reactor.ReactorConfig {
+func buildReactorConfig(model *core.ModelConfig, systemPrompt string, providerRegistry ...core.ProviderRegistry) reactor.ReactorConfig {
+	resolved := model
+	if len(providerRegistry) > 0 && providerRegistry[0] != nil {
+		resolved = model.ResolveProvider(providerRegistry[0])
+	}
 	return reactor.ReactorConfig{
-		APIKey:           model.APIKey,
-		BaseURL:          model.BaseURL,
-		AuthToken:        model.AuthToken,
-		Model:            model.Name,
+		APIKey:           resolved.APIKey,
+		BaseURL:          resolved.BaseURL,
+		AuthToken:        resolved.AuthToken,
+		Model:            resolved.Name,
 		SystemPrompt:     systemPrompt,
-		IsLocal:          model.IsLocal,
+		IsLocal:          resolved.IsLocal,
 		Temperature:      model.Temperature,
 		TopP:             model.TopP,
 		TopK:             int(model.TopK),
@@ -597,7 +617,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	}
 
 	// Build ReactorConfig from ModelConfig — align all generation parameters
-	reactorConfig := buildReactorConfig(model, config.Introduction)
+	reactorConfig := buildReactorConfig(model, config.Introduction, setup.providerRegistry)
 
 	if setup.logger != nil {
 		reactorConfig.Logger = setup.logger
@@ -625,7 +645,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 
 	// Register default lifecycle hooks (user hooks already registered as ReactorOptions)
 	r.RegisterThoughtHooks(thought.Defaults(r.Logger())...)
-	r.RegisterToolHooks(action.Defaults(r.AskPermission(), setup.permissionRuleStore, r.SkillRegistry(), r.BudgetEnforcer(), r.Logger())...)
+	r.RegisterToolHooks(action.Defaults(setup.permissionRuleStore, r.SkillRegistry(), r.BudgetEnforcer(), r.Logger())...)
 	r.RegisterObservationHooks(observation.Defaults(r.Logger())...)
 
 	// Populate skills catalog and rules on the Prompt
@@ -698,12 +718,13 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	}
 
 	a := &Agent{
-		config:       config,
-		model:        model,
-		memory:       setup.memory,
-		reactor:      r,
-		eventBus:     r.EventBus(),
-		sessionStore: setup.sessionStore,
+		config:           config,
+		model:            model,
+		memory:           setup.memory,
+		reactor:          r,
+		eventBus:         r.EventBus(),
+		sessionStore:     setup.sessionStore,
+		providerRegistry: setup.providerRegistry,
 	}
 
 	if setup.sessionID != "" {
@@ -726,9 +747,9 @@ func (a *Agent) Config() *core.AgentConfig {
 	return a.config
 }
 
-// Model returns the agent's model configuration.
+// Model returns the agent's model configuration (resolved against provider registry).
 func (a *Agent) Model() *core.ModelConfig {
-	return a.model
+	return a.model.ResolveProvider(a.providerRegistry)
 }
 
 // SetModel updates the agent's model configuration at runtime.
@@ -752,9 +773,10 @@ func (a *Agent) SetModel(model *core.ModelConfig) {
 	}
 	// Update the local model config (copy to avoid external mutation)
 	cp := *model
-	a.model = &cp
+	resolved := cp.ResolveProvider(a.providerRegistry)
+	a.model = resolved
 
-	a.reactor.SetModelConfig(cp)
+	a.reactor.SetModelConfig(*resolved)
 }
 
 func (a *Agent) Name() string {
@@ -1219,7 +1241,7 @@ func (a *Agent) Clone(childConfig *core.AgentConfig, childModel *core.ModelConfi
 		model = &mp
 	}
 
-	subReactorConfig := buildReactorConfig(model, config.Introduction)
+	subReactorConfig := buildReactorConfig(model, config.Introduction, a.providerRegistry)
 
 	childReactor := a.reactor.CloneReactor(subReactorConfig)
 
@@ -1231,13 +1253,14 @@ func (a *Agent) Clone(childConfig *core.AgentConfig, childModel *core.ModelConfi
 	childReactor.SetContextWindow(core.NewContextWindow(childSessionID, childMaxTokens))
 
 	return &Agent{
-		config:       config,
-		model:        model,
-		memory:       a.memory,
-		reactor:      childReactor,
-		eventBus:     a.eventBus,
-		sessionStore: a.sessionStore,
-		lastResult:   nil,
+		config:           config,
+		model:            model,
+		memory:           a.memory,
+		reactor:          childReactor,
+		eventBus:         a.eventBus,
+		sessionStore:     a.sessionStore,
+		providerRegistry: a.providerRegistry,
+		lastResult:       nil,
 	}
 }
 
@@ -1267,7 +1290,7 @@ func (a *Agent) Switch(config *core.AgentConfig, model *core.ModelConfig) {
 		a.model = model
 	}
 
-	switchConfig := buildReactorConfig(a.model, a.config.Introduction)
+	switchConfig := buildReactorConfig(a.model, a.config.Introduction, a.providerRegistry)
 	existingCW := a.resolveSessionForRole(a.config.Name)
 
 	newReactor := a.reactor.CloneReactor(switchConfig)

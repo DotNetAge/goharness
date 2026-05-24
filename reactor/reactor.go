@@ -166,9 +166,6 @@ type Reactor struct {
 	// prompt builds the structured system prompt from multiple sections.
 	prompt *Prompt
 
-	// askPermission manages user approval for sensitive tool operations.
-	askPermission *tools.AskPermission
-
 	// eventBus publishes ReactEvent messages to external subscribers (UI, loggers, etc.).
 	eventBus EventBus
 
@@ -231,17 +228,6 @@ func (r *Reactor) Memory() core.Memory { return r.memory }
 
 // Prompt returns the prompt builder for system prompt generation.
 func (r *Reactor) Prompt() *Prompt { return r.prompt }
-
-// SetAskPermission replaces the permission checker instance.
-// Use this to inject a pre-configured AskPermission with custom responders.
-func (r *Reactor) SetAskPermission(p *tools.AskPermission) { r.askPermission = p }
-
-// PermissionResponder returns the PermissionResponder for the AskPermission checker,
-// which allows external code (e.g., TUI) to respond to pending permission requests.
-func (r *Reactor) PermissionResponder() core.PermissionResponder { return r.askPermission }
-
-// AskPermission returns the *tools.AskPermission instance for hook wiring.
-func (r *Reactor) AskPermission() *tools.AskPermission { return r.askPermission }
 
 // Logger returns the reactor's logger instance.
 func (r *Reactor) Logger() core.Logger { return r.getLogger() }
@@ -371,6 +357,7 @@ func (r *Reactor) execToolHooksWithAbort(ctx *ReactContext, call toolCall) (ret 
 		tr.Success = false
 	} else {
 		tr.Result = res.Result
+		tr.Metadata = res.Metadata
 		tr.Duration = res.Duration
 		tr.Success = res.Error == nil
 		if res.Error != nil {
@@ -584,46 +571,10 @@ func (r *Reactor) discoverAndLoadSkills(setup *reactorSetup) {
 	}
 }
 
-// askUserPermissionFilter wraps AskPermission so the executor-level permission
-// checker only activates for the AskUser tool. All other tools are auto-allowed
-// because the PermissionHook (registered via toolHooks by action.Defaults or user
-// code) is the authoritative permission decision point for non-AskUser tools.
-//
-// Without this filter, the executor's internal AskPermission would independently
-// return PermissionAsk for LevelSensitive/LevelHighRisk tools, triggering
-// BlockAndWait() — which deadlocks in headless/integration-test environments
-// where no external Responder is connected.
-type askUserPermissionFilter struct {
-	inner *tools.AskPermission
-}
-
-func (f *askUserPermissionFilter) CheckPermissions(ctx *core.ToolUseContext) core.PermissionResult {
-	if ctx.ToolName == "AskUser" {
-		return f.inner.CheckPermissions(ctx)
-	}
-	return core.PermissionResult{Behavior: core.PermissionAllow}
-}
-
-// BlockAndWait delegates to AskPermission for the AskUser tool path.
-func (f *askUserPermissionFilter) BlockAndWait(ctx *core.ToolUseContext) core.PermissionResult {
-	return f.inner.BlockAndWait(ctx)
-}
-
-func (f *askUserPermissionFilter) IsWaiting() bool { return f.inner.IsWaiting() }
-func (f *askUserPermissionFilter) Respond(result core.PermissionResult) error {
-	return f.inner.Respond(result)
-}
-func (f *askUserPermissionFilter) RespondError(err error) error { return f.inner.RespondError(err) }
-
 func (r *Reactor) initToolExecutor(setup *reactorSetup) {
-	// Use askUserPermissionFilter so the executor only asks for AskUser tools.
-	// Non-AskUser permission decisions are handled by PermissionHook in the
-	// ToolHook chain, not by the executor's internal permission checker.
-	permissionChecker := core.ToolPermissionChecker(&askUserPermissionFilter{inner: r.askPermission})
-
 	r.toolExecutor = core.NewToolExecutor(
 		r.toolRegistry,
-		core.WithPermissionChecker(permissionChecker),
+		core.WithPermissionChecker(tools.NewFallbackPermissionChecker()),
 		core.WithResultLimits(setup.resultLimits),
 		core.WithEventEmitter(func(e core.ReactEvent) {
 			if r.eventBus != nil {
@@ -793,13 +744,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.initRegistries(setup)
 	r.initLLMCaller(config, setup)
 	r.discoverAndLoadSkills(setup)
-	// Initialize permission checker (used by tool executor)
-	r.askPermission = tools.NewAskPermission()
-	r.askPermission.SetEventEmitter(func(e core.ReactEvent) {
-		if r.eventBus != nil {
-			r.eventBus.Emit(e)
-		}
-	})
 	r.initToolExecutor(setup)
 	r.registerBundledTools(setup)
 
@@ -965,29 +909,9 @@ func (r *Reactor) getLLMTools() []gochatcore.Tool {
 }
 
 // CloneReactor creates a child Reactor that inherits all registries, infrastructure,
-// and execution pipeline from the parent, but with an independent config, task manager,
-// LLM client, and conversation context.
-//
-// Thread Safety Guarantee:
-//
-//	Safe for concurrent use (parent + child running simultaneously):
-//	  - toolRegistry, skillRegistry: read-only after setup ✅
-//	  - eventBus: internally synchronized (InProcessEventBus uses RWMutex) ✅
-//	  - kvStore, fileStore: externally synchronized ✅
-//	  - thoughtHooks, toolHooks, observationHooks: immutable after setup ✅
-//
-//	Requires caution (shared mutable state):
-//	  - toolExecutor: may contain internal state (permission checks, result limits).
-//	    If parent/child execute tools concurrently, ensure the implementation is thread-safe.
-//	  - toolResultBudgetEnforcer: shares ContentReplacementState reference.
-//	    The state is cloned at creation time, but runtime mutations are shared.
-//	    For complete isolation, consider recreating the enforcer for the child.
-//
-// Independent (new instances for child):
-//   - config (Model, SystemPrompt, Temperature, etc. — can override)
-//   - llmCaller (child's own LLM caller with independent context window)
-//   - contextWindow (child's own conversation history)
-//   - askPermission (child's own permission checker with independent event emitter)
+// memory, hooks, and the event bus from the parent, but has its own independent:
+//   - Config (model, API key, temperature, etc.)
+//   - LLM caller (client, context window, token usage tracking)
 //   - asyncToolTimeout (copied from parent config, can be overridden)
 //
 // Use case: SubAgent creation where the child needs parent's tools/skills/memory
@@ -1022,13 +946,6 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 
 	// Clone LLMCaller with parent's shared infrastructure but independent client/context
 	child.llmCaller = r.cloneLLMCallerForChild(childConfig)
-
-	child.askPermission = tools.NewAskPermission()
-	child.askPermission.SetEventEmitter(func(e core.ReactEvent) {
-		if child.eventBus != nil {
-			child.eventBus.Emit(e)
-		}
-	})
 
 	return child
 }
@@ -1139,7 +1056,10 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 	// Structured tool messages: one per tool result (with correct tool_call_id)
 	if reactCtx.LastThought.Decision == DecisionAct {
 		for _, tr := range reactCtx.LastAction.Results {
-			toolCallID := lookUpToolCallID(reactCtx.LastThought, tr.ToolName)
+			toolCallID := tr.ToolCallID
+			if toolCallID == "" {
+				toolCallID = lookUpToolCallID(reactCtx.LastThought, tr.ToolName)
+			}
 			toolMsg := tr.ToolResultSummary()
 			reactCtx.AddToolMessage("tool", toolMsg, toolCallID)
 			r.persistStepToStore(reactCtx.Ctx(), core.Message{

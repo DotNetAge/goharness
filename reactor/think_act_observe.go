@@ -98,12 +98,23 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 		"iteration", iter,
 	)
 
-	result := r.llmCaller.CallStream(ctx.Ctx(), *callInput,
+	result := r.llmCaller.CallStreamWithToolDelta(ctx.Ctx(), *callInput,
 		func(chunk string) {
 			contentBuf.WriteString(chunk)
+			ctx.EmitEvent(core.ContentDelta, chunk)
 		},
-		func(thinkingChunk string) {
-			ctx.EmitEvent(core.ThinkingDelta, thinkingChunk)
+		[]StreamThinkingCallback{
+			func(thinkingChunk string) {
+				ctx.EmitEvent(core.ThinkingDelta, thinkingChunk)
+			},
+		},
+		func(delta gochatcore.ToolCallDelta) {
+			ctx.EmitEvent(core.ToolUseDelta, core.ToolUseDeltaData{
+				Index:     delta.Index,
+				ID:        delta.ID,
+				Name:      delta.Name,
+				Arguments: delta.Arguments,
+			})
 		},
 	)
 
@@ -436,12 +447,17 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 				resultStr = execResult.Result
 			}
 
+			var metadata any
+			if execResult != nil {
+				metadata = execResult.Metadata
+			}
 			tr := ToolResult{
 				ToolName:   toolName,
 				ToolCallID: toolCallID,
 				Duration:   time.Since(start),
 				Success:    execErr == nil,
 				Result:     resultStr,
+				Metadata:   metadata,
 			}
 			if execErr != nil {
 				tr.Error = execErr.Error()

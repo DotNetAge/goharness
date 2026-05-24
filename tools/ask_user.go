@@ -11,7 +11,7 @@ import (
 
 // AskUser is a tool that asks the user questions via the permission system.
 // Unlike the old design, this tool does NOT return an _interaction marker.
-// Instead, AskPermission.CheckPermissions() returns PermissionAsk with structured
+// Instead, the executor emits an AskUserRequest event with structured
 // questions, the permission dialog collects answers, and answers are injected
 // into params via UpdatedInput. Execute() is an identity function that formats
 // the answers as a natural-language message for the LLM.
@@ -67,9 +67,8 @@ func (t *AskUser) Info() *core.ToolInfo {
 }
 
 // Execute is an identity function. The actual interaction (showing question dialog,
-// collecting user answer) is handled by the permission system before this point.
-// The user's answers arrive via params["answers"], injected by the permission
-// system's UpdatedInput mechanism.
+// collecting user answer) is handled by the executor's awaitUserResponse via
+// AskUserRequest event. The user's answers arrive via params["answers"].
 func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, error) {
 	question, ok := params["question"].(string)
 	if !ok || question == "" {

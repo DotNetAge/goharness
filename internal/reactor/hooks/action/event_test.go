@@ -154,7 +154,7 @@ func newTestReactorWithEvents(mockFn reactor.MockLLMFunc, extraTools ...core.Fun
 	r := reactor.NewReactor(cfg, opts...)
 
 	r.RegisterThoughtHooks(&testPreCheckHook{})
-	r.RegisterToolHooks(action.Defaults(nil, nil, nil, nil, nil)...)
+	r.RegisterToolHooks(action.Defaults(nil, nil, nil, nil)...)
 	r.RegisterObservationHooks(&testConvergenceHook{})
 
 	for _, tool := range extraTools {
@@ -637,7 +637,7 @@ func TestBranch_Run_MaxIterationsReached(t *testing.T) {
 		reactor.WithoutBundledTools(),
 	)
 	r.RegisterThoughtHooks(&testPreCheckHook{})
-	r.RegisterToolHooks(action.Defaults(nil, nil, nil, nil, nil)...)
+	r.RegisterToolHooks(action.Defaults(nil, nil, nil, nil)...)
 	r.RegisterObservationHooks(&testConvergenceHook{})
 	_ = r.RegisterTool(&mockTool{name: "loop_tool"})
 

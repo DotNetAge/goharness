@@ -44,6 +44,9 @@ type StreamChunkCallback func(chunk string)
 // Used by models with extended thinking (DeepSeek-R1, o1, etc.) to emit raw thinking stream.
 type StreamThinkingCallback func(chunk string)
 
+// StreamToolUseDeltaCallback is called for each tool call argument delta during streaming.
+type StreamToolUseDeltaCallback func(delta gochatcore.ToolCallDelta)
+
 // MockLLMFunc is the signature for a mock LLM function used in testing.
 type MockLLMFunc func(ctx context.Context, input CallInput) (*gochatcore.Response, error)
 
@@ -336,6 +339,16 @@ func (c *LLMCaller) Call(ctx context.Context, input CallInput) CallResult {
 // text-based extraction via ParseThinkResponse or similar.
 // For native tool call support, use Call() (non-streaming).
 func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking ...StreamThinkingCallback) (cr CallResult) {
+	return c.CallStreamWithToolDelta(ctx, input, onChunk, onThinking)
+}
+
+// CallStreamWithToolDelta is like CallStream but also forwards tool call argument deltas.
+func (c *LLMCaller) CallStreamWithToolDelta(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking []StreamThinkingCallback, onToolCallDelta ...StreamToolUseDeltaCallback) (cr CallResult) {
+	return c.callStreamInternal(ctx, input, onChunk, onThinking, onToolCallDelta)
+}
+
+// callStreamInternal contains the shared streaming implementation.
+func (c *LLMCaller) callStreamInternal(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking []StreamThinkingCallback, onToolCallDelta []StreamToolUseDeltaCallback) (cr CallResult) {
 	defer func() {
 		if p := recover(); p != nil {
 			c.logger.Error("CallStream panicked", fmt.Errorf("%v", p),
@@ -410,6 +423,10 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 	if len(onThinking) > 0 && onThinking[0] != nil {
 		thinkingCB = onThinking[0]
 	}
+	var toolDeltaCB StreamToolUseDeltaCallback
+	if len(onToolCallDelta) > 0 && onToolCallDelta[0] != nil {
+		toolDeltaCB = onToolCallDelta[0]
+	}
 
 	for stream.Next() {
 		select {
@@ -442,6 +459,12 @@ func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk Str
 			thinkingBuf.WriteString(event.Content)
 			if thinkingCB != nil {
 				thinkingCB(event.Content)
+			}
+		case gochatcore.EventToolCall:
+			if toolDeltaCB != nil {
+				for _, delta := range event.ToolCallDeltas {
+					toolDeltaCB(delta)
+				}
 			}
 		case gochatcore.EventError:
 			return c.recordPartialResult(callCtx, input, contentBuf.String(), preciseInput, event.Err)

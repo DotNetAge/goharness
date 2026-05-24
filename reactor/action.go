@@ -18,7 +18,11 @@ type ToolResult struct {
 	// Used to correlate results back to the LLM's conversation context.
 
 	Result string `json:"result,omitempty"`
-	// Result contains the stringified output from a successful tool execution.
+	// Result contains the stringified output intended for the LLM.
+
+	Metadata any `json:"metadata,omitempty"`
+	// Metadata carries structured data for system consumers (UI, hooks, logging).
+	// Not sent to the LLM. Populated from ToolExecutionResult.Metadata.
 
 	Error string `json:"error,omitempty"`
 	// Error contains the error message if the tool execution failed.

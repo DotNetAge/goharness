@@ -3,13 +3,16 @@ package core
 import "github.com/DotNetAge/gochat/core"
 
 // ModelConfig holds the configuration for an LLM backend.
+// Provider-level fields (BaseURL, APIKey, AuthToken) can be inherited from
+// a named ProviderConfig via the Provider field, or set directly as overrides.
 type ModelConfig struct {
 	// ID          string `json:"id" yaml:"id"`
 	Name              string  `json:"name" yaml:"name"`                             // model name
 	Description       string  `json:"description" yaml:"description"`               // model description
-	BaseURL           string  `json:"base_url" yaml:"base_url"`                     // API base URL
-	APIKey            string  `json:"api_key" yaml:"api_key"`                       // API key (or credential reference name)
-	AuthToken         string  `json:"auth_token" yaml:"auth_token"`                 // auth token
+	Provider          string  `json:"provider" yaml:"provider"`                     // references a ProviderConfig by name
+	BaseURL           string  `json:"base_url" yaml:"base_url"`                     // API base URL (overrides provider)
+	APIKey            string  `json:"api_key" yaml:"api_key"`                       // API key (overrides provider)
+	AuthToken         string  `json:"auth_token" yaml:"auth_token"`                 // auth token (overrides provider)
 	MaxTokens         int64   `json:"max_tokens" yaml:"max_tokens"`                 // maximum output tokens per LLM call
 	ContextLength     int64   `json:"context_length" yaml:"context_length"`         // total context window (input + output), 0 = unknown
 	IsLocal           bool    `json:"is_local" yaml:"is_local"`                     // whether the model is local
@@ -33,4 +36,25 @@ func (m *ModelConfig) Config() *core.Config {
 		APIKey:    m.APIKey,
 		AuthToken: m.AuthToken,
 	}
+}
+
+func (m *ModelConfig) ResolveProvider(registry ProviderRegistry) *ModelConfig {
+	if m.Provider == "" || registry == nil {
+		return m
+	}
+	provider, err := registry.Get(m.Provider)
+	if err != nil {
+		return m
+	}
+	resolved := *m
+	if resolved.BaseURL == "" {
+		resolved.BaseURL = provider.BaseURL
+	}
+	if resolved.APIKey == "" {
+		resolved.APIKey = provider.APIKey
+	}
+	if resolved.AuthToken == "" {
+		resolved.AuthToken = provider.AuthToken
+	}
+	return &resolved
 }

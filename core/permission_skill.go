@@ -15,12 +15,12 @@ import (
 // The checker reads the registry on every invocation, so newly registered skills
 // take effect immediately ("动态检查"). No caching is performed.
 //
-// Place this in the PermissionChain BEFORE RuleBasedChecker and AskPermission:
+// Place this in the PermissionChain before RuleBasedChecker:
 //
 //	PermissionChain{
-//	    SkillBasedChecker(registry),     // [0] pre-approved by skill
-//	    RuleBasedChecker(store),         // [1] explicit rule matching
-//	    AskPermission,                   // [2] fallback user prompt
+//	    SkillBasedChecker(registry),                // [0] pre-approved by skill
+//	    RuleBasedChecker(store),                    // [1] explicit rule matching
+//	    FallbackPermissionChecker(),                // [2] fallback: ask for sensitive tools
 //	}
 type SkillBasedChecker struct {
 	registry SkillRegistry

@@ -11,6 +11,12 @@ const (
 	// ThinkingDelta is a fragment of the Think phase output (streaming).
 	ThinkingDelta ReactEventType = "thinking_delta"
 
+	// ContentDelta is a streaming text content fragment from the LLM response.
+	ContentDelta ReactEventType = "content_delta"
+
+	// ToolUseDelta is a streaming tool call argument fragment from the LLM response.
+	ToolUseDelta ReactEventType = "tool_use_delta"
+
 	// ThinkingDone signals the Think phase has completed and the full thought is available.
 	ThinkingDone ReactEventType = "thinking_done"
 
@@ -42,8 +48,7 @@ const (
 	FinalAnswer ReactEventType = "final_answer"
 
 	// ClarifyNeeded signals the Reactor needs user clarification.
-	// Deprecated: Merged into PermissionRequest with Questions field.
-	// Use PermissionRequest instead.
+	// Deprecated: Use AskUserRequest instead.
 	ClarifyNeeded ReactEventType = "clarify_needed"
 
 	// PermissionRequest signals a tool needs user authorization before execution.
@@ -51,6 +56,10 @@ const (
 
 	// PermissionDenied signals a tool execution was denied by the permission system.
 	PermissionDenied ReactEventType = "permission_denied"
+
+	// AskUserRequest signals the LLM is asking the user a question or set of questions.
+	// Unlike PermissionRequest (security), this is a dialogue interaction.
+	AskUserRequest ReactEventType = "ask_user_request"
 
 	// ExecutionSummary signals the reactor has completed and provides usage statistics.
 	ExecutionSummary ReactEventType = "execution_summary"
@@ -91,6 +100,8 @@ type ReactEvent struct {
 
 	// Data carries the event payload. Its concrete type depends on Type:
 	//   - ThinkingDelta: string (text fragment)
+	//   - ContentDelta: string (text content fragment)
+	//   - ToolUseDelta: ToolUseDeltaData
 	//   - ThinkingDone: Thought
 	//   - ActionStart: ActionStartData
 	//   - ActionProgress: ActionProgressData
@@ -101,9 +112,9 @@ type ReactEvent struct {
 	//   - SubtaskSpawned: SubtaskInfo
 	//   - SubtaskCompleted: SubtaskResult
 	//   - FinalAnswer: string
-	//   - ClarifyNeeded: string (the question) [Deprecated: merged into PermissionRequest]
-	//   - PermissionRequest: PermissionRequestData
+	//   - PermissionRequest: PermissionRequestData  (Grant/Deny)
 	//   - PermissionDenied: string (denial reason)
+	//   - AskUserRequest: AskUserRequestData  (Reply)
 	//   - ExecutionSummary: ExecutionSummaryData
 	//   - Error: string (error message)
 	//   - CycleEnd: CycleInfo
@@ -111,6 +122,14 @@ type ReactEvent struct {
 
 	// Timestamp is when the event was created.
 	Timestamp int64 `json:"timestamp"`
+}
+
+// ToolUseDeltaData is the payload for ToolUseDelta events.
+type ToolUseDeltaData struct {
+	Index     int    `json:"index"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // ActionStartData is the payload for ActionStart events (action-level, not per-tool).
@@ -185,14 +204,45 @@ type LLMTimeoutData struct {
 }
 
 // PermissionRequestData is the payload for PermissionRequest events.
-// When Questions is non-empty, the tool is AskUser and the frontend should
-// render a multi-question form instead of a simple allow/deny dialog.
+// The embedded grant/deny callbacks allow the event subscriber to respond
+// without holding a reference to the AskPermission instance.
 type PermissionRequestData struct {
-	ToolName      string              `json:"tool_name"`
-	Params        map[string]any      `json:"params,omitempty"`
-	Reason        string              `json:"reason,omitempty"`
-	SecurityLevel SecurityLevel       `json:"security_level"`
-	Questions     []PermissionQuestion `json:"questions,omitempty"`
+	TickID        string         `json:"tick_id"`
+	ToolName      string         `json:"tool_name"`
+	Params        map[string]any `json:"params,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	SecurityLevel SecurityLevel  `json:"security_level"`
+
+	grant func(updatedInput map[string]any)
+	deny  func(reason string)
+}
+
+func (d *PermissionRequestData) Grant(updatedInput map[string]any) {
+	if d.grant != nil {
+		d.grant(updatedInput)
+	}
+}
+
+func (d *PermissionRequestData) Deny(reason string) {
+	if d.deny != nil {
+		d.deny(reason)
+	}
+}
+
+// AskUserRequestData is the payload for AskUserRequest events.
+// The LLM asks the user structured questions (single/multi choice, free text).
+// The embedded reply callback delivers the user's answers.
+type AskUserRequestData struct {
+	TickID    string               `json:"tick_id"`
+	Questions []PermissionQuestion `json:"questions"`
+
+	reply func(answers map[string]string)
+}
+
+func (d *AskUserRequestData) Reply(answers map[string]string) {
+	if d.reply != nil {
+		d.reply(answers)
+	}
 }
 
 // ExecutionSummaryData is the payload for ExecutionSummary events.

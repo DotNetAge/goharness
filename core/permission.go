@@ -38,13 +38,8 @@ type PermissionResult struct {
 	// Message explains the reason when denied, or the question when asking.
 	Message string `json:"message,omitempty"`
 
-	// Questions are populated when Behavior=Ask and the tool is AskUser.
-	// The permission dialog renders these as a multi-question form.
-	Questions []PermissionQuestion `json:"questions,omitempty"`
-
 	// UpdatedInput allows hooks or user to modify tool parameters before execution.
-	// For AskUser, this carries the user's answers back.
-	// Only meaningful when Behavior is Allow or Ask (user approved with modifications).
+	// Only meaningful when Behavior is Allow (user approved with modifications).
 	UpdatedInput map[string]any `json:"updated_input,omitempty"`
 }
 
@@ -74,34 +69,19 @@ type ToolUseContext struct {
 
 // ToolPermissionChecker determines whether a tool execution is permitted.
 // Implementations can inspect tool metadata, parameters, and context to make
-// authorization decisions. The checker may return PermissionAsk to suspend
-// execution until the user responds (via the PermissionResponder mechanism).
+// authorization decisions.
+//
+// When CheckPermissions returns PermissionAsk, the executor emits either a
+// PermissionRequest event (for tool security) or an AskUserRequest event
+// (for LLM-user dialogue), depending on the tool. Both events carry embedded
+// callbacks (Grant/Deny/Reply) so subscribers can respond without holding a
+// reference to any specific permission instance.
 //
 // This interface is designed to be composable: a chain of checkers can be
 // combined, where each checker's result feeds into the next.
 type ToolPermissionChecker interface {
 	// CheckPermissions evaluates whether the tool call should be allowed.
 	// The returned PermissionResult may have Behavior=Ask, in which case
-	// the caller must wait for user input before proceeding.
+	// the executor will emit an event and wait for the embedded callback.
 	CheckPermissions(ctx *ToolUseContext) PermissionResult
-}
-
-// PermissionResponder allows external code to respond to a pending permission request.
-// When CheckPermissions returns PermissionAsk, the system blocks until
-// either Respond() or RespondError() is called.
-type PermissionResponder interface {
-	// Respond delivers the user's permission decision.
-	// Returns an error if there is no pending permission request.
-	Respond(result PermissionResult) error
-
-	// RespondError delivers an error (e.g., timeout, cancellation).
-	// Returns an error if there is no pending permission request.
-	RespondError(err error) error
-
-	// IsWaiting returns true if the system is currently blocked waiting for a response.
-	IsWaiting() bool
-
-	// BlockAndWait blocks until the user responds or the context is cancelled.
-	// Returns the final permission decision after the user responds.
-	BlockAndWait(ctx *ToolUseContext) PermissionResult
 }

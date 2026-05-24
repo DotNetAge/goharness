@@ -3,12 +3,19 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ToolExecutionResult struct {
 	Result      string
+	Metadata    any    // structured data for system consumers (UI, hooks, logging), not sent to LLM
 	Duration    time.Duration
 	Error       error
 	ToolName    string
@@ -144,35 +151,22 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 				e.cfg.logger.Info("[executor] tool denied", "tool", name, "reason", permResult.Message)
 			}
 			return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied: %s", name, permResult.Message)}, nil
+
 		case PermissionAsk:
-			if e.cfg.eventEmitter != nil {
-				e.cfg.eventEmitter(NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", PermissionRequest, PermissionRequestData{
-					ToolName:      name,
-					Params:        params,
-					Reason:        permResult.Message,
-					SecurityLevel: toolInfo.SecurityLevel,
-					Questions:     permResult.Questions,
-				}))
-			}
 			if e.cfg.logger != nil {
-				e.cfg.logger.Info("[executor] awaiting user permission", "tool", name)
+				e.cfg.logger.Info("[executor] awaiting user response", "tool", name)
 			}
-			if responder, ok := e.cfg.permissionChecker.(PermissionResponder); ok {
-				finalResult := responder.BlockAndWait(useCtx)
-				if e.cfg.logger != nil {
-					e.cfg.logger.Debug("[executor] permission response received", "tool", name, "behavior", finalResult.Behavior)
+			result := e.awaitUserResponse(name, params, toolInfo.SecurityLevel, useCtx)
+			switch result.Behavior {
+			case PermissionDeny:
+				if e.cfg.eventEmitter != nil {
+					e.cfg.eventEmitter(NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", PermissionDenied, result.Message))
 				}
-				switch finalResult.Behavior {
-				case PermissionDeny:
-					if e.cfg.eventEmitter != nil {
-						e.cfg.eventEmitter(NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", PermissionDenied, finalResult.Message))
-					}
-					return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied by user: %s", name, finalResult.Message)}, nil
-				case PermissionAllow:
-					if finalResult.UpdatedInput != nil {
-						params = finalResult.UpdatedInput
-						useCtx.Params = params
-					}
+				return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied by user: %s", name, result.Message)}, nil
+			case PermissionAllow:
+				if result.UpdatedInput != nil {
+					params = result.UpdatedInput
+					useCtx.Params = params
 				}
 			}
 		case PermissionAllow:
@@ -214,7 +208,8 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 	}
 
 	if err != nil {
-		return &ToolExecutionResult{ToolName: name, Duration: duration, Error: err}, nil
+		enhanced := enhanceFileError(err, extractPath(params))
+		return &ToolExecutionResult{ToolName: name, Duration: duration, Error: enhanced}, nil
 	}
 
 	str, ok := result.(string)
@@ -234,6 +229,126 @@ func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params m
 		Duration: duration,
 		ToolName: name,
 	}, nil
+}
+
+// awaitUserResponse emits an event and blocks until the user responds.
+// For AskUser tools, emits AskUserRequest (Reply callback).
+// For all other tools, emits PermissionRequest (Grant/Deny callbacks).
+func (e *defaultToolExecutor) awaitUserResponse(name string, params map[string]any, secLevel SecurityLevel, useCtx *ToolUseContext) PermissionResult {
+	ch := make(chan PermissionResult, 1)
+
+	if name == "AskUser" {
+		questions := extractAskUserQuestions(params)
+		if e.cfg.eventEmitter != nil {
+			e.cfg.eventEmitter(NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", AskUserRequest, AskUserRequestData{
+				TickID:    uuid.New().String(),
+				Questions: questions,
+				reply: func(answers map[string]string) {
+					ch <- PermissionResult{Behavior: PermissionAllow, UpdatedInput: map[string]any{"answers": answers}}
+				},
+			}))
+		}
+		select {
+		case result := <-ch:
+			return result
+		case <-useCtx.Ctx.Done():
+			return PermissionResult{Behavior: PermissionDeny, Message: "context cancelled"}
+		}
+	}
+
+	if e.cfg.eventEmitter != nil {
+		e.cfg.eventEmitter(NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", PermissionRequest, PermissionRequestData{
+			TickID:        uuid.New().String(),
+			ToolName:      name,
+			Params:        params,
+			Reason:        "This tool requires your approval before execution.",
+			SecurityLevel: secLevel,
+			grant: func(updatedInput map[string]any) {
+				ch <- PermissionResult{Behavior: PermissionAllow, UpdatedInput: updatedInput}
+			},
+			deny: func(reason string) {
+				ch <- PermissionResult{Behavior: PermissionDeny, Message: reason}
+			},
+		}))
+	}
+	select {
+	case result := <-ch:
+		return result
+	case <-useCtx.Ctx.Done():
+		return PermissionResult{Behavior: PermissionDeny, Message: "context cancelled"}
+	}
+}
+
+// extractAskUserQuestions converts tool params into PermissionQuestion slice.
+func extractAskUserQuestions(params map[string]any) []PermissionQuestion {
+	question, _ := params["question"].(string)
+	if question == "" {
+		return nil
+	}
+	multi, _ := params["multiSelect"].(bool)
+	header := question
+	if len(header) > 12 {
+		header = header[:12]
+	}
+	q := PermissionQuestion{
+		Question:    question,
+		Header:      header,
+		MultiSelect: multi,
+	}
+	if opts, ok := params["options"].([]any); ok {
+		for _, o := range opts {
+			if s, ok := o.(string); ok {
+				q.Options = append(q.Options, QuestionOption{Label: s})
+			}
+		}
+	}
+	return []PermissionQuestion{q}
+}
+
+// enhanceFileError wraps file-not-found errors with similar path suggestions.
+func enhanceFileError(err error, path string) error {
+	if path == "" || !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	suggestions := findSimilarPaths(dir, filepath.Base(path))
+	if len(suggestions) == 0 {
+		return fmt.Errorf("%w\nFile not found: %s", err, path)
+	}
+	return fmt.Errorf("%w\nFile not found: %s\n\nDid you mean one of these?\n%s",
+		err, path, strings.Join(suggestions, "\n"))
+}
+
+// extractPath attempts to extract a "path" or "file_path" parameter from the params map.
+func extractPath(params map[string]any) string {
+	for _, key := range []string{"path", "file_path", "filepath", "dir", "directory"} {
+		if v, ok := params[key]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// findSimilarPaths scans the directory for entries with similar names.
+func findSimilarPaths(dir, base string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var suggestions []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.Contains(strings.ToLower(name), strings.ToLower(base)) ||
+			strings.Contains(strings.ToLower(base), strings.ToLower(name)) {
+			suggestions = append(suggestions, filepath.Join(dir, name))
+			if len(suggestions) >= 3 {
+				break
+			}
+		}
+	}
+	return suggestions
 }
 
 func (e *defaultToolExecutor) processResult(toolName, str string, toolInfo *ToolInfo) string {
