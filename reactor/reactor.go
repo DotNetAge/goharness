@@ -105,7 +105,7 @@ type RunResult struct {
 	Steps             []Step        `json:"steps,omitempty" yaml:"steps,omitempty"`
 	TotalIterations   int           `json:"total_iterations" yaml:"total_iterations"`
 	TerminationReason string        `json:"termination_reason,omitempty" yaml:"termination_reason,omitempty"`
-	TokensUsed        int           `json:"tokens_used,omitempty" yaml:"tokens_used,omitempty"`
+	TokenUsage        core.TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"`
 	TotalDuration     time.Duration `json:"total_duration_ms,omitempty" yaml:"total_duration_ms,omitempty"`
 }
 
@@ -1073,7 +1073,7 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 }
 
 // buildResultFromContext constructs a RunResult from the ReactContext state.
-func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int, totalInputTokens int, runStart time.Time) *RunResult {
+func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, aggregated core.TokenUsage, runStart time.Time) *RunResult {
 	answer := extractAnswer(reactCtx)
 	if answer != "" {
 		reactCtx.EmitEvent(core.FinalAnswer, answer)
@@ -1081,11 +1081,10 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int
 
 	totalDuration := time.Since(runStart)
 
-	summary := buildExecutionSummary(reactCtx, totalTokens, totalDuration)
+	summary := buildExecutionSummary(reactCtx, aggregated, totalDuration)
 	reactCtx.EmitEvent(core.ExecutionSummary, summary)
 
-	totalOutputTokens := totalTokens - totalInputTokens
-	taskSummary := buildTaskSummary(answer, totalInputTokens, totalOutputTokens, reactCtx.CurrentIteration,
+	taskSummary := buildTaskSummary(answer, aggregated, reactCtx.CurrentIteration,
 		summary.ToolCalls, totalDuration, reactCtx.TerminationReason)
 	reactCtx.EmitEvent(core.TaskSummary, taskSummary)
 
@@ -1094,7 +1093,7 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, totalTokens int
 		Steps:             reactCtx.History,
 		TotalIterations:   reactCtx.CurrentIteration,
 		TerminationReason: reactCtx.TerminationReason,
-		TokensUsed:        totalTokens,
+		TokenUsage:        aggregated,
 		TotalDuration:     totalDuration,
 	}
 }
@@ -1123,11 +1122,11 @@ func extractAnswer(reactCtx *ReactContext) string {
 	return ""
 }
 
-func buildExecutionSummary(reactCtx *ReactContext, totalTokens int, totalDuration time.Duration) core.ExecutionSummaryData {
+func buildExecutionSummary(reactCtx *ReactContext, aggregated core.TokenUsage, totalDuration time.Duration) core.ExecutionSummaryData {
 	summary := core.ExecutionSummaryData{
 		TotalIterations:   reactCtx.CurrentIteration,
 		TotalDuration:     totalDuration,
-		TokensUsed:        totalTokens,
+		TokensUsed:        aggregated,
 		TerminationReason: reactCtx.TerminationReason,
 	}
 	summary.ToolsUsed = collectUniqueToolNames(reactCtx.History)
@@ -1140,10 +1139,9 @@ func buildExecutionSummary(reactCtx *ReactContext, totalTokens int, totalDuratio
 	return summary
 }
 
-func buildTaskSummary(answer string, inputTokens int, outputTokens int, iterations int, toolCalls int, duration time.Duration, terminationReason string) core.TaskSummaryData {
+func buildTaskSummary(answer string, aggregated core.TokenUsage, iterations int, toolCalls int, duration time.Duration, terminationReason string) core.TaskSummaryData {
 	data := core.TaskSummaryData{
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
+		TokenUsage: aggregated,
 	}
 	if iterations > 1 || toolCalls > 0 {
 		toolWord := "tool calls"
@@ -1215,8 +1213,11 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		}
 	}()
 
-	totalTokens := initialTokens
-	totalInputTokens := initialTokens
+	totalTokenUsage := core.TokenUsage{
+		InputTokens:  initialTokens,
+		OutputTokens: 0,
+		TotalTokens:  initialTokens,
+	}
 	sessionID := r.resolveSessionID(reactCtx)
 	r.getLogger().Info("run loop start",
 		"session_id", sessionID,
@@ -1240,10 +1241,17 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 		cycleNum := reactCtx.CurrentIteration + 1
 		r.toolExecutor.ResetCycle()
 
-		inputTokens, outputTokens, err := r.Think(reactCtx)
-		totalTokens += inputTokens + outputTokens
-		totalInputTokens += inputTokens
-		reactCtx.CurrentInputTokens = inputTokens
+		cycleUsage, err := r.Think(reactCtx)
+		totalTokenUsage.InputTokens += cycleUsage.InputTokens
+		totalTokenUsage.OutputTokens += cycleUsage.OutputTokens
+		totalTokenUsage.TotalTokens += cycleUsage.TotalTokens
+		totalTokenUsage.CachedTokens += cycleUsage.CachedTokens
+		totalTokenUsage.ReasoningTokens += cycleUsage.ReasoningTokens
+		totalTokenUsage.AudioTokensInput += cycleUsage.AudioTokensInput
+		totalTokenUsage.AudioTokensOutput += cycleUsage.AudioTokensOutput
+		totalTokenUsage.AcceptedPredictionTokens += cycleUsage.AcceptedPredictionTokens
+		totalTokenUsage.RejectedPredictionTokens += cycleUsage.RejectedPredictionTokens
+		reactCtx.CurrentInputTokens = cycleUsage.InputTokens
 		if err != nil {
 			r.abortCycle(reactCtx, "think", err, cycleStart, cycleNum, sessionID)
 			break
@@ -1275,15 +1283,15 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			"session_id", sessionID,
 			"iteration", cycleNum,
 			"elapsed_ms", time.Since(cycleStart).Milliseconds(),
-			"input_tokens", inputTokens,
+			"input_tokens", cycleUsage.InputTokens,
 		)
 	}
 
-	result := r.buildResultFromContext(reactCtx, totalTokens, totalInputTokens, runStart)
+	result := r.buildResultFromContext(reactCtx, totalTokenUsage, runStart)
 	r.getLogger().Info("run loop done",
 		"session_id", sessionID,
 		"total_iterations", result.TotalIterations,
-		"total_tokens", totalTokens,
+		"total_tokens", totalTokenUsage.TotalTokens,
 		"total_elapsed_ms", time.Since(runStart).Milliseconds(),
 		"termination_reason", result.TerminationReason,
 	)

@@ -51,11 +51,11 @@ func (r *Reactor) buildCallInput(ctx *ReactContext) *CallInput {
 // The System Prompt and Instructions remain stable across rounds;
 // direction is steered via tool result footers.
 //
-// Returns (inputTokens, outputTokens, error).
+// Returns (TokenUsage, error).
 // On success, ctx.LastThought is populated with the parsed Thought.
 // On abort (hook), ctx.TerminationReason is set and error is nil.
 // On failure, error is non-nil and ctx.LastThought may be partially set.
-func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
+func (r *Reactor) Think(ctx *ReactContext) (core.TokenUsage, error) {
 	thinkStart := time.Now()
 	sessionID := r.resolveSessionID(ctx)
 	iter := ctx.CurrentIteration + 1
@@ -74,13 +74,13 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 			"session_id", sessionID,
 			"iteration", iter,
 		)
-		return 0, 0, fmt.Errorf("llm caller not initialized")
+		return core.TokenUsage{}, fmt.Errorf("llm caller not initialized")
 	}
 
 	// Thought Before hooks (PreCheck, ThoughtEvent, ThoughtLogger)
 	if hr := r.execThoughtHooksBefore(ctx, callInput); hr.IsTerminal() {
 		if hr.Error != nil {
-			return 0, 0, hr.Error
+			return core.TokenUsage{}, hr.Error
 		}
 		ctx.TerminationReason = hr.AbortReason
 		ctx.LastThought = &Thought{
@@ -88,7 +88,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 			IsFinal:   true,
 			Reasoning: hr.AbortReason,
 		}
-		return 0, 0, nil
+		return core.TokenUsage{}, nil
 	}
 
 	var contentBuf strings.Builder
@@ -133,7 +133,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 				Error:     result.Error.Error(),
 			})
 		}
-		return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), fmt.Errorf("llm call failed: %w", result.Error)
+		return result.TokenUsage, fmt.Errorf("llm call failed: %w", result.Error)
 	}
 
 	content := contentBuf.String()
@@ -155,7 +155,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 				"raw_preview", Truncate(content, 100),
 				"content_length", len(content),
 			)
-			return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), fmt.Errorf("think parse failed: %w", parseErr)
+			return result.TokenUsage, fmt.Errorf("think parse failed: %w", parseErr)
 		}
 	}
 
@@ -165,7 +165,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 	// Thought After hooks (ThoughtEvent, ThoughtLogger)
 	if hr := r.execThoughtHooksAfter(ctx, thought); hr.IsTerminal() {
 		if hr.Error != nil {
-			return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), hr.Error
+			return result.TokenUsage, hr.Error
 		}
 		ctx.TerminationReason = hr.AbortReason
 	}
@@ -180,7 +180,7 @@ func (r *Reactor) Think(ctx *ReactContext) (int, int, error) {
 		"output_tokens", int(result.TokenUsage.OutputTokens),
 	)
 
-	return int(result.TokenUsage.InputTokens), int(result.TokenUsage.OutputTokens), nil
+	return result.TokenUsage, nil
 }
 
 // nativeToolCallsToThought converts native gochat ToolCalls to the Thought format used by

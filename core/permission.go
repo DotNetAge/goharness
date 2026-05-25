@@ -16,6 +16,9 @@ const (
 )
 
 // QuestionOption represents a single choice in a permission question.
+// Deprecated: This type was historically shared with AskUserRequestData but has been
+// replaced by AskUserOption for that purpose. It remains here only for the
+// permission/security context. Prefer AskUserOption for new LLM-question code.
 type QuestionOption struct {
 	Label       string `json:"label"`       // Display text for the option
 	Description string `json:"description"` // Explanation of this choice's implications
@@ -23,7 +26,9 @@ type QuestionOption struct {
 }
 
 // PermissionQuestion represents a structured question with options.
-// Used by AskUser tool; the permission dialog renders this as a form.
+// Deprecated: This type was historically shared with AskUserRequestData but has been
+// replaced by AskUserQuestion for that purpose. It remains here only for the
+// permission/security context. Prefer AskUserQuestion for new LLM-question code.
 type PermissionQuestion struct {
 	Question    string           `json:"question"`     // The question text
 	Header      string           `json:"header"`       // Short chip/tag label (max 12 chars)

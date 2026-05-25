@@ -8,11 +8,41 @@ import (
 
 // TokenUsage records the token consumption for a single LLM call.
 // It is both returned in CallResult and persisted via SessionStore for billing/monitoring.
+//
+// Detailed fields (CachedTokens, ReasoningTokens, etc.) are provider-specific.
+// When the provider returns detailed token breakdowns (e.g., OpenAI's
+// prompt_tokens_details / completion_tokens_details), they are preserved here.
+// Fields that are not reported by the provider remain at their zero value.
 type TokenUsage struct {
 	Timestamp    time.Time `json:"timestamp"`
 	InputTokens  int       `json:"input_tokens"`
 	OutputTokens int       `json:"output_tokens"`
+	TotalTokens  int       `json:"total_tokens"`
 	RemainTokens int       `json:"remain_tokens"`
+
+	// CachedTokens is the number of tokens read from the prompt cache
+	// (prompt_tokens_details.cached_tokens).
+	CachedTokens int `json:"cached_tokens,omitempty"`
+
+	// ReasoningTokens is the number of tokens used for reasoning/thinking
+	// (completion_tokens_details.reasoning_tokens).
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+
+	// AudioTokensInput is the number of audio tokens in the prompt
+	// (prompt_tokens_details.audio_tokens).
+	AudioTokensInput int `json:"audio_tokens_input,omitempty"`
+
+	// AudioTokensOutput is the number of audio tokens in the completion
+	// (completion_tokens_details.audio_tokens).
+	AudioTokensOutput int `json:"audio_tokens_output,omitempty"`
+
+	// AcceptedPredictionTokens is the number of tokens accepted from speculation
+	// (completion_tokens_details.accepted_prediction_tokens).
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+
+	// RejectedPredictionTokens is the number of tokens rejected from speculation
+	// (completion_tokens_details.rejected_prediction_tokens).
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
 
 // SlideEvent is emitted when the ContextWindow slides out old messages.

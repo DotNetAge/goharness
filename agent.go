@@ -112,11 +112,11 @@ type Agent struct {
 // Result holds the outcome of an Ask or AskStream call.
 // Developers can query token consumption, iterations, tool usage, etc.
 type Result struct {
-	Answer    string `json:"answer"`
-	Tokens    int    `json:"tokens"`
-	Duration  string `json:"duration,omitempty"` // human-readable, e.g. "1.23s"
-	Steps     int    `json:"steps"`              // total T-A-O iterations
-	ToolsUsed int    `json:"tools_used"`         // number of tool invocations
+	Answer    string          `json:"answer"`
+	TokenUsage core.TokenUsage `json:"token_usage"`
+	Duration  string          `json:"duration,omitempty"` // human-readable, e.g. "1.23s"
+	Steps     int             `json:"steps"`              // total T-A-O iterations
+	ToolsUsed int             `json:"tools_used"`         // number of tool invocations
 }
 
 // ---------------------------------------------------------------------------
@@ -957,7 +957,7 @@ func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question s
 		"session_id", effectiveSessionID,
 		"elapsed_ms", elapsedMs,
 		"total_iterations", runResult.TotalIterations,
-		"total_tokens", runResult.TokensUsed,
+		"total_tokens", runResult.TokenUsage.TotalTokens,
 	)
 
 	// 3. Persist user message and assistant response after execution
@@ -969,7 +969,7 @@ func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question s
 
 	result := &Result{
 		Answer:    runResult.Answer,
-		Tokens:    runResult.TokensUsed,
+		TokenUsage: runResult.TokenUsage,
 		Duration:  runResult.TotalDuration.String(),
 		Steps:     runResult.TotalIterations,
 		ToolsUsed: len(runResult.Steps),
@@ -1196,7 +1196,7 @@ func (a *Agent) LastResult() *Result {
 //	for event := range ch {
 //	    fmt.Printf("[%s] %v\n", event.Type, event.Data)
 //	}
-//	fmt.Printf("Total tokens: %d\n", result.Tokens)
+//	fmt.Printf("Total tokens: %d\n", result.TokenUsage.TotalTokens)
 func (a *Agent) Events() (<-chan core.ReactEvent, func()) {
 	return a.eventBus.Subscribe()
 }

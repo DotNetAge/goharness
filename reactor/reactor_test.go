@@ -353,7 +353,7 @@ func TestReactor_Think_ProducesThought(t *testing.T) {
 
 	ctx := NewReactContext(context.Background(), "Test input", nil, 10)
 
-	inputTokens, outputTokens, err := r.Think(ctx)
+	tu, err := r.Think(ctx)
 	if err != nil {
 		t.Fatalf("Think failed: %v", err)
 	}
@@ -366,11 +366,11 @@ func TestReactor_Think_ProducesThought(t *testing.T) {
 	if ctx.LastThought.FinalAnswer != "Done." {
 		t.Errorf("expected FinalAnswer 'Done.', got '%s'", ctx.LastThought.FinalAnswer)
 	}
-	if inputTokens < 0 {
-		t.Errorf("expected non-negative token count, got %d", inputTokens)
+	if tu.InputTokens < 0 {
+		t.Errorf("expected non-negative token count, got %d", tu.InputTokens)
 	}
-	if outputTokens < 0 {
-		t.Errorf("expected non-negative output token count, got %d", outputTokens)
+	if tu.OutputTokens < 0 {
+		t.Errorf("expected non-negative output token count, got %d", tu.OutputTokens)
 	}
 }
 
@@ -387,7 +387,7 @@ func TestReactor_Think_NativeToolCalls(t *testing.T) {
 
 	ctx := NewReactContext(context.Background(), "Read a file", nil, 10)
 
-	_, _, err := r.Think(ctx)
+	_, err := r.Think(ctx)
 	if err != nil {
 		t.Fatalf("Think failed: %v", err)
 	}

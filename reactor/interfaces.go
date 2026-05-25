@@ -140,12 +140,12 @@ type SessionManager interface {
 //   - Act: Execute the decision from Thought (tool calls or answer)
 //   - Observe: Evaluate results and determine next action
 //
-// Think returns (inputTokens, outputTokens, error).
+// Think returns a TokenUsage with full token breakdown and any error.
 // Act and Observe return error only.
 type TAOExecutor interface {
 	// Think executes the thinking phase: calls LLM, parses response into Thought.
-	// Returns input/output token counts and any error.
-	Think(ctx *ReactContext) (int, int, error)
+	// Returns full token usage breakdown and any error.
+	Think(ctx *ReactContext) (core.TokenUsage, error)
 
 	// Act executes the action phase: performs tool calls or generates answer based on Thought.
 	Act(ctx *ReactContext) error

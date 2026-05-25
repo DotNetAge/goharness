@@ -44,6 +44,12 @@ const (
 	// SubtaskCompleted signals a subagent task has finished (success or failure).
 	SubtaskCompleted ReactEventType = "subtask_completed"
 
+	// AgentTalkStart signals an AgentTalk conversation is about to begin.
+	AgentTalkStart ReactEventType = "agent_talk_start"
+
+	// AgentTalkEnd signals an AgentTalk conversation has completed.
+	AgentTalkEnd ReactEventType = "agent_talk_end"
+
 	// FinalAnswer signals the Reactor has produced its final answer.
 	FinalAnswer ReactEventType = "final_answer"
 
@@ -188,6 +194,21 @@ type SubtaskResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// AgentTalkInfo is the payload for AgentTalkStart events.
+type AgentTalkInfo struct {
+	To        string `json:"to"`
+	SessionID string `json:"session_id"`
+	Message   string `json:"message,omitempty"`
+}
+
+// AgentTalkResult is the payload for AgentTalkEnd events.
+type AgentTalkResult struct {
+	To        string `json:"to"`
+	SessionID string `json:"session_id"`
+	Reply     string `json:"reply,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 // CycleInfo is the payload for CycleEnd events.
 type CycleInfo struct {
 	Iteration         int           `json:"iteration"`
@@ -229,12 +250,21 @@ func (d *PermissionRequestData) Deny(reason string) {
 	}
 }
 
+// AskUserQuestion represents a single question asked by the LLM via the AskUser tool.
+// Semantically distinct from PermissionQuestion (which is for tool security approvals).
+// The LLM uses this to gather user input — single choice, multiple choice, or free text.
+type AskUserQuestion struct {
+	Question    string   `json:"question"`              // The question text
+	Options     []string `json:"options,omitempty"`     // Answer choices (optional for free-text)
+	MultiSelect bool     `json:"multi_select"`          // Allow multiple selections
+}
+
 // AskUserRequestData is the payload for AskUserRequest events.
 // The LLM asks the user structured questions (single/multi choice, free text).
 // The embedded reply callback delivers the user's answers.
 type AskUserRequestData struct {
-	TickID    string               `json:"tick_id"`
-	Questions []PermissionQuestion `json:"questions"`
+	TickID    string           `json:"tick_id"`
+	Questions []AskUserQuestion `json:"questions"`
 
 	reply func(answers map[string]string)
 }
@@ -251,7 +281,7 @@ type ExecutionSummaryData struct {
 	ToolCalls         int           `json:"tool_calls"`
 	ToolsUsed         []string      `json:"tools_used,omitempty"`
 	TotalDuration     time.Duration `json:"total_duration_ms"`
-	TokensUsed        int           `json:"tokens_used"`
+	TokensUsed        TokenUsage    `json:"tokens_used"`
 	TerminationReason string        `json:"termination_reason,omitempty"`
 }
 
@@ -270,7 +300,6 @@ func NewReactEvent(sessionID, taskID, parentID string, eventType ReactEventType,
 // TaskSummaryData is the payload for TaskSummary events.
 // It carries a natural-language summary of the task execution produced by the LLM.
 type TaskSummaryData struct {
-	Summary      string `json:"summary"`       // Natural-language task execution summary
-	InputTokens  int    `json:"input_tokens"`  // Estimated input tokens for this LLM call
-	OutputTokens int    `json:"output_tokens"` // Reported output tokens from LLM provider
+	Summary    string     `json:"summary"`              // Natural-language task execution summary
+	TokenUsage TokenUsage `json:"token_usage"`           // Full token consumption breakdown
 }

@@ -961,21 +961,21 @@ func TestTokenCounting_MultiRound(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 
-	t.Logf("Result: answer=%q, tokens=%d, duration=%s, steps=%d, tools=%d",
-		result.Answer, result.Tokens, result.Duration, result.Steps, result.ToolsUsed)
+	t.Logf("Result: answer=%q, total_tokens=%d, duration=%s, steps=%d, tools=%d",
+		result.Answer, result.TokenUsage.TotalTokens, result.Duration, result.Steps, result.ToolsUsed)
 
 	// Verify 3 HTTP requests were made
 	if len(*captured) != 3 {
 		t.Fatalf("expected 3 captured requests, got %d", len(*captured))
 	}
 
-	// Verify token accumulation: Result.Tokens should be the sum of all rounds
+	// Verify token accumulation: Result.TokenUsage should reflect total consumed
 	expectedTotal := 600 + 1400 + 2650
 	t.Logf("Expected cumulative tokens: %d (600 + 1400 + 2650)", expectedTotal)
 
 	// The actual token count from Result should reflect the total consumed
-	if result.Tokens > 0 {
-		t.Logf("Result.Tokens = %d", result.Tokens)
+	if result.TokenUsage.TotalTokens > 0 {
+		t.Logf("Result.TokenUsage.TotalTokens = %d", result.TokenUsage.TotalTokens)
 		// Note: The exact value depends on how the reactor aggregates tokens
 		// In streaming path, tokens are estimated via stream.Usage()
 	}
@@ -1021,12 +1021,13 @@ func TestTokenCounting_ResponseUsage(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 
-	t.Logf("Result tokens: %d", result.Tokens)
+	t.Logf("Result token usage: total=%d, input=%d, output=%d",
+		result.TokenUsage.TotalTokens, result.TokenUsage.InputTokens, result.TokenUsage.OutputTokens)
 	t.Logf("Captured requests: %d", len(*captured))
 
 	// The token count should be > 0 if usage was properly parsed
-	if result.Tokens == 0 {
-		t.Log("WARN: Result.Tokens is 0 (may be expected if streaming path doesn't extract usage)")
+	if result.TokenUsage.TotalTokens == 0 {
+		t.Log("WARN: Result.TokenUsage.TotalTokens is 0 (may be expected if streaming path doesn't extract usage)")
 	}
 }
 
@@ -1114,8 +1115,8 @@ func TestTokenCounting_ProgressiveDisclosure(t *testing.T) {
 
 	t.Logf("=== Token Counting: Progressive Disclosure ===")
 	t.Logf("Total rounds: %d", len(*captured))
-	t.Logf("Result: tokens=%d, steps=%d, tools=%d, duration=%s",
-		result.Tokens, result.Steps, result.ToolsUsed, result.Duration)
+	t.Logf("Result: total_tokens=%d, steps=%d, tools=%d, duration=%s",
+		result.TokenUsage.TotalTokens, result.Steps, result.ToolsUsed, result.Duration)
 
 	// Expected cumulative tokens
 	expectedTotal := 480 + 920 + 1600 + 3200
@@ -1138,8 +1139,8 @@ func TestTokenCounting_ProgressiveDisclosure(t *testing.T) {
 	}
 	t.Logf("Final round has %d tool results", toolResults)
 
-	if result.Tokens > 0 {
-		t.Logf("PASS: Token counting returned %d tokens across %d rounds", result.Tokens, len(*captured))
+	if result.TokenUsage.TotalTokens > 0 {
+		t.Logf("PASS: Token counting returned %d tokens across %d rounds", result.TokenUsage.TotalTokens, len(*captured))
 	} else {
 		t.Log("WARN: Token counting returned 0 (streaming path may not extract usage)")
 	}
@@ -1230,7 +1231,8 @@ func TestTokenCounting_PerRoundEstimation(t *testing.T) {
 
 	t.Logf("=== Token Counting Per Round (using tiktoken) ===")
 	t.Logf("Total rounds: %d", len(*captured))
-	t.Logf("Total Result tokens: %d", result.Tokens)
+	t.Logf("Result: total_tokens=%d, input=%d, output=%d",
+		result.TokenUsage.TotalTokens, result.TokenUsage.InputTokens, result.TokenUsage.OutputTokens)
 	t.Logf("Steps: %d, Tools used: %d", result.Steps, result.ToolsUsed)
 
 	// Use core.CountTokens (tiktoken) to count exact tokens per round
@@ -1272,8 +1274,9 @@ func TestTokenCounting_PerRoundEstimation(t *testing.T) {
 
 	t.Logf("\nSummary:")
 	t.Logf("  Total input tokens:  %d", totalInputTokens)
-	t.Logf("  Total output tokens: ~%d (from Result.Tokens)", result.Tokens)
-	t.Logf("  Grand total:         ~%d tokens", totalInputTokens+result.Tokens)
+	t.Logf("  Result output tokens: %d", result.TokenUsage.OutputTokens)
+	t.Logf("  Result total tokens:  %d", result.TokenUsage.TotalTokens)
+	t.Logf("  Grand total (input+output): ~%d tokens", totalInputTokens+result.TokenUsage.OutputTokens)
 }
 
 func TestTokenUsage_SessionStoreBilling(t *testing.T) {
@@ -1368,8 +1371,8 @@ func TestTokenUsage_SessionStoreBilling(t *testing.T) {
 
 	t.Logf("=== Token Usage Billing Report ===")
 	t.Logf("Session ID: %s", sessionID)
-	t.Logf("Result: answer=%q, tokens=%d, steps=%d, tools=%d",
-		result.Answer, result.Tokens, result.Steps, result.ToolsUsed)
+	t.Logf("Result: answer=%q, total_tokens=%d, steps=%d, tools=%d",
+		result.Answer, result.TokenUsage.TotalTokens, result.Steps, result.ToolsUsed)
 
 	// Retrieve token usage bill from SessionStore
 	ctx := context.Background()

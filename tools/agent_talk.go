@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/DotNetAge/goreact/core"
 )
@@ -86,13 +87,36 @@ func (t *AgentTalkTool) Execute(ctx context.Context, params map[string]any) (any
 		"message_preview", truncateForLog(message, 100),
 	)
 
+	tc := core.GetToolContext(ctx)
+	if tc != nil && tc.EmitEvent != nil {
+		tc.EmitEvent(core.ReactEvent{
+			Type: core.AgentTalkStart,
+			Data: core.AgentTalkInfo{To: to, SessionID: sessionID, Message: message},
+		})
+	}
+
+	started := time.Now()
 	reply, err := t.talk(ctx, to, sessionID, message)
 	if err != nil {
 		logger.Error("agent talk failed", err,
 			"to", to,
 			"session_id", sessionID,
+			"elapsed_ms", time.Since(started).Milliseconds(),
 		)
+		if tc != nil && tc.EmitEvent != nil {
+			tc.EmitEvent(core.ReactEvent{
+				Type: core.AgentTalkEnd,
+				Data: core.AgentTalkResult{To: to, SessionID: sessionID, Error: err.Error()},
+			})
+		}
 		return nil, fmt.Errorf("agent talk to %q: %w", to, err)
+	}
+
+	if tc != nil && tc.EmitEvent != nil {
+		tc.EmitEvent(core.ReactEvent{
+			Type: core.AgentTalkEnd,
+			Data: core.AgentTalkResult{To: to, SessionID: sessionID, Reply: reply},
+		})
 	}
 
 	return map[string]any{

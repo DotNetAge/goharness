@@ -7,7 +7,8 @@ import "github.com/DotNetAge/gochat/core"
 // a named ProviderConfig via the Provider field, or set directly as overrides.
 type ModelConfig struct {
 	// ID          string `json:"id" yaml:"id"`
-	Name              string  `json:"name" yaml:"name"`                             // model name
+	Name              string  `json:"name" yaml:"name"`                             // model name (internal identifier)
+	Title             string  `json:"title,omitempty" yaml:"title,omitempty"`       // display title
 	Description       string  `json:"description" yaml:"description"`               // model description
 	Provider          string  `json:"provider" yaml:"provider"`                     // references a ProviderConfig by name
 	BaseURL           string  `json:"base_url" yaml:"base_url"`                     // API base URL (overrides provider)

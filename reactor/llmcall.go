@@ -495,19 +495,21 @@ func (c *LLMCaller) callStreamInternal(ctx context.Context, input CallInput, onC
 		}
 	}
 
+	var streamUsage *gochatcore.Usage
 	outputTokens := 0
-	if usage := stream.Usage(); usage != nil {
-		if usage.CompletionTokens > 0 {
-			outputTokens = usage.CompletionTokens
-		} else if usage.TotalTokens > 0 {
-			outputTokens = usage.TotalTokens - preciseInput
+	if su := stream.Usage(); su != nil {
+		streamUsage = su
+		if su.CompletionTokens > 0 {
+			outputTokens = su.CompletionTokens
+		} else if su.TotalTokens > 0 {
+			outputTokens = su.TotalTokens - preciseInput
 			if outputTokens < 0 {
-				outputTokens = usage.TotalTokens
+				outputTokens = su.TotalTokens
 			}
 		}
 	}
 
-	return c.recordResult(ctx, input, contentBuf.String(), preciseInput, outputTokens, messages, toolCalls)
+	return c.recordResult(ctx, input, contentBuf.String(), preciseInput, outputTokens, messages, toolCalls, streamUsage)
 }
 
 // ---------------------------------------------------------------------------
@@ -721,14 +723,27 @@ func (c *LLMCaller) calcPreciseTokens(messages []gochatcore.Message) int {
 
 // recordResult builds a TokenUsage record via recordTokenUsage, and returns a CallResult.
 // toolCalls carries native function call results from the LLM response.
-func (c *LLMCaller) recordResult(ctx context.Context, input CallInput, content string, inputTokens int, respOrTokens interface{}, messages []gochatcore.Message, toolCalls []gochatcore.ToolCall) CallResult {
+// providerUsage is an optional parameter carrying the full token usage from the provider
+// (including detailed breakdown like cached_tokens, reasoning_tokens, etc.).
+// When nil, details are extracted from respOrTokens if it is a *gochatcore.Response.
+func (c *LLMCaller) recordResult(ctx context.Context, input CallInput, content string, inputTokens int, respOrTokens interface{}, messages []gochatcore.Message, toolCalls []gochatcore.ToolCall, providerUsage ...*gochatcore.Usage) CallResult {
 	outputTokens := 0
+	var pu *gochatcore.Usage
+	if len(providerUsage) > 0 {
+		pu = providerUsage[0]
+	}
+
 	switch v := respOrTokens.(type) {
 	case *gochatcore.Response:
-		if v != nil && v.Usage != nil && v.Usage.TotalTokens > 0 {
-			outputTokens = v.Usage.TotalTokens - inputTokens
-			if outputTokens < 0 {
-				outputTokens = v.Usage.TotalTokens
+		if v != nil && v.Usage != nil {
+			if pu == nil {
+				pu = v.Usage
+			}
+			if v.Usage.TotalTokens > 0 {
+				outputTokens = v.Usage.TotalTokens - inputTokens
+				if outputTokens < 0 {
+					outputTokens = v.Usage.TotalTokens
+				}
 			}
 		}
 	case int:
@@ -736,7 +751,7 @@ func (c *LLMCaller) recordResult(ctx context.Context, input CallInput, content s
 	case error:
 	}
 
-	usage := c.recordTokenUsage(ctx, input, inputTokens, outputTokens)
+	usage := c.recordTokenUsage(ctx, input, inputTokens, outputTokens, pu)
 
 	return CallResult{
 		Content:    content,
@@ -755,7 +770,7 @@ func (c *LLMCaller) recordPartialResult(ctx context.Context, input CallInput, co
 // buildErrorResult creates a CallResult for failed calls, records the token usage,
 // persists it to SessionStore, and returns the result.
 func (c *LLMCaller) buildErrorResult(ctx context.Context, input CallInput, err error, inputTokens int) CallResult {
-	usage := c.recordTokenUsage(ctx, input, inputTokens, 0)
+	usage := c.recordTokenUsage(ctx, input, inputTokens, 0, nil)
 
 	return CallResult{
 		Content:    fmt.Sprintf("[llmcaller error] %v", err),
@@ -767,7 +782,10 @@ func (c *LLMCaller) buildErrorResult(ctx context.Context, input CallInput, err e
 
 // recordTokenUsage records token usage: calculates remain tokens, builds TokenUsage,
 // updates context window, appends to internal records, and persists to SessionStore.
-func (c *LLMCaller) recordTokenUsage(ctx context.Context, input CallInput, inputTokens int, outputTokens int) core.TokenUsage {
+// providerUsage is the full usage from the LLM provider, including detailed breakdowns
+// (cached_tokens, reasoning_tokens, etc.). It may be nil for providers that don't
+// return detailed usage or when called from error paths.
+func (c *LLMCaller) recordTokenUsage(ctx context.Context, input CallInput, inputTokens int, outputTokens int, providerUsage *gochatcore.Usage) core.TokenUsage {
 	remainTokens := c.maxTokens
 	c.mu.RLock()
 	if c.contextWindow != nil {
@@ -779,7 +797,34 @@ func (c *LLMCaller) recordTokenUsage(ctx context.Context, input CallInput, input
 		Timestamp:    time.Now(),
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
 		RemainTokens: remainTokens,
+	}
+
+	// Extract detailed token breakdown from provider usage if available.
+	// These fields correspond to OpenAI-compatible prompt_tokens_details
+	// and completion_tokens_details. When the provider returns exact counts,
+	// they take precedence over our local estimates.
+	if providerUsage != nil {
+		if providerUsage.TotalTokens > 0 {
+			usage.TotalTokens = providerUsage.TotalTokens
+		}
+		if providerUsage.PromptTokens > 0 {
+			usage.InputTokens = providerUsage.PromptTokens
+		}
+		if providerUsage.CompletionTokens > 0 {
+			usage.OutputTokens = providerUsage.CompletionTokens
+		}
+		if d := providerUsage.PromptTokensDetails; d != nil {
+			usage.CachedTokens = d.CachedTokens
+			usage.AudioTokensInput = d.AudioTokens
+		}
+		if d := providerUsage.CompletionTokensDetails; d != nil {
+			usage.ReasoningTokens = d.ReasoningTokens
+			usage.AudioTokensOutput = d.AudioTokens
+			usage.AcceptedPredictionTokens = d.AcceptedPredictionTokens
+			usage.RejectedPredictionTokens = d.RejectedPredictionTokens
+		}
 	}
 
 	c.mu.Lock()

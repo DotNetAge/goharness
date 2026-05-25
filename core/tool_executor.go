@@ -279,30 +279,25 @@ func (e *defaultToolExecutor) awaitUserResponse(name string, params map[string]a
 	}
 }
 
-// extractAskUserQuestions converts tool params into PermissionQuestion slice.
-func extractAskUserQuestions(params map[string]any) []PermissionQuestion {
+// extractAskUserQuestions converts tool params into AskUserQuestion slice.
+func extractAskUserQuestions(params map[string]any) []AskUserQuestion {
 	question, _ := params["question"].(string)
 	if question == "" {
 		return nil
 	}
 	multi, _ := params["multiSelect"].(bool)
-	header := question
-	if len(header) > 12 {
-		header = header[:12]
-	}
-	q := PermissionQuestion{
+	q := AskUserQuestion{
 		Question:    question,
-		Header:      header,
 		MultiSelect: multi,
 	}
 	if opts, ok := params["options"].([]any); ok {
 		for _, o := range opts {
 			if s, ok := o.(string); ok {
-				q.Options = append(q.Options, QuestionOption{Label: s})
+				q.Options = append(q.Options, s)
 			}
 		}
 	}
-	return []PermissionQuestion{q}
+	return []AskUserQuestion{q}
 }
 
 // enhanceFileError wraps file-not-found errors with similar path suggestions.
