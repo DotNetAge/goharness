@@ -13,12 +13,12 @@ import (
 
 // Prompt is the centralized system prompt builder (progressive disclosure Level 1).
 // Only static identity, rules, tool guidance, and coordination hints belong here.
-// Think-phase instructions (Level 2) and skill content (Level 3) are loaded separately.
+// Skill content (Level 2) is loaded separately. No custom JSON output format is
+// required — the LLM uses native tool calling natively.
 type Prompt struct {
 	// Static sections — rendered once, stable across rounds
 	Identity            string // Agent name, role, description
 	Rules               string // Behavioral rules
-	OutputFormat        string // Expected JSON output format (Thought schema)
 	ToolUsage           string // Tool usage guidelines
 	SkillsCatalog       string // Skills metadata matched to AgentConfig.Skills
 	ExecutionGuidelines string // Caution about risky operations
@@ -54,8 +54,7 @@ func NewDefaultPrompt(name, role, description, introduction string) *Prompt {
 	return &Prompt{
 		Identity: fmt.Sprintf("You are %s %s.\n- Name: %s\n- Responsibility: %s\n\n%s",
 			articleFor(role), role, name, description, introduction),
-		Rules:        DefaultBehavioralRules(),
-		OutputFormat: BuildOutputFormat(),
+		Rules: DefaultBehavioralRules(),
 	}
 }
 
@@ -93,30 +92,26 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, projec
 			"## Behavioral Rules\n%s", p.Rules)))
 	}
 
-	// Section 4: Output format (Thought JSON schema)
-	if p.OutputFormat != "" {
-		msgs = append(msgs, gochatcore.NewSystemMessage(p.OutputFormat))
-	}
 
-	// Section 5: Execution guidelines
+	// Section 4: Execution guidelines
 	if p.ExecutionGuidelines != "" {
 		msgs = append(msgs, gochatcore.NewSystemMessage(p.ExecutionGuidelines))
 	}
 
-	// Section 6: Tool usage guidelines
+	// Section 5: Tool usage guidelines
 	if p.ToolUsage != "" {
 		msgs = append(msgs, gochatcore.NewSystemMessage(p.ToolUsage))
 	}
 
-	// Section 7: Tone and style
+	// Section 6: Tone and style
 	if p.ToneAndStyle != "" {
 		msgs = append(msgs, gochatcore.NewSystemMessage(p.ToneAndStyle))
 	}
 
-	// Section 8: Environment info
+	// Section 7: Environment info
 	msgs = append(msgs, gochatcore.NewSystemMessage(BuildEnvironmentInfo(sessionID, sessionDir, projectDir)))
 
-	// Section 9: Application-specific addons (injected by application layer)
+	// Section 8: Application-specific addons (injected by application layer)
 	// Merge Prompt's built-in AddonSections with any runtime-provided addons
 	allAddons := append([]string(nil), core.SYSTEM_ADDON_SECTIONS...)
 	allAddons = append(allAddons, addonSections...)
@@ -126,7 +121,7 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, projec
 		}
 	}
 
-	// Section 10: System reminders
+	// Section 9: System reminders
 	sysReminders := p.SystemReminders
 	if sysReminders == "" {
 		sysReminders = BuildSystemReminders()
@@ -138,7 +133,7 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, projec
 
 	// ===== Dynamic sections (can vary per session) =====
 
-	// Section 11: Output efficiency (how to communicate with the user)
+	// Section 10: Output efficiency (how to communicate with the user)
 	if p.OutputEfficiency != "" {
 		msgs = append(msgs, gochatcore.NewSystemMessage(p.OutputEfficiency))
 	}
@@ -160,7 +155,7 @@ func (p *Prompt) ToSectionedMessages(sessionID string, sessionDir string, projec
 //   - SessionDir will be empty (no sandbox isolation)
 //   - Directory usage guidance will NOT be included (requires both dirs)
 //
-// For full directory support, use RenderToLLMInputWithContext() instead.
+// For full directory support, use ToSectionedMessages() directly.
 func (p *Prompt) RenderToLLMInput(
 	input string,
 	history ConversationHistory,
@@ -168,32 +163,6 @@ func (p *Prompt) RenderToLLMInput(
 ) CallInput {
 	return CallInput{
 		SystemPromptSections: p.ToSectionedMessages("", "", ""),
-		UserMessage:          input,
-		History:              history,
-		Tools:                tools,
-	}
-}
-
-// RenderToLLMInputWithContext assembles the complete CallInput with explicit directory context.
-// This is the recommended method when building CallInput outside of Reactor's normal flow.
-//
-// Parameters provide complete directory information for LLM awareness:
-//   - projectDir: Working directory (use os.Getwd() if unsure)
-//   - sessionDir: Session sandbox (leave "" if not applicable)
-//   - sessionID: Session identifier (leave "" if starting new session)
-//
-// When both projectDir and sessionDir are provided, the System Prompt automatically
-// includes directory usage guidance to help LLM make informed file operation decisions.
-func (p *Prompt) RenderToLLMInputWithContext(
-	input string,
-	history ConversationHistory,
-	tools []gochatcore.Tool,
-	sessionID string,
-	sessionDir string,
-	projectDir string,
-) CallInput {
-	return CallInput{
-		SystemPromptSections: p.ToSectionedMessages(sessionID, sessionDir, projectDir),
 		UserMessage:          input,
 		History:              history,
 		Tools:                tools,
@@ -213,7 +182,7 @@ func BuildSystemReminders() string {
 		"- Loop awareness: the system detects stuck loops and repeated actions automatically, but if you notice yourself repeating the same tool calls without progress \u2192 change approach proactively (saves cycles)"
 }
 
-// BuildToneAndStyle returns tone and style guidelines with T-A-O reasoning guidance.
+// BuildToneAndStyle returns tone and style guidelines with Think-Act reasoning guidance.
 func BuildToneAndStyle() string {
 	return "## Tone & Style\n" +
 		"- No emojis unless user explicitly requests them\n" +
@@ -373,7 +342,7 @@ func buildDirectoryUsageGuidance(projectDir, sessionDir string) string {
 
 // BuildToolUsageGuidelines returns the streamlined tool usage meta-rules.
 // Removed per-tool Bash→dedicated mappings (already in each tool's description).
-// Focuses on T-A-O loop optimization: parallelization and progress tracking.
+// Focuses on Think-Act loop optimization: parallelization and progress tracking.
 func BuildToolUsageGuidelines() string {
 	return `## Tool Strategy for Multi-Turn Loops
 1. **Parallelize aggressively**: Group independent tool calls into ONE response.
@@ -484,56 +453,3 @@ func BuildDefaultRules() string {
 - Prefer known facts from memory; when memory is available, use it to ground responses.`
 }
 
-// BuildOutputFormat returns the response protocol with tool-first routing.
-// Path A: native function calling for tools (no JSON wrapper needed).
-// Path B: JSON schema for answer/subagent decisions.
-// AskUser: use the dedicated AskUser tool for clarification (not Path C JSON).
-// Plain text answers are also accepted as fallback (auto-detected by ParseThinkResponse).
-func BuildOutputFormat() string {
-	return `## Response Format
-
-Your output format depends on whether you need to use tools:
-
-### Path A: Using Tools (Most Common)
-DO NOT wrap in JSON. Use native function calling directly.
-The system automatically converts tool calls → DecisionAct.
-Just call WebSearch, Read, Write, Skill, etc. normally.
-
-### Path B: Final Answer (No Tools Needed)
-Return a JSON object (plain text also works as fallback):
-
-{
-  "decision": "answer",
-  "reasoning": "<brief: why this decision, 1 sentence>",
-  "final_answer": "<your complete response>",
-  "is_final": true
-}
-
-### Path C: Need More Info — Use AskUser Tool Instead
-Don't use the JSON "clarify" path. Use the **AskUser** tool (available in your tool list).
-It supports options, multi-select, and free-form questions, and blocks until you get an answer.
-
-### Path D: Outside Your Expertise — Spawn a Sub-Agent
-{
-  "decision": "subagent",
-  "reasoning": "<why not your domain>",
-  "subagent_target": "<agent name>",
-  "subagent_prompt": "<task description>",
-  "is_final": false
-}
-
-### Key Fields
-- **decision**: Routes your response (act/answer/subagent)
-- **reasoning**: Written to history for next cycle's reflection. Keep it brief and factual. **MUST match the user's language.**
-  Good: "Factual query, no tools needed."
-  Bad: "I think the user might want to know about this topic which I happen to have information about..."
-- **is_final**:
-  - true = task complete, terminate
-  - false = need more cycles (waiting for user, delegating, or intermediate state)
-  - Omitting OK for simple answers — system auto-detects
-
-### Examples
-{"decision":"answer","reasoning":"Direct factual answer.","final_answer":"REST stands for Representational State Transfer.","is_final":true}
-
-{"decision":"subagent","reasoning":"API design is a backend engineering task.","subagent_target":"backend-engineer","subagent_prompt":"Design REST API for user auth","is_final":false}`
-}

@@ -13,6 +13,9 @@ type ThoughtLoggerHook struct {
 func (h *ThoughtLoggerHook) Priority() int { return reactor.PriorityThoughtLogger }
 
 func (h *ThoughtLoggerHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
+	if h.Logger == nil {
+		return reactor.HookResult{}
+	}
 	h.Logger.Info("think start",
 		"session_id", ctx.SessionID,
 		"iteration", ctx.CurrentIteration+1,
@@ -22,6 +25,9 @@ func (h *ThoughtLoggerHook) Before(ctx *reactor.ReactContext, input *reactor.Cal
 }
 
 func (h *ThoughtLoggerHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
+	if h.Logger == nil {
+		return reactor.HookResult{}
+	}
 	h.Logger.Info("think done",
 		"session_id", ctx.SessionID,
 		"iteration", ctx.CurrentIteration+1,

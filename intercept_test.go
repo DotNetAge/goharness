@@ -1229,19 +1229,19 @@ func TestTokenCounting_PerRoundEstimation(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 
-	t.Logf("=== Token Counting Per Round (using tiktoken) ===")
+	t.Logf("=== Token Counting Per Round ===")
 	t.Logf("Total rounds: %d", len(*captured))
 	t.Logf("Result: total_tokens=%d, input=%d, output=%d",
 		result.TokenUsage.TotalTokens, result.TokenUsage.InputTokens, result.TokenUsage.OutputTokens)
 	t.Logf("Steps: %d, Tools used: %d", result.Steps, result.ToolsUsed)
 
-	// Use core.CountTokens (tiktoken) to count exact tokens per round
+	// Count tokens per round using simple heuristic
 	var roundTokens []int
 	var totalInputTokens int
 	t.Logf("\nRound-by-round exact token count:")
 	for i := 0; i < len(*captured); i++ {
 		bodyText := string((*captured)[i].Body)
-		inputTokens, _ := core.CountTokens(bodyText)
+		inputTokens := len(bodyText)/4 + 1
 		roundTokens = append(roundTokens, inputTokens)
 		totalInputTokens += inputTokens
 		t.Logf("  Round %d: input tokens = %d (body size = %d bytes)", i+1, inputTokens, len((*captured)[i].Body))
@@ -1261,7 +1261,7 @@ func TestTokenCounting_PerRoundEstimation(t *testing.T) {
 	t.Logf("\n=== Token Budget Per Round ===")
 	for i := 0; i < len(*captured); i++ {
 		bodyText := string((*captured)[i].Body)
-		inputTokens, _ := core.CountTokens(bodyText)
+		inputTokens := len(bodyText)/4 + 1
 		// Parse the JSON body to check message count
 		var bodyMap map[string]any
 		json.Unmarshal((*captured)[i].Body, &bodyMap)

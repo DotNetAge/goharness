@@ -29,7 +29,6 @@ type ToolExecutor interface {
 type toolExecutorConfig struct {
 	registry          ToolRegistry
 	permissionChecker ToolPermissionChecker
-	resultLimits      ToolResultLimits
 	eventEmitter      func(ReactEvent)
 	resultStore       *ResultStore
 	kvStore           KVStore
@@ -50,10 +49,6 @@ func WithPermissionChecker(checker ToolPermissionChecker) ExecutorOption {
 
 func WithLogger(logger Logger) ExecutorOption {
 	return func(c *toolExecutorConfig) { c.logger = logger }
-}
-
-func WithResultLimits(limits ToolResultLimits) ExecutorOption {
-	return func(c *toolExecutorConfig) { c.resultLimits = limits }
 }
 
 func WithEventEmitter(emitter func(ReactEvent)) ExecutorOption {
@@ -102,12 +97,6 @@ func NewToolExecutor(registry ToolRegistry, opts ...ExecutorOption) ToolExecutor
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	if cfg.resultLimits.MaxResultSizeChars == 0 {
-		cfg.resultLimits.MaxResultSizeChars = DefaultToolResultLimits().MaxResultSizeChars
-	}
-	if cfg.resultLimits.MaxToolResultsPerMessageChars == 0 {
-		cfg.resultLimits.MaxToolResultsPerMessageChars = DefaultToolResultLimits().MaxToolResultsPerMessageChars
-	}
 	return &defaultToolExecutor{
 		cfg: cfg,
 	}
@@ -118,8 +107,8 @@ type defaultToolExecutor struct {
 }
 
 func (e *defaultToolExecutor) ResetCycle() {
-	// ResetCycle is a no-op after removing per-executor charsUsed tracking.
-	// Budget enforcement is handled by ToolResultBudgetEnforcer at the reactor layer.
+	// ResetCycle is a no-op — cycle-level tool result tracking was removed
+	// along with the ToolResultBudgetEnforcer.
 }
 
 func (e *defaultToolExecutor) Execute(ctx context.Context, name string, params map[string]any) (*ToolExecutionResult, error) {
@@ -351,19 +340,15 @@ func (e *defaultToolExecutor) processResult(toolName, str string, toolInfo *Tool
 		return str
 	}
 
-	// Simplified: only check per-tool threshold.
-	// The actual persistence and aggregate budget enforcement
-	// is handled by ToolResultBudgetEnforcer in the reactor layer.
-	threshold := e.cfg.resultLimits.MaxResultSizeChars
+	// Inline truncation: if the result exceeds the per-tool limit, truncate in place.
+	threshold := 25000 // default char limit
 	if toolInfo.MaxResultSizeChars > 0 {
 		threshold = toolInfo.MaxResultSizeChars
 	}
-	charCount := len([]rune(str))
-	if charCount <= threshold {
+	runes := []rune(str)
+	if len(runes) <= threshold {
 		return str
 	}
 
-	// Mark as needing reactor-level processing by returning unchanged.
-	// The callers (e.g., persistStep in reactor) will apply budget enforcement.
-	return str
+	return string(runes[:threshold]) + "\n... [truncated: result exceeds size limit] ..."
 }

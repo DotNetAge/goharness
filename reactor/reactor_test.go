@@ -24,7 +24,7 @@ func (h *testPreCheckHook) Before(ctx *ReactContext, input *CallInput) HookResul
 		return HookResult{Abort: true, AbortReason: "reached max iterations"}
 	}
 	if ctx.Ctx().Err() != nil {
-		return HookResult{Abort: true, AbortReason: "request cancelled"}
+		return HookResult{Abort: true, AbortReason: "context_cancelled: context canceled"}
 	}
 	return HookResult{}
 }
@@ -39,21 +39,17 @@ type testConvergenceHook struct{}
 
 func (h *testConvergenceHook) Priority() int { return PriorityConvergence }
 
-func (h *testConvergenceHook) After(ctx *ReactContext, obs *Observation) HookResult {
-	thought := ctx.LastThought
-	if thought != nil {
-		if thought.IsFinal {
-			return HookResult{Abort: true, AbortReason: "thinker produced final answer"}
+func (h *testConvergenceHook) Before(ctx *ReactContext, input *CallInput) HookResult {
+	return HookResult{}
+}
+
+func (h *testConvergenceHook) After(ctx *ReactContext, thought *Thought) HookResult {
+	if ctx.LastAction != nil {
+		for _, tr := range ctx.LastAction.Results {
+			if !tr.Success && tr.Error != "" {
+				return HookResult{Abort: true, AbortReason: "irrecoverable tool error: " + tr.Error}
+			}
 		}
-		if thought.Decision == DecisionAnswer {
-			return HookResult{Abort: true, AbortReason: "direct answer produced"}
-		}
-		if thought.Decision == DecisionClarify {
-			return HookResult{Abort: true, AbortReason: "clarification needed"}
-		}
-	}
-	if !obs.Success && !obs.ShouldRetry && obs.Error != "" {
-		return HookResult{Abort: true, AbortReason: "irrecoverable tool error: " + obs.Error}
 	}
 	if IsDestructiveLoop(ctx.History) {
 		return HookResult{Abort: true, AbortReason: "destructive loop detected"}
@@ -73,9 +69,8 @@ func (h *testConvergenceHook) After(ctx *ReactContext, obs *Observation) HookRes
 func (h *testConvergenceHook) Abort(ctx *ReactContext, reason string) {}
 
 func registerTestDefaultHooks(r *Reactor) {
-	r.RegisterThoughtHooks(&testPreCheckHook{})
+	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
 	r.RegisterToolHooks()
-	r.RegisterObservationHooks(&testConvergenceHook{})
 }
 
 // ============================================================================
@@ -96,7 +91,6 @@ func TestPrompt_ToSectionedMessages_StaticOrder(t *testing.T) {
 			prompt: &Prompt{
 				Identity:            "You are a test agent.",
 				Rules:               "1. Be helpful.",
-				OutputFormat:        "Test output format.",
 				ExecutionGuidelines: "Be cautious with writes.",
 				SkillsCatalog:       "- skill_a",
 				ToolUsage:           "Use tools wisely.",
@@ -108,7 +102,6 @@ func TestPrompt_ToSectionedMessages_StaticOrder(t *testing.T) {
 				"You are a test agent.",
 				"- skill_a",
 				"## Behavioral Rules\n1. Be helpful.",
-				"Test output format.",
 				"Be cautious with writes.",
 				"Use tools wisely.",
 				"Be concise.",
@@ -116,7 +109,7 @@ func TestPrompt_ToSectionedMessages_StaticOrder(t *testing.T) {
 			wantDynamic: []string{
 				"Use prose.",
 			},
-			wantTotal:    11,
+			wantTotal:    10,
 			wantReminder: "Remember context limits.",
 		},
 		{
@@ -234,7 +227,7 @@ func TestReactor_Run_MockLLM_AnswerImmediately(t *testing.T) {
 	r := newTestReactor(func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
 		callCount++
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Hello, user!", "reasoning": "I can answer directly."}`,
+			Content: "Hello, user!",
 		}, nil
 	})
 
@@ -251,8 +244,8 @@ func TestReactor_Run_MockLLM_AnswerImmediately(t *testing.T) {
 	if result.Answer != "Hello, user!" {
 		t.Errorf("expected answer 'Hello, user!', got '%s'", result.Answer)
 	}
-	if result.TerminationReason != "direct answer produced" {
-		t.Errorf("expected termination 'direct answer produced', got '%s'", result.TerminationReason)
+	if result.TerminationReason != "direct_answer" {
+		t.Errorf("expected termination 'direct_answer', got '%s'", result.TerminationReason)
 	}
 }
 
@@ -278,7 +271,7 @@ func TestReactor_Run_MockLLM_ActThenAnswer(t *testing.T) {
 		secondCallInput = input
 		// Second call: answer after tool result
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Done.", "reasoning": "Tool returned successfully."}`,
+			Content: "Done.",
 		}, nil
 	}, WithExtraTools(&mockEchoTool{}))
 
@@ -295,8 +288,8 @@ func TestReactor_Run_MockLLM_ActThenAnswer(t *testing.T) {
 	if result.Answer != "Done." {
 		t.Errorf("expected answer 'Done.', got '%s'", result.Answer)
 	}
-	if result.TerminationReason != "direct answer produced" {
-		t.Errorf("expected termination 'direct answer produced', got '%s'", result.TerminationReason)
+	if result.TerminationReason != "direct_answer" {
+		t.Errorf("expected termination 'direct_answer', got '%s'", result.TerminationReason)
 	}
 
 	// Verify that the second LLM call received history containing the tool execution result.
@@ -321,7 +314,7 @@ func TestReactor_Run_MockLLM_ContextCancelled(t *testing.T) {
 		// This should not be called since context is pre-cancelled
 		// (runLoop checks Cancelled before Think in each iteration)
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "should not reach"}`,
+			Content: "should not reach",
 		}, nil
 	})
 
@@ -332,7 +325,7 @@ func TestReactor_Run_MockLLM_ContextCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.TerminationReason != "request cancelled" {
+	if result.TerminationReason != "context_cancelled: context canceled" {
 		t.Errorf("expected termination reason 'request cancelled', got '%s'", result.TerminationReason)
 	}
 	if result.TotalIterations != 0 {
@@ -341,13 +334,13 @@ func TestReactor_Run_MockLLM_ContextCancelled(t *testing.T) {
 }
 
 // ============================================================================
-// Think / Act / Observe Individual Phase Tests
+// Think / Act Individual Phase Tests
 // ============================================================================
 
 func TestReactor_Think_ProducesThought(t *testing.T) {
 	r := newTestReactor(func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Done.", "reasoning": "Analyzing the request."}`,
+			Content: "Done.",
 		}, nil
 	})
 
@@ -363,8 +356,8 @@ func TestReactor_Think_ProducesThought(t *testing.T) {
 	if ctx.LastThought.Decision != DecisionAnswer {
 		t.Errorf("expected DecisionAnswer, got %s", ctx.LastThought.Decision)
 	}
-	if ctx.LastThought.FinalAnswer != "Done." {
-		t.Errorf("expected FinalAnswer 'Done.', got '%s'", ctx.LastThought.FinalAnswer)
+	if ctx.LastThought.Content != "Done." {
+		t.Errorf("expected Content 'Done.', got '%s'", ctx.LastThought.Content)
 	}
 	if tu.InputTokens < 0 {
 		t.Errorf("expected non-negative token count, got %d", tu.InputTokens)
@@ -409,8 +402,8 @@ func TestReactor_Act_AnswerDecision(t *testing.T) {
 	r := newTestReactor(nil) // No LLM needed for Act test
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
 	ctx.LastThought = &Thought{
-		Decision:    DecisionAnswer,
-		FinalAnswer: "The answer is 42.",
+		Decision: DecisionAnswer,
+		Content:  "The answer is 42.",
 	}
 
 	err := r.Act(ctx)
@@ -428,23 +421,6 @@ func TestReactor_Act_AnswerDecision(t *testing.T) {
 	}
 }
 
-func TestReactor_Act_ClarifyDecision(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastThought = &Thought{
-		Decision:              DecisionClarify,
-		ClarificationQuestion: "What file should I read?",
-	}
-
-	err := r.Act(ctx)
-	if err != nil {
-		t.Fatalf("Act failed: %v", err)
-	}
-	if len(ctx.LastAction.Results) == 0 || ctx.LastAction.Results[0].ToolName != "clarify" {
-		t.Errorf("expected clarify result, got %v", ctx.LastAction.Results)
-	}
-}
-
 func TestReactor_Act_NoThought(t *testing.T) {
 	r := newTestReactor(nil)
 	ctx := NewReactContext(context.Background(), "Test", nil, 10)
@@ -455,61 +431,14 @@ func TestReactor_Act_NoThought(t *testing.T) {
 	}
 }
 
-func TestReactor_Observe_ToolCallResult(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastAction = &Action{
-		Results: []ToolResult{{ToolName: "read", Result: "file contents here", Success: true}},
-	}
-	ctx.LastThought = &Thought{Decision: DecisionAct}
-
-	err := r.Observe(ctx)
-	if err != nil {
-		t.Fatalf("Observe failed: %v", err)
-	}
-	if ctx.LastObservation == nil {
-		t.Fatal("expected LastObservation to be set")
-	}
-	if ctx.LastObservation.Result != "[read] file contents here" {
-		t.Errorf("expected observation result '[read] file contents here', got '%s'", ctx.LastObservation.Result)
-	}
-}
-
-func TestReactor_Observe_ToolCallError(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-	ctx.LastAction = &Action{
-		Results: []ToolResult{{ToolName: "read", Success: false, Error: "file not found"}},
-	}
-	ctx.LastThought = &Thought{Decision: DecisionAct}
-
-	err := r.Observe(ctx)
-	if err != nil {
-		t.Fatalf("Observe failed: %v", err)
-	}
-	if ctx.LastObservation.Error == "" {
-		t.Error("expected observation error to be set")
-	}
-}
-
-func TestReactor_Observe_NoAction(t *testing.T) {
-	r := newTestReactor(nil)
-	ctx := NewReactContext(context.Background(), "Test", nil, 10)
-
-	err := r.Observe(ctx)
-	if err == nil {
-		t.Fatal("expected error when Observe called without Action")
-	}
-}
-
 // -- Negative cases: conditions that should NOT trigger termination --
 
 func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 	t.Run("different params should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}, Observation: Observation{Error: "permission denied"}},
-			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "permission denied"}},
-			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "permission denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false, Error: "permission denied"}}}, Thought: Thought{ToolCalls: map[string]map[string]any{"bash": {"cmd": "rm -rf /"}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false, Error: "permission denied"}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false, Error: "permission denied"}}}},
 		}
 		if IsDestructiveLoop(history) {
 			t.Error("IsDestructiveLoop should return false: different params per call")
@@ -518,8 +447,8 @@ func TestCheckTermination_DestructiveLoop_NotTriggered(t *testing.T) {
 
 	t.Run("fewer than 3 calls should not trigger", func(t *testing.T) {
 		history := []Step{
-			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "denied"}},
-			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false}}}, Observation: Observation{Error: "denied"}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false, Error: "denied"}}}},
+			{Action: Action{Results: []ToolResult{{ToolName: "bash", Success: false, Error: "denied"}}}},
 		}
 		if IsDestructiveLoop(history) {
 			t.Error("IsDestructiveLoop should return false: only 2 calls")
@@ -585,217 +514,6 @@ func TestCheckTermination_ResultConverged_NotTriggered(t *testing.T) {
 		}
 	})
 }
-
-
-// ============================================================================
-// ParseThinkResponse — JSON Format Noise Tests
-// ============================================================================
-
-func TestParseThinkResponse_JSONFormats(t *testing.T) {
-	t.Run("plain JSON", func(t *testing.T) {
-		thought, err := ParseThinkResponse(`{"decision": "answer", "final_answer": "done", "reasoning": "ok"}`, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected DecisionAnswer, got %s", thought.Decision)
-		}
-		if thought.FinalAnswer != "done" {
-			t.Errorf("expected 'done', got '%s'", thought.FinalAnswer)
-		}
-		if thought.Reasoning != "ok" {
-			t.Errorf("expected 'ok', got '%s'", thought.Reasoning)
-		}
-	})
-
-	t.Run("JSON in code fence", func(t *testing.T) {
-		input := "```json\n{\"decision\": \"answer\", \"final_answer\": \"fenced\", \"reasoning\": \"fence\"}\n```"
-		thought, err := ParseThinkResponse(input, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected DecisionAnswer, got %s", thought.Decision)
-		}
-		if thought.FinalAnswer != "fenced" {
-			t.Errorf("expected 'fenced', got '%s'", thought.FinalAnswer)
-		}
-	})
-
-	t.Run("JSON in code fence without language tag", func(t *testing.T) {
-		input := "```\n{\"decision\": \"answer\", \"final_answer\": \"bare\", \"reasoning\": \"bare\"}\n```"
-		thought, err := ParseThinkResponse(input, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if thought.FinalAnswer != "bare" {
-			t.Errorf("expected 'bare', got '%s'", thought.FinalAnswer)
-		}
-	})
-
-	t.Run("mixed case decision is normalized to lowercase", func(t *testing.T) {
-		thought, err := ParseThinkResponse(`{"decision": "Answer", "final_answer": "mixed", "reasoning": "case"}`, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected normalized DecisionAnswer, got %s", thought.Decision)
-		}
-	})
-
-	t.Run("unknown decision defaults to answer", func(t *testing.T) {
-		thought, err := ParseThinkResponse(`{"decision": "fly", "final_answer": "defaulted", "reasoning": "unknown"}`, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected fallback DecisionAnswer, got %s", thought.Decision)
-		}
-		if thought.FinalAnswer != "defaulted" {
-			t.Errorf("expected 'defaulted', got '%s'", thought.FinalAnswer)
-		}
-	})
-
-	t.Run("missing fields get zero values", func(t *testing.T) {
-		thought, err := ParseThinkResponse(`{}`, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected fallback DecisionAnswer for empty JSON, got %s", thought.Decision)
-		}
-		if thought.Timestamp.IsZero() {
-			t.Error("expected Timestamp to be set when missing")
-		}
-	})
-
-	t.Run("invalid JSON returns error", func(t *testing.T) {
-		_, err := ParseThinkResponse(`{invalid json`, nil)
-		if err == nil {
-			t.Error("expected parse error for invalid JSON")
-		}
-	})
-}
-
-func TestParseThinkResponse_DirectTextAnswer(t *testing.T) {
-	t.Run("Chinese markdown answer should be parsed as DecisionAnswer", func(t *testing.T) {
-		chineseAnswer := `根据最新的搜索结果，OpenAI 近期在模型发布、基础设施合作以及商业化方面都有重大进展，以下是核心动态总结：
-
-### 1. 最新模型发布
-* **GPT-5.5 发布**：OpenAI 在 2026 年 4 月宣布了最新模型 **GPT-5.5**。
-
-### 2. 基础设施合作
-* 与 NVIDIA 达成战略合作`
-
-		thought, err := ParseThinkResponse(chineseAnswer, nil)
-		if err != nil {
-			t.Fatalf("expected success for direct text answer, got error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected DecisionAnswer, got %s", thought.Decision)
-		}
-		if !thought.IsFinal {
-			t.Error("expected IsFinal to be true for direct answer")
-		}
-		if !strings.Contains(thought.FinalAnswer, "OpenAI") {
-			t.Errorf("expected FinalAnswer to contain 'OpenAI', got: %s", Truncate(thought.FinalAnswer, 100))
-		}
-	})
-
-	t.Run("English plain text answer should be parsed as DecisionAnswer", func(t *testing.T) {
-		englishAnswer := `Based on the search results, here's a summary of OpenAI's latest developments:
-
-## 1. Model Releases
-- GPT-5.5 announced in April 2026
-
-## 2. Business Updates
-- Revenue reached $4.3B in H1 2025`
-
-		thought, err := ParseThinkResponse(englishAnswer, nil)
-		if err != nil {
-			t.Fatalf("expected success for English answer, got error: %v", err)
-		}
-		if thought.Decision != DecisionAnswer {
-			t.Errorf("expected DecisionAnswer, got %s", thought.Decision)
-		}
-	})
-
-	t.Run("Short non-answer content should return error", func(t *testing.T) {
-		shortContent := "hello"
-		_, err := ParseThinkResponse(shortContent, nil)
-		if err == nil {
-			t.Error("expected error for short non-JSON content")
-		}
-	})
-
-	t.Run("JSON-like but invalid should return error", func(t *testing.T) {
-		jsonLike := `{decision: answer, malformed`
-		_, err := ParseThinkResponse(jsonLike, nil)
-		if err == nil {
-			t.Error("expected error for malformed JSON-like content")
-		}
-	})
-}
-
-func TestLooksLikeDirectAnswer(t *testing.T) {
-	testCases := []struct {
-		name     string
-		content  string
-		expected bool
-	}{
-		{
-			name:     "Chinese summary with 根据关键词",
-			content:  "根据最新的搜索结果，以下是总结...",
-			expected: true,
-		},
-		{
-			name:     "English with based on",
-			content:  "Based on the search results, here is the answer...",
-			expected: true,
-		},
-		{
-			name:     "Markdown heading",
-			content:  "## Summary\n\nThis is a detailed response about the topic.",
-			expected: true,
-		},
-		{
-			name:     "Long text without keywords (>50 chars)",
-			content:  strings.Repeat("This is a long enough response that should be considered as an answer. ", 3),
-			expected: true,
-		},
-		{
-			name:     "Too short",
-			content:  "short",
-			expected: false,
-		},
-		{
-			name:     "Starts with brace (JSON-like)",
-			content:  `{not valid json but starts with brace`,
-			expected: false,
-		},
-		{
-			name:     "Only special characters",
-			content:  "!@#$%^&*()",
-			expected: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := looksLikeDirectAnswer(tc.content)
-			if result != tc.expected {
-				t.Errorf("looksLikeDirectAnswer() = %v, expected %v for content: %q",
-					result, tc.expected, Truncate(tc.content, 50))
-			}
-		})
-	}
-}
-
-// ============================================================================
-
-// ============================================================================
-
-
 
 // ============================================================================
 // CloneReactor Tests (Child Agent Inheritance and Isolation)
@@ -959,69 +677,9 @@ func (m *mockMemoryImpl) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// mockModel is a mock that always returns a fixed response.
-type mockModel struct{}
-
-func (m *mockModel) Call(ctx context.Context, model string, messages []gochatcore.Message, tools []gochatcore.Tool) (*gochatcore.Response, error) {
-	return &gochatcore.Response{
-		Content: "Hello! How can I help you today?",
-	}, nil
-}
-
-// mockModelWithToolCalls returns native tool calls instead of text responses.
-type mockModelWithToolCalls struct {
-	calls     int
-	responses []gochatcore.Response
-	tools     map[string]core.FuncTool
-}
-
-func (m *mockModelWithToolCalls) Call(ctx context.Context, model string, messages []gochatcore.Message, tools []gochatcore.Tool) (*gochatcore.Response, error) {
-	if m.calls < len(m.responses) {
-		resp := &m.responses[m.calls]
-		m.calls++
-		return resp, nil
-	}
-	// Default: return answer
-	return &gochatcore.Response{
-		Content: `{"decision": "answer", "final_answer": "Task completed."}`,
-	}, nil
-}
-
 // ============================================================================
 // Enhanced Reactor Tests with Mock LLM
 // ============================================================================
-
-func TestReactor_MockLLMWithThought(t *testing.T) {
-	callCount := 0
-	mockFn := func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
-		callCount++
-		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Hello from mock!", "reasoning": "User asked for help"}`,
-		}, nil
-	}
-
-	r := NewReactor(ReactorConfig{
-		Model:         "test",
-		MaxIterations: 5,
-	},
-		WithMockLLM(mockFn),
-		WithoutBundledTools(),
-	)
-
-	result, err := r.Run(context.Background(), "Help me", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if callCount == 0 {
-		t.Fatal("mock LLM was not called")
-	}
-	if result.Answer != "Hello from mock!" {
-		t.Errorf("expected answer 'Hello from mock!', got %q", result.Answer)
-	}
-	if result.TotalIterations < 1 {
-		t.Errorf("expected at least 1 iteration, got %d", result.TotalIterations)
-	}
-}
 
 func TestReactor_MockLLMWithNativeToolCalls(t *testing.T) {
 	callCount := 0
@@ -1038,7 +696,7 @@ func TestReactor_MockLLMWithNativeToolCalls(t *testing.T) {
 			}, nil
 		}
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Done"}`,
+			Content: "Done",
 		}, nil
 	}
 
@@ -1087,7 +745,7 @@ func TestReactor_MockLLMMultiTurnConversation(t *testing.T) {
 			t.Logf("turn %d: history has %d messages", turnCount, len(input.History))
 		}
 		return &gochatcore.Response{
-			Content: fmt.Sprintf(`{"decision": "answer", "final_answer": "Response %d"}`, turnCount),
+			Content: fmt.Sprintf("Response %d", turnCount),
 		}, nil
 	}
 
@@ -1121,11 +779,13 @@ func TestReactor_MockLLMToolExecutionResult(t *testing.T) {
 			if len(input.History) == 0 {
 				capturedHistory = input.History
 				return &gochatcore.Response{
-					Content: `{"decision": "act", "tool_calls": {"echo_tool": {"message": "hello"}}}`,
+					Message: gochatcore.Message{
+						ToolCalls: []gochatcore.ToolCall{{Name: "echo_tool", Arguments: `{"message": "hello"}`}},
+					},
 				}, nil
 			}
 			return &gochatcore.Response{
-				Content: `{"decision": "answer", "final_answer": "Done"}`,
+				Content: "Done",
 			}, nil
 		}),
 		WithoutBundledTools(),
@@ -1147,46 +807,22 @@ func TestReactor_MockLLMToolExecutionResult(t *testing.T) {
 	t.Logf("Captured history on first call: %d messages", len(capturedHistory))
 }
 
-func TestReactor_MockLLMWithParseError(t *testing.T) {
-	mockFn := func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
-		return &gochatcore.Response{
-			Content: "this is not valid json {{{",
-		}, nil
-	}
-
-	r := NewReactor(ReactorConfig{
-		Model:         "test",
-		MaxIterations: 2,
-	},
-		WithMockLLM(mockFn),
-		WithoutBundledTools(),
-	)
-
-	result, err := r.Run(context.Background(), "Test", nil)
-	if err != nil {
-		t.Logf("expected: run returned error: %v", err)
-	} else {
-		t.Logf("run completed with answer: %q", result.Answer)
-	}
-}
-
 func TestReactor_MockLLMMultipleToolCallsInParallel(t *testing.T) {
 	toolCallCount := 0
 	mockFn := func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
 		toolCallCount++
 		if toolCallCount == 1 {
 			return &gochatcore.Response{
-				Content: `{
-					"decision": "act",
-					"tool_calls": {
-						"echo_tool": {"message": "first"},
-						"read": {"path": "/tmp/test.txt"}
-					}
-				}`,
+				Message: gochatcore.Message{
+					ToolCalls: []gochatcore.ToolCall{
+						{Name: "echo_tool", Arguments: `{"message": "first"}`},
+						{Name: "read", Arguments: `{"path": "/tmp/test.txt"}`},
+					},
+				},
 			}, nil
 		}
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Both tools executed"}`,
+			Content: "Both tools executed",
 		}, nil
 	}
 
@@ -1220,46 +856,14 @@ func TestReactor_MockLLMMultipleToolCallsInParallel(t *testing.T) {
 	}
 }
 
-func TestReactor_MockLLMDecisionClarify(t *testing.T) {
-	mockFn := func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
-		return &gochatcore.Response{
-			Content: `{"decision": "clarify", "clarification_question": "Can you provide more details?"}`,
-		}, nil
-	}
-
-	r := NewReactor(ReactorConfig{
-		Model:         "test",
-		MaxIterations: 2,
-	},
-		WithMockLLM(mockFn),
-		WithoutBundledTools(),
-	)
-
-	result, err := r.Run(context.Background(), "Help me", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	hasClarify := false
-	for _, step := range result.Steps {
-		if step.Thought.Decision == DecisionClarify {
-			hasClarify = true
-			if step.Action.Summary() != "[clarify] Can you provide more details?" {
-				t.Errorf("expected clarify question, got %q", step.Action.Summary())
-			}
-		}
-	}
-	if !hasClarify {
-		t.Log("WARN: no clarify action found in steps")
-	}
-}
-
 func TestReactor_MockLLMMaxIterationsRespected(t *testing.T) {
 	callCount := 0
 	mockFn := func(ctx context.Context, input CallInput) (*gochatcore.Response, error) {
 		callCount++
 		return &gochatcore.Response{
-			Content: `{"decision": "act", "tool_calls": {"echo_tool": {"message": "loop"}}}`,
+			Message: gochatcore.Message{
+				ToolCalls: []gochatcore.ToolCall{{Name: "echo_tool", Arguments: `{"message": "loop"}`}},
+			},
 		}, nil
 	}
 
@@ -1285,7 +889,6 @@ func TestReactor_MockLLMMaxIterationsRespected(t *testing.T) {
 	}
 	t.Logf("Iterations: %d (max was 3), LLM calls: %d", result.TotalIterations, callCount)
 }
-
 
 // toolNameInAction reports whether any ToolResult in the Action has the given tool name.
 func toolNameInAction(a Action, name string) bool {

@@ -125,12 +125,13 @@ type testConvergenceHook struct{}
 
 func (h *testConvergenceHook) Priority() int { return reactor.PriorityConvergence }
 
-func (h *testConvergenceHook) After(ctx *reactor.ReactContext, obs *reactor.Observation) reactor.HookResult {
-	thought := ctx.LastThought
-	if thought != nil {
-		if thought.Decision == reactor.DecisionAnswer {
-			return reactor.HookResult{Abort: true, AbortReason: "answer produced"}
-		}
+func (h *testConvergenceHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
+	return reactor.HookResult{}
+}
+
+func (h *testConvergenceHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
+	if thought != nil && thought.Decision == reactor.DecisionAnswer {
+		return reactor.HookResult{Abort: true, AbortReason: "answer produced"}
 	}
 	return reactor.HookResult{}
 }
@@ -153,9 +154,8 @@ func newTestReactorWithEvents(mockFn reactor.MockLLMFunc, extraTools ...core.Fun
 
 	r := reactor.NewReactor(cfg, opts...)
 
-	r.RegisterThoughtHooks(&testPreCheckHook{})
-	r.RegisterToolHooks(action.Defaults(nil, nil, nil, nil)...)
-	r.RegisterObservationHooks(&testConvergenceHook{})
+	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
+	r.RegisterToolHooks(action.Defaults(nil, nil, nil)...)
 
 	for _, tool := range extraTools {
 		if err := r.RegisterTool(tool); err != nil {
@@ -164,9 +164,8 @@ func newTestReactorWithEvents(mockFn reactor.MockLLMFunc, extraTools ...core.Fun
 	}
 
 	collector := newEventCollector(bus,
-		core.ActionStart, core.ToolExecStart, core.ToolExecEnd,
-		core.ActionProgress, core.ActionEnd,
-	)
+		core.ToolExecStart, core.ToolExecEnd,
+			)
 
 	return r, bus, collector
 }
@@ -189,9 +188,8 @@ func newTestReactorWithEventsMinimal(mockFn reactor.MockLLMFunc, extraTools ...c
 
 	r := reactor.NewReactor(cfg, opts...)
 
-	r.RegisterThoughtHooks(&testPreCheckHook{})
+	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
 	r.RegisterToolHooks(&action.ToolEventHook{})
-	r.RegisterObservationHooks(&testConvergenceHook{})
 
 	for _, tool := range extraTools {
 		if err := r.RegisterTool(tool); err != nil {
@@ -200,7 +198,7 @@ func newTestReactorWithEventsMinimal(mockFn reactor.MockLLMFunc, extraTools ...c
 	}
 
 	collector := newEventCollector(bus,
-		core.ActionStart, core.ToolExecStart, core.ToolExecEnd,
+		core.ToolExecStart, core.ToolExecEnd,
 	)
 
 	return r, bus, collector
@@ -223,7 +221,7 @@ func TestBranch_Isolation_OnlyToolEventHook(t *testing.T) {
 			}, nil
 		}
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Done"}`,
+			Content: "Done",
 		}, nil
 	}, &mockTool{name: "search"})
 
@@ -235,14 +233,8 @@ func TestBranch_Isolation_OnlyToolEventHook(t *testing.T) {
 	_ = collector.drain(2 * time.Second)
 	collector.close()
 
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 
-	t.Logf("Branch 0-Isolation (ONLY ToolEventHook): ActionStart=%d, ToolExecStart=%d", asCount, tsCount)
-
-	if asCount != 1 {
-		t.Errorf("expected 1 ActionStart, got %d", asCount)
-	}
 	if tsCount != 1 {
 		t.Errorf("expected 1 ToolExecStart, got %d", tsCount)
 	}
@@ -256,7 +248,7 @@ func TestBranch_Isolation_OnlyToolEventHook(t *testing.T) {
 func TestBranch_Run_PreCheckCancelled(t *testing.T) {
 	mockFn := func(ctx context.Context, input reactor.CallInput) (*gochatcore.Response, error) {
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "should not reach"}`,
+			Content: "should not reach",
 		}, nil
 	}
 
@@ -277,13 +269,13 @@ func TestBranch_Run_PreCheckCancelled(t *testing.T) {
 
 // ============================================================================
 // Branch 2: Run → Think → Answer (JSON decision=answer)
-// Expected: 0 ActionStart, 0 ToolExecStart/End (no tools)
+// Expected: 0 ToolExecStart/End (no tools)
 // ============================================================================
 
 func TestBranch_Run_Think_Answer(t *testing.T) {
 	r, _, collector := newTestReactorWithEventsMinimal(func(ctx context.Context, input reactor.CallInput) (*gochatcore.Response, error) {
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Direct answer"}`,
+			Content: "Direct answer",
 		}, nil
 	})
 
@@ -295,18 +287,15 @@ func TestBranch_Run_Think_Answer(t *testing.T) {
 	events := collector.drain(1 * time.Second)
 	collector.close()
 
-	if collector.countByType(core.ActionStart) != 0 {
-		t.Errorf("expected 0 ActionStart for answer decision, got %d", collector.countByType(core.ActionStart))
-	}
 	if collector.countByType(core.ToolExecStart) != 0 {
 		t.Errorf("expected 0 ToolExecStart for answer decision, got %d", collector.countByType(core.ToolExecStart))
 	}
-	t.Logf("Branch 2-Answer: total events=%d (expect 0 action events)", len(events))
+	t.Logf("Branch 2-Answer: total events=%d (expect 0 tool events)", len(events))
 }
 
 // ============================================================================
 // Branch 3: Run → Think → Act (single tool) → Observe → Answer
-// Expected: 1 ActionStart + 1 ToolExecStart + 1 ToolExecEnd
+// Expected: 1 ToolExecStart + 1 ToolExecEnd
 // ============================================================================
 
 func TestBranch_Run_Think_ActSingleTool_Observe_Answer(t *testing.T) {
@@ -323,7 +312,7 @@ func TestBranch_Run_Think_ActSingleTool_Observe_Answer(t *testing.T) {
 			}, nil
 		}
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Done"}`,
+			Content: "Done",
 		}, nil
 	}, &mockTool{name: "search"})
 
@@ -335,15 +324,9 @@ func TestBranch_Run_Think_ActSingleTool_Observe_Answer(t *testing.T) {
 	_ = collector.drain(2 * time.Second)
 	collector.close()
 
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 	teCount := collector.countByType(core.ToolExecEnd)
 
-	t.Logf("Branch 3-ActSingle: ActionStart=%d, ToolExecStart=%d, ToolExecEnd=%d", asCount, tsCount, teCount)
-
-	if asCount != 1 {
-		t.Errorf("expected 1 ActionStart, got %d", asCount)
-	}
 	if tsCount != 1 {
 		t.Errorf("expected 1 ToolExecStart, got %d", tsCount)
 	}
@@ -351,21 +334,11 @@ func TestBranch_Run_Think_ActSingleTool_Observe_Answer(t *testing.T) {
 		t.Errorf("expected 1 ToolExecEnd, got %d", teCount)
 	}
 
-	actionStarts := collector.getByType(core.ActionStart)
-	if len(actionStarts) > 0 {
-		data := actionStarts[0].Data.(core.ActionStartData)
-		if data.ToolCount != 1 {
-			t.Errorf("expected ToolCount=1, got %d", data.ToolCount)
-		}
-		if len(data.ToolNames) != 1 || data.ToolNames[0] != "search" {
-			t.Errorf("expected ToolNames=[search], got %v", data.ToolNames)
-		}
-	}
 }
 
 // ============================================================================
 // Branch 4: Run → Think → Act (parallel tools) → Observe → Answer
-// Expected: 1 ActionStart(count=2) + 2 ToolExecStart + 2 ToolExecEnd
+// Expected: 2 ToolExecStart + 2 ToolExecEnd
 // ============================================================================
 
 func TestBranch_Run_Think_ActParallelTools_Observe_Answer(t *testing.T) {
@@ -383,7 +356,7 @@ func TestBranch_Run_Think_ActParallelTools_Observe_Answer(t *testing.T) {
 			}, nil
 		}
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Done"}`,
+			Content: "Done",
 		}, nil
 	}, &mockTool{name: "grep"}, &mockTool{name: "read"})
 
@@ -395,15 +368,9 @@ func TestBranch_Run_Think_ActParallelTools_Observe_Answer(t *testing.T) {
 	_ = collector.drain(2 * time.Second)
 	collector.close()
 
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 	teCount := collector.countByType(core.ToolExecEnd)
 
-	t.Logf("Branch 4-Parallel: ActionStart=%d, ToolExecStart=%d, ToolExecEnd=%d", asCount, tsCount, teCount)
-
-	if asCount != 1 {
-		t.Errorf("expected 1 ActionStart for parallel tools, got %d", asCount)
-	}
 	if tsCount != 2 {
 		t.Errorf("expected 2 ToolExecStart, got %d", tsCount)
 	}
@@ -415,8 +382,8 @@ func TestBranch_Run_Think_ActParallelTools_Observe_Answer(t *testing.T) {
 // ============================================================================
 // Branch 5: CRITICAL - Multi-iteration with tools each iteration
 // This is THE bug scenario: iter1(tool) → iter2(tool) → iter3(tool) → answer
-// Expected: 3 ActionStart + 3 ToolExecStart + 3 ToolExecEnd
-// BEFORE FIX: only 1 ActionStart was emitted!
+// Expected: 3 ToolExecStart + 3 ToolExecEnd
+// 
 // ============================================================================
 
 func TestBranch_Run_MultiIteration_EachHasTools(t *testing.T) {
@@ -444,7 +411,7 @@ func TestBranch_Run_MultiIteration_EachHasTools(t *testing.T) {
 			}, nil
 		default:
 			return &gochatcore.Response{
-				Content: `{"decision": "answer", "final_answer": "Final answer"}`,
+				Content: "Final answer",
 			}, nil
 		}
 	}, &mockTool{name: "web_search"}, &mockTool{name: "web_fetch"})
@@ -457,19 +424,14 @@ func TestBranch_Run_MultiIteration_EachHasTools(t *testing.T) {
 	_ = collector.drain(3 * time.Second)
 	collector.close()
 
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 	teCount := collector.countByType(core.ToolExecEnd)
 
 	t.Logf("=== BRANCH 5: Multi-Iteration (THE BUG SCENARIO) ===")
 	t.Logf("Total iterations: %d", result.TotalIterations)
-	t.Logf("ActionStart=%d (EXPECT 3)", asCount)
 	t.Logf("ToolExecStart=%d (EXPECT 3)", tsCount)
 	t.Logf("ToolExecEnd=%d (EXPECT 3)", teCount)
 
-	if asCount != 3 {
-		t.Errorf("CRITICAL BUG: expected 3 ActionStart (one per iteration), got %d — iteration reset not working!", asCount)
-	}
 	if tsCount != 3 {
 		t.Errorf("expected 3 ToolExecStart, got %d", tsCount)
 	}
@@ -477,27 +439,11 @@ func TestBranch_Run_MultiIteration_EachHasTools(t *testing.T) {
 		t.Errorf("expected 3 ToolExecEnd, got %d", teCount)
 	}
 
-	actionStarts := collector.getByType(core.ActionStart)
-	expectedIterations := []int{0, 1, 2}
-	expectedToolNames := [][]string{{"web_search"}, {"web_search"}, {"web_fetch"}}
-
-	for i, as := range actionStarts {
-		data := as.Data.(core.ActionStartData)
-		t.Logf("  ActionStart[%d]: Iteration=%d, ToolCount=%d, ToolNames=%v",
-			i, data.Iteration, data.ToolCount, data.ToolNames)
-
-		if i < len(expectedIterations) && data.Iteration != expectedIterations[i] {
-			t.Errorf("  ActionStart[%d]: expected Iteration=%d, got %d", i, expectedIterations[i], data.Iteration)
-		}
-		if i < len(expectedToolNames) && !equalStringSlices(data.ToolNames, expectedToolNames[i]) {
-			t.Errorf("  ActionStart[%d]: expected ToolNames=%v, got %v", i, expectedToolNames[i], data.ToolNames)
-		}
-	}
 }
 
 // ============================================================================
 // Branch 6: Mixed iterations - iter1(tool) → iter2(answer)
-// Expected: 1 ActionStart + 1 ToolExecStart + 1 ToolExecEnd
+// Expected: 1 ToolExecStart + 1 ToolExecEnd
 // ============================================================================
 
 func TestBranch_Run_Mixed_Iter1Tool_Iter2Answer(t *testing.T) {
@@ -512,7 +458,7 @@ func TestBranch_Run_Mixed_Iter1Tool_Iter2Answer(t *testing.T) {
 			}, nil
 		}
 		return &gochatcore.Response{
-			Content: `{"decision": "answer", "final_answer": "Found it"}`,
+			Content: "Found it",
 		}, nil
 	}, &mockTool{name: "lookup"})
 
@@ -524,14 +470,8 @@ func TestBranch_Run_Mixed_Iter1Tool_Iter2Answer(t *testing.T) {
 	_ = collector.drain(2 * time.Second)
 	collector.close()
 
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 
-	t.Logf("Branch 6-Mixed: ActionStart=%d (expect 1), ToolExecStart=%d (expect 1)", asCount, tsCount)
-
-	if asCount != 1 {
-		t.Errorf("expected 1 ActionStart, got %d", asCount)
-	}
 	if tsCount != 1 {
 		t.Errorf("expected 1 ToolExecStart, got %d", tsCount)
 	}
@@ -636,14 +576,13 @@ func TestBranch_Run_MaxIterationsReached(t *testing.T) {
 		}),
 		reactor.WithoutBundledTools(),
 	)
-	r.RegisterThoughtHooks(&testPreCheckHook{})
-	r.RegisterToolHooks(action.Defaults(nil, nil, nil, nil)...)
-	r.RegisterObservationHooks(&testConvergenceHook{})
+	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
+	r.RegisterToolHooks(action.Defaults(nil, nil, nil)...)
 	_ = r.RegisterTool(&mockTool{name: "loop_tool"})
 
 	bus := reactor.NewEventBus()
 	collector := newEventCollector(bus,
-		core.ActionStart, core.ToolExecStart, core.ToolExecEnd,
+		core.ToolExecStart, core.ToolExecEnd,
 	)
 
 	result, err := r.Run(context.Background(), "Loop test", nil)
@@ -653,9 +592,6 @@ func TestBranch_Run_MaxIterationsReached(t *testing.T) {
 
 	_ = collector.drain(2 * time.Second)
 	collector.close()
-
-	asCount := collector.countByType(core.ActionStart)
-	t.Logf("Branch 9-MaxIter: TotalIterations=%d, ActionStart=%d (expect ≤3)", result.TotalIterations, asCount)
 
 	if result.TotalIterations > 3 {
 		t.Errorf("expected ≤3 iterations, got %d", result.TotalIterations)

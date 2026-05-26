@@ -1,9 +1,5 @@
 package reactor
 
-import (
-	"strings"
-)
-
 // Truncate shortens a string to maxLen runes for error messages.
 func Truncate(s string, maxLen int) string {
 	runes := []rune(s)
@@ -11,15 +7,6 @@ func Truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "..."
-}
-
-// coalesce returns s if it is non-empty, otherwise returns fallback.
-// Useful for providing default values for optional string parameters.
-func coalesce(s, fallback string) string {
-	if s != "" {
-		return s
-	}
-	return fallback
 }
 
 // lookUpToolCallID returns the tool_call_id for the given target tool name.
@@ -76,20 +63,6 @@ func lookUpToolCallID(thought *Thought, target string) string {
 	}
 
 	return target
-}
-
-// analyzeActionResult inspects a tool result string and returns diagnostic insights
-// such as whether the result was truncated or contains error information.
-// These insights can be used for logging, monitoring, or decision-making.
-func analyzeActionResult(result string) []string {
-	var insights []string
-	if len(result) > 1000 {
-		insights = append(insights, "large result truncated for context")
-	}
-	if strings.Contains(strings.ToLower(result), "error") {
-		insights = append(insights, "result may contain error information")
-	}
-	return insights
 }
 
 // collectUniqueToolNames scans the step history and returns a deduplicated list of

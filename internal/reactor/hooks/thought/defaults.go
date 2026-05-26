@@ -11,5 +11,6 @@ func Defaults(logger core.Logger) []reactor.ThoughtHook {
 		&PreCheckHook{},
 		&ThoughtEventHook{},
 		&ThoughtLoggerHook{Logger: logger},
+		&ConvergenceHook{},
 	}
 }

@@ -11,7 +11,7 @@ import (
 // BudgetCompact trims message content to fit within a token budget.
 func BudgetCompact(messages []Message, estimateFn func(string) int, targetTokens int64) []Message {
 	if estimateFn == nil {
-		estimateFn = EstimateTokens
+		estimateFn = func(s string) int { return len(s)/4 + 1 }
 	}
 	if len(messages) <= 2 {
 		return messages
@@ -65,41 +65,6 @@ func BudgetCompact(messages []Message, estimateFn func(string) int, targetTokens
 	}
 
 	return result
-}
-
-// TokenEstimator provides token counting for strings.
-type TokenEstimator interface {
-	Estimate(text string) int
-}
-
-// defaultTokenEstimator is the default implementation backed by EstimateTokens
-// (tiktoken BPE with fallback heuristic). This ensures all token accounting
-// in the Reactor uses a single, consistent counting strategy.
-type defaultTokenEstimator struct{}
-
-// NewDefaultTokenEstimator creates an estimator using the shared EstimateTokens function.
-// EstimateTokens is backed by tiktoken BPE tokenizer with automatic fallback
-// to character-class heuristics when tiktoken is unavailable.
-//
-// The charsPerToken parameter is accepted for backward compatibility but is no longer
-// used — actual counting always goes through EstimateTokens().
-//
-// Deprecated: Use NewTokenEstimator() for new code, or simply rely on the
-// zero-value of *defaultTokenEstimator which correctly delegates to EstimateTokens.
-func NewDefaultTokenEstimator(charsPerToken float64) *defaultTokenEstimator {
-	return &defaultTokenEstimator{}
-}
-
-// NewTokenEstimator returns the standard token estimator that uses tiktoken BPE
-// tokenization with automatic fallback. This is the recommended constructor.
-func NewTokenEstimator() *defaultTokenEstimator {
-	return &defaultTokenEstimator{}
-}
-
-// Estimate returns the token count using the shared EstimateTokens function
-// (tiktoken BPE with heuristic fallback).
-func (e *defaultTokenEstimator) Estimate(text string) int {
-	return EstimateTokens(text)
 }
 
 // TrimJSONResult attempts to trim a JSON result by removing large array elements

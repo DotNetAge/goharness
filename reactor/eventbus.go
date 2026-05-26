@@ -8,7 +8,7 @@ import (
 )
 
 // EventBus is the interface for publishing and subscribing to ReactEvents.
-// It decouples the Reactor's internal T-A-O loop from external consumers (clients, UI).
+// It decouples the Reactor's internal Think-Act loop from external consumers (clients, UI).
 type EventBus interface {
 	// Emit publishes an event to all subscribers.
 	Emit(event core.ReactEvent)
@@ -57,56 +57,34 @@ func isCriticalEvent(eventType core.ReactEventType) bool {
 	return eventType == core.PermissionRequest || eventType == core.PermissionDenied
 }
 
-// emitTargets is the snapshot of subscribers collected under lock, sent without lock held.
-type emitTarget struct {
-	ch     chan core.ReactEvent
-	filter func(core.ReactEvent) bool
-}
-
 // Emit publishes an event to all active subscribers.
 //
 // Non-critical events: non-blocking send with silent drop on full channel.
 // Critical events (PermissionRequest, PermissionDenied): blocking send
 // — guarantees delivery to prevent tool-execution hang.
 //
-// The subscribers map is snapshotted under RLock, then the lock is released
-// before any channel send, eliminating deadlock risk between Emit and unsubscribe/Close.
+// The subscribers map is protected by RLock for the entire emit duration
+// to prevent a concurrent unsubscribe/Close from closing a channel mid-send.
+// Non-blocking sends eliminate deadlock risk with unsubscribe (which needs the write lock).
+// For critical events the blocking send is safe because the consumer is actively reading.
 func (b *InProcessEventBus) Emit(event core.ReactEvent) {
 	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	if b.closed {
-		b.mu.RUnlock()
-		if b.logger != nil && event.Type != core.ThinkingDelta {
-			b.logger.Debug("[eventbus] emit skipped — bus closed", "type", event.Type, "session_id", event.SessionID)
-		}
 		return
 	}
 
-	if b.logger != nil && event.Type != core.ThinkingDelta {
-		b.logger.Debug("[eventbus] emit", "type", event.Type, "session_id", event.SessionID, "subscribers", len(b.subscribers))
-	}
-
-	targets := make([]emitTarget, 0, len(b.subscribers))
 	for _, sub := range b.subscribers {
 		if sub.filter != nil && !sub.filter(event) {
 			continue
 		}
-		targets = append(targets, emitTarget{ch: sub.ch, filter: sub.filter})
-	}
-	b.mu.RUnlock()
-
-	if isCriticalEvent(event.Type) {
-		for _, t := range targets {
-			t.ch <- event
-		}
-		return
-	}
-
-	for _, t := range targets {
-		select {
-		case t.ch <- event:
-		default:
-			if b.logger != nil {
-				b.logger.Warn("[eventbus] event dropped — subscriber channel full", "type", event.Type, "session_id", event.SessionID)
+		if isCriticalEvent(event.Type) {
+			sub.ch <- event
+		} else {
+			select {
+			case sub.ch <- event:
+			default:
 			}
 		}
 	}

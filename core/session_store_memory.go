@@ -109,7 +109,7 @@ func (s *MemorySessionStore) CurrentContext(_ context.Context, agentName string,
 	var selected []Message
 	var usedTokens int64
 	for i := len(msgs) - 1; i >= 0; i-- {
-		msgTokens := int64(EstimateTokens(msgs[i].Content))
+		msgTokens := int64(len(msgs[i].Content)/4 + 1)
 		if usedTokens+msgTokens > maxTokens {
 			break
 		}

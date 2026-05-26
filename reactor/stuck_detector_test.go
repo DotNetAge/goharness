@@ -125,9 +125,9 @@ func TestOscillationDetector_ThreeWayOscillation(t *testing.T) {
 	d := &OscillationDetector{Threshold: 4}
 	history := []IterationSnapshot{
 		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionClarify},
+		{Iteration: 2, Decision: DecisionAnswer},
 		{Iteration: 3, Decision: DecisionAct},
-		{Iteration: 4, Decision: DecisionClarify},
+		{Iteration: 4, Decision: DecisionAnswer},
 	}
 	diag := d.Analyze(history)
 	if diag == nil || !diag.Stuck {

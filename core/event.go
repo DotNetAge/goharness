@@ -4,7 +4,7 @@ import "time"
 
 // ReactEventType identifies the type of agent-level event.
 // These are distinct from gochat/core.StreamEventType which operates at the LLM token level.
-// ReactEvent operates at the agent business logic level (T-A-O cycles, tool calls, subtasks).
+// ReactEvent operates at the agent business logic level (Think-Act cycles, tool calls, subtasks).
 type ReactEventType string
 
 const (
@@ -20,11 +20,7 @@ const (
 	// ThinkingDone signals the Think phase has completed and the full thought is available.
 	ThinkingDone ReactEventType = "thinking_done"
 
-	// ActionStart signals the Act phase has begun with the given tools.
-	ActionStart ReactEventType = "action_start"
 
-	// ActionProgress reports progress of the current Act phase (e.g., "3/5 tools complete").
-	ActionProgress ReactEventType = "action_progress"
 
 	// ToolExecStart signals a specific tool is about to start executing.
 	ToolExecStart ReactEventType = "tool_exec_start"
@@ -32,11 +28,6 @@ const (
 	// ToolExecEnd signals a specific tool has completed execution.
 	ToolExecEnd ReactEventType = "tool_exec_end"
 
-	// ActionEnd signals all tools in the current Act phase have completed.
-	ActionEnd ReactEventType = "action_end"
-
-	// ObservationDone signals the Observe phase has completed.
-	ObservationDone ReactEventType = "observation_done"
 
 	// SubtaskSpawned signals a subagent task has been created.
 	SubtaskSpawned ReactEventType = "subtask_spawned"
@@ -52,10 +43,6 @@ const (
 
 	// FinalAnswer signals the Reactor has produced its final answer.
 	FinalAnswer ReactEventType = "final_answer"
-
-	// ClarifyNeeded signals the Reactor needs user clarification.
-	// Deprecated: Use AskUserRequest instead.
-	ClarifyNeeded ReactEventType = "clarify_needed"
 
 	// PermissionRequest signals a tool needs user authorization before execution.
 	PermissionRequest ReactEventType = "permission_request"
@@ -76,11 +63,11 @@ const (
 	// LLMTimeout signals the LLM call (Think phase) exceeded its time limit.
 	LLMTimeout ReactEventType = "llm_timeout"
 
-	// CycleEnd signals one complete T-A-O cycle has ended.
+	// CycleEnd signals one complete Think-Act cycle has ended.
 	CycleEnd ReactEventType = "cycle_end"
 
 	// TaskSummary signals a natural-language summary of the completed task.
-	// This is emitted after the T-A-O loop finishes for non-trivial tasks.
+	// This is emitted after the Think-Act loop finishes for non-trivial tasks.
 	TaskSummary ReactEventType = "task_summary"
 )
 
@@ -109,12 +96,8 @@ type ReactEvent struct {
 	//   - ContentDelta: string (text content fragment)
 	//   - ToolUseDelta: ToolUseDeltaData
 	//   - ThinkingDone: Thought
-	//   - ActionStart: ActionStartData
-	//   - ActionProgress: ActionProgressData
 	//   - ToolExecStart: ToolExecStartData
 	//   - ToolExecEnd: ToolExecEndData
-	//   - ActionEnd: ActionEndData
-	//   - ObservationDone: Observation
 	//   - SubtaskSpawned: SubtaskInfo
 	//   - SubtaskCompleted: SubtaskResult
 	//   - FinalAnswer: string
@@ -138,14 +121,6 @@ type ToolUseDeltaData struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
-// ActionStartData is the payload for ActionStart events (action-level, not per-tool).
-type ActionStartData struct {
-	ToolCount            int      `json:"tool_count"`
-	ToolNames            []string `json:"tool_names"`
-	TotalPredictedTokens int      `json:"total_predicted_tokens,omitempty"`
-	Iteration            int      `json:"iteration,omitempty"`
-}
-
 // ToolExecStartData is the payload for ToolExecStart events.
 type ToolExecStartData struct {
 	ToolName        string         `json:"tool_name"`
@@ -163,20 +138,6 @@ type ToolExecEndData struct {
 	Duration   time.Duration `json:"duration_ms"`
 }
 
-// ActionEndData is the payload for ActionEnd events.
-type ActionEndData struct {
-	TotalTools   int    `json:"total_tools"`
-	SuccessCount int    `json:"success_count"`
-	FailedCount  int    `json:"failed_count"`
-	Summary      string `json:"summary,omitempty"`
-}
-
-// ActionProgressData is the payload for ActionProgress events.
-type ActionProgressData struct {
-	CompletedCount int    `json:"completed_count"`
-	TotalCount     int    `json:"total_count"`
-	Status         string `json:"status,omitempty"`
-}
 
 // SubtaskInfo is the payload for SubtaskSpawned events.
 type SubtaskInfo struct {

@@ -136,17 +136,16 @@ func newIntTestReactor(mockFn reactor.MockLLMFunc, extraTools ...core.FuncTool) 
 	bus := reactor.NewEventBus()
 	cfg := reactor.ReactorConfig{Model: "qwen3.6-plus", MaxIterations: 15}
 	r := reactor.NewReactor(cfg, reactor.WithMockLLM(mockFn), reactor.WithEventBus(bus), reactor.WithoutBundledTools())
-	r.RegisterThoughtHooks(&intPreCheckHook{})
+	r.RegisterThoughtHooks(&intPreCheckHook{}, &intConvergenceHook{})
 	r.RegisterToolHooks(&action.ToolEventHook{})
-	r.RegisterObservationHooks(&intConvergenceHook{})
 	for _, tool := range extraTools {
 		if err := r.RegisterTool(tool); err != nil {
 			panic(fmt.Sprintf("register tool failed: %v", err))
 		}
 	}
 	collector := newIntEventCollector(bus,
-		core.ActionStart, core.ToolExecStart, core.ToolExecEnd,
-		core.ActionEnd, core.PermissionDenied, core.FinalAnswer,
+		core.ToolExecStart, core.ToolExecEnd,
+		core.PermissionDenied, core.FinalAnswer,
 	)
 	return r, bus, collector
 }
@@ -168,11 +167,12 @@ func (h *intPreCheckHook) Abort(ctx *reactor.ReactContext, reason string) {}
 type intConvergenceHook struct{}
 
 func (h *intConvergenceHook) Priority() int { return reactor.PriorityConvergence }
-func (h *intConvergenceHook) After(ctx *reactor.ReactContext, obs *reactor.Observation) reactor.HookResult {
-	t := ctx.LastThought
-	if t != nil && t.Decision == reactor.DecisionAnswer {
-		return reactor.HookResult{Abort: true, AbortReason: "answer produced"}
-	}
+func (h *intConvergenceHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
+	return reactor.HookResult{}
+}
+func (h *intConvergenceHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
+	// Let the loop's natural termination (direct_answer logic in runLoop)
+	// handle the answer — this ensures RunResult.Answer is populated properly.
 	return reactor.HookResult{}
 }
 func (h *intConvergenceHook) Abort(ctx *reactor.ReactContext, reason string) {}
@@ -180,7 +180,7 @@ func (h *intConvergenceHook) Abort(ctx *reactor.ReactContext, reason string) {}
 // ============================================================================
 // SCENARIO A: Sliding Window — Multi-Round Complex Analysis Triggers Slide
 // 场景：生产环境严重服务降级事故分析（Redis Cluster MOVED错误→根因定位）
-// 验证：多轮迭代中每轮ActionStart/ToolExecStart正确触发、滑动窗口保留system消息
+// 验证：多轮迭代中每轮ToolExecStart正确触发、滑动窗口保留system消息
 // ============================================================================
 
 func TestIntegration_SlidingWindow_MultiRoundComplexAnalysis(t *testing.T) {
@@ -203,10 +203,9 @@ func TestIntegration_SlidingWindow_MultiRoundComplexAnalysis(t *testing.T) {
 				ToolCalls: []gochatcore.ToolCall{{Name: "bash", Arguments: "{\"cmd\":\"redis-cli --cluster info\"}"}},
 			}}, nil
 		case 4:
-			answerA := "{\"decision\":\"answer\",\"final_answer\":\"## 根因分析报告\\n\\n故障时间线:\\n- 22:25 Redis Cluster slot migration began\\n- 22:27 pay-gw received ASK redirects\\n- 22:28 go-redis/v9 client bug blocked on ASK handling\\n- 22:30 Connection pool exhausted, cascade to order-svc/inv-svc\\n\\n根因: pay-gw go-redis/v9 v9.0.47 has known issue #2341 where ASK response blocks instead of async retry.\\n\\n修复建议:\\n1. Upgrade to v9.0.51+\\n2. Increase connection pool max-active to 200\\n3. Move Redis maintenance window to 02:00-04:00\",\"reasoning\":\"Analysis complete after %d rounds.\"}"
-			return &gochatcore.Response{Content: fmt.Sprintf(answerA, iterCount)}, nil
+			return &gochatcore.Response{Content: "## 根因分析报告\n\n故障时间线:\n- 22:25 Redis Cluster slot migration began\n- 22:27 pay-gw received ASK redirects\n- 22:28 go-redis/v9 client bug blocked on ASK handling\n- 22:30 Connection pool exhausted, cascade to order-svc/inv-svc\n\n根因: pay-gw go-redis/v9 v9.0.47 has known issue #2341 where ASK response blocks instead of async retry.\n\n修复建议:\n1. Upgrade to v9.0.51+\n2. Increase connection pool max-active to 200\n3. Move Redis maintenance window to 02:00-04:00"}, nil
 		default:
-			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"Done.\"}"}, nil
+			return &gochatcore.Response{Content: "Done."}, nil
 		}
 	}, &intMockTool{name: "web_search"}, &intMockTool{name: "web_fetch"}, &intMockTool{name: "bash"})
 
@@ -225,16 +224,12 @@ func TestIntegration_SlidingWindow_MultiRoundComplexAnalysis(t *testing.T) {
 	t.Logf("Iterations: %d, Messages=%d, Tokens=%d/%d, Ratio=%.3f",
 		result.TotalIterations, cw.MessageCount(), cw.TokensUsed, cw.MaxTokens, cw.UsageRatio())
 
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 	teCount := collector.countByType(core.ToolExecEnd)
-	t.Logf("ActionStart=%d, ToolExecStart=%d, ToolExecEnd=%d", asCount, tsCount, teCount)
+	t.Logf("ToolExecStart=%d, ToolExecEnd=%d", tsCount, teCount)
 
 	if result.TotalIterations < 4 {
 		t.Errorf("expected >= 4 iterations (3 tool rounds + 1 answer), got %d", result.TotalIterations)
-	}
-	if asCount < 3 {
-		t.Errorf("expected >=3 ActionStart (one per tool iteration), got %d", asCount)
 	}
 	if tsCount < 3 {
 		t.Errorf("expected >=3 ToolExecStart, got %d", tsCount)
@@ -244,18 +239,6 @@ func TestIntegration_SlidingWindow_MultiRoundComplexAnalysis(t *testing.T) {
 	}
 	if cw.MessageCount() < 4 {
 		t.Errorf("Messages=%d below MinPreserveMessages=4 threshold", cw.MessageCount())
-	}
-
-	actionStarts := collector.getByType(core.ActionStart)
-	for i, as := range actionStarts {
-		data := as.Data.(core.ActionStartData)
-		t.Logf("  ActionStart[%d]: Iter=%d, Tools=%d, Names=%v", i, data.Iteration, data.ToolCount, data.ToolNames)
-		if data.ToolCount <= 0 {
-			t.Errorf("ActionStart[%d]: ToolCount should be >0, got %d", i, data.ToolCount)
-		}
-		if len(data.ToolNames) == 0 {
-			t.Errorf("ActionStart[%d]: ToolNames should not be empty", i)
-		}
 	}
 }
 
@@ -278,7 +261,7 @@ func TestIntegration_SlidingWindow_MultipleSlides_MessageCorrectness(t *testing.
 				ToolCalls: []gochatcore.ToolCall{{Name: "web_search", Arguments: "{\"query\":\"microservices " + topic + " best practices 2024\"}"}},
 			}}, nil
 		}
-		return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"Based on 7 rounds of analysis, here is the complete microservices migration roadmap with code examples for each area.\"}"}, nil
+		return &gochatcore.Response{Content: "Based on 7 rounds of analysis, here is the complete microservices migration roadmap with code examples for each area."}, nil
 	}, &intMockTool{name: "web_search"})
 
 	maxTokens := int64(800)
@@ -299,12 +282,6 @@ func TestIntegration_SlidingWindow_MultipleSlides_MessageCorrectness(t *testing.
 
 	if cw.MessageCount() < 4 {
 		t.Errorf("MessageCount=%d < MinPreserve=4 after sliding", cw.MessageCount())
-	}
-
-	asCount := collector.countByType(core.ActionStart)
-	t.Logf("ActionStart events collected: %d", asCount)
-	if asCount < 5 {
-		t.Errorf("expected >=5 ActionStart for 7+ LLM calls with tools, got %d", asCount)
 	}
 
 	msgs := cw.GetMessages()
@@ -341,9 +318,9 @@ func TestIntegration_Permission_AllowThenExecute(t *testing.T) {
 				ToolCalls: []gochatcore.ToolCall{{Name: "bash", Arguments: "{\"cmd\":\"kubectl exec deployment/api-server -n staging -- /app/smoke-test\"}"}},
 			}}, nil
 		case 3:
-			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"## Staging Deployment Report\\n\\nDeployed: staging-03, image latest, rolling update, took 47s.\\nSmoke Test: Health PASS, DB PASS, Redis PASS, Auth PASS, Cache 90%.\\nTraffic switched to new version. Rollback ready: kubectl rollout undo deployment/api-server -n staging\"}"}, nil
+			return &gochatcore.Response{Content: "## Staging Deployment Report\n\nDeployed: staging-03, image latest, rolling update, took 47s.\nSmoke Test: Health PASS, DB PASS, Redis PASS, Auth PASS, Cache 90%.\nTraffic switched to new version. Rollback ready: kubectl rollout undo deployment/api-server -n staging"}, nil
 		default:
-			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"Done.\"}"}, nil
+			return &gochatcore.Response{Content: "Done."}, nil
 		}
 	}, &intMockTool{name: "deploy"}, &intMockTool{name: "bash"})
 
@@ -381,11 +358,6 @@ func TestIntegration_Permission_AllowThenExecute(t *testing.T) {
 		t.Error("Final answer should confirm smoke test passed")
 	}
 
-	actionStarts := collector.getByType(core.ActionStart)
-	for i, as := range actionStarts {
-		data := as.Data.(core.ActionStartData)
-		t.Logf("  ActionStart[%d]: Iter=%d, Tools=%d, Names=%v", i, data.Iteration, data.ToolCount, data.ToolNames)
-	}
 }
 
 // ============================================================================
@@ -407,7 +379,7 @@ func TestIntegration_Permission_Deny(t *testing.T) {
 		}
 		// After seeing the denial feedback, produce an answer to terminate
 		return &gochatcore.Response{
-			Content: `{"decision":"answer","final_answer":"FLUSHALL已被权限系统拒绝，未执行任何操作。","reasoning":"高危操作已被拒绝"}`,
+			Content: "FLUSHALL已被权限系统拒绝，未执行任何操作。",
 		}, nil
 	}, &intMockTool{name: "bash"})
 
@@ -463,7 +435,7 @@ func (h *denyBashChecker) CheckPermissions(ctx *core.ToolUseContext) core.Permis
 // ============================================================================
 // SCENARIO H: Tool Execution Error — Sync Tool Returns Error
 // 场景：工具执行过程中出现运行时错误（网络超时、文件不存在等）
-// 验证：ToolExecEnd 发射携带错误信息、ActionEnd 错误计数正确、Observe 产生错误观测
+// 验证：ToolExecEnd 发射携带错误信息、Observe 产生错误观测
 // ============================================================================
 
 func TestIntegration_ToolExecError_SyncTool(t *testing.T) {
@@ -479,7 +451,7 @@ func TestIntegration_ToolExecError_SyncTool(t *testing.T) {
 		}
 		// After the error is fed back, produce an answer to terminate
 		return &gochatcore.Response{
-			Content: `{"decision":"answer","final_answer":"检查失败：/etc/hosts 文件访问被拒绝，权限不足或文件不存在。"}`,
+			Content: "检查失败：/etc/hosts 文件访问被拒绝，权限不足或文件不存在。",
 		}, nil
 	}, &intErrorTool{name: "file_check"})
 
@@ -518,16 +490,6 @@ func TestIntegration_ToolExecError_SyncTool(t *testing.T) {
 		}
 	}
 
-	// ActionEnd should reflect the failure (0/1 success)
-	aeEvents := collector.getByType(core.ActionEnd)
-	if len(aeEvents) > 0 {
-		data := aeEvents[0].Data.(core.ActionEndData)
-		t.Logf("  ActionEnd: Total=%d, Success=%d, Failed=%d", data.TotalTools, data.SuccessCount, data.FailedCount)
-		if data.FailedCount != 1 {
-			t.Errorf("Expected FailedCount=1, got %d", data.FailedCount)
-		}
-	}
-
 	// Should complete in 2 iterations: tool error → answer
 	if result.TotalIterations != 2 {
 		t.Errorf("Expected 2 iterations (error + answer), got %d", result.TotalIterations)
@@ -554,9 +516,9 @@ func (t *intErrorTool) Execute(ctx context.Context, params map[string]any) (any,
 }
 
 // ============================================================================
-// SCENARIO I: Empty ToolCalls — DecisionAct With No Tools Falls Back to Answer
-// 场景：LLM 返回 decision=act 但没有 tool_calls
-// 验证：系统不崩溃、回退到 answer、没有工具执行事件
+// SCENARIO I: Empty ToolCalls — LLM Answers Without Tools
+// 场景：LLM 直接回答，没有 tool_calls
+// 验证：系统不崩溃、没有工具执行事件
 // ============================================================================
 
 func TestIntegration_EmptyToolCalls_Fallback(t *testing.T) {
@@ -564,7 +526,7 @@ func TestIntegration_EmptyToolCalls_Fallback(t *testing.T) {
 
 	r, _, collector := newIntTestReactor(func(ctx context.Context, input reactor.CallInput) (*gochatcore.Response, error) {
 		return &gochatcore.Response{
-			Content: `{"decision":"act","reasoning":"User just wants a greeting, no tools needed","final_answer":"你好！今天有什么可以帮你的？"}`,
+			Content: "你好！今天有什么可以帮你的？",
 		}, nil
 	})
 
@@ -616,7 +578,7 @@ func TestIntegration_Clarify_AmbiguousInputThenContinue(t *testing.T) {
 	r, _, collector := newIntTestReactor(func(ctx context.Context, input reactor.CallInput) (*gochatcore.Response, error) {
 		round++
 		if round == 1 {
-			return &gochatcore.Response{Content: "{\"decision\":\"clarify\",\"clarification_question\":\"您说'登录有问题'需要更多细节：A)页面打不开/白屏 B)正确密码提示错误 C)登录后立即被踢出 D)手机号收不到验证码。请选字母或补充信息。\"}"}, nil
+			return &gochatcore.Response{Content: "我需要更多信息来帮助您解决登录问题。"}, nil
 		}
 		if round == 2 {
 			return &gochatcore.Response{Message: gochatcore.Message{
@@ -626,8 +588,7 @@ func TestIntegration_Clarify_AmbiguousInputThenContinue(t *testing.T) {
 				},
 			}}, nil
 		}
-		answerE := "{\"decision\":\"answer\",\"final_answer\":\"## 登录问题根因\\n\\n选项B确认：正确密码但提示错误。\\n\\n根因：src/services/auth/login.go:142 密码哈希比较使用了==而非ConstantTimeCompare，且编码不一致(hex vs raw bytes)。\\n\\n修复：使用crypto/subtle.ConstantTimeCompare并统一编码格式。\\n验证：dev环境测试账号登录，检查无password mismatch日志，10次压测session稳定。\"}"
-		return &gochatcore.Response{Content: answerE}, nil
+		return &gochatcore.Response{Content: "## 登录问题根因\n\n选项B确认：正确密码但提示错误。\n\n根因：src/services/auth/login.go:142 密码哈希比较使用了==而非ConstantTimeCompare，且编码不一致(hex vs raw bytes)。\n\n修复：使用crypto/subtle.ConstantTimeCompare并统一编码格式。\n验证：dev环境测试账号登录，检查无password mismatch日志，10次压测session稳定。"}, nil
 	}, &intMockTool{name: "read_file"}, &intMockTool{name: "bash"})
 
 	result1, err := r.Run(context.Background(), ambiguousInput, nil)
@@ -670,7 +631,7 @@ func TestIntegration_Clarify_AmbiguousInputThenContinue(t *testing.T) {
 // ============================================================================
 // SCENARIO E: Multi-Agent Delegation — Parent Spawns Child Tasks
 // 场景：SaaS平台全面安全审计（依赖CVE/认证授权/API注入/基础设施4个子任务）
-// 验证：父Agent发起多次SubAgent调用、每次ActionStart包含subagent工具名、最终聚合报告
+// 验证：父Agent发起多次SubAgent调用、每次ToolExecStart包含subagent工具名、最终聚合报告
 // ============================================================================
 
 func TestIntegration_SubAgent_MultiAgentSecurityAudit(t *testing.T) {
@@ -693,9 +654,9 @@ func TestIntegration_SubAgent_MultiAgentSecurityAudit(t *testing.T) {
 				ToolCalls: []gochatcore.ToolCall{{Name: "subagent", Arguments: "{\"task_id\":\"child-infrascan\",\"agent_name\":\"infra-auditor\",\"description\":\"Audit TLS certs, K8s RBAC, VPC ACLs, WAF rules\"}"}},
 			}}, nil
 		case 4:
-			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"# SaaS Platform Security Audit Report\\n\\nOverall Risk: MEDIUM-HIGH\\n\\n## 1. Dependency Vulnerabilities\\nFound 47 issues (3 CRITICAL, 5 HIGH). Top: CVE-2024-1234 lodash.prototype.polluted, CVE-2024-5678 express-jwt weak key entropy.\\n\\n## 2. Auth Security\\nFound 27 issues (1 CRITICAL, 3 HIGH). Session fixation risk, JWT none algorithm accepted.\\n\\n## 3. Infra Security\\nFound 19 issues (0 CRITICAL, 2 HIGH). TLS 1.0 enabled on ingress, missing CSP headers.\\n\\n## Summary Matrix\\n| Category | Critical | High | Medium | Low | Total |\\n|----------|----------|------|--------|-----|-------|\\n| Deps      | 2        | 5    | 12     | 28  | 47    |\\n| Code     | 1        | 3    | 8      | 15  | 27    |\\n| Infra     | 0        | 2    | 6      | 11  | 19    |\\n| Total    | 3        | 10   | 26     | 54  | 93    |\\n\\nTop 5 Fixes:\\n1. Upgrade lodash to v4.17.21\\n2. Switch JWT to RS256\\n3. Regenerate session ID after login\\n4. Disable TLSv1.0/1.1 on K8s ingress\\n5. Add Content-Security-Policy headers\"}"}, nil
+			return &gochatcore.Response{Content: "# SaaS Platform Security Audit Report\n\nOverall Risk: MEDIUM-HIGH\n\n## 1. Dependency Vulnerabilities\nFound 47 issues (3 CRITICAL, 5 HIGH). Top: CVE-2024-1234 lodash.prototype.polluted, CVE-2024-5678 express-jwt weak key entropy.\n\n## 2. Auth Security\nFound 27 issues (1 CRITICAL, 3 HIGH). Session fixation risk, JWT none algorithm accepted.\n\n## 3. Infra Security\nFound 19 issues (0 CRITICAL, 2 HIGH). TLS 1.0 enabled on ingress, missing CSP headers.\n\n## Summary Matrix\n| Category | Critical | High | Medium | Low | Total |\n|----------|----------|------|--------|-----|-------|\n| Deps      | 2        | 5    | 12     | 28  | 47    |\n| Code     | 1        | 3    | 8      | 15  | 27    |\n| Infra     | 0        | 2    | 6      | 11  | 19    |\n| Total    | 3        | 10   | 26     | 54  | 93    |\n\nTop 5 Fixes:\n1. Upgrade lodash to v4.17.21\n2. Switch JWT to RS256\n3. Regenerate session ID after login\n4. Disable TLSv1.0/1.1 on K8s ingress\n5. Add Content-Security-Policy headers"}, nil
 		default:
-			return &gochatcore.Response{Content: "{\"decision\":\"answer\",\"final_answer\":\"Done.\"}"}, nil
+			return &gochatcore.Response{Content: "Done."}, nil
 		}
 	}, &intMockTool{name: "subagent"})
 
@@ -713,12 +674,8 @@ func TestIntegration_SubAgent_MultiAgentSecurityAudit(t *testing.T) {
 	if result.TotalIterations < 3 {
 		t.Errorf("expected >=3 iterations (3 subagent + answer), got %d", result.TotalIterations)
 	}
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
-	t.Logf("ActionStart=%d, ToolExecStart=%d", asCount, tsCount)
-	if asCount != 3 {
-		t.Errorf("expected 3 ActionStart (one per subagent iteration), got %d", asCount)
-	}
+	t.Logf("ToolExecStart=%d", tsCount)
 	if tsCount != 3 {
 		t.Errorf("expected 3 ToolExecStart (one subagent call each), got %d", tsCount)
 	}
@@ -726,17 +683,6 @@ func TestIntegration_SubAgent_MultiAgentSecurityAudit(t *testing.T) {
 		t.Error("Final answer should contain aggregated summary from child audits")
 	}
 
-	actionStarts := collector.getByType(core.ActionStart)
-	for i, as := range actionStarts {
-		data := as.Data.(core.ActionStartData)
-		t.Logf("  SubAgent[%d]: Iter=%d, Tools=%d, Names=%v", i, data.Iteration, data.ToolCount, data.ToolNames)
-		if data.ToolNames[0] != "subagent" {
-			t.Errorf("SubAgent[%d]: expected tool='subagent', got %v", i, data.ToolNames)
-		}
-		if data.ToolCount != 1 {
-			t.Errorf("SubAgent[%d]: expected 1 tool per delegation, got %d", i, data.ToolCount)
-		}
-	}
 }
 
 // ============================================================================
@@ -768,8 +714,7 @@ func TestIntegration_MixedPath_KubernetesTroubleshooting(t *testing.T) {
 				ToolCalls: []gochatcore.ToolCall{{Name: "bash", Arguments: "{\"cmd\":\"kubectl exec -n monitoring prometheus-0 -- du -sh /prometheus/wal\"}"}},
 			}}, nil
 		default:
-			answerF := "{\"decision\":\"answer\",\"final_answer\":\"# K8s集群故障关联性分析与修复优先级\\n\\n## 问题关联链\\ningress-nginx OOMKill → 重启风暴 → DNS缓存失效 → coredns延迟↑ → prometheus抓取失败 → WAL堆积 → disk pressure\\n\\n## 修复优先级\\nP0 (立即): 扩容ingress-nginx memory limit 512Mi→2Gi\\nP1 (1h内): 清理prometheus WAL (wal-compression + compact)\\nP2 (今日): 增加node disk capacity或设置 eviction soft threshold\\nP3 (本周): coredns autoscaling + local cache tuning\\n\\n## 根因\\ningress-nginx内存泄漏(v1.9.3 known bug #12345)，每次请求泄露~4KB，在高QPS下约2小时触OOM。\"}"
-			return &gochatcore.Response{Content: answerF}, nil
+			return &gochatcore.Response{Content: "# K8s集群故障关联性分析与修复优先级\n\n## 问题关联链\ningress-nginx OOMKill → 重启风暴 → DNS缓存失效 → coredns延迟↑ → prometheus抓取失败 → WAL堆积 → disk pressure\n\n## 修复优先级\nP0 (立即): 扩容ingress-nginx memory limit 512Mi→2Gi\nP1 (1h内): 清理prometheus WAL (wal-compression + compact)\nP2 (今日): 增加node disk capacity或设置 eviction soft threshold\nP3 (本周): coredns autoscaling + local cache tuning\n\n## 根因\ningress-nginx内存泄漏(v1.9.3 known bug #12345)，每次请求泄露~4KB，在高QPS下约2小时触OOM。"}, nil
 		}
 	}, &intMockTool{name: "bash"}, &intMockTool{name: "read_file"})
 
@@ -787,13 +732,9 @@ func TestIntegration_MixedPath_KubernetesTroubleshooting(t *testing.T) {
 	if result.TotalIterations < 4 {
 		t.Errorf("expected >=4 iterations (3 tool rounds + 1 answer), got %d", result.TotalIterations)
 	}
-	asCount := collector.countByType(core.ActionStart)
 	tsCount := collector.countByType(core.ToolExecStart)
 	teCount := collector.countByType(core.ToolExecEnd)
-	t.Logf("ActionStart=%d, ToolExecStart=%d, ToolExecEnd=%d", asCount, tsCount, teCount)
-	if asCount < 3 {
-		t.Errorf("expected >=3 ActionStart, got %d", asCount)
-	}
+	t.Logf("ToolExecStart=%d, ToolExecEnd=%d", tsCount, teCount)
 	if tsCount != teCount {
 		t.Errorf("ToolExecStart(%d) != ToolExecEnd(%d)", tsCount, teCount)
 	}

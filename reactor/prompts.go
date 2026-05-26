@@ -36,7 +36,7 @@ Can I complete this with current info/tools/skills?
 ### P3: Loop Hygiene (Self-Monitoring)
 - **Progress awareness**: Track what's done vs remaining across cycles.
 - **Stuck detection**: If 2+ rounds with no meaningful progress → change approach or escalate.
-- **Quality bar**: Don't set is_final:true until output meets quality standards.
+- **Quality bar**: Change strategy if 2+ rounds of tool calls show no progress.
 - **No repeated failures**: Same tool+params failing twice? → try different approach, don't retry same thing.`
 }
 

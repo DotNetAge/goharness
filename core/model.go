@@ -28,7 +28,7 @@ type ModelConfig struct {
 	RepetitionPenalty float64 `json:"repetition_penalty" yaml:"repetition_penalty"` // repetition penalty
 	FrequencyPenalty  float64 `json:"frequency_penalty" yaml:"frequency_penalty"`   // frequency penalty (reduces exact token repetition)
 	Enabled           bool    `json:"enabled" yaml:"enabled"`                       // whether the model is enabled (API key configured)
-	MaxTurns          int     `json:"max_turns" yaml:"max_turns"`                   // maximum T-A-O loop iterations (0 = use reactor default)
+	MaxTurns          int     `json:"max_turns" yaml:"max_turns"`                   // maximum Think-Act loop iterations (0 = use reactor default)
 }
 
 func (m *ModelConfig) Config() *core.Config {

@@ -1,11 +1,11 @@
-// Package reactor implements the Think-Act-Observe (T-A-O) execution engine
+// Package reactor implements the Think-Act execution engine
 // with progressive disclosure and multi-agent coordination.
 //
 // Reactor is organized into three logical domains:
 //
 //   RegistryHub    — Tool, skill, intent, and rule registries + executor
 //   SessionManager — Context window, session store, slide configuration
-//   TAOExecutor    — Think → Act → Observe phase execution
+//   ThinkExecutor  — Think → Act loop execution
 //
 // These interfaces are satisfied by the *Reactor struct and used to
 // decompose the god object into focused contracts.
@@ -25,11 +25,8 @@ const (
 	PriorityPermission        = 41
 	PriorityThoughtEvent      = 42
 	PriorityToolEvent         = 43
-	PriorityObservationEvent  = 44
 	PriorityThoughtLogger     = 45
 	PriorityToolLogger        = 46
-	PriorityObservationLogger = 47
-	PriorityBudget            = 48
 	PriorityConvergence       = 49
 )
 
@@ -75,15 +72,6 @@ type ToolHook interface {
 	Abort(ctx *ReactContext, reason string)
 }
 
-// ObservationHook 观察阶段钩子。
-// 没有 Before 方法——观察是 post-hoc 分析。
-// After 在观察结论产生后执行，可修改 Observation 并判定终止。
-type ObservationHook interface {
-	Priority() int
-	After(ctx *ReactContext, obs *Observation) HookResult
-	Abort(ctx *ReactContext, reason string)
-}
-
 // ── 原有接口 ────────────────────────────────────────────────────────────────
 
 // RegistryHub defines the contract for accessing tool, skill, and rule registries.
@@ -114,7 +102,6 @@ type RegistryHub interface {
 // The session manager is responsible for:
 //   - Maintaining the sliding context window within token limits
 //   - Persisting conversation history to the session store
-//   - Estimating token counts for content strings
 //   - Configuring slide behavior when context exceeds limits
 type SessionManager interface {
 	// SessionStore returns the backing store for conversation persistence.
@@ -128,21 +115,17 @@ type SessionManager interface {
 
 	// SlideConfig returns the current sliding window configuration.
 	SlideConfig() core.SlideConfig
-
-	// EstimateTokens estimates the number of tokens in the given content string.
-	EstimateTokens(content string) int
 }
 
-// TAOExecutor defines the contract for executing the Think-Act-Observe cycle.
+// ThinkExecutor defines the contract for executing the Think-Act loop.
 //
-// Each method corresponds to one phase of the T-A-O loop:
-//   - Think: Call LLM and parse response into a Thought
-//   - Act: Execute the decision from Thought (tool calls or answer)
-//   - Observe: Evaluate results and determine next action
+// The loop alternates between two phases:
+//   - Think: Call LLM, derive a Thought with optional ToolCalls
+//   - Act: Execute ToolCalls or produce the final answer
 //
 // Think returns a TokenUsage with full token breakdown and any error.
-// Act and Observe return error only.
-type TAOExecutor interface {
+// Act returns error only.
+type ThinkExecutor interface {
 	// Think executes the thinking phase: calls LLM, parses response into Thought.
 	// Returns full token usage breakdown and any error.
 	Think(ctx *ReactContext) (core.TokenUsage, error)
@@ -150,10 +133,8 @@ type TAOExecutor interface {
 	// Act executes the action phase: performs tool calls or generates answer based on Thought.
 	Act(ctx *ReactContext) error
 
-	// Observe executes the observation phase: evaluates Action results, checks termination conditions.
-	Observe(ctx *ReactContext) error
 }
 
 var _ RegistryHub = (*Reactor)(nil)
 var _ SessionManager = (*Reactor)(nil)
-var _ TAOExecutor = (*Reactor)(nil)
+var _ ThinkExecutor = (*Reactor)(nil)

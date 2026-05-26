@@ -46,7 +46,7 @@ func TestEventBus_FilteredSubscribe(t *testing.T) {
 	defer cancel()
 
 	bus.Emit(core.NewReactEvent("s", "main", "", core.ThinkingDelta, "skip"))
-	bus.Emit(core.NewReactEvent("s", "task_1", "main", core.ActionStart, core.ActionStartData{ToolCount: 1, ToolNames: []string{"Grep"}}))
+	bus.Emit(core.NewReactEvent("s", "task_1", "main", core.ThinkingDelta, "hello from task_1"))
 
 	select {
 	case received := <-ch:
@@ -183,7 +183,7 @@ func TestReactContext_EmitEvent(t *testing.T) {
 	defer bus.Close()
 
 	ch, cancel := bus.SubscribeFiltered(func(e core.ReactEvent) bool {
-		return e.Type == core.ActionStart
+		return e.Type == core.ToolExecStart
 	})
 	defer cancel()
 
@@ -191,14 +191,14 @@ func TestReactContext_EmitEvent(t *testing.T) {
 	ctx.emitEvent = bus.Emit
 
 	// Emit through context
-	ctx.EmitEvent(core.ActionStart, core.ActionStartData{ToolCount: 1, ToolNames: []string{"Read"}})
+	ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{ToolName: "Read", Params: map[string]any{"path": "test"}})
 	ctx.EmitEvent(core.ThinkingDelta, "should be filtered")
 
 	select {
 	case ev := <-ch:
-		data := ev.Data.(core.ActionStartData)
-		if len(data.ToolNames) != 1 || data.ToolNames[0] != "Read" {
-			t.Errorf("expected tool Read, got %v", data.ToolNames)
+		data := ev.Data.(core.ToolExecStartData)
+		if data.ToolName != "Read" {
+			t.Errorf("expected tool Read, got %v", data.ToolName)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout")
@@ -209,7 +209,7 @@ func TestReactContext_EmitEvent_NilBus(t *testing.T) {
 	// Should not panic when emitEvent is nil
 	ctx := NewReactContext(context.Background(), "test", nil, 10)
 	ctx.emitEvent = nil // explicitly nil
-	ctx.EmitEvent(core.ActionStart, "test") // should be no-op
+	ctx.EmitEvent(core.ThinkingDelta, "test") // should be no-op
 }
 
 func TestReactEventTypes(t *testing.T) {
@@ -217,16 +217,11 @@ func TestReactEventTypes(t *testing.T) {
 	types := map[core.ReactEventType]bool{
 		core.ThinkingDelta:   false,
 		core.ThinkingDone:    false,
-		core.ActionStart:     false,
-		core.ActionProgress:  false,
 		core.ToolExecStart:   false,
 		core.ToolExecEnd:     false,
-		core.ActionEnd:       false,
-		core.ObservationDone: false,
 		core.SubtaskSpawned:  false,
 		core.SubtaskCompleted: false,
 		core.FinalAnswer:     false,
-		core.ClarifyNeeded:   false,
 		core.Error:           false,
 		core.CycleEnd:        false,
 	}

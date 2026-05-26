@@ -65,7 +65,7 @@ type ToolUseContext struct {
 	// Params are the original parameters provided by the LLM.
 	Params map[string]any
 
-	// Iteration is the current T-A-O cycle number.
+	// Iteration is the current Think-Act cycle number.
 	Iteration int
 
 	// Ctx is the context.Context for cancellation support.

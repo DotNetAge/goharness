@@ -27,8 +27,10 @@ func IsDestructiveLoop(history []Step) bool {
 		return false
 	}
 	tail := history[len(history)-maxDestructiveLoopCount:]
-	firstSig := toolSignature(tail[0])
-	firstErr := tail[0].Observation.Error
+	if len(tail[0].Action.Results) == 0 {
+		return false
+	}
+	firstErr := tail[0].Action.Results[0].Error
 	if firstErr == "" {
 		return false
 	}
@@ -36,10 +38,10 @@ func IsDestructiveLoop(history []Step) bool {
 		if step.Thought.Decision != DecisionAct {
 			return false
 		}
-		if toolSignature(step) != firstSig {
+		if len(step.Action.Results) == 0 || toolSignature(step) != toolSignature(tail[0]) {
 			return false
 		}
-		if step.Observation.Error != firstErr {
+		if step.Action.Results[0].Error != firstErr {
 			return false
 		}
 	}

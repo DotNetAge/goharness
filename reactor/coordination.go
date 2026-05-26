@@ -44,7 +44,7 @@ type CoordState struct {
 	GlobalTimer     *time.Timer
 	Logger          core.Logger
 
-	mu              sync.Mutex
+	mu              sync.RWMutex
 	LifecycleCtx    context.Context
 	LifecycleCancel context.CancelFunc
 	SubTaskCtxs     map[string]context.Context
@@ -82,8 +82,11 @@ func NewCoordState(parentTaskID string, overallTimeout time.Duration, logger cor
 
 	if overallTimeout > 0 {
 		cs.GlobalTimer = time.AfterFunc(overallTimeout, func() {
+			cs.mu.RLock()
+			ch := cs.ControlChan
+			cs.mu.RUnlock()
 			select {
-			case cs.ControlChan <- &core.ControlCommand{Action: core.CmdCancel, Reason: "global timeout exceeded", Timestamp: time.Now()}:
+			case ch <- &core.ControlCommand{Action: core.CmdCancel, Reason: "global timeout exceeded", Timestamp: time.Now()}:
 			default:
 			}
 		})
@@ -323,6 +326,3 @@ func (cs *CoordState) recreateInterruptedSubTaskContexts() {
 	}
 }
 
-// ErrInvalidLifecycleTransition is returned when an attempted lifecycle state
-// transition is not permitted by the state machine rules.
-var ErrInvalidLifecycleTransition = errors.New("invalid lifecycle state transition")

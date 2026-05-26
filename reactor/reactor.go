@@ -109,21 +109,20 @@ type RunResult struct {
 	TotalDuration     time.Duration `json:"total_duration_ms,omitempty" yaml:"total_duration_ms,omitempty"`
 }
 
-// Runner is the public interface for the T-A-O reactor.
+// Runner is the public interface for the reactor loop.
 type Runner interface {
 	Run(ctx context.Context, input string, history ConversationHistory) (*RunResult, error)
 }
 
 var _ Runner = (*Reactor)(nil)
 
-// Reactor is the core T-A-O (Think-Act-Observe) execution engine.
-// It implements the Runner, RegistryHub, SessionManager, and TAOExecutor interfaces.
+// Reactor is the core agent execution engine.
+// It implements the Runner, RegistryHub, SessionManager, and ThinkExecutor interfaces.
 //
-// Reactor orchestrates the complete agent loop:
-//  1. Think: Call LLM with context → parse response into Thought
-//  2. Act: Execute tool calls or generate answer based on Thought
-//  3. Observe: Evaluate results → check termination conditions
-//  4. Repeat until termination or max iterations reached
+// Reactor orchestrates the LLM-driven agent loop:
+//  1. Think: Call LLM with context → derive Thought from native response
+//  2. Act: Execute tool calls or use the raw answer
+//  3. Repeat until LLM answers directly or termination conditions are met
 //
 // Thread Safety:
 //   - Public methods are safe for concurrent use where documented
@@ -133,7 +132,7 @@ var _ Runner = (*Reactor)(nil)
 // Lifecycle:
 //
 //	Created via NewReactor() with ReactorConfig and ReactorOptions.
-//	Use Run() to execute a single user request through the T-A-O loop.
+//	Use Run() to execute a single user request through the agent loop.
 //	Use CloneReactor() to create child reactors for sub-agent delegation.
 type Reactor struct {
 	// config holds the LLM generation parameters and operational settings.
@@ -190,7 +189,7 @@ type Reactor struct {
 
 	// cachedLLMTools caches the LLM-ready tool definitions.
 	// The full tool registry is converted once after all tools are registered
-	// and reused across T-A-O cycles to avoid per-round conversion overhead.
+	// and reused across Think-Act cycles to avoid per-round conversion overhead.
 	// Invalidated when RegisterTool is called after construction.
 	cachedLLMTools []gochatcore.Tool
 	cacheMu        sync.RWMutex
@@ -199,11 +198,6 @@ type Reactor struct {
 	projectDir string // Layer 2: Project working directory (always non-empty after init)
 	sessionDir string // Layer 3: Session working directory
 
-	// contentReplacementState tracks which tool results have been replaced with previews.
-	contentReplacementState *core.ContentReplacementState
-
-	// toolResultBudgetEnforcer applies size limits to tool results (Phase 1: per-tool, Phase 2: aggregate).
-	toolResultBudgetEnforcer *ToolResultBudgetEnforcer
 
 	// asyncToolTimeout is the timeout for async tool execution (default 5 minutes)
 	asyncToolTimeout time.Duration
@@ -213,10 +207,10 @@ type Reactor struct {
 	// Hook 集合 — 构建时按 priority 排序，运行时只读
 	thoughtHooks     []ThoughtHook
 	toolHooks        []ToolHook
-	observationHooks []ObservationHook
 
 	// stuckAnalyzer 检测迭代卡死模式，注入提示或终止循环。
 	stuckAnalyzer    StuckDetector
+	stuckMu          sync.Mutex
 	stuckNudgeCounts map[StuckPattern]int
 }
 
@@ -232,8 +226,6 @@ func (r *Reactor) Prompt() *Prompt { return r.prompt }
 // Logger returns the reactor's logger instance.
 func (r *Reactor) Logger() core.Logger { return r.getLogger() }
 
-// BudgetEnforcer returns the tool result budget enforcer.
-func (r *Reactor) BudgetEnforcer() *ToolResultBudgetEnforcer { return r.toolResultBudgetEnforcer }
 
 // RegisterThoughtHooks appends thought hooks and re-sorts by priority.
 func (r *Reactor) RegisterThoughtHooks(hooks ...ThoughtHook) {
@@ -247,11 +239,6 @@ func (r *Reactor) RegisterToolHooks(hooks ...ToolHook) {
 	sortByPriority(r.toolHooks)
 }
 
-// RegisterObservationHooks appends observation hooks and re-sorts by priority.
-func (r *Reactor) RegisterObservationHooks(hooks ...ObservationHook) {
-	r.observationHooks = append(r.observationHooks, hooks...)
-	sortByPriority(r.observationHooks)
-}
 
 // sortByPriority 是按 priority 排序 hook 切片的泛型辅助函数。
 // 三条 hook 链各自独立调用此函数排序。
@@ -384,31 +371,6 @@ func (r *Reactor) execToolHooksWithAbort(ctx *ReactContext, call toolCall) (ret 
 	return
 }
 
-// execObservationHooksAfter 串行执行所有 ObservationHook.After。
-// Observation hooks can modify the Observation and signal termination.
-func (r *Reactor) execObservationHooksAfter(ctx *ReactContext, obs *Observation) (result HookResult) {
-	defer func() {
-		if p := recover(); p != nil {
-			r.getLogger().Error("observation hook panicked", fmt.Errorf("%v", p))
-			result = HookResult{Error: fmt.Errorf("observation hook panic: %v", p)}
-		}
-	}()
-	for _, h := range r.observationHooks {
-		result = h.After(ctx, obs)
-		if result.IsTerminal() {
-			r.notifyObservationAbort(ctx, result.AbortReason)
-			return result
-		}
-	}
-	return HookResult{}
-}
-
-// notifyObservationAbort notifies all observation hooks in reverse priority order of an abort.
-func (r *Reactor) notifyObservationAbort(ctx *ReactContext, reason string) {
-	for i := len(r.observationHooks) - 1; i >= 0; i-- {
-		r.observationHooks[i].Abort(ctx, reason)
-	}
-}
 
 // getLogger returns the injected Logger or default slog-based logger.
 func (r *Reactor) getLogger() core.Logger {
@@ -428,8 +390,6 @@ type reactorSetup struct {
 	skipAllBundled bool
 	extraTools     []core.FuncTool
 	excludeTools   []string
-	resultLimits   core.ToolResultLimits
-	tokenEstimator core.TokenEstimator
 	eventBus       EventBus
 	skillDirs      []string
 	skills         []string
@@ -451,7 +411,6 @@ type reactorSetup struct {
 	// Hook 注入
 	thoughtHooks     []ThoughtHook
 	toolHooks        []ToolHook
-	observationHooks []ObservationHook
 
 	stuckAnalyzer StuckDetector
 }
@@ -516,11 +475,6 @@ func (r *Reactor) initLLMCaller(config ReactorConfig, setup *reactorSetup) {
 		gochat.WithTimeout(4*time.Minute),
 	)
 
-	estimator := setup.tokenEstimator
-	if estimator == nil {
-		estimator = core.NewTokenEstimator()
-	}
-
 	var llmOpts []LLMCallerOption
 	if setup.sessionStore != nil {
 		llmOpts = append(llmOpts, WithLLMCallerSessionStore(setup.sessionStore))
@@ -539,7 +493,7 @@ func (r *Reactor) initLLMCaller(config ReactorConfig, setup *reactorSetup) {
 		llmOpts = append(llmOpts, WithLLMCallerSlideHandler(core.NewMemorySlideHandler(memForSlide)))
 	}
 
-	r.llmCaller = NewLLMCaller(llmCfg, client, estimator, setup.sessionStore, llmOpts...)
+	r.llmCaller = NewLLMCaller(llmCfg, client, setup.sessionStore, llmOpts...)
 }
 
 func (r *Reactor) discoverAndLoadSkills(setup *reactorSetup) {
@@ -575,7 +529,6 @@ func (r *Reactor) initToolExecutor(setup *reactorSetup) {
 	r.toolExecutor = core.NewToolExecutor(
 		r.toolRegistry,
 		core.WithPermissionChecker(tools.NewFallbackPermissionChecker()),
-		core.WithResultLimits(setup.resultLimits),
 		core.WithEventEmitter(func(e core.ReactEvent) {
 			if r.eventBus != nil {
 				r.eventBus.Emit(e)
@@ -747,24 +700,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	r.initToolExecutor(setup)
 	r.registerBundledTools(setup)
 
-	// Initialize content replacement state and budget enforcer
-	r.contentReplacementState = core.NewContentReplacementState()
-	sessionDir := r.sessionDir
-	if sessionDir == "" && r.fileStore != nil {
-		sessionDir = r.fileStore.GetSessionPath("")
-	}
-	r.toolResultBudgetEnforcer = NewToolResultBudgetEnforcer(
-		core.NewDiskResultPersister(sessionDir),
-		core.DefaultToolResultLimits(),
-		r.contentReplacementState,
-		func(name string) *core.ToolInfo {
-			if t, ok := r.toolRegistry.Get(name); ok {
-				return t.Info()
-			}
-			return nil
-		},
-	)
-
 	for _, tool := range setup.extraTools {
 		if err := r.RegisterTool(tool); err != nil {
 			r.getLogger().Warn("failed to register extra tool", "error", err)
@@ -788,7 +723,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	// 用户 hooks — 通过 Option 追加
 	r.thoughtHooks = append(r.thoughtHooks, setup.thoughtHooks...)
 	r.toolHooks = append(r.toolHooks, setup.toolHooks...)
-	r.observationHooks = append(r.observationHooks, setup.observationHooks...)
 
 	// Auto-register MemoryThoughtHook (read-half of memory closed loop).
 	// Retrieves relevant context from Memory and injects into System Prompt
@@ -806,7 +740,6 @@ func NewReactor(config ReactorConfig, opts ...ReactorOption) *Reactor {
 	// 按 priority 排序（per-chain）
 	sortByPriority(r.thoughtHooks)
 	sortByPriority(r.toolHooks)
-	sortByPriority(r.observationHooks)
 
 	// StuckDetector
 	if setup.stuckAnalyzer != nil {
@@ -827,10 +760,6 @@ func (r *Reactor) FileStore() core.FileStore               { return r.fileStore 
 func (r *Reactor) ContextWindow() *core.ContextWindow      { return r.llmCaller.ContextWindow() }
 func (r *Reactor) SetContextWindow(cw *core.ContextWindow) { r.llmCaller.SetContextWindow(cw) }
 func (r *Reactor) SlideConfig() core.SlideConfig           { return r.llmCaller.SlideConfig() }
-func (r *Reactor) EstimateTokens(content string) int {
-	return r.llmCaller.Estimator().Estimate(content)
-}
-
 // SetModelConfig updates the reactor's LLM configuration at runtime.
 // This propagates model parameters to the LLMCaller and recreates the
 // gochat client when API key or base URL change.
@@ -915,7 +844,7 @@ func (r *Reactor) getLLMTools() []gochatcore.Tool {
 //   - asyncToolTimeout (copied from parent config, can be overridden)
 //
 // Use case: SubAgent creation where the child needs parent's tools/skills/memory
-// but runs its own T-A-O loop with possibly a different model or system prompt.
+// but runs its own Think-Act loop with possibly a different model or system prompt.
 func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 	childConfig := r.config.Merge(configOverride)
 
@@ -934,11 +863,8 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 		eventBus:                 r.eventBus,
 		kvStore:                  r.kvStore,
 		fileStore:                r.fileStore,
-		contentReplacementState:  r.contentReplacementState.Clone(),
-		toolResultBudgetEnforcer: r.toolResultBudgetEnforcer,
 		thoughtHooks:             r.thoughtHooks,
 		toolHooks:                r.toolHooks,
-		observationHooks:         r.observationHooks,
 		stuckAnalyzer:            r.stuckAnalyzer,
 		stuckNudgeCounts:         r.stuckNudgeCounts,
 		asyncToolTimeout:         r.asyncToolTimeout,
@@ -951,7 +877,7 @@ func (r *Reactor) CloneReactor(configOverride ReactorConfig) *Reactor {
 }
 
 // cloneLLMCallerForChild creates a new LLMCaller for CloneReactor,
-// sharing the parent's infrastructure (tokenEstimator, sessionStore, mockLLM)
+// sharing the parent's infrastructure (sessionStore, mockLLM)
 // but with its own client and context window.
 func (r *Reactor) cloneLLMCallerForChild(childConfig ReactorConfig) *LLMCaller {
 	llmCfg := LLMCallerConfig{
@@ -978,11 +904,11 @@ func (r *Reactor) cloneLLMCallerForChild(childConfig ReactorConfig) *LLMCaller {
 		if parentCaller.SessionStore() != nil {
 			llmOpts = append(llmOpts, WithLLMCallerSessionStore(parentCaller.SessionStore()))
 		}
-		return NewLLMCaller(llmCfg, client, parentCaller.Estimator(), parentCaller.SessionStore(), llmOpts...)
+		return NewLLMCaller(llmCfg, client, parentCaller.SessionStore(), llmOpts...)
 	}
 
 	// Fallback: create standalone LLMCaller for child without parent infrastructure
-	return NewLLMCaller(llmCfg, client, nil, nil, llmOpts...)
+	return NewLLMCaller(llmCfg, client, nil, llmOpts...)
 }
 
 func (r *Reactor) Run(ctx context.Context, input string, history ConversationHistory) (*RunResult, error) {
@@ -999,29 +925,31 @@ func (r *Reactor) Run(ctx context.Context, input string, history ConversationHis
 	return r.runLoop(reactCtx, 0, time.Now())
 }
 
-// persistStep records a T-A-O cycle step into history and persistent storage.
-// Uses structured messages (v2 format) instead of XML:
+// persistStep records a cycle step into history and persistent storage.
+// The assistant message preserves the raw LLM content verbatim, with
+// native tool calls attached. This ensures the LLM sees its own exact
+// output in subsequent iterations, improving coherence.
 //
-//	assistant: "Thought: <reasoning>\nDecision: <decision>"
+// Messages stored:
+//
+//	assistant: <raw LLM content>  (+ ToolCalls if tools were used)
 //	tool:      "<tool_name> returned: <result>"     (if tool was called)
 //	tool:      "<tool_name> error: <error>"           (if tool errored)
 func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
-	// Apply budget enforcement before results enter conversation history.
-	// Large results are persisted and replaced with previews (Phase 1),
-	// then aggregate budget is checked (Phase 2).
-	if reactCtx.LastThought.Decision == DecisionAct && r.toolResultBudgetEnforcer != nil {
-		reactCtx.LastAction.Results = r.toolResultBudgetEnforcer.Enforce(
-			reactCtx.LastAction.Results,
+	if reactCtx.LastThought == nil || reactCtx.LastAction == nil {
+		r.getLogger().Warn("persistStep: skipped — LastThought or LastAction is nil",
+			"session_id", r.resolveSessionID(reactCtx),
+			"iteration", reactCtx.CurrentIteration,
 		)
+		return
 	}
 
 	step := Step{
-		Iteration:   reactCtx.CurrentIteration + 1,
-		Thought:     *reactCtx.LastThought,
-		Action:      *reactCtx.LastAction,
-		Observation: *reactCtx.LastObservation,
-		Timestamp:   time.Now(),
-		Duration:    time.Since(cycleStart),
+		Iteration: reactCtx.CurrentIteration + 1,
+		Thought:   *reactCtx.LastThought,
+		Action:    *reactCtx.LastAction,
+		Timestamp: time.Now(),
+		Duration:  time.Since(cycleStart),
 	}
 	reactCtx.AppendHistory(step)
 
@@ -1030,8 +958,7 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 		Duration:  time.Since(cycleStart),
 	})
 
-	// Structured assistant message: thought content with tool calls (required by strict APIs like DeepSeek)
-	thoughtMsg := fmt.Sprintf("Thought: %s\nDecision: %s", reactCtx.LastThought.Reasoning, reactCtx.LastThought.Decision)
+	// Assistant message: raw LLM content with native tool calls
 	var toolCalls []core.ToolCall
 	if reactCtx.LastThought.Decision == DecisionAct && len(reactCtx.LastThought.ToolCallList) > 0 {
 		toolCalls = make([]core.ToolCall, len(reactCtx.LastThought.ToolCallList))
@@ -1044,10 +971,10 @@ func (r *Reactor) persistStep(reactCtx *ReactContext, cycleStart time.Time) {
 			}
 		}
 	}
-	reactCtx.AddMessage("assistant", thoughtMsg, toolCalls...)
+	reactCtx.AddMessage("assistant", reactCtx.LastThought.Content, toolCalls...)
 	assistantMsg := core.Message{
 		Role:      "assistant",
-		Content:   thoughtMsg,
+		Content:   reactCtx.LastThought.Content,
 		Timestamp: time.Now().Unix(),
 		ToolCalls: toolCalls,
 	}
@@ -1099,10 +1026,8 @@ func (r *Reactor) buildResultFromContext(reactCtx *ReactContext, aggregated core
 }
 
 func extractAnswer(reactCtx *ReactContext) string {
+	// DecisionAnswer: the raw LLM Content is the answer (via ToolResult{Result: content})
 	if reactCtx.LastAction != nil && len(reactCtx.LastAction.Results) > 0 {
-		// When the answer comes from a DecisionAnswer action, the result is
-		// stored as ToolResult{ToolName:"answer", Result:text}.  Use the raw
-		// Result directly rather than Summary() which would prefix "[answer]".
 		for _, r := range reactCtx.LastAction.Results {
 			if r.ToolName == "answer" {
 				return r.Result
@@ -1110,11 +1035,9 @@ func extractAnswer(reactCtx *ReactContext) string {
 		}
 		return reactCtx.LastAction.Summary()
 	}
-	if reactCtx.LastThought != nil && reactCtx.LastThought.FinalAnswer != "" {
-		return reactCtx.LastThought.FinalAnswer
-	}
-	if reactCtx.LastObservation != nil && reactCtx.LastObservation.Result != "" {
-		return reactCtx.LastObservation.Result
+	// Fallback: use raw content from Thought
+	if reactCtx.LastThought != nil && reactCtx.LastThought.Content != "" {
+		return reactCtx.LastThought.Content
 	}
 	if reactCtx.TerminationReason != "" {
 		return fmt.Sprintf("<task-terminated>%s</task-terminated>", reactCtx.TerminationReason)
@@ -1226,6 +1149,18 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 	)
 
 	for reactCtx.CurrentIteration < reactCtx.MaxIterations {
+		// 上下文取消检查 — 防止取消后继续执行 Think/Act
+		if err := reactCtx.Ctx().Err(); err != nil {
+			reactCtx.TerminationReason = fmt.Sprintf("context_cancelled: %v", err)
+			reactCtx.IsTerminated = true
+			r.getLogger().Info("run loop terminated — context cancelled",
+				"session_id", sessionID,
+				"iteration", reactCtx.CurrentIteration+1,
+				"error", err,
+			)
+			break
+		}
+
 		// TerminationReason 由 hook (PreCheckHook / ConvergenceHook) 设置
 		if reactCtx.TerminationReason != "" {
 			reactCtx.IsTerminated = true
@@ -1256,7 +1191,7 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			r.abortCycle(reactCtx, "think", err, cycleStart, cycleNum, sessionID)
 			break
 		}
-		// PreCheckHook 中止（ctx cancelled/已达上限）→ 跳过 Act/Observe
+		// PreCheckHook/ConvergenceHook 中止 → 跳过 Act
 		if reactCtx.TerminationReason != "" {
 			reactCtx.IsTerminated = true
 			r.getLogger().Info("run loop terminated",
@@ -1271,19 +1206,51 @@ func (r *Reactor) runLoop(reactCtx *ReactContext, initialTokens int, runStart ti
 			break
 		}
 
-		if err := r.Observe(reactCtx); err != nil {
-			r.abortCycle(reactCtx, "observe", err, cycleStart, cycleNum, sessionID)
-			break
-		}
-
 		r.persistStep(reactCtx, cycleStart)
 		reactCtx.CurrentIteration++
+
+		// LLM 没有调用工具 → 直接回答了 → 自然终止
+		// 判断依据是 LLM 原生的 finish_reason 信号（与 OpenCode/ClaudeCode 一致）：
+		//   "end_turn"/"stop"       → LLM 主动回答
+		//   "max_tokens"/"length"   → 达到 token 上限截断
+		//   无 finish_reason        → 降级检查 len(ToolCalls) == 0（兼容旧 provider）
+		if reactCtx.LastThought != nil {
+			fr := reactCtx.LastThought.FinishReason
+			isToolUse := fr == "tool_use" || fr == "tool_calls"
+			if !isToolUse && len(reactCtx.LastThought.ToolCalls) == 0 {
+				reason := "direct_answer"
+				switch fr {
+				case "max_tokens", "length":
+					reason = "max_tokens"
+				}
+				reactCtx.TerminationReason = reason
+				reactCtx.IsTerminated = true
+				r.getLogger().Info("run loop terminated",
+					"session_id", sessionID,
+					"iteration", cycleNum,
+					"finish_reason", fr,
+					"reason", reason,
+				)
+				break
+			}
+		}
 
 		r.getLogger().Info("cycle end",
 			"session_id", sessionID,
 			"iteration", cycleNum,
 			"elapsed_ms", time.Since(cycleStart).Milliseconds(),
 			"input_tokens", cycleUsage.InputTokens,
+		)
+	}
+
+	// 循环因 MaxIterations 自然退出 → 设置终止原因
+	if reactCtx.TerminationReason == "" {
+		reactCtx.TerminationReason = "max_iterations"
+		reactCtx.IsTerminated = true
+		r.getLogger().Info("run loop terminated — max iterations reached",
+			"session_id", sessionID,
+			"iterations", reactCtx.CurrentIteration,
+			"max_iterations", reactCtx.MaxIterations,
 		)
 	}
 

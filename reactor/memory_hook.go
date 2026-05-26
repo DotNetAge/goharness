@@ -32,7 +32,7 @@ func NewMemoryThoughtHook(mem core.Memory) *MemoryThoughtHook {
 }
 
 // Priority returns 50 — runs after all user hooks (0-39) and other built-in
-// hooks (40-49) but before convergence check (49) in the thought chain.
+// hooks (40-49) and after convergence check (49) in the thought chain.
 // This ensures memory context is available during the LLM call.
 func (h *MemoryThoughtHook) Priority() int { return 50 }
 

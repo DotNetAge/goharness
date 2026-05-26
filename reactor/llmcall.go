@@ -24,17 +24,19 @@ type CallInput struct {
 	Tools                []gochatcore.Tool    // native function calling tools (full schema, stable)
 }
 
-// CallResult holds the response, native tool calls, and token usage from a single LLM call.
+// CallResult holds the response, native tool calls, finish reason, and token usage from a single LLM call.
 //
 // Content contains the text response — this is always populated.
 // ToolCalls contains native function calling results from the LLM (non-streaming path only).
 // When ToolCalls is non-empty, callers should prefer it over text-based tool call parsing.
+// FinishReason is the native stop_reason from the LLM API ("stop", "tool_calls", "end_turn", "tool_use", "length", "max_tokens", etc.).
 type CallResult struct {
-	Content    string
-	ToolCalls  []gochatcore.ToolCall // native function call results (non-streaming) or nil
-	TokenUsage core.TokenUsage
-	Error      error // non-nil when the LLM call itself failed (network, auth, timeout, etc.)
-	TimedOut   bool  // true when the call was cancelled due to streamTimeout
+	Content      string
+	ToolCalls    []gochatcore.ToolCall // native function call results (non-streaming) or nil
+	FinishReason string                // native stop_reason from LLM API
+	TokenUsage   core.TokenUsage
+	Error        error // non-nil when the LLM call itself failed (network, auth, timeout, etc.)
+	TimedOut     bool  // true when the call was cancelled due to streamTimeout
 }
 
 // StreamChunkCallback is called for each content chunk during streaming.
@@ -75,7 +77,6 @@ type LLMCaller struct {
 
 	// Infrastructure
 	client         gochat.ClientBuilder
-	tokenEstimator core.TokenEstimator
 	contextWindow  *core.ContextWindow
 	slideConfig    core.SlideConfig
 	sessionStore   core.SessionStore
@@ -113,7 +114,6 @@ type LLMCallerConfig struct {
 func NewLLMCaller(
 	cfg LLMCallerConfig,
 	client gochat.ClientBuilder,
-	tokenEstimator core.TokenEstimator,
 	sessionStore core.SessionStore,
 	opts ...LLMCallerOption,
 ) *LLMCaller {
@@ -131,7 +131,6 @@ func NewLLMCaller(
 		maxTokens:        cfg.MaxTokens,
 		clientType:       cfg.ClientType,
 		client:           client,
-		tokenEstimator:   tokenEstimator,
 		slideConfig:      core.DefaultSlideConfig,
 		sessionStore:     sessionStore,
 		logger:           cfg.Logger,
@@ -219,11 +218,6 @@ func (c *LLMCaller) SlideConfig() core.SlideConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.slideConfig
-}
-
-// Estimator returns the underlying token estimator.
-func (c *LLMCaller) Estimator() core.TokenEstimator {
-	return c.tokenEstimator
 }
 
 // SessionStore returns the underlying session store.
@@ -336,7 +330,7 @@ func (c *LLMCaller) Call(ctx context.Context, input CallInput) CallResult {
 //
 // Native tool calls are NOT available in the streaming path (gochat Stream interface
 // does not expose ToolCalls). Tool call parsing in the streaming path relies on
-// text-based extraction via ParseThinkResponse or similar.
+// text-based extraction.
 // For native tool call support, use Call() (non-streaming).
 func (c *LLMCaller) CallStream(ctx context.Context, input CallInput, onChunk StreamChunkCallback, onThinking ...StreamThinkingCallback) (cr CallResult) {
 	return c.CallStreamWithToolDelta(ctx, input, onChunk, onThinking)
@@ -394,7 +388,11 @@ func (c *LLMCaller) callStreamInternal(ctx context.Context, input CallInput, onC
 				toolCalls = resp.Message.ToolCalls
 			}
 		}
-		return c.recordResult(callCtx, input, resp.Content, preciseInput, resp, messages, toolCalls)
+		result := c.recordResult(callCtx, input, resp.Content, preciseInput, resp, messages, toolCalls)
+		if resp != nil {
+			result.FinishReason = resp.FinishReason
+		}
+		return result
 	}
 
 	// 5. Build request and stream
@@ -509,28 +507,9 @@ func (c *LLMCaller) callStreamInternal(ctx context.Context, input CallInput, onC
 		}
 	}
 
-	return c.recordResult(ctx, input, contentBuf.String(), preciseInput, outputTokens, messages, toolCalls, streamUsage)
-}
-
-// ---------------------------------------------------------------------------
-// Token statistics
-// ---------------------------------------------------------------------------
-
-// PreviewTokens estimates the token consumption for a hypothetical call
-// without sending the request.
-func (c *LLMCaller) PreviewTokens(input CallInput) int {
-	messages := c.assembleMessages(input)
-	return c.calcPreciseTokens(messages)
-}
-
-// RemainTokens returns the remaining token capacity of the context window.
-func (c *LLMCaller) RemainTokens() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.contextWindow == nil {
-		return c.maxTokens
-	}
-	return int(c.contextWindow.TokensRemaining())
+	result := c.recordResult(ctx, input, contentBuf.String(), preciseInput, outputTokens, messages, toolCalls, streamUsage)
+	result.FinishReason = stream.Event().FinishReason
+		return result
 }
 
 // AddContextMessage adds a message to the context window token tracking.
@@ -542,40 +521,9 @@ func (c *LLMCaller) AddContextMessage(role, content string) {
 	defer c.mu.Unlock()
 	if c.contextWindow != nil {
 		c.contextWindow.AddMessage(role, content)
-		tokens := int64(c.tokenEstimator.Estimate(content))
+		tokens := int64(len(content)/4 + 1)
 		c.contextWindow.AddTokens(tokens)
 	}
-}
-
-// TotalInputTokens returns the total input tokens from the context window.
-// Calculated by traversing all current messages, not by summing call records.
-func (c *LLMCaller) TotalInputTokens() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.contextWindow == nil {
-		return 0
-	}
-	return int(c.contextWindow.TokensUsed)
-}
-
-// TotalOutputTokens returns the total output tokens across all recorded calls.
-func (c *LLMCaller) TotalOutputTokens() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var total int
-	for _, r := range c.records {
-		total += r.OutputTokens
-	}
-	return total
-}
-
-// TokenRecords returns a copy of all token usage records for external statistics.
-func (c *LLMCaller) TokenRecords() []core.TokenUsage {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]core.TokenUsage, len(c.records))
-	copy(out, c.records)
-	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -610,7 +558,7 @@ func (c *LLMCaller) doSlide(input CallInput) {
 		return
 	}
 
-	estimateFn := func(s string) int { return c.tokenEstimator.Estimate(s) }
+	estimateFn := func(s string) int { return len(s)/4 + 1 }
 	slided := cw.Slide(sc, estimateFn)
 
 	if len(slided.Messages) > 0 {
@@ -708,13 +656,13 @@ func (c *LLMCaller) buildClient(messages []gochatcore.Message, tools []gochatcor
 }
 
 // calcPreciseTokens estimates the total token count for the given message sequence.
-// Uses TokenEstimator for each message and sums them up.
+// Uses len(text)/4 + 1 heuristic for each message and sums them up.
 func (c *LLMCaller) calcPreciseTokens(messages []gochatcore.Message) int {
 	var total int
 	for _, m := range messages {
 		for _, block := range m.Content {
 			if block.Type == "text" || block.Text != "" {
-				total += c.tokenEstimator.Estimate(block.Text)
+				total += len(block.Text)/4 + 1
 			}
 		}
 	}

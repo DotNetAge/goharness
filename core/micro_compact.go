@@ -90,12 +90,11 @@ func MicroCompact(messages []Message, keepRecent int) []Message {
 	}
 
 	// Second pass: strip orphaned ToolCalls from assistant messages
-	// in the compaction zone.
+	// whose corresponding tool results were removed.
+	// Uses removedToolCallIDs (derived from original indices) to match,
+	// avoiding index mismatch between result and messages slices.
 	if len(removedToolCallIDs) > 0 {
 		for i := range result {
-			if i >= keepFromIdx {
-				break
-			}
 			if result[i].Role != "assistant" || len(result[i].ToolCalls) == 0 {
 				continue
 			}

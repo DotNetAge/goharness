@@ -45,7 +45,7 @@ func (t ToolResult) ToolResultSummary() string {
 	return fmt.Sprintf("[%s] %s", t.ToolName, t.Result)
 }
 
-// Action represents the output of the Act phase in the T-A-O cycle.
+// Action represents the output of the Act phase in the Think-Act cycle.
 // An Action maps to N tool calls (N >= 0), with per-tool results stored in Results.
 //
 // The old ActionType field (ActionTypeToolCall, ActionTypeAnswer, etc.) has been removed.
@@ -64,7 +64,7 @@ type Action struct {
 }
 
 // Summary joins all per-tool result summaries into a single newline-separated string.
-// This is used for event emission, observation formatting, and logging.
+// This is used for event emission and logging.
 func (a *Action) Summary() string {
 	var parts []string
 	for _, r := range a.Results {

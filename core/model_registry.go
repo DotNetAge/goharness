@@ -1,6 +1,9 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // ModelRegistry manages multiple LLM backend configurations.
 // It allows different agents to use different models based on their
@@ -37,6 +40,7 @@ var (
 
 // InMemoryModelRegistry is the default in-memory ModelRegistry implementation.
 type InMemoryModelRegistry struct {
+	mu     sync.RWMutex
 	models map[string]*ModelConfig
 }
 
@@ -48,6 +52,9 @@ func NewInMemoryModelRegistry() *InMemoryModelRegistry {
 }
 
 func (m *InMemoryModelRegistry) Get(name string) (*ModelConfig, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	if m.models == nil {
 		return nil, ErrModelNotFound
 	}
@@ -59,6 +66,9 @@ func (m *InMemoryModelRegistry) Get(name string) (*ModelConfig, error) {
 }
 
 func (m *InMemoryModelRegistry) Register(name string, config *ModelConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if name == "" {
 		return fmt.Errorf("model registry: model name must not be empty")
 	}
@@ -76,6 +86,9 @@ func (m *InMemoryModelRegistry) Register(name string, config *ModelConfig) error
 }
 
 func (m *InMemoryModelRegistry) List() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	if len(m.models) == 0 {
 		return nil
 	}
@@ -87,6 +100,9 @@ func (m *InMemoryModelRegistry) List() []string {
 }
 
 func (m *InMemoryModelRegistry) Size() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	if m.models == nil {
 		return 0
 	}

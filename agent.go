@@ -9,7 +9,6 @@ import (
 
 	"github.com/DotNetAge/goreact/core"
 	"github.com/DotNetAge/goreact/internal/reactor/hooks/action"
-	"github.com/DotNetAge/goreact/internal/reactor/hooks/observation"
 	"github.com/DotNetAge/goreact/internal/reactor/hooks/thought"
 	"github.com/DotNetAge/goreact/reactor"
 	"github.com/google/uuid"
@@ -115,7 +114,7 @@ type Result struct {
 	Answer    string          `json:"answer"`
 	TokenUsage core.TokenUsage `json:"token_usage"`
 	Duration  string          `json:"duration,omitempty"` // human-readable, e.g. "1.23s"
-	Steps     int             `json:"steps"`              // total T-A-O iterations
+	Steps     int             `json:"steps"`              // total Think-Act iterations
 	ToolsUsed int             `json:"tools_used"`         // number of tool invocations
 }
 
@@ -177,7 +176,6 @@ type agentSetup struct {
 	// Permission rule store (injected externally, nil = skip rule-based checking)
 	permissionRuleStore core.PermissionRuleStore
 
-	observationHooks []reactor.ObservationHook
 
 	kvStore core.KVStore
 }
@@ -414,11 +412,6 @@ func WithToolHooks(hooks ...reactor.ToolHook) AgentOption {
 	}
 }
 
-func WithObservationHooks(hooks ...reactor.ObservationHook) AgentOption {
-	return func(s *agentSetup) {
-		s.observationHooks = append(s.observationHooks, hooks...)
-	}
-}
 
 func WithPermissionRuleStore(store core.PermissionRuleStore) AgentOption {
 	return func(s *agentSetup) {
@@ -473,7 +466,7 @@ func buildReactorConfig(model *core.ModelConfig, systemPrompt string, providerRe
 
 // DefaultAgent creates a ready-to-use Agent with sensible defaults.
 // It only requires an API key to start working. The agent uses qwen3.5-flash
-// by default with a standard T-A-O reactor and a session context window of 8192 tokens.
+// by default with a standard Think-Act reactor and a session context window of 8192 tokens.
 //
 // Usage:
 //
@@ -612,9 +605,6 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	if len(setup.toolHooks) > 0 {
 		reactorOpts = append(reactorOpts, reactor.WithToolHooks(setup.toolHooks...))
 	}
-	if len(setup.observationHooks) > 0 {
-		reactorOpts = append(reactorOpts, reactor.WithObservationHooks(setup.observationHooks...))
-	}
 
 	// Build ReactorConfig from ModelConfig — align all generation parameters
 	reactorConfig := buildReactorConfig(model, config.Introduction, setup.providerRegistry)
@@ -645,8 +635,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 
 	// Register default lifecycle hooks (user hooks already registered as ReactorOptions)
 	r.RegisterThoughtHooks(thought.Defaults(r.Logger())...)
-	r.RegisterToolHooks(action.Defaults(setup.permissionRuleStore, r.SkillRegistry(), r.BudgetEnforcer(), r.Logger())...)
-	r.RegisterObservationHooks(observation.Defaults(r.Logger())...)
+	r.RegisterToolHooks(action.Defaults(setup.permissionRuleStore, r.SkillRegistry(), r.Logger())...)
 
 	// Populate skills catalog and rules on the Prompt
 	if p := r.Prompt(); p != nil {
@@ -1132,7 +1121,7 @@ func (a *Agent) checkSlide(ctx context.Context, sessionID string) {
 		return
 	}
 
-	estimateFn := func(s string) int { return a.reactor.EstimateTokens(s) }
+	estimateFn := func(s string) int { return len(s)/4 + 1 }
 	slided := cw.Slide(slideConfig, estimateFn)
 
 	if len(slided.Messages) > 0 {
@@ -1183,7 +1172,7 @@ func (a *Agent) LastResult() *Result {
 //
 //   - ThinkingDelta: text fragment (streaming thought)
 //   - ThinkingDone: completed thought
-//   - ActionStart / ActionResult: tool execution
+//   - ToolExecStart / ToolExecEnd: tool execution
 //   - FinalAnswer: the complete answer
 //   - Error: reactor-level errors
 //   - ExecutionSummary: iteration count, tool usage, token stats
@@ -1207,7 +1196,7 @@ func (a *Agent) Events() (<-chan core.ReactEvent, func()) {
 // Usage — only receive thinking and tool action events:
 //
 //	ch, cancel := agent.EventsFiltered(func(e core.ReactEvent) bool {
-//	    return e.Type == core.ThinkingDelta || e.Type == core.ActionStart
+//	    return e.Type == core.ThinkingDelta || e.Type == core.ToolExecStart
 //	})
 //	defer cancel()
 func (a *Agent) EventsFiltered(filter func(core.ReactEvent) bool) (<-chan core.ReactEvent, func()) {
@@ -1217,7 +1206,7 @@ func (a *Agent) EventsFiltered(filter func(core.ReactEvent) bool) (<-chan core.R
 // Clone creates a child Agent that inherits all runtime state from the parent
 // except identity (Config) and model backend. The child shares memory, event bus,
 // session store, and all registries with the parent, but has its own independent
-// T-A-O loop, conversation context, and task tracking.
+// Think-Act loop, conversation context, and task tracking.
 //
 // When childConfig is nil, inherits parent's config.
 // When childModel is nil, inherits parent's model.

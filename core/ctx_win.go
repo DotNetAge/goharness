@@ -138,7 +138,7 @@ type SlideConfig struct {
 	MaxSlideBatch       int
 }
 
-// DefaultSlideConfig returns sensible defaults for T-A-O agent workloads.
+// DefaultSlideConfig returns sensible defaults for Think-Act agent workloads.
 // Trigger at 65% usage (before "Lost in the Middle" ~70%), target 45% after slide,
 // preserve minimum 4 messages (2 full turns).
 var DefaultSlideConfig = SlideConfig{
@@ -192,7 +192,7 @@ func (w *ContextWindow) Slide(config SlideConfig, estimateFn func(string) int) S
 
 	estimate := estimateFn
 	if estimate == nil {
-		estimate = EstimateTokens
+		estimate = func(s string) int { return len(s)/4 + 1 }
 	}
 
 	targetTokens := int64(float64(w.MaxTokens) * config.TargetRatio)

@@ -9,7 +9,7 @@ package core
 //     Loaded by Orchestrator during routing AND by Agent during responsibility check.
 //     Never includes full system prompt details — that's Body's job.
 //   - **Body**: Full System Prompt / instruction set. Only loaded into the Agent's
-//     ContextWindow when the Agent executes a task (via T-A-O loop Level 2/3).
+//     ContextWindow when the Agent executes a task (via Think-Act loop Level 2/3).
 //
 // ## Orchestration fields (optional, zero-value defaults):
 //

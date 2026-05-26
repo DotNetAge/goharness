@@ -42,7 +42,7 @@ func (h ConversationHistory) Format(maxTurns int) string {
 }
 
 // ReactContext holds the shared mutable state for a single Reactor.Run invocation.
-// It is created at the start of Run and mutated throughout the T-A-O loop.
+// It is created at the start of Run and mutated throughout the Think-Act loop.
 // All fields are protected by mu for concurrent read safety where needed.
 type ReactContext struct {
 
@@ -63,10 +63,10 @@ type ReactContext struct {
 	// cancel is the cancellation function derived from ctx.
 
 	CurrentIteration int
-	// CurrentIteration tracks the current T-A-O cycle index (0-based).
+	// CurrentIteration tracks the current Think-Act cycle index (0-based).
 
 	MaxIterations int
-	// MaxIterations is the upper bound on the number of T-A-O cycles allowed.
+	// MaxIterations is the upper bound on the number of Think-Act cycles allowed.
 
 	Input string
 	// Input is the original user prompt that initiated this run.
@@ -79,9 +79,6 @@ type ReactContext struct {
 
 	LastAction *Action
 	// LastAction holds the output of the most recent Act phase.
-
-	LastObservation *Observation
-	// LastObservation holds the output of the most recent Observe phase.
 
 	History []Step
 	// History accumulates all completed Step records for the run.
@@ -101,11 +98,13 @@ type ReactContext struct {
 
 	emitEvent func(event core.ReactEvent)
 	// emitEvent is the event callback set by the Reactor before Run.
-	// If non-nil, it is called after each T-A-O phase to emit events.
+	// If non-nil, it is called after each Think-Act phase to emit events.
 	// It is a no-op if nil.
 
 	mu sync.RWMutex
-	// mu protects concurrent access to History and ConversationHistory.
+	// mu is write-locked by AppendHistory/AddMessage/AddToolMessage.
+	// Reads of History/ConversationHistory assume single-goroutine access
+	// and do not acquire the read lock.
 }
 
 // EmitEvent publishes a ReactEvent through the context's configured event callback.
@@ -129,7 +128,7 @@ func (c *ReactContext) EmitEvent(eventType core.ReactEventType, data any) {
 //   - ctx: the parent context (nil defaults to context.Background()).
 //   - input: the user's original prompt.
 //   - history: prior conversation messages to continue from.
-//   - maxIter: maximum number of T-A-O iterations (≤0 defaults to core.DefaultMaxSteps).
+//   - maxIter: maximum number of Think-Act iterations (≤0 defaults to core.DefaultMaxSteps).
 //
 // Returns a pointer to the initialized ReactContext.
 func NewReactContext(ctx context.Context, input string, history ConversationHistory, maxIter int) *ReactContext {
@@ -145,7 +144,7 @@ func NewReactContext(ctx context.Context, input string, history ConversationHist
 //   - parentID: identifier of the parent task (empty for root tasks).
 //   - input: the user's original prompt or delegated task description.
 //   - history: prior conversation messages.
-//   - maxIter: maximum number of T-A-O iterations (≤0 defaults to core.DefaultMaxSteps).
+//   - maxIter: maximum number of Think-Act iterations (≤0 defaults to core.DefaultMaxSteps).
 //
 // Returns a pointer to the initialized ReactContext.
 func NewReactContextWithIDs(ctx context.Context, taskID, parentID, input string, history ConversationHistory, maxIter int) *ReactContext {
@@ -180,7 +179,7 @@ func (c *ReactContext) Ctx() context.Context {
 
 // withToolTimeout creates a shallow copy of ReactContext with a timeout-wrapped context.
 // The original ReactContext is not modified. This is used by executeSyncTools to
-// prevent a hanging tool from blocking the entire T-A-O loop indefinitely.
+// prevent a hanging tool from blocking the entire Think-Act loop indefinitely.
 func (c *ReactContext) withToolTimeout(timeout time.Duration) (*ReactContext, context.CancelFunc) {
 	toolCtx, cancel := context.WithTimeout(c.Ctx(), timeout)
 	return &ReactContext{
@@ -195,7 +194,6 @@ func (c *ReactContext) withToolTimeout(timeout time.Duration) (*ReactContext, co
 		ConversationHistory:   c.ConversationHistory,
 		LastThought:           c.LastThought,
 		LastAction:            c.LastAction,
-		LastObservation:       c.LastObservation,
 		History:               c.History,
 		CurrentInputTokens:    c.CurrentInputTokens,
 		IsTerminated:          c.IsTerminated,

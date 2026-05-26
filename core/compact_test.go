@@ -93,25 +93,6 @@ func TestBudgetCompact_ShortInput(t *testing.T) {
 	}
 }
 
-func TestDefaultTokenEstimator(t *testing.T) {
-	// NewDefaultTokenEstimator now delegates to EstimateTokens (tiktoken-backed)
-	e := NewDefaultTokenEstimator(4.0)
-	count := e.Estimate("hello world")
-	// "hello world" = 2 tokens in BPE (or ~3 with heuristic fallback)
-	if count < 1 || count > 5 {
-		t.Errorf("expected reasonable token count for 'hello world', got %d", count)
-	}
-	// Verify backward-compatible constructor works
-	e2 := NewDefaultTokenEstimator(-1)
-	if e2.Estimate("test") < 1 {
-		t.Errorf("negative charsPerToken should still produce valid estimate, got %d", e2.Estimate("test"))
-	}
-	e3 := NewDefaultTokenEstimator(0)
-	if e3.Estimate("test") < 1 {
-		t.Errorf("zero charsPerToken should still produce valid estimate, got %d", e3.Estimate("test"))
-	}
-}
-
 func TestTrimJSONResult_ShortString(t *testing.T) {
 	input := `{"key": "value"}`
 	result := TrimJSONResult(input, 100)

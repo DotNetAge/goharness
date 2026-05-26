@@ -41,19 +41,6 @@ func WithExcludeTools(names ...string) ReactorOption {
 	}
 }
 
-// WithResultLimits configures tool result size thresholds (second layer defense).
-func WithResultLimits(limits core.ToolResultLimits) ReactorOption {
-	return func(s *reactorSetup) {
-		s.resultLimits = limits
-	}
-}
-
-// WithTokenEstimator sets a custom token estimator for budget tracking.
-func WithTokenEstimator(estimator core.TokenEstimator) ReactorOption {
-	return func(s *reactorSetup) {
-		s.tokenEstimator = estimator
-	}
-}
 
 // WithEventBus sets the event bus for streaming agent events.
 // If not set, a new InProcessEventBus is created automatically.
@@ -250,14 +237,6 @@ func WithToolHooks(hooks ...ToolHook) ReactorOption {
 	}
 }
 
-// WithObservationHooks 注入观察阶段 hooks。
-func WithObservationHooks(hooks ...ObservationHook) ReactorOption {
-	return func(s *reactorSetup) {
-		s.observationHooks = append(s.observationHooks, hooks...)
-	}
-}
-
-// WithStuckDetection 设置循环卡死检测器。
 // detector 分析迭代历史，检测工具循环、错误循环、决策振荡、无进展等模式，
 // 早期注入提示引导 LLM 自修正，三次仍无改进时硬终止。
 //

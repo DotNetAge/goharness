@@ -149,7 +149,7 @@ func (r *Reactor) Think(ctx *ReactContext) (core.TokenUsage, error) {
 	}
 
 	// Build Thought directly from native response — no JSON parsing.
-	thought := buildThoughtFromNative(content, toolCalls, time.Now())
+	thought := buildThoughtFromNative(content, toolCalls, result.FinishReason, time.Now())
 
 	// Set LastThought before After hooks so hooks can reference it
 	ctx.LastThought = thought
@@ -177,10 +177,11 @@ func (r *Reactor) Think(ctx *ReactContext) (core.TokenUsage, error) {
 
 // buildThoughtFromNative constructs a Thought from the native LLM response.
 // No JSON parsing — the Thought is derived from raw content and native tool calls.
-func buildThoughtFromNative(content string, toolCalls []gochatcore.ToolCall, ts time.Time) *Thought {
+func buildThoughtFromNative(content string, toolCalls []gochatcore.ToolCall, finishReason string, ts time.Time) *Thought {
 	thought := &Thought{
-		Content:   content,
-		Timestamp: ts,
+		Content:      content,
+		FinishReason: finishReason,
+		Timestamp:    ts,
 	}
 
 	if len(toolCalls) > 0 {
@@ -382,6 +383,17 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 	for _, c := range asyncCalls {
 		c := c
 		go func(toolName string, params map[string]any, toolCallID string) {
+			defer func() {
+				if r := recover(); r != nil {
+					asyncCh <- asyncResult{
+						name:       toolName,
+						result:     "",
+						err:        fmt.Errorf("async tool %q outer goroutine panicked: %v", toolName, r),
+						toolCallID: toolCallID,
+					}
+				}
+			}()
+
 			asyncCtx, cancel := context.WithTimeout(ctx.Ctx(), r.asyncToolTimeout)
 			defer cancel()
 
@@ -390,23 +402,30 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 				Params:   params,
 			})
 
-			resultCh := make(chan struct{}, 1)
-			var execResult *core.ToolExecutionResult
-			var execErr error
+			type innerExecResult struct {
+				result *core.ToolExecutionResult
+				err    error
+			}
+			resultCh := make(chan innerExecResult, 1)
 			go func() {
+				var er innerExecResult
 				defer func() {
 					if r := recover(); r != nil {
-						execErr = fmt.Errorf("tool %q panicked: %v", toolName, r)
+						er.err = fmt.Errorf("tool %q panicked: %v", toolName, r)
 					}
-					resultCh <- struct{}{}
+					resultCh <- er
 				}()
-				execResult, execErr = r.toolExecutor.Execute(asyncCtx, toolName, params)
+				er.result, er.err = r.toolExecutor.Execute(asyncCtx, toolName, params)
 			}()
 
+			var execResult *core.ToolExecutionResult
+			var execErr error
 			select {
-			case <-resultCh:
-				// normal completion or panic
+			case er := <-resultCh:
+				execResult = er.result
+				execErr = er.err
 			case <-asyncCtx.Done():
+				execResult = nil
 				execErr = fmt.Errorf("async tool %q timed out after %v", toolName, r.asyncToolTimeout)
 			}
 
@@ -469,28 +488,6 @@ func (r *Reactor) executeAsyncTools(ctx *ReactContext, asyncCalls []toolCall, st
 }
 
 func (r *Reactor) assembleActionResult(ctx *ReactContext, calls []toolCall, start time.Time, results []ToolResult) error {
-	summary := strings.Join(func() []string {
-		var parts []string
-		for _, r := range results {
-			parts = append(parts, r.ToolResultSummary())
-		}
-		return parts
-	}(), "\n")
-
-	successCount := 0
-	for _, r := range results {
-		if r.Success {
-			successCount++
-		}
-	}
-
-	ctx.EmitEvent(core.ActionEnd, core.ActionEndData{
-		TotalTools:   len(calls),
-		SuccessCount: successCount,
-		FailedCount:  len(calls) - successCount,
-		Summary:      summary,
-	})
-
 	ctx.LastAction = &Action{
 		Timestamp: start,
 		Results:   results,

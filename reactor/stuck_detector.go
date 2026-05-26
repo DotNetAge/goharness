@@ -40,7 +40,7 @@ type ToolCallSnapshot struct {
 	Error string `json:"error"`
 }
 
-// IterationSnapshot 记录一轮 T-A-O 周期的快照。
+// IterationSnapshot 记录一轮 Think-Act 周期的快照。
 type IterationSnapshot struct {
 	Iteration int                `json:"iteration"`
 	Decision  string             `json:"decision"`
