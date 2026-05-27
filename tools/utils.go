@@ -132,9 +132,9 @@ const sessionPathPrefix = "session:"
 //
 // Behavior:
 //   - "session:filename" → resolves to <sessionDir>/filename (scope: session)
-//                    → if sessionDir is empty, falls back to <projectDir>/filename
+//     → if sessionDir is empty, falls back to <projectDir>/filename
 //   - "relative/path"  → resolves to <projectDir>/relative/path (scope: project)
-//                    → if projectDir is empty, falls back to current working directory
+//     → if projectDir is empty, falls back to current working directory
 //   - "/absolute/path" → returns as-is (scope: empty)
 //
 // This is intentionally simple - no heuristic inference.
@@ -171,7 +171,6 @@ func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath
 
 	return filepath.Join(targetDir, inputPath), PathScopeProject
 }
-
 
 // SessionContextKey is the context key for storing session ID.
 type SessionContextKey struct{}

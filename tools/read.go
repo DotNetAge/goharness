@@ -7,25 +7,26 @@ import (
 	"io/fs"
 	"strings"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goreact/store"
 )
 
 // Read implements a tool for reading files from the filesystem.
 type Read struct {
-	info   *core.ToolInfo
-	limits core.FileReadingLimits
+	info   *ToolInfo
+	limits FileReadingLimits
 }
 
 // NewReadTool creates a file read tool with default limits.
-func NewReadTool() core.FuncTool {
-	return NewReadToolWithLimits(core.DefaultFileReadingLimits())
+func NewReadTool() FuncTool {
+	return NewReadToolWithLimits(DefaultFileReadingLimits())
 }
 
 // NewReadToolWithLimits creates a read tool with custom limits.
-func NewReadToolWithLimits(limits core.FileReadingLimits) core.FuncTool {
+func NewReadToolWithLimits(limits FileReadingLimits) FuncTool {
 	return &Read{
 		limits: limits,
-		info: &core.ToolInfo{
+		info: &ToolInfo{
 			Name:        "Read",
 			Description: "Reads a file from the local filesystem.",
 			Prompt: `Reads a file from the local filesystem. You can access any file directly by using this tool.
@@ -43,10 +44,10 @@ Usage:
 
 Skills may expose a "Base directory" in their Skill tool result. When a skill says "Base directory: <path>", use Read to access reference files in that directory — the skill instructions are a guide, not the full reference.`,
 			Tags:               []string{"file", "filesystem", "read", "content"},
-			SecurityLevel:      core.LevelSafe,
+			SecurityLevel:      events.LevelSafe,
 			IsReadOnly:         true,
 			MaxResultSizeChars: -1,
-			Parameters: []core.Parameter{
+			Parameters: []Parameter{
 				{
 					Name:        "path",
 					Type:        "string",
@@ -70,7 +71,7 @@ Skills may expose a "Base directory" in their Skill tool result. When a skill sa
 	}
 }
 
-func (r *Read) Info() *core.ToolInfo {
+func (r *Read) Info() *ToolInfo {
 	return r.info
 }
 
@@ -82,7 +83,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 
 	logger := getLogger(ctx)
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	resolvedPath, scope := ResolveTargetPath(path, tc.ProjectDir, tc.SessionDir)
 
 	logger.Info("reading file",
@@ -97,7 +98,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 
 	// Pre-read: check file exists, size, and type via fs.FS
 	cleanPath := strings.TrimLeft(resolvedPath, "/")
-	info, err := fs.Stat(core.OS, cleanPath)
+	info, err := fs.Stat(store.OS, cleanPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("file does not exist: %s", resolvedPath)
@@ -109,10 +110,10 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	}
 	if r.limits.MaxSizeBytes > 0 && info.Size() > r.limits.MaxSizeBytes {
 		return map[string]any{
-			"success":     false,
-			"path":        resolvedPath,
-			"scope":       scope,
-			"size_bytes":  info.Size(),
+			"success":    false,
+			"path":       resolvedPath,
+			"scope":      scope,
+			"size_bytes": info.Size(),
 			"error": fmt.Sprintf(
 				"file too large (%.2f KB), maximum allowed is %d KB. "+
 					"Use offset and limit parameters to read specific sections, "+
@@ -122,7 +123,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	}
 
 	// Read file content via fs.FS
-	data, err := core.ReadFileFromFS(core.OS, resolvedPath)
+	data, err := store.ReadFileFromFS(store.OS, resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}

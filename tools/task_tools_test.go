@@ -5,25 +5,26 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goreact/store"
 )
 
-func newTestKVStore(t *testing.T) (core.KVStore, func()) {
+func newTestKVStore(t *testing.T) (store.KVStore, func()) {
 	tmpDir := t.TempDir()
-	store, err := core.NewFileSystemKVStore(tmpDir)
+	store, err := store.NewFileSystemKVStore(tmpDir)
 	if err != nil {
 		t.Fatalf("failed to create KVStore: %v", err)
 	}
 	return store, func() {}
 }
 
-func withKVStoreContext(ctx context.Context, kv core.KVStore, sessionID string) context.Context {
-	toolCtx := &core.ToolContext{
+func withKVStoreContext(ctx context.Context, kv store.KVStore, sessionID string) context.Context {
+	toolCtx := &ToolContext{
 		KVStore:   kv,
 		SessionID: sessionID,
-		EmitEvent: func(e core.ReactEvent) {},
+		EmitEvent: func(e events.ReactEvent) {},
 	}
-	return core.WithToolContext(ctx, toolCtx)
+	return WithToolContext(ctx, toolCtx)
 }
 
 func TestTaskCreateTool_Execute(t *testing.T) {

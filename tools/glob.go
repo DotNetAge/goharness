@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // GlobTool implements file path discovery using 'find' or 'fd'.
@@ -16,14 +16,14 @@ type GlobTool struct {
 }
 
 // NewGlobTool creates a Glob tool.
-func NewGlobTool() core.FuncTool {
+func NewGlobTool() FuncTool {
 	return &GlobTool{
 		MaxResults: 200,
 	}
 }
 
-func (t *GlobTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *GlobTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:               "Glob",
 		MaxResultSizeChars: 30000,
 		Description:        "Find files",
@@ -33,8 +33,8 @@ func (t *GlobTool) Info() *core.ToolInfo {
 - Use this tool when you need to find files by name patterns
 - When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the SubAgent tool instead`,
 		Tags:          []string{"file", "search", "pattern", "filesystem", "discovery"},
-		SecurityLevel: core.LevelSafe,
-		Parameters: []core.Parameter{
+		SecurityLevel: events.LevelSafe,
+		Parameters: []Parameter{
 			{
 				Name:        "pattern",
 				Type:        "string",

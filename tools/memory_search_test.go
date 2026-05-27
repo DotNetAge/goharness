@@ -6,16 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/memory"
 )
 
-// mockMemory implements core.Memory for testing
+// mockMemory implements memory.Memory for testing
 type mockMemory struct {
-	records []core.MemoryRecord
+	records []memory.MemoryRecord
 	err     error
 }
 
-func (m *mockMemory) Retrieve(_ context.Context, query string, _ ...core.RetrieveOption) ([]core.MemoryRecord, error) {
+func (m *mockMemory) Retrieve(_ context.Context, query string, _ ...memory.RetrieveOption) ([]memory.MemoryRecord, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -23,14 +23,14 @@ func (m *mockMemory) Retrieve(_ context.Context, query string, _ ...core.Retriev
 		return nil, errors.New("memory retrieval failed")
 	}
 
-	var results []core.MemoryRecord
+	var results []memory.MemoryRecord
 	for _, r := range m.records {
 		results = append(results, r)
 	}
 	return results, nil
 }
 
-func (m *mockMemory) Store(_ context.Context, record core.MemoryRecord) (string, error) {
+func (m *mockMemory) Store(_ context.Context, record memory.MemoryRecord) (string, error) {
 	return "test-id", nil
 }
 
@@ -93,23 +93,23 @@ func TestMemorySearch_Info(t *testing.T) {
 
 func TestMemorySearch_Execute_Success(t *testing.T) {
 	mem := &mockMemory{
-		records: []core.MemoryRecord{
+		records: []memory.MemoryRecord{
 			{
-				ID:      "mem-1",
-				Type:    core.MemoryTypeLongTerm,
-				Title:   "User Prefers TypeScript",
-				Content: "User explicitly prefers TypeScript over JavaScript for all new projects",
-				Tags:    []string{"preference", "typescript"},
-				Score:   0.95,
+				ID:        "mem-1",
+				Type:      memory.MemoryTypeLongTerm,
+				Title:     "User Prefers TypeScript",
+				Content:   "User explicitly prefers TypeScript over JavaScript for all new projects",
+				Tags:      []string{"preference", "typescript"},
+				Score:     0.95,
 				CreatedAt: time.Now(),
 			},
 			{
-				ID:      "mem-2",
-				Type:    core.MemoryTypeSession,
-				Title:   "Current Project Structure",
-				Content: "Project uses monorepo structure with packages in /packages directory",
-				Tags:    []string{"project", "structure"},
-				Score:   0.85,
+				ID:        "mem-2",
+				Type:      memory.MemoryTypeSession,
+				Title:     "Current Project Structure",
+				Content:   "Project uses monorepo structure with packages in /packages directory",
+				Tags:      []string{"project", "structure"},
+				Score:     0.85,
 				CreatedAt: time.Now(),
 			},
 		},
@@ -148,7 +148,7 @@ func TestMemorySearch_Execute_Success(t *testing.T) {
 
 func TestMemorySearch_Execute_EmptyResult(t *testing.T) {
 	mem := &mockMemory{
-		records: []core.MemoryRecord{},
+		records: []memory.MemoryRecord{},
 	}
 
 	tool := NewMemorySearch(mem).(*MemorySearch)
@@ -215,10 +215,10 @@ func TestMemorySearch_Execute_ShortQuery(t *testing.T) {
 
 func TestMemorySearch_Execute_WithTypesFilter(t *testing.T) {
 	mem := &mockMemory{
-		records: []core.MemoryRecord{
+		records: []memory.MemoryRecord{
 			{
 				ID:      "mem-1",
-				Type:    core.MemoryTypeLongTerm,
+				Type:    memory.MemoryTypeLongTerm,
 				Title:   "Long Term Memory",
 				Content: "This is long-term knowledge",
 			},
@@ -244,7 +244,7 @@ func TestMemorySearch_Execute_WithTypesFilter(t *testing.T) {
 
 func TestMemorySearch_LimitValidation(t *testing.T) {
 	mem := &mockMemory{
-		records: make([]core.MemoryRecord, 25),
+		records: make([]memory.MemoryRecord, 25),
 	}
 
 	tool := NewMemorySearch(mem).(*MemorySearch)
@@ -266,10 +266,10 @@ func TestMemorySearch_LimitValidation(t *testing.T) {
 }
 
 func TestMemorySearch_FormatResults(t *testing.T) {
-	records := []core.MemoryRecord{
+	records := []memory.MemoryRecord{
 		{
 			ID:        "test-123",
-			Type:      core.MemoryTypeSession,
+			Type:      memory.MemoryTypeSession,
 			Title:     "Test Memory",
 			Content:   "This is test content",
 			Tags:      []string{"tag1", "tag2"},
@@ -308,12 +308,12 @@ func TestMemorySearch_FormatResults(t *testing.T) {
 
 func TestMemoryTypeLabel(t *testing.T) {
 	tests := []struct {
-		input core.MemoryType
+		input memory.MemoryType
 		want  string
 	}{
-		{core.MemoryTypeSession, "Session Memory"},
-		{core.MemoryTypeLongTerm, "Long-term Knowledge"},
-		{core.MemoryType(999), "Unknown"},
+		{memory.MemoryTypeSession, "Session Memory"},
+		{memory.MemoryTypeLongTerm, "Long-term Knowledge"},
+		{memory.MemoryType(999), "Unknown"},
 	}
 
 	for _, tt := range tests {

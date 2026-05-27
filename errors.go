@@ -1,36 +1,20 @@
 package goreact
 
 import (
-	"errors"
-
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/memory"
+	"github.com/DotNetAge/goreact/skill"
 )
 
-// Agent errors
+// Skill errors (aliased here for backward compatibility)
 var (
-	ErrAgentNotFound    = errors.New("agent not found")
-	ErrAgentNotActive   = errors.New("agent not active")
-	ErrAgentMaxSteps    = errors.New("max steps exceeded")
+	ErrSkillNotFound    = skill.ErrSkillNotFound
+	ErrSkillExecution   = skill.ErrSkillExecution
+	ErrSkillCompilation = skill.ErrSkillCompilation
 )
 
-// Tool errors
+// Memory errors (aliased here for backward compatibility)
 var (
-	ErrToolNotFound     = errors.New("tool not found")
-	ErrToolExecution    = errors.New("tool execution failed")
-	ErrToolValidation   = errors.New("tool validation failed")
-	ErrToolUnauthorized = errors.New("tool unauthorized")
-)
-
-// Skill errors (defined in core package, aliased here for backward compatibility)
-var (
-	ErrSkillNotFound    = core.ErrSkillNotFound
-	ErrSkillExecution   = core.ErrSkillExecution
-	ErrSkillCompilation = core.ErrSkillCompilation
-)
-
-// Memory errors (defined in core package, aliased here for backward compatibility)
-var (
-	ErrMemoryNotFound   = core.ErrMemoryNotFound
-	ErrMemoryStorage    = core.ErrMemoryStorage
-	ErrMemoryRetrieval  = core.ErrMemoryRetrieval
+	ErrMemoryNotFound   = memory.ErrMemoryNotFound
+	ErrMemoryStorage    = memory.ErrMemoryStorage
+	ErrMemoryRetrieval  = memory.ErrMemoryRetrieval
 )

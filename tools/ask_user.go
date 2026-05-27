@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // AskUser is a tool that asks the user questions via the permission system.
@@ -16,13 +16,13 @@ import (
 // into params via UpdatedInput. Execute() is an identity function that formats
 // the answers as a natural-language message for the LLM.
 type AskUser struct {
-	info *core.ToolInfo
+	info *ToolInfo
 }
 
 // NewAskUserTool creates a new AskUser tool.
-func NewAskUserTool() core.FuncTool {
+func NewAskUserTool() FuncTool {
 	return &AskUser{
-		info: &core.ToolInfo{
+		info: &ToolInfo{
 			Name:        "AskUser",
 			Description: "Asks the user multiple choice questions to gather information, clarify ambiguity, understand preferences, make decisions or offer them choices.",
 			Prompt: `Use this tool when you need to ask the user questions during execution. This allows you to:
@@ -35,10 +35,10 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`,
-			Tags:        []string{"interaction", "question", "clarify", "human"},
-			IsReadOnly:  false,
-			SecurityLevel: core.LevelSensitive,
-			Parameters: []core.Parameter{
+			Tags:          []string{"interaction", "question", "clarify", "human"},
+			IsReadOnly:    false,
+			SecurityLevel: events.LevelSensitive,
+			Parameters: []Parameter{
 				{
 					Name:        "question",
 					Type:        "string",
@@ -62,7 +62,7 @@ Usage notes:
 	}
 }
 
-func (t *AskUser) Info() *core.ToolInfo {
+func (t *AskUser) Info() *ToolInfo {
 	return t.info
 }
 

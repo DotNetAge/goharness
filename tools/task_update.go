@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TaskUpdateTool struct{}
@@ -14,8 +12,8 @@ func NewTaskUpdateTool() *TaskUpdateTool {
 	return &TaskUpdateTool{}
 }
 
-func (t *TaskUpdateTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TaskUpdateTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TaskUpdate",
 		Description: "Update a task's subject, description, status, owner, or dependency relationships.",
 		Prompt: `Update a task's metadata or advance it through its lifecycle.
@@ -43,7 +41,7 @@ Dependencies:
 
 At least one of subject, description, status, owner, addBlocks, or addBlockedBy must be provided.`,
 		Tags: []string{"task", "update", "status", "planning"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "task_id", Type: "string", Description: "The ID of the task to update.", Required: true},
 			{Name: "subject", Type: "string", Description: "New subject (short title) for the task.", Required: false},
 			{Name: "description", Type: "string", Description: "New detailed description of what needs to be done.", Required: false},
@@ -63,7 +61,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		return nil, fmt.Errorf("task_id is required")
 	}
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TaskUpdate requires ToolContext with SessionID")
 	}
@@ -234,5 +232,3 @@ func canReach(ctx context.Context, sessionID, from, to string) bool {
 	}
 	return false
 }
-
-

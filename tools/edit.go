@@ -6,19 +6,17 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 // FileEditTool implements a tool for editing files with staleness checks.
 type FileEditTool struct{}
 
-func NewFileEditTool() core.FuncTool {
+func NewFileEditTool() FuncTool {
 	return &FileEditTool{}
 }
 
-func (t *FileEditTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *FileEditTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "FileEdit",
 		Description: "Edit files by replacing exact strings. Supports single, all, or limited-count replacements with staleness check.",
 		Prompt: `Performs exact string replacements in files.
@@ -31,8 +29,8 @@ Usage:
 - Use replace_all=true to rename a variable or change a string everywhere in the file.
 - Use limit=N to replace the first N occurrences only (e.g. limit=2 replaces the first 2 matches).
 - Use last_read_time to prevent stale writes — pass the file's modification timestamp from your last Read result.`,
-		Tags:         []string{"file", "edit", "code", "replace", "modification"},
-		Parameters: []core.Parameter{
+		Tags: []string{"file", "edit", "code", "replace", "modification"},
+		Parameters: []Parameter{
 			{
 				Name:        "path",
 				Type:        "string",
@@ -81,7 +79,7 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	logger := getLogger(ctx)
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	resolvedPath, scope := ResolveTargetPath(filePath, tc.ProjectDir, tc.SessionDir)
 
 	logger.Info("editing file",

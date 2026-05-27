@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 // GrepTool implements a high-performance search using ripgrep (rg).
@@ -17,18 +15,18 @@ type GrepTool struct {
 }
 
 // NewGrepTool creates a Grep tool.
-func NewGrepTool() core.FuncTool {
+func NewGrepTool() FuncTool {
 	return &GrepTool{
 		MaxResults:     100,
 		MaxOutputChars: 50000,
 	}
 }
 
-func (t *GrepTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
-		Name:        "Grep",
+func (t *GrepTool) Info() *ToolInfo {
+	return &ToolInfo{
+		Name:               "Grep",
 		MaxResultSizeChars: 50000,
-		Description: "A powerful search tool built on ripgrep",
+		Description:        "A powerful search tool built on ripgrep",
 		Prompt: `A powerful search tool built on ripgrep
 
 Usage:
@@ -40,7 +38,7 @@ Usage:
 - Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use interface\{\} to find interface{} in Go code)
 - Multiline matching: By default patterns match within single lines only. For cross-line patterns like struct \{[\s\S]*?field, use multiline: true`,
 		Tags: []string{"file", "search", "content", "regex", "text"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{
 				Name:        "pattern",
 				Type:        "string",

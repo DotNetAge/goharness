@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 const webFetchCacheTTL = 15 * time.Minute
@@ -30,7 +28,7 @@ type WebFetchTool struct {
 	memCache sync.Map
 }
 
-func NewWebFetchTool() core.FuncTool {
+func NewWebFetchTool() FuncTool {
 	return &WebFetchTool{
 		client: &http.Client{
 			Timeout: 15 * time.Second,
@@ -44,8 +42,8 @@ func NewWebFetchTool() core.FuncTool {
 	}
 }
 
-func (t *WebFetchTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *WebFetchTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:               "WebFetch",
 		MaxResultSizeChars: 25000,
 		Description:        "Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.",
@@ -64,7 +62,7 @@ Content Budget:
 - If you need more of a truncated page, re-fetch with a more specific prompt`,
 		Tags:       []string{"web", "fetch", "url", "content", "http"},
 		IsReadOnly: true,
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{
 				Name:        "url",
 				Type:        "string",
@@ -109,7 +107,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		t.memCache.Delete(wfCacheKey)
 	}
 
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs != nil {
 		if data, err := kvs.Get(ctx, webFetchCacheSessionID, wfCacheKey); err == nil && len(data) > 0 {
 			var entry cachedFetch

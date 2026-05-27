@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 func TestRunScript_Info(t *testing.T) {
@@ -15,7 +15,7 @@ func TestRunScript_Info(t *testing.T) {
 	if info.Name != "RunScript" {
 		t.Errorf("expected name 'run_script', got %q", info.Name)
 	}
-	if info.SecurityLevel != core.LevelSensitive {
+	if info.SecurityLevel != events.LevelSensitive {
 		t.Errorf("expected SecurityLevel LevelSensitive, got %v", info.SecurityLevel)
 	}
 	if len(info.Tags) == 0 {
@@ -114,7 +114,7 @@ func (m *mockScriptExecutor) Execute(_ context.Context, _, _ string, _ []string)
 
 func TestRunScript_ExecuteWithMockExecutor(t *testing.T) {
 	tool := &RunScript{
-		info:           NewRunScriptTool().Info(),
+		info: NewRunScriptTool().Info(),
 		scriptExecutor: &mockScriptExecutor{
 			result: &scriptResult{
 				ExitCode: 0,

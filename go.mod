@@ -2,11 +2,11 @@ module github.com/DotNetAge/goreact
 
 go 1.26
 
-// replace (
-// github.com/DotNetAge/gochat => ../gochat
-// 	github.com/DotNetAge/gograph => ../gograph
-// 	github.com/DotNetAge/gorag => ../gorag
-// )
+replace (
+	github.com/DotNetAge/gochat => ../gochat
+//github.com/DotNetAge/gograph => ../gograph
+//github.com/DotNetAge/gorag => ../gorag
+)
 
 require (
 	github.com/DotNetAge/gochat v0.2.6

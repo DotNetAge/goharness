@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // Default bash command timeout in milliseconds.
@@ -20,12 +20,12 @@ const maxBashOutputSize = 30000
 
 // BashTool implements a tool for executing shell commands with whitelist security.
 type BashTool struct {
-	whitelistEnabled     bool
-	customWhitelist      map[string]bool
+	whitelistEnabled bool
+	customWhitelist  map[string]bool
 }
 
 // NewBashTool creates a Bash tool with default whitelist enabled.
-func NewBashTool() core.FuncTool {
+func NewBashTool() FuncTool {
 	return &BashTool{
 		whitelistEnabled: true,
 		customWhitelist:  make(map[string]bool),
@@ -33,7 +33,7 @@ func NewBashTool() core.FuncTool {
 }
 
 // NewBashToolWithWhitelist creates a Bash tool with custom whitelist.
-func NewBashToolWithWhitelist(allowedCommands []string) core.FuncTool {
+func NewBashToolWithWhitelist(allowedCommands []string) FuncTool {
 	wl := make(map[string]bool)
 	for _, cmd := range allowedCommands {
 		wl[cmd] = true
@@ -45,7 +45,7 @@ func NewBashToolWithWhitelist(allowedCommands []string) core.FuncTool {
 }
 
 // NewBashToolUnrestricted creates a Bash tool without whitelist (not recommended for production).
-func NewBashToolUnrestricted() core.FuncTool {
+func NewBashToolUnrestricted() FuncTool {
 	return &BashTool{
 		whitelistEnabled: false,
 		customWhitelist:  make(map[string]bool),
@@ -54,11 +54,11 @@ func NewBashToolUnrestricted() core.FuncTool {
 
 var baseCommandPattern = regexp.MustCompile(`^\s*([a-zA-Z][a-zA-Z0-9._\-]*)(\s|$)`)
 
-func (t *BashTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
-		Name:        "Bash",
+func (t *BashTool) Info() *ToolInfo {
+	return &ToolInfo{
+		Name:               "Bash",
 		MaxResultSizeChars: 60000,
-		Description: "Execute shell commands and return their output. Use dedicated tools instead of bash when available.",
+		Description:        "Execute shell commands and return their output. Use dedicated tools instead of bash when available.",
 		Prompt: `Executes a given bash command and returns its output. The project directory persists between commands, but shell state does not.
 
 IMPORTANT: The following commands are blocked by the Bash tool whitelist — use dedicated tools instead:
@@ -84,8 +84,8 @@ Dedicated tools provide a better user experience and make it easier to review to
    - Before destructive operations (git reset --hard, git push --force), consider safer alternatives.
 - Use working_dir to run commands in a specific directory.`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
-		SecurityLevel: core.LevelHighRisk,
-		Parameters: []core.Parameter{
+		SecurityLevel: events.LevelHighRisk,
+		Parameters: []Parameter{
 			{
 				Name:        "command",
 				Type:        "string",

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
 	"github.com/google/uuid"
 )
 
@@ -15,8 +14,8 @@ func NewTaskCreateTool() *TaskCreateTool {
 	return &TaskCreateTool{}
 }
 
-func (t *TaskCreateTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TaskCreateTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TaskCreate",
 		Description: "Create a task in the task list for tracking and planning work. Use TaskUpdate to mark progress, TaskGet/TaskList to check status.",
 		Prompt: `Create a task in the task list to break down complex work into manageable steps.
@@ -44,7 +43,7 @@ Usage:
 - Use blocks/blockedBy (via TaskUpdate) to express task ordering`,
 		Tags:    []string{"task", "create", "planning", "tracking"},
 		IsAsync: false,
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "subject", Type: "string", Description: "Short title for the task.", Required: true},
 			{Name: "description", Type: "string", Description: "Detailed description of what needs to be done.", Required: true},
 			{Name: "active_form", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
@@ -63,7 +62,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		return nil, fmt.Errorf("description is required")
 	}
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TaskCreate requires ToolContext with SessionID")
 	}

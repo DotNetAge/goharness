@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TaskGetTool struct{}
@@ -13,8 +11,8 @@ func NewTaskGetTool() *TaskGetTool {
 	return &TaskGetTool{}
 }
 
-func (t *TaskGetTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TaskGetTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TaskGet",
 		Description: "Get detailed information about a specific task, including its status, owner, and dependency relationships.",
 		Prompt: `Get detailed information about a specific task by task_id.
@@ -35,7 +33,7 @@ Returns:
 - blocked_by: tasks that this one depends on (they must complete first)
 - created_at: when the task was created`,
 		Tags: []string{"task", "get", "status", "planning"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "task_id", Type: "string", Description: "The unique identifier of the task to retrieve.", Required: true},
 		},
 	}
@@ -47,7 +45,7 @@ func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, 
 		return nil, fmt.Errorf("task_id is required")
 	}
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TaskGet requires ToolContext with SessionID")
 	}

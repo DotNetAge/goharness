@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TeamGetTasksTool struct{}
@@ -13,8 +11,8 @@ func NewTeamGetTasksTool() *TeamGetTasksTool {
 	return &TeamGetTasksTool{}
 }
 
-func (t *TeamGetTasksTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TeamGetTasksTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TeamGetTasks",
 		Description: "Get all tasks assigned to a team, with their status, owner, and dependencies.",
 		Prompt: `Retrieve all tasks belonging to a specific team.
@@ -27,7 +25,7 @@ Use this to:
 Required parameter:
 - team_name: the name of the team (from TeamCreate)`,
 		Tags: []string{"team", "tasks", "list", "status"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "team_name", Type: "string", Description: "Name of the team to get tasks for.", Required: true},
 		},
 	}
@@ -39,7 +37,7 @@ func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (
 		return nil, fmt.Errorf("team_name is required")
 	}
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TeamGetTasks requires ToolContext with SessionID")
 	}

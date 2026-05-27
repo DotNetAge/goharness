@@ -7,18 +7,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // LS lists directory contents with metadata (size, type, permissions, modification time).
 type LS struct {
-	info *core.ToolInfo
+	info *ToolInfo
 }
 
 // NewLsTool creates an Ls tool.
-func NewLsTool() core.FuncTool {
+func NewLsTool() FuncTool {
 	return &LS{
-		info: &core.ToolInfo{
+		info: &ToolInfo{
 			Name:               "Ls",
 			MaxResultSizeChars: 30000,
 			Description:        "List directory contents with file metadata — size, type, permissions, modification time. Supports recursive tree view and hidden files.",
@@ -40,9 +40,9 @@ Set show_hidden=true to include dot-files (.gitignore, .env, .config, etc.). Hid
 - Use Glob to search for files matching a pattern across the whole project.
 - Use Read to read a specific file's content.
 - When exploring an unfamiliar codebase, start with Ls on the root directory to understand the project structure.`,
-			Tags:         []string{"file", "filesystem", "list", "directory"},
-			SecurityLevel: core.LevelSafe,
-			Parameters: []core.Parameter{
+			Tags:          []string{"file", "filesystem", "list", "directory"},
+			SecurityLevel: events.LevelSafe,
+			Parameters: []Parameter{
 				{Name: "path", Type: "string", Description: "Directory path to list. Defaults to current directory ('.').", Required: false},
 				{Name: "recursive", Type: "boolean", Description: "If true, recursively list sub-directories (2 levels deep). Default: false.", Required: false},
 				{Name: "show_hidden", Type: "boolean", Description: "If true, include dot-files and hidden directories. Default: false.", Required: false},
@@ -51,7 +51,7 @@ Set show_hidden=true to include dot-files (.gitignore, .env, .config, etc.). Hid
 	}
 }
 
-func (l *LS) Info() *core.ToolInfo {
+func (l *LS) Info() *ToolInfo {
 	return l.info
 }
 
@@ -61,7 +61,7 @@ const maxLsItems = 500
 
 func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	// Get ToolContext for directory awareness (Design-time safety)
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 
 	// Get directory path (defaults to current directory)
 	dirPath := "."

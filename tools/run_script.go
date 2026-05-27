@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // ---------------------------------------------------------------------------
@@ -129,15 +129,15 @@ type scriptExecutor interface {
 // ---------------------------------------------------------------------------
 
 type platformScriptExecutor struct {
-	platform          Platform
-	mu                sync.Mutex
-	venvManagers      map[string]*venvManager
+	platform     Platform
+	mu           sync.Mutex
+	venvManagers map[string]*venvManager
 }
 
 func newPlatformScriptExecutor() *platformScriptExecutor {
 	return &platformScriptExecutor{
-		platform:      CurrentPlatform(),
-		venvManagers:  make(map[string]*venvManager),
+		platform:     CurrentPlatform(),
+		venvManagers: make(map[string]*venvManager),
 	}
 }
 
@@ -443,11 +443,11 @@ func dirExists(path string) bool {
 // ---------------------------------------------------------------------------
 
 type RunScript struct {
-	info              *core.ToolInfo
-	scriptExecutor    scriptExecutor
+	info           *ToolInfo
+	scriptExecutor scriptExecutor
 }
 
-func NewRunScriptTool() core.FuncTool {
+func NewRunScriptTool() FuncTool {
 	platform := CurrentPlatform()
 	executor := newPlatformScriptExecutor()
 	return &RunScript{
@@ -456,7 +456,7 @@ func NewRunScriptTool() core.FuncTool {
 	}
 }
 
-func buildRunScriptInfo(platform Platform) *core.ToolInfo {
+func buildRunScriptInfo(platform Platform) *ToolInfo {
 	var description string
 	switch platform {
 	case PlatformWindows:
@@ -551,14 +551,14 @@ Usage:
 - Use the args parameter for additional arguments.`
 	}
 
-	return &core.ToolInfo{
-		Name:          "RunScript",
-		Description:   description,
-		Prompt:        prompt,
+	return &ToolInfo{
+		Name:               "RunScript",
+		Description:        description,
+		Prompt:             prompt,
 		MaxResultSizeChars: 30000,
-		Tags:          []string{"script", "execute", "python", "shell", "skill"},
-		SecurityLevel: core.LevelSensitive,
-		Parameters: []core.Parameter{
+		Tags:               []string{"script", "execute", "python", "shell", "skill"},
+		SecurityLevel:      events.LevelSensitive,
+		Parameters: []Parameter{
 			{
 				Name:        "command",
 				Type:        "string",
@@ -581,7 +581,7 @@ Usage:
 	}
 }
 
-func (t *RunScript) Info() *core.ToolInfo {
+func (t *RunScript) Info() *ToolInfo {
 	return t.info
 }
 

@@ -6,12 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // Write implements a tool for writing files to the filesystem.
 type Write struct {
-	info *core.ToolInfo
+	info *ToolInfo
 }
 
 const writeDescription = `Writes a file to the local filesystem.
@@ -23,11 +23,11 @@ Usage:
 - The path parameter must be an absolute path, not a relative path.`
 
 // NewWriteTool creates a file write tool.
-func NewWriteTool() core.FuncTool {
+func NewWriteTool() FuncTool {
 	return &Write{
-		info: &core.ToolInfo{
-			Name:          "Write",
-			Description:   writeDescription,
+		info: &ToolInfo{
+			Name:        "Write",
+			Description: writeDescription,
 			Prompt: `Writes a file to the local filesystem.
 
 Usage:
@@ -35,13 +35,13 @@ Usage:
 - Prefer the file_edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
 - NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`,
-			Tags:         []string{"file", "filesystem", "write", "create"},
-			SecurityLevel: core.LevelSensitive,
+			Tags:          []string{"file", "filesystem", "write", "create"},
+			SecurityLevel: events.LevelSensitive,
 		},
 	}
 }
 
-func (w *Write) Info() *core.ToolInfo {
+func (w *Write) Info() *ToolInfo {
 	return w.info
 }
 
@@ -59,7 +59,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	logger := getLogger(ctx)
 
 	// Resolve path with optional session: prefix support
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	resolvedPath, scope := ResolveTargetPath(path, tc.ProjectDir, tc.SessionDir)
 
 	logger.Info("writing file",

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TeamCreateTool struct {
@@ -16,8 +14,8 @@ func NewTeamCreateTool(spawn SpawnFunc) *TeamCreateTool {
 	return &TeamCreateTool{spawn: spawn}
 }
 
-func (t *TeamCreateTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TeamCreateTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TeamCreate",
 		Description: "Create a team of agents that work together on a complex task. The team leader coordinates work and delegates to team members.",
 		Prompt: `Create a team of agents to collaboratively solve a complex task.
@@ -47,7 +45,7 @@ Returns:
 - team_name, leader, members list
 - task_ids if tasks were created`,
 		Tags: []string{"team", "create", "swarm", "orchestration", "collaboration"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "team_name", Type: "string", Description: "Short, unique name for the team (kebab-case).", Required: true},
 			{Name: "description", Type: "string", Description: "What the team is working on.", Required: true},
 			{Name: "leader", Type: "string", Description: "Name of the team leader agent.", Required: true},
@@ -83,7 +81,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		return nil, fmt.Errorf("members is required and must contain at least one agent")
 	}
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TeamCreate requires ToolContext with SessionID")
 	}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 // CollectResultsTool blocks until the specified tasks complete and returns all results.
@@ -16,11 +14,11 @@ func NewCollectResultsTool() *CollectResultsTool {
 	return &CollectResultsTool{}
 }
 
-func (t *CollectResultsTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
-		Name:        "CollectResults",
+func (t *CollectResultsTool) Info() *ToolInfo {
+	return &ToolInfo{
+		Name:               "CollectResults",
 		MaxResultSizeChars: 50000,
-		Description: "Wait for one or more async tasks to complete and return their results. Blocks until all specified tasks are done.",
+		Description:        "Wait for one or more async tasks to complete and return their results. Blocks until all specified tasks are done.",
 		Prompt: `Wait for async tasks (started by SubAgent) to finish and collect their results.
 
 This tool blocks until ALL specified task_ids have completed. Use it after SubAgent() to retrieve results.
@@ -35,16 +33,16 @@ Usage:
 - Pass task_ids returned by SubAgent() calls
 - Multiple parallel sub-agent results can be collected in one call
 - Sequential tasks should be chained: SubAgent → Collect → SubAgent → Collect`,
-		Tags:      []string{"orchestration", "collect", "result"},
+		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "task_ids", Type: "array", Description: "Array of task IDs to collect results from.", Required: true},
 		},
 	}
 }
 
 func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.ResultStore == nil {
 		return nil, fmt.Errorf("collect_results tool requires ToolContext with ResultStore")
 	}

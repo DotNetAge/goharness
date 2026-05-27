@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 func mustAbs(t *testing.T, path string) string {
@@ -76,7 +76,7 @@ func TestBash(t *testing.T) {
 		if info.Description == "" {
 			t.Error("Expected non-empty description")
 		}
-		if info.SecurityLevel != core.LevelHighRisk {
+		if info.SecurityLevel != events.LevelHighRisk {
 			t.Errorf("Expected HighRisk, got %v", info.SecurityLevel)
 		}
 	})
@@ -156,7 +156,7 @@ func TestLS(t *testing.T) {
 		if ls.Info().Description == "" {
 			t.Error("Expected non-empty description")
 		}
-		if ls.Info().SecurityLevel != core.LevelSafe {
+		if ls.Info().SecurityLevel != events.LevelSafe {
 			t.Errorf("Expected LevelSafe, got %v", ls.Info().SecurityLevel)
 		}
 	})
@@ -207,7 +207,7 @@ func TestGlob(t *testing.T) {
 		if glob.Info().Description == "" {
 			t.Error("Expected non-empty description")
 		}
-		if glob.Info().SecurityLevel != core.LevelSafe {
+		if glob.Info().SecurityLevel != events.LevelSafe {
 			t.Errorf("Expected LevelSafe, got %v", glob.Info().SecurityLevel)
 		}
 	})
@@ -274,7 +274,7 @@ func TestRead(t *testing.T) {
 		if read.Info().Description == "" {
 			t.Error("Expected non-empty description")
 		}
-		if read.Info().SecurityLevel != core.LevelSafe {
+		if read.Info().SecurityLevel != events.LevelSafe {
 			t.Errorf("Expected LevelSafe, got %v", read.Info().SecurityLevel)
 		}
 	})
@@ -341,7 +341,7 @@ func TestWrite(t *testing.T) {
 		if write.Info().Description == "" {
 			t.Error("Expected non-empty description")
 		}
-		if write.Info().SecurityLevel != core.LevelSensitive {
+		if write.Info().SecurityLevel != events.LevelSensitive {
 			t.Errorf("Expected LevelSensitive, got %v", write.Info().SecurityLevel)
 		}
 	})

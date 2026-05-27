@@ -5,26 +5,26 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/memory"
 )
 
 // MemorySearch implements a tool for searching long-term and session memory.
-// It provides semantic retrieval over stored knowledge using the core.Memory interface.
+// It provides semantic retrieval over stored knowledge using the memory.Memory interface.
 type MemorySearch struct {
-	memory core.Memory
+	memory memory.Memory
 }
 
 // NewMemorySearch creates a MemorySearch tool with the given Memory implementation.
 // Returns nil if memory is nil (memory not configured).
-func NewMemorySearch(memory core.Memory) core.FuncTool {
+func NewMemorySearch(memory memory.Memory) FuncTool {
 	if memory == nil {
 		return nil
 	}
 	return &MemorySearch{memory: memory}
 }
 
-func (t *MemorySearch) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *MemorySearch) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:               "MemorySearch",
 		MaxResultSizeChars: 30000,
 		Description:        "Search long-term memory for relevant past knowledge, experiences, or data. Use this when you need information from previous interactions, user preferences, historical context, or domain-specific knowledge that may have been stored in memory.",
@@ -33,7 +33,7 @@ Use this when you need information from previous interactions, user preferences,
 This should be your FIRST source of external information before searching the internet.`,
 		Tags:       []string{"memory", "knowledge", "search", "retrieval"},
 		IsReadOnly: true,
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{
 				Name:        "query",
 				Type:        "string",
@@ -77,23 +77,23 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		}
 	}
 
-	var opts []core.RetrieveOption
-	opts = append(opts, core.WithMemoryLimit(limit))
+	var opts []memory.RetrieveOption
+	opts = append(opts, memory.WithMemoryLimit(limit))
 
 	if typesRaw, ok := params["types"].([]any); ok && len(typesRaw) > 0 {
-		var memTypes []core.MemoryType
+		var memTypes []memory.MemoryType
 		for _, t := range typesRaw {
 			if typeStr, ok := t.(string); ok {
 				switch strings.ToLower(typeStr) {
 				case "longterm", "long-term", "long_term":
-					memTypes = append(memTypes, core.MemoryTypeLongTerm)
+					memTypes = append(memTypes, memory.MemoryTypeLongTerm)
 				case "session":
-					memTypes = append(memTypes, core.MemoryTypeSession)
+					memTypes = append(memTypes, memory.MemoryTypeSession)
 				}
 			}
 		}
 		if len(memTypes) > 0 {
-			opts = append(opts, core.WithMemoryTypes(memTypes...))
+			opts = append(opts, memory.WithMemoryTypes(memTypes...))
 		}
 	}
 
@@ -125,7 +125,7 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 	return result, nil
 }
 
-func formatMemorySearchResults(query string, records []core.MemoryRecord) string {
+func formatMemorySearchResults(query string, records []memory.MemoryRecord) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Memory search results for query: %q\n\n", query)
 	fmt.Fprintf(&sb, "Found %d relevant memory record(s):\n\n", len(records))
@@ -162,11 +162,11 @@ func formatMemorySearchResults(query string, records []core.MemoryRecord) string
 	return sb.String()
 }
 
-func memoryTypeLabel(t core.MemoryType) string {
+func memoryTypeLabel(t memory.MemoryType) string {
 	switch t {
-	case core.MemoryTypeSession:
+	case memory.MemoryTypeSession:
 		return "Session Memory"
-	case core.MemoryTypeLongTerm:
+	case memory.MemoryTypeLongTerm:
 		return "Long-term Knowledge"
 	default:
 		return "Unknown"

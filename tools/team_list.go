@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TeamListTool struct{}
@@ -13,8 +11,8 @@ func NewTeamListTool() *TeamListTool {
 	return &TeamListTool{}
 }
 
-func (t *TeamListTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TeamListTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TeamList",
 		Description: "List all teams in the current session with their members and status.",
 		Prompt: `List all teams in the current session.
@@ -31,13 +29,13 @@ Returns:
 - task_ids: tasks dispatched to the team
 - status: active or completed
 - created_at: when the team was created`,
-		Tags: []string{"team", "list", "status", "orchestration"},
-		Parameters: []core.Parameter{},
+		Tags:       []string{"team", "list", "status", "orchestration"},
+		Parameters: []Parameter{},
 	}
 }
 
 func (t *TeamListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TeamList requires ToolContext with SessionID")
 	}

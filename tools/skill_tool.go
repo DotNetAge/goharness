@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/skill"
 )
 
 // SkillLookupFunc looks up a skill by name and returns it if found.
 // The reactor provides this to avoid circular imports.
-type SkillLookupFunc func(name string) (*core.Skill, error)
+type SkillLookupFunc func(name string) (*skill.Skill, error)
 
 // SkillTool lets the LLM load a skill's full instructions on demand.
 //
@@ -27,8 +27,8 @@ func NewSkillTool(lookup SkillLookupFunc) *SkillTool {
 	return &SkillTool{lookup: lookup}
 }
 
-func (t *SkillTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *SkillTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:               "Skill",
 		MaxResultSizeChars: 50000,
 		Description:        "Load a specialized skill by name. Skills are listed in the system prompt with their descriptions. Call this tool when a skill can help with the current task.",
@@ -42,7 +42,7 @@ Skills may expose a "Base directory" in their result. When present, Use the Read
 
 Available skills are listed in the system prompt under "## Capacities (Available Skills)".`,
 		Tags: []string{"skill", "capability"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{
 				Name:        "name",
 				Type:        "string",
@@ -79,11 +79,11 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 	result += fmt.Sprintf("\nInstructions:\n%s", skill.Instructions)
 
 	return map[string]any{
-		"skill_name":  skill.Name,
-		"description": skill.Description,
-		"instructions": skill.Instructions,
+		"skill_name":    skill.Name,
+		"description":   skill.Description,
+		"instructions":  skill.Instructions,
 		"allowed_tools": skill.AllowedTools,
-		"content":     result,
-		"loaded":      true,
+		"content":       result,
+		"loaded":        true,
 	}, nil
 }

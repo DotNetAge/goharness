@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TaskListTool struct{}
@@ -13,8 +11,8 @@ func NewTaskListTool() *TaskListTool {
 	return &TaskListTool{}
 }
 
-func (t *TaskListTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TaskListTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TaskList",
 		Description: "List all tasks in the current session with their status, owner, and dependency information.",
 		Prompt: `List all tasks in the current session.
@@ -36,7 +34,7 @@ Returns a list with:
 - owner: who is responsible (if assigned)
 - blocked_by: tasks blocking this one (if any)`,
 		Tags: []string{"task", "list", "status", "planning"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "status_filter", Type: "string", Description: "Optional: filter by status (pending, in_progress, completed, cancelled).", Required: false},
 			{Name: "owner_filter", Type: "string", Description: "Optional: filter by assigned owner.", Required: false},
 		},
@@ -44,7 +42,7 @@ Returns a list with:
 }
 
 func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TaskList requires ToolContext with SessionID")
 	}

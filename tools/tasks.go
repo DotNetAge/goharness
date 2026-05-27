@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/store"
 )
 
 type TaskStatus string
@@ -228,8 +228,8 @@ func DeleteTeam(ctx context.Context, sessionID, teamName string) error {
 	return kv.Delete(ctx, sessionID, teamKey(sessionID, teamName))
 }
 
-func getKVStore(ctx context.Context) core.KVStore {
-	tc := core.GetToolContext(ctx)
+func getKVStore(ctx context.Context) store.KVStore {
+	tc := GetToolContext(ctx)
 	if tc == nil {
 		return nil
 	}

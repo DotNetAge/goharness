@@ -6,7 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goreact/store"
 )
 
 // SpawnFunc creates and runs a sub-agent for a delegated task.
@@ -27,8 +28,8 @@ func NewSubAgentTool(spawn SpawnFunc) *SubAgentTool {
 	return &SubAgentTool{spawn: spawn}
 }
 
-func (t *SubAgentTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *SubAgentTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "SubAgent",
 		Description: "Spawn a sub-agent for a task. Returns immediately with a task_id. Use CollectResults to retrieve the result later.",
 		Prompt: `Spawn a sub-agent to handle a task. Use this for two scenarios:
@@ -53,7 +54,7 @@ Usage:
 Don't race: After spawning a sub-agent, you know nothing about what it found until you call CollectResults.`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "agent_name", Type: "string", Description: "Name of the sub-agent to spawn.", Required: true},
 			{Name: "task", Type: "string", Description: "Task description for the sub-agent.", Required: true},
 		},
@@ -72,7 +73,7 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	logger := getLogger(ctx)
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.EmitEvent == nil {
 		return nil, fmt.Errorf("subagent tool requires ToolContext with EventBus")
 	}
@@ -87,9 +88,9 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	taskID := fmt.Sprintf("subagent-%d", t.counter.Add(1))
 
-	tc.EmitEvent(core.ReactEvent{
+	tc.EmitEvent(events.ReactEvent{
 		AgentID: "main",
-		Type:    core.SubtaskSpawned,
+		Type:    events.SubtaskSpawned,
 		Data:    map[string]any{"task_id": taskID, "agent_name": agentName, "task": task},
 	})
 
@@ -115,18 +116,18 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 			)
 		}
 
-		var taskResult *core.TaskResult
+		var taskResult *store.TaskResult
 		if err != nil {
-			taskResult = &core.TaskResult{TaskID: taskID, Error: err.Error(), Done: true}
+			taskResult = &store.TaskResult{TaskID: taskID, Error: err.Error(), Done: true}
 		} else {
-			taskResult = &core.TaskResult{TaskID: taskID, Result: result, Done: true}
+			taskResult = &store.TaskResult{TaskID: taskID, Result: result, Done: true}
 		}
 		if tc.ResultStore != nil {
 			tc.ResultStore.Store(taskID, taskResult)
 		}
-		tc.EmitEvent(core.ReactEvent{
+		tc.EmitEvent(events.ReactEvent{
 			AgentID: agentName,
-			Type:    core.SubtaskCompleted,
+			Type:    events.SubtaskCompleted,
 			Data:    map[string]any{"task_id": taskID, "success": err == nil},
 		})
 	}()

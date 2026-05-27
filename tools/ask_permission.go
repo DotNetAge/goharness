@@ -3,26 +3,26 @@ package tools
 import (
 	"fmt"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 type fallbackPermissionChecker struct{}
 
-func NewFallbackPermissionChecker() core.ToolPermissionChecker {
+func NewFallbackPermissionChecker() ToolPermissionChecker {
 	return &fallbackPermissionChecker{}
 }
 
-func (c *fallbackPermissionChecker) CheckPermissions(ctx *core.ToolUseContext) core.PermissionResult {
+func (c *fallbackPermissionChecker) CheckPermissions(ctx *ToolUseContext) PermissionResult {
 	info := ctx.ToolInfo
-	if info != nil && (info.SecurityLevel == core.LevelSafe || info.IsReadOnly) {
-		return core.PermissionResult{Behavior: core.PermissionAllow}
+	if info != nil && (info.SecurityLevel == events.LevelSafe || info.IsReadOnly) {
+		return PermissionResult{Behavior: PermissionAllow}
 	}
 	reason := fmt.Sprintf("Tool %q requires your authorization", ctx.ToolName)
-	if info != nil && info.SecurityLevel == core.LevelHighRisk {
+	if info != nil && info.SecurityLevel == events.LevelHighRisk {
 		reason = fmt.Sprintf("Tool %q is high-risk and requires your explicit authorization", ctx.ToolName)
 	}
-	return core.PermissionResult{
-		Behavior: core.PermissionAsk,
+	return PermissionResult{
+		Behavior: PermissionAsk,
 		Message:  reason,
 	}
 }

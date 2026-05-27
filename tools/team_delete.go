@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-
-	"github.com/DotNetAge/goreact/core"
 )
 
 type TeamDeleteTool struct{}
@@ -13,8 +11,8 @@ func NewTeamDeleteTool() *TeamDeleteTool {
 	return &TeamDeleteTool{}
 }
 
-func (t *TeamDeleteTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *TeamDeleteTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "TeamDelete",
 		Description: "Delete a team and clean up its associated data. All team members must be idle before deletion.",
 		Prompt: `Delete a team and clean up its data.
@@ -34,7 +32,7 @@ Returns:
 - success: whether the team was deleted
 - message: status message`,
 		Tags: []string{"team", "delete", "cleanup", "orchestration"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "team_name", Type: "string", Description: "The name of the team to delete.", Required: true},
 		},
 	}
@@ -46,7 +44,7 @@ func (t *TeamDeleteTool) Execute(ctx context.Context, params map[string]any) (an
 		return nil, fmt.Errorf("team_name is required")
 	}
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc == nil || tc.SessionID == "" {
 		return nil, fmt.Errorf("TeamDelete requires ToolContext with SessionID")
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 const (
@@ -43,26 +43,26 @@ func IsWindowsPlatform() bool {
 
 // PowerShellTool implements the Windows PowerShell command execution tool.
 type PowerShellTool struct {
-	maxOutput         int
-	maxDuration       time.Duration
+	maxOutput   int
+	maxDuration time.Duration
 }
 
-func NewPowerShellTool() core.FuncTool {
+func NewPowerShellTool() FuncTool {
 	return &PowerShellTool{
-		maxOutput:     powershellDefaultMaxOutputBytes,
-		maxDuration:   powershellDefaultMaxDuration,
+		maxOutput:   powershellDefaultMaxOutputBytes,
+		maxDuration: powershellDefaultMaxDuration,
 	}
 }
 
-func (t *PowerShellTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
-		Name:        "PowerShell",
+func (t *PowerShellTool) Info() *ToolInfo {
+	return &ToolInfo{
+		Name:               "PowerShell",
 		MaxResultSizeChars: 30000,
-		Description: "Execute PowerShell commands on Windows. Use for system registry queries, service management, and Windows-specific operations.",
-		Prompt:      t.buildDescription(),
-		Tags:        []string{"windows", "powershell", "system", "command"},
-		SecurityLevel: core.LevelHighRisk,
-		Parameters: []core.Parameter{
+		Description:        "Execute PowerShell commands on Windows. Use for system registry queries, service management, and Windows-specific operations.",
+		Prompt:             t.buildDescription(),
+		Tags:               []string{"windows", "powershell", "system", "command"},
+		SecurityLevel:      events.LevelHighRisk,
+		Parameters: []Parameter{
 			{
 				Name:        "command",
 				Type:        "string",
@@ -103,8 +103,6 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 	} else {
 		cmd = exec.CommandContext(ctx, powershellPath, args...)
 	}
-
-
 
 	start := time.Now()
 

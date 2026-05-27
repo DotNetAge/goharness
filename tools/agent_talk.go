@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/events"
 )
 
 // AgentTalkFunc sends a message to another agent in a specific session and returns the reply.
@@ -25,8 +25,8 @@ func NewAgentTalkTool(talk AgentTalkFunc) *AgentTalkTool {
 	return &AgentTalkTool{talk: talk}
 }
 
-func (t *AgentTalkTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *AgentTalkTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:        "AgentTalk",
 		Description: "Send a message to another agent and get a reply. The agent continues its existing conversation when session_id is reused.",
 		Prompt: `Send a message to a known agent and get a reply. Use this for ongoing coordination — checking status, giving feedback, discussing shared work.
@@ -52,7 +52,7 @@ Parameters:
 
 Returns: {reply (the agent's response), agent_name, session_id}`,
 		Tags: []string{"orchestration", "talk", "agent-talk", "coordination"},
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{Name: "agent_name", Type: "string", Description: "Target agent name (e.g. @writer, code-reviewer).", Required: true},
 			{Name: "session_id", Type: "string", Description: "Conversation thread ID. New = start fresh. Reused = continue where you left off.", Required: true},
 			{Name: "message", Type: "string", Description: "Message content. Include enough context for the agent to understand.", Required: true},
@@ -87,11 +87,11 @@ func (t *AgentTalkTool) Execute(ctx context.Context, params map[string]any) (any
 		"message_preview", truncateForLog(message, 100),
 	)
 
-	tc := core.GetToolContext(ctx)
+	tc := GetToolContext(ctx)
 	if tc != nil && tc.EmitEvent != nil {
-		tc.EmitEvent(core.ReactEvent{
-			Type: core.AgentTalkStart,
-			Data: core.AgentTalkInfo{To: to, SessionID: sessionID, Message: message},
+		tc.EmitEvent(events.ReactEvent{
+			Type: events.AgentTalkStart,
+			Data: events.AgentTalkInfo{To: to, SessionID: sessionID, Message: message},
 		})
 	}
 
@@ -104,18 +104,18 @@ func (t *AgentTalkTool) Execute(ctx context.Context, params map[string]any) (any
 			"elapsed_ms", time.Since(started).Milliseconds(),
 		)
 		if tc != nil && tc.EmitEvent != nil {
-			tc.EmitEvent(core.ReactEvent{
-				Type: core.AgentTalkEnd,
-				Data: core.AgentTalkResult{To: to, SessionID: sessionID, Error: err.Error()},
+			tc.EmitEvent(events.ReactEvent{
+				Type: events.AgentTalkEnd,
+				Data: events.AgentTalkResult{To: to, SessionID: sessionID, Error: err.Error()},
 			})
 		}
 		return nil, fmt.Errorf("agent talk to %q: %w", to, err)
 	}
 
 	if tc != nil && tc.EmitEvent != nil {
-		tc.EmitEvent(core.ReactEvent{
-			Type: core.AgentTalkEnd,
-			Data: core.AgentTalkResult{To: to, SessionID: sessionID, Reply: reply},
+		tc.EmitEvent(events.ReactEvent{
+			Type: events.AgentTalkEnd,
+			Data: events.AgentTalkResult{To: to, SessionID: sessionID, Reply: reply},
 		})
 	}
 

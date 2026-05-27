@@ -28,11 +28,11 @@ func TestValidateRequired(t *testing.T) {
 
 func TestValidateRequiredString(t *testing.T) {
 	tests := []struct {
-		name      string
-		params    map[string]any
-		key       string
-		wantVal   string
-		wantErr   bool
+		name    string
+		params  map[string]any
+		key     string
+		wantVal string
+		wantErr bool
 	}{
 		{"valid string", map[string]any{"cmd": "echo hi"}, "cmd", "echo hi", false},
 		{"missing key", map[string]any{}, "cmd", "", true},
@@ -103,10 +103,10 @@ func TestTruncateStringEdgeCases(t *testing.T) {
 
 func TestToFloat64(t *testing.T) {
 	tests := []struct {
-		name    string
-		v       any
-		want    float64
-		wantOk  bool
+		name   string
+		v      any
+		want   float64
+		wantOk bool
 	}{
 		{"float64", float64(3.14), 3.14, true},
 		{"float32", float32(2.71), 2.71, true},

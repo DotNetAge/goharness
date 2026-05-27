@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DotNetAge/goreact/core"
+	"github.com/DotNetAge/goreact/logging"
 	md "github.com/JohannesKaufmann/html-to-markdown"
 )
 
@@ -163,6 +163,7 @@ type cachedSearch struct {
 }
 
 var mdConverter = md.NewConverter("", true, nil)
+
 // Each adapter is responsible for building the request URL and resolving result URLs.
 func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, extraHeaders map[string]string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
@@ -260,7 +261,7 @@ type WebSearchTool struct {
 // Uses parallel execution: Baidu + Sogou + Weixin.
 // Each adapter returns top results, which are then merged and deduplicated.
 // Results are cached via the KVStore interface (2-day TTL) for speed and knowledge reuse.
-func NewWebSearchTool() core.FuncTool {
+func NewWebSearchTool() FuncTool {
 	t := &WebSearchTool{}
 	t.adapters = []SearchAdapter{
 		NewSogouAdapter(),
@@ -278,8 +279,8 @@ func (t *WebSearchTool) AddAdapter(adapter SearchAdapter) {
 	t.adapters = append([]SearchAdapter{adapter}, t.adapters...)
 }
 
-func (t *WebSearchTool) Info() *core.ToolInfo {
-	return &core.ToolInfo{
+func (t *WebSearchTool) Info() *ToolInfo {
+	return &ToolInfo{
 		Name:               "WebSearch",
 		MaxResultSizeChars: 30000,
 		Description: `Search the web for real-time information. Returns a list of {title, url} results.
@@ -298,7 +299,7 @@ Usage notes:
 - Domain filtering is supported to include or block specific websites
 - IMPORTANT: Use the correct year in search queries`,
 		IsReadOnly: true,
-		Parameters: []core.Parameter{
+		Parameters: []Parameter{
 			{
 				Name:        "query",
 				Type:        "string",
@@ -364,7 +365,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 
 	// Check KVStore cache (2-day TTL)
 	cacheKey := query + "|" + strings.Join(allowedDomains, ",") + "|" + strings.Join(blockedDomains, ",")
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs != nil {
 		if data, err := kvs.Get(ctx, cacheSessionID, cacheKey); err == nil && len(data) > 0 {
 			var entry cachedSearch
@@ -528,7 +529,7 @@ collectLoop:
 
 // CachedQueryCount returns how many unique queries are in the KVStore cache.
 func (t *WebSearchTool) CachedQueryCount(ctx context.Context) int {
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
 		return 0
 	}
@@ -541,7 +542,7 @@ func (t *WebSearchTool) CachedQueryCount(ctx context.Context) int {
 
 // AllCachedQueries returns all cache keys (query strings) stored in KVStore.
 func (t *WebSearchTool) AllCachedQueries(ctx context.Context) []string {
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
 		return nil
 	}
@@ -554,7 +555,7 @@ func (t *WebSearchTool) AllCachedQueries(ctx context.Context) []string {
 
 // AllCachedResults returns every unique URL across all cached queries in KVStore.
 func (t *WebSearchTool) AllCachedResults(ctx context.Context) []SearchResult {
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
 		return nil
 	}
@@ -588,7 +589,7 @@ func (t *WebSearchTool) AllCachedResults(ctx context.Context) []SearchResult {
 // This enables other mechanisms (memory, checks) to reuse externally
 // collected knowledge without making a new network request.
 func (t *WebSearchTool) SearchCache(ctx context.Context, keyword string) []SearchResult {
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
 		return nil
 	}
@@ -633,7 +634,7 @@ func (t *WebSearchTool) SearchCache(ctx context.Context, keyword string) []Searc
 
 // EvictExpiredCache removes entries older than the TTL from KVStore.
 func (t *WebSearchTool) EvictExpiredCache(ctx context.Context) {
-	kvs := core.GetToolContext(ctx).KVStore
+	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
 		return
 	}
@@ -722,10 +723,10 @@ func truncateStr(s string, maxLen int) string {
 
 // getLogger extracts Logger from ToolContext or returns default slog-based logger.
 // This enables dependency injection while maintaining backward compatibility.
-func getLogger(ctx context.Context) core.Logger {
-	tc := core.GetToolContext(ctx)
+func getLogger(ctx context.Context) logging.Logger {
+	tc := GetToolContext(ctx)
 	if tc != nil && tc.Logger != nil {
 		return tc.Logger
 	}
-	return core.DefaultLogger()
+	return logging.DefaultLogger()
 }

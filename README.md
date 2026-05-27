@@ -266,7 +266,7 @@ func main() {
 
 | 方法 | 返回 | 说明 |
 |------|------|------|
-| `Tools()` | `[]core.ToolInfo` | 已注册工具列表（名称、描述、参数、安全级别） |
+| `Tools()` | `[]ToolInfo` | 已注册工具列表（名称、描述、参数、安全级别） |
 | `Skills()` | `[]*core.Skill` | 已加载 Skill 列表 |
 | `Config()` | `*core.AgentConfig` | Agent 配置 |
 | `Model()` | `*core.ModelConfig` | 模型配置 |
