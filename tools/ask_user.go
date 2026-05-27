@@ -9,17 +9,30 @@ import (
 	"github.com/DotNetAge/goreact/events"
 )
 
-// AskUser is a tool that asks the user questions via the permission system.
-// Unlike the old design, this tool does NOT return an _interaction marker.
-// Instead, the executor emits an AskUserRequest event with structured
-// questions, the permission dialog collects answers, and answers are injected
-// into params via UpdatedInput. Execute() is an identity function that formats
-// the answers as a natural-language message for the LLM.
+// AskUser 实现了用户交互工具。
+// 用于在执行过程中向用户提问，收集信息、澄清歧义或获取决策。
+//
+// 与旧设计的区别：
+//   - 不再返回 _interaction marker
+//   - 通过 AskUserRequest 事件发送结构化问题
+//   - 权限对话框收集答案，通过 UpdatedInput 注入参数
+//   - Execute() 是恒等函数，将答案格式化为自然语言消息
+//
+// 交互流程：
+//  1. LLM 调用 AskUser 工具并传入问题
+//  2. 执行器检测到 AskUser，发送 AskUserRequest 事件
+//  3. 前端显示问题对话框
+//  4. 用户选择或输入答案
+//  5. 答案通过 UpdatedInput 注入回 params
+//  6. Execute() 格式化答案返回给 LLM
 type AskUser struct {
-	info *ToolInfo
+	info *ToolInfo // 工具元信息
 }
 
-// NewAskUserTool creates a new AskUser tool.
+// NewAskUserTool 创建一个 AskUser 工具实例。
+//
+// 返回：
+//   - FuncTool: 配置好的 AskUser 工具实例
 func NewAskUserTool() FuncTool {
 	return &AskUser{
 		info: &ToolInfo{
@@ -62,13 +75,23 @@ Usage notes:
 	}
 }
 
+// Info 返回 AskUser 工具的元信息。
 func (t *AskUser) Info() *ToolInfo {
 	return t.info
 }
 
-// Execute is an identity function. The actual interaction (showing question dialog,
-// collecting user answer) is handled by the executor's awaitUserResponse via
-// AskUserRequest event. The user's answers arrive via params["answers"].
+// Execute 执行用户提问操作。
+// 这是一个恒等函数：实际的交互（显示问题对话框、收集用户答案）
+// 由执行器的 awaitUserResponse 通过 AskUserRequest 事件处理。
+// 用户答案通过 params["answers"] 注入。
+//
+// 参数：
+//   - ctx: 上下文
+//   - params: 必须包含 "question"，可选 "options" 和 "multiSelect"
+//
+// 返回：
+//   - string: 格式化的答案结果或提示消息
+//   - error: 缺少必需参数时返回错误
 func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, error) {
 	question, ok := params["question"].(string)
 	if !ok || question == "" {
@@ -84,8 +107,16 @@ func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, erro
 	return fmt.Sprintf(`Asked user: "%s". Proceed based on the response.`, question), nil
 }
 
-// formatAnswerResult builds a natural-language result string for the LLM,
-// matching Claude Code's approach of telling the model what to do with the answer.
+// formatAnswerResult 构建自然语言的答案结果字符串。
+// 遵循 Claude Code 的方式，告诉模型如何处理答案。
+// 键按字母顺序排序以确保确定性输出。
+//
+// 参数：
+//   - question: 原始问题
+//   - answers: 用户答案映射（键为问题标识，值为答案）
+//
+// 返回：
+//   - string: 格式化的答案结果
 func formatAnswerResult(question string, answers map[string]any) string {
 	// Sort keys for deterministic output
 	keys := make([]string, 0, len(answers))

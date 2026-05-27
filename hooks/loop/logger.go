@@ -4,13 +4,14 @@ import (
 	"github.com/DotNetAge/goreact/logging"
 )
 
-// LoopLoggerHook 记录循环开始和结束日志。
+// LoopLoggerHook logs the start and end of each LLM call in the Think-Act loop.
 type LoopLoggerHook struct {
 	Logger logging.Logger
 }
 
 func (h *LoopLoggerHook) Priority() int { return hooks.PriorityLoopLogger }
 
+// BeforeLLM logs the start of an LLM call with session ID, iteration, and input preview.
 func (h *LoopLoggerHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -23,6 +24,7 @@ func (h *LoopLoggerHook) BeforeLLM(sessionID string, iteration int, input *hooks
 	return hooks.HookResult{}
 }
 
+// AfterLLM logs the completion of an LLM call with tool call information.
 func (h *LoopLoggerHook) AfterLLM(sessionID string, iteration int, resp *hooks.LLMResponse, results []hooks.ToolResult) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -37,4 +39,5 @@ func (h *LoopLoggerHook) AfterLLM(sessionID string, iteration int, resp *hooks.L
 	return hooks.HookResult{}
 }
 
+// Abort is a no-op for LoopLoggerHook.
 func (h *LoopLoggerHook) Abort(sessionID string, reason string) {}

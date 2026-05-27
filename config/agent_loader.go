@@ -10,6 +10,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// LoadAgentsFrom 从指定目录加载所有 Agent 配置文件，并返回初始化好的 AgentRegistry。
+//
+// 该函数执行以下操作：
+//  1. 将目录路径转换为绝对路径
+//  2. 应用可选的 AgentRegistryOption 配置选项（如自定义 Logger）
+//  3. 扫描目录中的所有 .md 文件（不区分大小写）
+//  4. 解析每个 Markdown 文件，提取 YAML frontmatter 和正文内容
+//  5. 将解析成功的 Agent 配置注册到 AgentRegistry 中
+//
+// 对于解析失败的文件，函数会记录警告日志并跳过，不会中断整体加载过程。
+// 这允许部分损坏的配置文件不影响其他正常文件的加载。
+//
+// 参数 dir 可以是相对路径或绝对路径。opts 参数用于自定义 Registry 行为，
+// 例如使用 WithLogger 选项指定自定义的日志记录器。
 func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, error) {
 	absPath, err := filepath.Abs(dir)
 	if err != nil {
@@ -51,6 +65,24 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 	return registry, nil
 }
 
+// parseAgentFile 解析单个 Agent 配置文件，返回解析后的 AgentConfig 对象。
+//
+// 文件格式要求：
+//  - 必须以 "---" 开头（YAML frontmatter 开始标记）
+//  - 必须包含两个 "---" 分隔符（frontmatter 开始和结束）
+//  - frontmatter 部分必须是有效的 YAML 格式
+//  - 两个分隔符之间的内容为 YAML 元数据
+//  - 第二个分隔符之后的内容为正文（Introduction/Body）
+//
+// 支持的字段：
+//  - name (必需): Agent 名称
+//  - role 或 title: Agent 角色（优先使用 role，回退到 title）
+//  - description: 描述信息
+//  - model: 默认模型名称
+//  - skills: 技能列表（数组）
+//  - meta: 扩展元数据（支持 map 或数组格式）
+//
+// 该函数会处理 Windows 换行符（\r\n）并自动转换为 Unix 格式（\n）。
 func parseAgentFile(filePath string) (*AgentConfig, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -142,6 +174,8 @@ func parseAgentFile(filePath string) (*AgentConfig, error) {
 	return agent, nil
 }
 
+// deepCopyMeta 递归地深拷贝元数据映射，确保修改副本不会影响原始数据。
+// 支持嵌套的 map[string]any 和 []any 类型的递归拷贝。
 func deepCopyMeta(src map[string]any) map[string]any {
 	dst := make(map[string]any, len(src))
 	for k, v := range src {

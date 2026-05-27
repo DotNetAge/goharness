@@ -1,3 +1,6 @@
+// Package store provides filesystem abstraction utilities.
+// It includes helpers for reading files from fs.FS implementations,
+// with support for handling absolute paths by converting them to relative paths.
 package store
 
 import (

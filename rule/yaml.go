@@ -9,15 +9,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ruleYAML is the internal structure for YAML rule file parsing.
 type ruleYAML struct {
 	Rules []Rule `yaml:"rules"`
 }
 
+// YAMLRuleRegistry implements RuleRegistry by loading rules from a YAML file.
+// Thread-safe with read-write locking for concurrent access.
 type YAMLRuleRegistry struct {
 	mu    sync.RWMutex
 	rules []Rule
 }
 
+// NewYAMLRuleRegistry creates a new YAMLRuleRegistry by loading rules from the given YAML file path.
 func NewYAMLRuleRegistry(yamlPath string) (*YAMLRuleRegistry, error) {
 	absPath, err := filepath.Abs(yamlPath)
 	if err != nil {
@@ -30,6 +34,8 @@ func NewYAMLRuleRegistry(yamlPath string) (*YAMLRuleRegistry, error) {
 	return reg, nil
 }
 
+// MustYAMLRuleRegistry creates a new YAMLRuleRegistry or panics on error.
+// Useful for initialization in package-level variables.
 func MustYAMLRuleRegistry(yamlPath string) *YAMLRuleRegistry {
 	reg, err := NewYAMLRuleRegistry(yamlPath)
 	if err != nil {
@@ -38,6 +44,8 @@ func MustYAMLRuleRegistry(yamlPath string) *YAMLRuleRegistry {
 	return reg
 }
 
+// load reads and parses rules from a YAML file.
+// Validates that all rules have non-empty ID and Intro fields.
 func (r *YAMLRuleRegistry) load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -64,6 +72,8 @@ func (r *YAMLRuleRegistry) load(path string) error {
 	return nil
 }
 
+// Register adds or updates a rule in the registry.
+// If a rule with the same ID exists, it is updated.
 func (r *YAMLRuleRegistry) Register(rule Rule) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -77,6 +87,8 @@ func (r *YAMLRuleRegistry) Register(rule Rule) error {
 	return nil
 }
 
+// Unregister removes a rule from the registry by ID.
+// No-op if the rule doesn't exist.
 func (r *YAMLRuleRegistry) Unregister(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -88,6 +100,7 @@ func (r *YAMLRuleRegistry) Unregister(id string) {
 	}
 }
 
+// Get retrieves a rule by ID. Returns the rule and true if found, nil and false otherwise.
 func (r *YAMLRuleRegistry) Get(id string) (*Rule, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -99,6 +112,7 @@ func (r *YAMLRuleRegistry) Get(id string) (*Rule, bool) {
 	return nil, false
 }
 
+// All returns a copy of all rules in the registry.
 func (r *YAMLRuleRegistry) All() []Rule {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -107,6 +121,7 @@ func (r *YAMLRuleRegistry) All() []Rule {
 	return out
 }
 
+// GetByScope returns all rules matching the given scope.
 func (r *YAMLRuleRegistry) GetByScope(scope RuleScope) []Rule {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -119,6 +134,8 @@ func (r *YAMLRuleRegistry) GetByScope(scope RuleScope) []Rule {
 	return filtered
 }
 
+// FormatPromptSection formats enabled rules as a Markdown list for inclusion in system prompts.
+// Returns empty string if no rules are defined or all rules are disabled.
 func (r *YAMLRuleRegistry) FormatPromptSection() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

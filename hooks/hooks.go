@@ -1,3 +1,6 @@
+// Package hooks provides the hook system for the gochat framework.
+// It defines interfaces and types for intercepting and modifying
+// the behavior of LLM loops and tool executions.
 package hooks
 
 import (
@@ -7,26 +10,46 @@ import (
 	"github.com/DotNetAge/goreact/session"
 )
 
+// Hook priority constants define the execution order of hooks.
+// Lower values indicate higher priority (executed first).
 const (
-	PriorityPreCheck    = 40
-	PriorityPermission  = 41
-	PriorityLoopEvent   = 42
-	PriorityToolEvent   = 43
-	PriorityLoopLogger  = 45
-	PriorityToolLogger  = 46
+	// PriorityPreCheck is the priority for pre-check hooks that run before any processing.
+	PriorityPreCheck = 40
+	// PriorityPermission is the priority for permission-checking hooks.
+	PriorityPermission = 41
+	// PriorityLoopEvent is the priority for general loop event hooks.
+	PriorityLoopEvent = 42
+	// PriorityToolEvent is the priority for tool-related event hooks.
+	PriorityToolEvent = 43
+	// PriorityLoopLogger is the priority for loop logging hooks.
+	PriorityLoopLogger = 45
+	// PriorityToolLogger is the priority for tool logging hooks.
+	PriorityToolLogger = 46
+	// PriorityConvergence is the priority for convergence-checking hooks.
 	PriorityConvergence = 49
 )
 
+// HookResult represents the result of a hook execution.
+// It indicates whether the current operation should be aborted
+// and provides optional error information.
 type HookResult struct {
-	Abort       bool
+	// Abort indicates whether the operation should be stopped.
+	Abort bool
+	// AbortReason contains the reason for aborting the operation.
 	AbortReason string
-	Error       error
+	// Error contains any error that occurred during hook execution.
+	Error error
 }
 
+// IsTerminal returns true if the hook result indicates that
+// processing should stop (either due to abort or an error).
 func (r HookResult) IsTerminal() bool {
 	return r.Abort || r.Error != nil
 }
 
+// LoopHook defines the interface for hooks that intercept the Think-Act loop.
+// Implementations can inspect and modify behavior before and after LLM calls,
+// as well as handle abort scenarios.
 type LoopHook interface {
 	Priority() int
 	BeforeLLM(sessionID string, iteration int, input *CallInput) HookResult
@@ -34,6 +57,8 @@ type LoopHook interface {
 	Abort(sessionID string, reason string)
 }
 
+// ToolHook defines the interface for hooks that intercept tool executions.
+// Implementations can check permissions before tool execution and log results after.
 type ToolHook interface {
 	Priority() int
 	Before(sessionID string, toolName string, params map[string]any) HookResult
@@ -43,6 +68,7 @@ type ToolHook interface {
 
 type ConversationHistory = []session.Message
 
+// LLMResponse represents the response from an LLM call in the Think phase.
 type LLMResponse struct {
 	Content      string
 	Reasoning    string
@@ -52,12 +78,14 @@ type LLMResponse struct {
 	AbortReason  string
 }
 
+// ToolCallInvocation represents a single tool call requested by the LLM.
 type ToolCallInvocation struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
 }
 
+// ToolResult represents the result of a tool execution.
 type ToolResult struct {
 	ToolName   string        `json:"tool_name"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
@@ -68,6 +96,7 @@ type ToolResult struct {
 	Success    bool          `json:"success"`
 }
 
+// CallInput contains the input data for an LLM call.
 type CallInput struct {
 	SessionID            string
 	SystemPromptSections []gochatcore.Message
@@ -76,6 +105,7 @@ type CallInput struct {
 	Tools                []gochatcore.Tool
 }
 
+// ToolResultSummary returns a human-readable summary of a tool result.
 func ToolResultSummary(tr ToolResult) string {
 	prefix := "[" + tr.ToolName + "]"
 	if tr.Error != "" {
@@ -88,6 +118,8 @@ func ToolResultSummary(tr ToolResult) string {
 	return prefix + " returned: (empty result)"
 }
 
+// Truncate truncates a string to the specified maximum length in runes,
+// appending "..." if truncated.
 func Truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {

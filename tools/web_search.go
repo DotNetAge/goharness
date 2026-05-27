@@ -125,29 +125,30 @@ func extractSnippet(lines []string, start int) string {
 
 // --- WebSearch Tool (Claude-style adapter pattern) ---
 
-// SearchResult represents a single web search result.
+// SearchResult 表示单条网络搜索结果。
 type SearchResult struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet,omitempty"`
-	Source  string `json:"source,omitempty"`
+	Title   string `json:"title"`             // 结果标题
+	URL     string `json:"url"`               // 结果 URL
+	Snippet string `json:"snippet,omitempty"` // 结果摘要
+	Source  string `json:"source,omitempty"`  // 来源搜索引擎
 }
 
-// SearchAdapter is the interface for web search providers.
-// Following Claude Code's adapter factory pattern, multiple providers
-// can be registered and the system falls back through them.
+// SearchAdapter 是搜索适配器接口。
+// 遵循 Claude Code 的适配器工厂模式，支持多个搜索引擎注册和回退。
+//
+// 实现此接口可以为 WebSearchTool 添加新的搜索引擎后端。
 type SearchAdapter interface {
-	// Name returns the adapter's identifier.
+	// Name 返回适配器的标识符（如 "sogou", "weixin"）。
 	Name() string
-	// Search performs a web search and returns results.
+	// Search 执行网络搜索并返回结果。
 	Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error)
 }
 
-// SearchOptions configures search behavior.
+// SearchOptions 配置搜索行为。
 type SearchOptions struct {
-	MaxResults     int
-	AllowedDomains []string
-	BlockedDomains []string
+	MaxResults     int      // 最大返回结果数量
+	AllowedDomains []string // 允许的域名白名单
+	BlockedDomains []string // 屏蔽的域名黑名单
 }
 
 // searchCacheTTL is the lifetime of cached search results (2 days).
@@ -246,21 +247,32 @@ func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
 
 // --- WebSearchTool ---
 
-// WebSearchTool performs web searches, returning {title, url} pairs.
-// Following Claude Code's architecture: search discovers URLs, WebFetch reads them.
+// WebSearchTool 实现了网络搜索工具。
+// 支持多引擎并行搜索和结果缓存，遵循 Claude Code 的架构设计：
+//   - WebSearch: 轻量级发现 → 返回 {title, url}（小 token 成本）
+//   - WebFetch: 深度读取 → 本地 HTTP 获取 → HTML→Markdown → LLM 摘要
 //
-// Claude Code pattern:
-//   - WebSearch: lightweight discovery → returns {title, url} only (small token cost)
-//   - WebFetch: deep reading → local HTTP fetch → HTML→Markdown → LLM summarization
+// 特性：
+//   - 多引擎并行搜索（默认：搜狗 + 微信）
+//   - 结果去重和合并
+//   - 2 天 TTL 的 KVStore 缓存
+//   - 域名过滤（允许/屏蔽列表）
 type WebSearchTool struct {
-	adapters  []SearchAdapter
-	adapterMu sync.RWMutex
+	adapters  []SearchAdapter // 搜索适配器列表
+	adapterMu sync.RWMutex    // 适配器列表的读写锁
 }
 
-// NewWebSearchTool creates a WebSearchTool with multiple search adapters for hybrid search.
-// Uses parallel execution: Baidu + Sogou + Weixin.
-// Each adapter returns top results, which are then merged and deduplicated.
-// Results are cached via the KVStore interface (2-day TTL) for speed and knowledge reuse.
+// NewWebSearchTool 创建一个 WebSearchTool 实例。
+// 默认使用搜狗和微信搜索适配器的混合搜索模式。
+//
+// 搜索策略：
+//   - 并行执行所有适配器
+//   - 合并并去重结果
+//   - 8 秒超时保证响应速度
+//   - 结果通过 KVStore 缓存 2 天
+//
+// 返回：
+//   - FuncTool: 配置好的 WebSearchTool 实例
 func NewWebSearchTool() FuncTool {
 	t := &WebSearchTool{}
 	t.adapters = []SearchAdapter{

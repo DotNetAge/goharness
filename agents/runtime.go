@@ -1,3 +1,59 @@
+// Package agents provides the AI Agent runtime core for executing ReAct (Reasoning + Acting) loops.
+//
+// This package implements the central orchestration layer for AI agents, managing:
+//   - LLM interactions with streaming support and tool use
+//   - Tool registration, discovery, and execution (sync/async)
+//   - Skill catalogs for agent capabilities
+//   - Behavioral rules and system prompt construction
+//   - Session management with conversation history and compaction
+//   - Hook system for extending loop behavior (BeforeLLM, AfterLLM, Tool hooks)
+//   - Event emission for real-time monitoring and observability
+//
+// # Architecture Overview
+//
+// The Runtime struct is the central orchestrator that replaces the old Reactor architecture.
+// It follows a cleaner separation of concerns:
+//
+//	Runtime (this file)
+//	├── Model Configuration (LLM settings)
+//	├── Registries (Tools, Skills, Rules, Agents, Providers)
+//	├── Executor (Tool execution engine)
+//	├── Hooks (LoopHooks + ToolHooks)
+//	└── Logger
+//
+//	Session (separate package)
+//	├── Message storage & retrieval
+//	├── Conversation window management
+//	├── Compaction (sliding window for token limits)
+//	└── Persistence
+//
+// # Thinking Loop Lifecycle
+//
+// The core execution flow (exec method) implements a ReAct loop:
+//
+//	1. Build system prompts from registries + session state
+//	2. Execute BeforeLLM hooks (can abort/modify)
+//	3. Assemble messages (system + history + user question)
+//	4. Stream LLM response (content + thinking + tool calls)
+//	5. Execute AfterLLM hooks (can abort/modify)
+//	6. If no tool calls → return final answer
+//	7. If tool calls → execute tools with hook chain
+//	8. Append results to session → repeat from step 1
+//	9. Terminate: completed / max_iterations / cancelled / error
+//
+// # Thread Safety
+//
+// Runtime is designed for single-threaded use within an Ask context.
+// For concurrent Ask calls, create separate Runtime instances or use external synchronization.
+// Internal state (registries) is typically initialized once and read during execution.
+//
+// # Quick Start
+//
+//	rt := NewRuntime(
+//	    WithModel(config.ModelConfig{...}),
+//	    WithToolRegistry(customRegistry),
+//	)
+//	result, err := rt.Ask("agent-name", "What files are in this directory?", session).Execute()
 package agents
 
 import (
@@ -25,6 +81,63 @@ import (
 // Runtime holds the infrastructure and registries needed to run the ThinkingLoop.
 // It is the replacement for the old Reactor: Runtime + Session together replicate
 // all Reactor functionality without the circular architectural issues.
+//
+// # Architecture Diagram
+//
+//	┌─────────────────────────────────────────────────────────────┐
+//	│                        Runtime                               │
+//	├─────────────────────────────────────────────────────────────┤
+//	│  model: ModelConfig          (LLM API settings)              │
+//	│  ─────────────────────────────────────────────────────────  │
+//	│  Registries:                                                 │
+//	│    ├─ toolReg: ToolRegistry    (Grep, Bash, WebSearch...)    │
+//	│    ├─ skillReg: SkillRegistry  (Agent capabilities)          │
+//	│    ├─ ruleReg: RuleRegistry    (Behavioral rules)            │
+//	│    ├─ agentReg: AgentRegistry  (Agent configurations)        │
+//	│    └─ providerReg: ProviderRegistry (LLM providers)         │
+//	│  ─────────────────────────────────────────────────────────  │
+//	│  Execution:                                                   │
+//	│    ├─ toolExec: ToolExecutor   (Tool execution engine)       │
+//	│    └─ mem: Memory             (Vector/memory store)          │
+//	│  ─────────────────────────────────────────────────────────  │
+//	│  Extensions:                                                  │
+//	│    ├─ loopHooks: []LoopHook    (BeforeLLM, AfterLLM, Abort)  │
+//	│    ├─ toolHooks: []ToolHook   (Before, After tool execution) │
+//	│    └─ logger: Logger          (Structured logging)           │
+//	│  ─────────────────────────────────────────────────────────  │
+//	│  Timeouts:                                                    │
+//	│    ├─ asyncTimeout: Duration   (For async tools)             │
+//	│    └─ syncTimeout: Duration    (For sync tools)              │
+//	└─────────────────────────────────────────────────────────────┘
+//
+// # Field Descriptions
+//
+//   - model: LLM configuration including API key, base URL, model name,
+//     temperature, max tokens, and sampling parameters (top_p, top_k, etc.)
+//   - toolReg: Registry of available tools (file operations, web access, code execution)
+//   - skillReg: Registry of agent skills/capabilities exposed in system prompt
+//   - ruleReg: Registry of behavioral rules that constrain agent behavior
+//   - mem: Memory interface for vector storage and retrieval (RAG)
+//   - agentReg: Registry of named agent configurations (role, description, intro)
+//   - providerReg: Registry of LLM provider configurations
+//   - toolExec: Tool execution engine with hook support and event emission
+//   - logger: Structured logger for debug/info/warning/error output
+//   - loopHooks: Hooks that run before/after each LLM call in the thinking loop
+//   - toolHooks: Hooks that run before/after each tool execution
+//   - asyncTimeout: Maximum execution time for async (concurrent) tools
+//   - syncTimeout: Maximum execution time for synchronous (sequential) tools
+//
+// # Thread Safety
+//
+// Runtime is NOT safe for concurrent use. Each Ask call should use its own Runtime instance,
+// or external synchronization must be applied. The typical pattern is:
+//
+//   - Create one Runtime per application/service
+//   - Use it sequentially for Ask calls, OR
+//   - Create a Runtime pool for concurrent processing
+//
+// Internal registries are typically initialized once at construction time and then read-only
+// during execution. If dynamic registration is needed, external locking is required.
 type Runtime struct {
 	model config.ModelConfig
 
@@ -45,7 +158,42 @@ type Runtime struct {
 	syncTimeout  time.Duration
 }
 
-// RunResult holds execution results from a single Ask.
+// RunResult holds execution results from a single Ask call.
+// It provides comprehensive information about the thinking loop execution,
+// including the final answer, resource usage, and termination details.
+//
+// # Fields
+//
+//   - Answer: The final response text from the agent. This is the content
+//     returned when the loop terminates normally (no more tool calls needed).
+//     If the content is empty but reasoning exists, the reasoning is used.
+//   - TokenUsage: Detailed token consumption statistics including input tokens,
+//     output tokens, total tokens, and timestamp of usage recording.
+//   - Duration: Total wall-clock time for the entire Ask execution, from start
+//     to termination (including all iterations, tool executions, and LLM calls).
+//   - Iterations: Number of thinking loop iterations completed before termination.
+//     Each iteration includes one LLM call and potentially tool executions.
+//   - TerminationReason: String indicating why the loop terminated. Possible values:
+//     "completed" - Agent provided final answer without tool calls
+//     "max_iterations" - Reached maximum iteration limit (default 20)
+//     "max_tokens" - LLM response hit token limit (finish_reason: length)
+//     "content_filtered" - LLM response was filtered by safety systems
+//     "cancelled" - Context was cancelled externally
+//     "llm_error" - LLM API call failed (network, auth, rate limit)
+//     "hook_error" - A hook panicked or returned an error
+//     "hook_abort" - A hook intentionally aborted the loop
+//
+// # Usage Example
+//
+//	result, err := rt.Ask("coder", "Explain this code", sess).Execute()
+//	if err != nil {
+//	    log.Fatalf("Ask failed: %v", err)
+//	}
+//	fmt.Printf("Answer: %s\n", result.Answer)
+//	fmt.Printf("Iterations: %d\n", result.Iterations)
+//	fmt.Printf("Tokens: %d\n", result.TokenUsage.TotalTokens)
+//	fmt.Printf("Duration: %v\n", result.Duration)
+//	fmt.Printf("Termination: %s\n", result.TerminationReason)
 type RunResult struct {
 	Answer            string
 	TokenUsage        session.TokenUsage
@@ -54,7 +202,86 @@ type RunResult struct {
 	TerminationReason string
 }
 
-// NewRuntime creates a Runtime with the given options.
+// NewRuntime creates a new Runtime instance with the given configuration options.
+// It initializes all default registries, tools, and sets sensible defaults for timeouts.
+//
+// # Parameters
+//
+// opts: Variadic list of RuntimeConfig functions that configure the Runtime.
+//       Available options include:
+//   - WithModel(config.ModelConfig): Set LLM model configuration (required)
+//   - WithToolRegistry(tools.ToolRegistry): Use custom tool registry
+//   - WithSkillRegistry(skill.SkillRegistry): Use custom skill registry
+//   - WithRuleRegistry(rule.RuleRegistry): Use custom rule registry
+//   - WithAgentRegistry(*config.AgentRegistry): Use custom agent registry
+//   - WithProviderRegistry(config.ProviderRegistry): Use custom provider registry
+//   - WithMemory(memory.Memory): Set memory/RAG backend
+//   - WithLogger(logging.Logger): Set custom logger
+//   - WithLoopHooks(...hooks.LoopHook): Add loop lifecycle hooks
+//   - WithToolHooks(...hooks.ToolHook): Add tool execution hooks
+//   - WithAsyncTimeout(time.Duration): Set timeout for async tools (default: 5min)
+//   - WithSyncTimeout(time.Duration): Set timeout for sync tools (default: 5min)
+//
+// # Default Behavior
+//
+// When created without options, NewRuntime provides:
+//   - DefaultToolRegistry with 15+ built-in tools (Grep, Glob, Read, Write, Bash, etc.)
+//   - DefaultSkillRegistry (empty, ready for registration)
+//   - DefaultLogger (stdout with structured JSON output)
+//   - 5 minute timeouts for both sync and async tool execution
+//   - No agent registry, rule registry, or memory (nil)
+//   - No hooks registered
+//
+// # Built-in Tools
+//
+// The following tools are automatically registered:
+//   File Operations: Grep, Glob, Read, Write, FileEdit, Ls
+//   Execution: Bash, RunScript
+//   Web Access: WebSearch, WebFetch
+//   Interaction: AskUser
+//   Task Management: CollectResults, TaskList, TaskGet, TaskUpdate
+//   Platform-specific: PowerShell (Windows only)
+//
+// # Return Value
+//
+// *Runtime: A fully initialized Runtime ready for use. The Runtime is NOT
+//           safe for concurrent use. Create separate instances or synchronize externally.
+//
+// # Example: Minimal Setup
+//
+//	rt := NewRuntime(
+//	    WithModel(config.ModelConfig{
+//	        Name:      "gpt-4",
+//	        APIKey:    "sk-...",
+//	        BaseURL:   "https://api.openai.com/v1",
+//	        MaxTokens: 4096,
+//	    }),
+//	)
+//
+// # Example: Full Configuration
+//
+//	customTools := tools.NewDefaultToolRegistry()
+//	customTools.Register(tools.NewCustomTool())
+//
+//	rt := NewRuntime(
+//	    WithModel(config.ModelConfig{
+//	        Name:               "claude-3-opus",
+//	        APIKey:             "sk-ant-...",
+//	        BaseURL:            "https://api.anthropic.com",
+//	        MaxTokens:          8192,
+//	        Temperature:        0.7,
+//	        TopP:              0.9,
+//	        MaxTurns:          30,
+//	    }),
+//	    WithToolRegistry(customTools),
+//	    WithSkillRegistry(mySkillReg),
+//	    WithRuleRegistry(myRuleReg),
+//	    WithMemory(vectorStore),
+//	    WithLoopHooks(&MyLoggingHook{}),
+//	    WithToolHooks(&SecurityHook{}),
+//	    WithAsyncTimeout(10 * time.Minute),
+//	    WithSyncTimeout(2 * time.Minute),
+//	)
 func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	r := &Runtime{
 		toolReg:      tools.NewDefaultToolRegistry(),
@@ -73,6 +300,12 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 
 // ── Default tool registration ───────────────────────────────────────────────
 
+// registerDefaultTools registers all built-in tools into the tool registry.
+// Called automatically by NewRuntime during initialization.
+// Includes file operations (Grep, Glob, Read, Write, FileEdit, Ls),
+// execution tools (Bash, RunScript), web tools (WebSearch, WebFetch),
+// interaction tools (AskUser), and task management tools.
+// On Windows, additionally registers PowerShell tool.
 func (rt *Runtime) registerDefaultTools() {
 	bundled := []struct {
 		name    string
@@ -108,7 +341,101 @@ func (rt *Runtime) registerDefaultTools() {
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
-// Ask creates an AskBuilder for the given agent name, question, and session.
+// Ask creates an AskBuilder for initiating a conversation with an agent.
+// This is the primary entry point for interacting with the Runtime's thinking loop.
+//
+// Ask uses the Builder pattern to allow flexible configuration before execution.
+// The returned AskBuilder can be customized with event handlers, then executed
+// to run the full ReAct (Reasoning + Acting) loop.
+//
+// # Parameters
+//
+//   - agentName: String identifier for the agent configuration to use.
+//     Must match a name registered in the AgentRegistry. The agent config
+//     defines the role, description, and introduction used in system prompts.
+//     Example values: "coder", "analyst", "assistant", "researcher"
+//
+//   - question: The user's question or instruction to the agent. This will be
+//     appended to the session as a user message and sent to the LLM.
+//     Can be any natural language query, code request, or task description.
+//     Example: "What files are in this directory?", "Explain this function",
+//             "Refactor this code to use generics", "Search the web for..."
+//
+//   - s: A Session instance that maintains conversation history and state.
+//     The session handles message storage, compaction, and provides context
+//     window management. Each Ask call appends messages to this session.
+//     Create sessions with session.New() or session.NewWithConfig().
+//
+// # Return Value
+//
+// *AskBuilder: A builder that can be configured and then executed.
+//              Call builder.Execute() to run the thinking loop and get results.
+//              Call builder.OnEvent() to register event handlers for real-time updates.
+//
+// # Execution Flow
+//
+// When Execute() is called on the returned builder:
+//
+//	1. Append user question to session
+//	2. Build system prompt from agent config + registries + session state
+//	3. For each iteration (up to MaxTurns):
+//	   a. Run BeforeLLM hooks (can modify/abort)
+//	   b. Assemble messages (system + history + user)
+//	   c. Stream LLM response (content + thinking + tool calls)
+//	   d. Run AfterLLM hooks (can modify/abort)
+//	   e. If no tool calls → return answer (termination)
+//	   f. If tool calls → execute tools with hook chain
+//	   g. Append tool results to session → next iteration
+//	4. Return RunResult with answer, usage, duration, termination reason
+//
+// # Event Handling
+//
+// Register event handlers to receive real-time updates:
+//
+//	result, err := rt.Ask("agent", "question", sess).
+//	    OnEvent(events.ContentDelta, func(data any) {
+//	        fmt.Print(data.(string))  // Stream content to stdout
+//	    }).
+//	    OnEvent(events.ToolExecStart, func(data any) {
+//	        log.Printf("Tool executing: %v", data)
+//	    }).
+//	    Execute()
+//
+// Available event types: ContentDelta, ThinkingDelta, ToolUseDelta,
+// ToolExecStart, ToolExecEnd, CycleEnd, FinalAnswer, Error, etc.
+//
+// # Example: Basic Usage
+//
+//	sess := session.New(session.Config{
+//	    SessionDir:  "./sessions",
+//	    ProjectDir:  ".",
+//	    AgentName:   "coder",
+//	})
+//
+//	result, err := rt.Ask("coder", "List all Go files", sess).Execute()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Println(result.Answer)
+//
+// # Example: With Event Streaming
+//
+//	builder := rt.Ask("researcher", "Find recent papers on LLMs", sess)
+//	builder.OnEvent(events.ContentDelta, func(data any) {
+//	    ws.Send(data.(string))  // Stream to WebSocket client
+//	})
+//	result, err := builder.Execute()
+//
+// # Cancellation
+//
+// The AskBuilder includes a context.Context that can be cancelled:
+//
+//	builder := rt.Ask("agent", "long task", sess)
+//	go func() {
+//	    time.Sleep(30 * time.Second)
+//	    builder.Cancel()  // Cancel after 30 seconds
+//	}()
+//	result, err := builder.Execute()
 func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuilder {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &AskBuilder{
@@ -125,10 +452,51 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 // ── ThinkingLoop ────────────────────────────────────────────────────────────
 
 // exec runs the full ThinkingLoop for the AskBuilder.
-// It replicates the Reactor's Run() functionality using the new architecture:
-//   - Session handles message storage and compaction
-//   - Runtime handles system prompt building, LLM calls, and tool execution
-//   - Hooks are integrated into the loop
+// This is the core execution engine that implements the ReAct (Reasoning + Acting) pattern.
+//
+// # Architecture
+//
+// exec replaces the old Reactor.Run() with a cleaner separation:
+//   - Session handles message storage and compaction (sliding window)
+//   - Runtime (this method) handles system prompt building, LLM calls, and tool execution
+//   - Hooks are integrated into the loop at key points (BeforeLLM, AfterLLM, Tool)
+//   - Event bus provides real-time observability
+//
+// # Execution Flow
+//
+// 1. Initialize event bus and wire up event handlers from builder
+// 2. Set session compaction handler for token limit management
+// 3. Create tool executor with event emission and logging
+// 4. Determine max iterations from model config (default: 20)
+// 5. Append user question to session
+// 6. Build tool definitions (stable across iterations)
+// 7. For each iteration:
+//    a. Check context cancellation
+//    b. Build system prompts from registries + session state
+//    c. Execute BeforeLLM hooks (can abort/modify)
+//    d. Assemble messages (system sections + history + user question)
+//    e. Stream LLM response with full configuration
+//    f. Parse streaming events (content, thinking, tool calls, errors)
+//    g. Execute AfterLLM hooks (can abort/modify)
+//    h. Persist assistant message to session
+//    i. If no tool calls → emit FinalAnswer and return
+//    j. If tool calls → execute tools with hook chain
+//    k. Persist tool results to session → next iteration
+// 8. On max iterations: return error with termination reason
+//
+// # Termination Conditions
+//
+// The loop terminates when:
+//   - Context is cancelled (user-initiated or timeout)
+//   - A hook aborts the loop (BeforeLLM or AfterLLM returns terminal result)
+//   - LLM returns no tool calls (agent has final answer)
+//   - LLM returns an error (network, auth, rate limit)
+//   - Max iterations reached (default 20, configurable via ModelConfig.MaxTurns)
+//
+// # Thread Safety
+//
+// This method is NOT safe for concurrent calls on the same Runtime instance.
+// Each call should use its own Runtime or be externally synchronized.
 func (rt *Runtime) exec(b *AskBuilder) {
 	ctx := b.ctx
 	sid := b.session.ID()
@@ -447,6 +815,22 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 // ── Hook execution helpers (with panic recovery + Abort notification) ────────
 
+// execBeforeLLMHooks executes all registered LoopHook.BeforeLLM methods in sequence.
+// This is called before each LLM call in the thinking loop, allowing hooks to:
+//   - Inspect and modify system prompts, user message, history, or tool definitions
+//   - Abort the loop by returning a terminal HookResult
+//   - Add context from external sources (e.g., memory retrieval)
+//
+// Parameters:
+//   - sid: Session ID for logging and hook context
+//   - iter: Current iteration number (0-based)
+//   - input: CallInput containing current state (system prompts, user msg, history, tools)
+//   - emit: Function to emit events for real-time monitoring
+//
+// Returns:
+//   - HookResult: Empty if all hooks passed; terminal result if a hook aborted
+//
+// Safety: Includes panic recovery to prevent one bad hook from crashing the entire loop.
 func (rt *Runtime) execBeforeLLMHooks(sid string, iter int, input *hooks.CallInput, emit func(events.ReactEventType, any)) (result hooks.HookResult) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -465,6 +849,23 @@ func (rt *Runtime) execBeforeLLMHooks(sid string, iter int, input *hooks.CallInp
 	return hooks.HookResult{}
 }
 
+// execAfterLLMHooks executes all registered LoopHook.AfterLLM methods in sequence.
+// This is called after each LLM response, allowing hooks to:
+//   - Inspect and modify the LLM response (content, reasoning, tool calls)
+//   - Abort the loop by returning a terminal HookResult
+//   - Perform post-processing like content filtering or logging
+//
+// Parameters:
+//   - sid: Session ID for logging and hook context
+//   - iter: Current iteration number (0-based)
+//   - resp: LLMResponse containing the model's response (content, reasoning, tool calls, usage)
+//   - toolResults: Tool results from previous iteration (empty on first iteration)
+//   - emit: Function to emit events for real-time monitoring
+//
+// Returns:
+//   - HookResult: Empty if all hooks passed; terminal result if a hook aborted
+//
+// Safety: Includes panic recovery to prevent one bad hook from crashing the entire loop.
 func (rt *Runtime) execAfterLLMHooks(sid string, iter int, resp *hooks.LLMResponse, toolResults []hooks.ToolResult, emit func(events.ReactEventType, any)) (result hooks.HookResult) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -483,6 +884,17 @@ func (rt *Runtime) execAfterLLMHooks(sid string, iter int, resp *hooks.LLMRespon
 	return hooks.HookResult{}
 }
 
+// notifyLoopAbort notifies all registered hooks that the loop is being aborted.
+// Calls Abort() on each hook in reverse registration order (LIFO),
+// allowing hooks to perform cleanup in the opposite order of their setup.
+//
+// Parameters:
+//   - sessionID: Session ID for hook context
+//   - reason: Reason string explaining why the loop was aborted
+//
+// This is called when:
+//   - A BeforeLLM or AfterLLM hook returns a terminal result with abort reason
+//   - The loop needs to terminate early due to external conditions
 func (rt *Runtime) notifyLoopAbort(sessionID string, reason string) {
 	for i := len(rt.loopHooks) - 1; i >= 0; i-- {
 		rt.loopHooks[i].Abort(sessionID, reason)
@@ -493,6 +905,30 @@ func (rt *Runtime) notifyLoopAbort(sessionID string, reason string) {
 
 // buildSystemPrompts constructs the system prompt sections from the Runtime's
 // registries and session state. This replaces the old Reactor's Prompt struct.
+//
+// The system prompt is built as multiple message sections to allow for:
+//   - Clear separation of concerns (identity, skills, rules, etc.)
+//   - KV cache optimization (static vs dynamic boundary)
+//   - Selective modification by hooks
+//
+// # Prompt Sections (in order):
+//
+//  1. Identity: Agent name, role, description, introduction (from AgentRegistry)
+//  2. Skills Catalog: Available skills and their descriptions (from SkillRegistry)
+//  3. Behavioral Rules: Default rules + custom rules (from RuleRegistry)
+//  4. Tool Usage Guidelines: How to use tools effectively
+//  5. Tone & Style: Communication style instructions
+//  6. Environment Info: Session ID, working directories, platform info
+//  7. System Reminders: Important operational reminders
+//  8. Dynamic Boundary: Marker for KV cache split point
+//  9. Output Efficiency: Instructions for concise output
+//
+// Parameters:
+//   - sessionID: Current session identifier for environment info
+//   - s: Session instance for retrieving agent name and directory info
+//
+// Returns:
+//   - []gochatcore.Message: Array of system messages forming the complete prompt
 func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
 	var msgs []gochatcore.Message
 
@@ -550,8 +986,30 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 
 // ── Message Assembly ────────────────────────────────────────────────────────
 
-// assembleMessages builds the complete message sequence for the LLM call.
-// Order: system sections → conversation history → user message.
+// assembleMessages builds the complete message sequence for the LLM API call.
+// Combines system prompts, conversation history, and user question into the
+// correct order expected by the LLM provider.
+//
+// # Message Order:
+//
+// 1. System sections (from buildSystemPrompts) - multiple system messages
+// 2. Conversation history (micro-compacted, max 2 consecutive same-role msgs)
+//    - Converted from session.Message to gochatcore.Message format
+//    - Preserves tool calls and tool call IDs in assistant/tool messages
+// 3. User question (if not already present as last message in history)
+//
+// # Compaction
+//
+// History is compacted using session.MicroCompact() which merges consecutive
+// messages of the same role to reduce token count while preserving information.
+//
+// Parameters:
+//   - systemSections: System prompt sections from buildSystemPrompts()
+//   - history: Conversation history from session.Current()
+//   - question: User's current question (may be empty if already in history)
+//
+// Returns:
+//   - []gochatcore.Message: Complete message sequence ready for LLM API call
 func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history []session.Message, question string) []gochatcore.Message {
 	var msgs []gochatcore.Message
 	msgs = append(msgs, systemSections...)
@@ -593,7 +1051,34 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 
 // ── Tool Execution ──────────────────────────────────────────────────────────
 
-// executeTools runs tool calls with the ToolHook chain, supporting async/sync execution.
+// executeTools runs multiple tool calls with the ToolHook chain, supporting both
+// async (concurrent) and sync (sequential) execution modes.
+//
+// # Execution Strategy
+//
+// For each tool invocation:
+//   - If tool.IsAsync == true: Execute concurrently in a goroutine with asyncTimeout
+//   - If tool.IsAsync == false: Execute synchronously in sequence with syncTimeout
+//
+// Async tools run in parallel using WaitGroup for coordination. Results are collected
+// into a slice maintaining original invocation order (by index).
+//
+// # Hook Integration
+//
+// Each tool execution goes through:
+// 1. ToolHook.Before chain (all hooks, can abort/deny)
+// 2. Actual tool execution via ToolExecutor
+// 3. ToolHook.After chain (all hooks, can modify result)
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout propagation
+//   - sessionID: Session ID for logging and hook context
+//   - invocs: Tool invocations to execute (from LLM response)
+//   - emit: Event emission function for real-time monitoring
+//   - toolExec: ToolExecutor instance to use for execution
+//
+// Returns:
+//   - []hooks.ToolResult: Results for each invocation, same order as input
 func (rt *Runtime) executeTools(
 	ctx context.Context,
 	sessionID string,
@@ -630,6 +1115,14 @@ func (rt *Runtime) executeTools(
 	return results
 }
 
+// isToolAsync checks if a tool should be executed asynchronously (concurrently).
+// Looks up the tool in the registry and returns its IsAsync flag.
+//
+// Parameters:
+//   - name: Tool name to look up
+//
+// Returns:
+//   - bool: true if tool exists and is marked as async, false otherwise
 func (rt *Runtime) isToolAsync(name string) bool {
 	if t, ok := rt.toolReg.Get(name); ok {
 		return t.Info().IsAsync
@@ -637,6 +1130,34 @@ func (rt *Runtime) isToolAsync(name string) bool {
 	return false
 }
 
+// executeSingleTool executes a single tool invocation with full hook chain support.
+// This is the core tool execution function called by executeTools for each invocation.
+//
+// # Execution Flow:
+//
+// 1. ToolHook.Before chain:
+//    - Each hook can inspect and approve/deny the execution
+//    - If any hook aborts, returns failed result immediately
+// 2. Emit ToolExecStart event
+// 3. Create timeout context (asyncTimeout or syncTimeout)
+// 4. Execute tool via ToolExecutor.Execute()
+// 5. Build ToolResult from execution result or error
+// 6. ToolHook.After chain:
+//    - Each hook can inspect and modify the result
+//    - If any hook aborts, replaces result with failure
+// 7. Emit ToolExecEnd event with final result
+// 8. Return ToolResult
+//
+// Parameters:
+//   - ctx: Parent context for cancellation propagation
+//   - sessionID: Session ID for logging and hooks
+//   - inv: ToolCallInvocation containing name, ID, and arguments
+//   - emit: Event emission function
+//   - toolExec: ToolExecutor to use
+//   - timeout: Maximum execution duration for this tool call
+//
+// Returns:
+//   - hooks.ToolResult: Complete execution result including success/failure, output, error, duration
 func (rt *Runtime) executeSingleTool(
 	ctx context.Context,
 	sessionID string,
@@ -696,6 +1217,17 @@ func (rt *Runtime) executeSingleTool(
 	return tr
 }
 
+// failedToolResult creates a failed ToolResult for tool execution errors or aborts.
+// Used when hooks deny execution, tools fail, or timeouts occur.
+//
+// Parameters:
+//   - toolName: Name of the tool that failed
+//   - toolCallID: ID of the tool call from LLM response
+//   - errMsg: Human-readable error message
+//   - start: Timestamp when execution started (for duration calculation)
+//
+// Returns:
+//   - hooks.ToolResult: Failed result with Success=false, Error set, Duration calculated
 func failedToolResult(toolName, toolCallID, errMsg string, start time.Time) hooks.ToolResult {
 	return hooks.ToolResult{
 		ToolName:   toolName,
@@ -706,6 +1238,17 @@ func failedToolResult(toolName, toolCallID, errMsg string, start time.Time) hook
 	}
 }
 
+// buildToolResult constructs a ToolResult from tool execution output or error.
+// Handles both successful executions (with result data) and failures.
+//
+// Parameters:
+//   - inv: Original tool invocation (name, ID, arguments)
+//   - execResult: Execution result from ToolExecutor (may be nil on error)
+//   - execErr: Error from tool execution (nil on success)
+//   - start: Start timestamp for duration calculation
+//
+// Returns:
+//   - hooks.ToolResult: Complete result with success status, output/error, metadata, duration
 func buildToolResult(inv hooks.ToolCallInvocation, execResult *tools.ToolExecutionResult, execErr error, start time.Time) hooks.ToolResult {
 	tr := hooks.ToolResult{
 		ToolName:   inv.Name,
@@ -729,6 +1272,20 @@ func buildToolResult(inv hooks.ToolCallInvocation, execResult *tools.ToolExecuti
 
 // ── LLM Response Parsing ────────────────────────────────────────────────────
 
+// parseToolInvocations converts LLM tool call objects into internal hook format.
+// Parses JSON arguments strings into parameter maps for each tool call.
+//
+// # Input Processing
+//
+// Filters out invalid calls (missing ID or name). For argument parsing:
+//   - Valid JSON: Unmarshal into map[string]any
+//   - Invalid JSON: Store as {"raw_args": original_string} to preserve data
+//
+// Parameters:
+//   - calls: Tool calls from gochat streaming response
+//
+// Returns:
+//   - []hooks.ToolCallInvocation: Parsed invocations ready for execution, or nil if empty
 func parseToolInvocations(calls []gochatcore.ToolCall) []hooks.ToolCallInvocation {
 	if len(calls) == 0 {
 		return nil
@@ -755,6 +1312,16 @@ func parseToolInvocations(calls []gochatcore.ToolCall) []hooks.ToolCallInvocatio
 
 // ── Tool Definition Building ────────────────────────────────────────────────
 
+// buildToolDefinitions converts all registered tools into LLM API tool definition format.
+// Called once at the start of exec() since tool definitions are stable across iterations.
+//
+// Each tool's Info() is converted to gochatcore.Tool with:
+//   - Name: Tool identifier
+//   - Description: Human-readable description for LLM
+//   - Parameters: JSON Schema object built from Parameter slice
+//
+// Returns:
+//   - []gochatcore.Tool: Array of tool definitions for LLM API, or nil if no tools registered
 func (rt *Runtime) buildToolDefinitions() []gochatcore.Tool {
 	if rt.toolReg == nil {
 		return nil
@@ -775,6 +1342,24 @@ func (rt *Runtime) buildToolDefinitions() []gochatcore.Tool {
 	return out
 }
 
+// buildParamSchema converts a Parameter slice into JSON Schema format for LLM tool definitions.
+// Builds a proper JSON Schema "object" type with properties for each parameter.
+//
+// # Schema Structure
+//
+//	{
+//	  "type": "object",
+//	  "properties": {
+//	    "param1": {"type": "string", "description": "...", "enum": [...]},
+//	    "param2": {"type": "integer", "description": "..."}
+//	  }
+//	}
+//
+// Parameters:
+//   - params: Tool parameter definitions from tools.Info().Parameters
+//
+// Returns:
+//   - json.RawMessage: Marshaled JSON Schema, or empty object schema if params is nil/empty
 func buildParamSchema(params []tools.Parameter) json.RawMessage {
 	if len(params) == 0 {
 		return json.RawMessage(`{"type":"object","properties":{}}`)
@@ -801,6 +1386,23 @@ func buildParamSchema(params []tools.Parameter) json.RawMessage {
 	return b
 }
 
+// paramTypeToJSONType maps Go/tool parameter type strings to JSON Schema type names.
+// Handles common aliases and defaults unknown types to "string".
+//
+// # Type Mapping
+//
+//   - "integer", "int", "int64", "int32" → "integer"
+//   - "number", "float64", "float32" → "number"
+//   - "boolean", "bool" → "boolean"
+//   - "array", "[]string", "[]int" → "array"
+//   - "object", "map" → "object"
+//   - Everything else → "string" (default)
+//
+// Parameters:
+//   - t: Type string from tool parameter definition
+//
+// Returns:
+//   - string: JSON Schema compatible type name
 func paramTypeToJSONType(t string) string {
 	switch t {
 	case "integer", "int", "int64", "int32":
@@ -820,18 +1422,133 @@ func paramTypeToJSONType(t string) string {
 
 // ── RegistryHub accessors ─────────────────────────────────────────────────────
 
-func (rt *Runtime) Logger() logging.Logger          { return rt.logger }
+// Logger returns the Runtime's structured logger instance.
+// The logger is used throughout the runtime for debug, info, warning, and error messages.
+// Default implementation outputs JSON-formatted logs to stdout.
+//
+// Returns:
+//   - logging.Logger: The configured logger instance. Never nil (defaults to DefaultLogger).
+//
+// Example:
+//
+//	logger := rt.Logger()
+//	logger.Info("Starting Ask", "agent", agentName, "question", question)
+func (rt *Runtime) Logger() logging.Logger { return rt.logger }
+
+// ToolRegistry returns the Runtime's tool registry containing all registered tools.
+// The tool registry manages available tools that the LLM can invoke during execution.
+// Built-in tools are registered automatically by NewRuntime; additional tools
+// can be registered via RegisterTool() or WithToolRegistry().
+//
+// Returns:
+//   - tools.ToolRegistry: The tool registry instance. Never nil.
+//
+// Example:
+//
+//	reg := rt.ToolRegistry()
+//	if tool, ok := reg.Get("Bash"); ok {
+//	    fmt.Printf("Bash tool: %s\n", tool.Info().Description)
+//	}
 func (rt *Runtime) ToolRegistry() tools.ToolRegistry { return rt.toolReg }
+
+// SkillRegistry returns the Runtime's skill registry for managing agent capabilities.
+// Skills define high-level capabilities exposed to the agent in system prompts.
+// Unlike tools (which are function-calling), skills describe what an agent CAN do.
+//
+// Returns:
+//   - skill.SkillRegistry: The skill registry instance. May be nil if not configured.
+//
+// Example:
+//
+//	skills := rt.SkillRegistry()
+//	if skills != nil {
+//	    for _, s := range skills.ListSkills() {
+//	        fmt.Printf("Skill: %s - %s\n", s.Name, s.Description)
+//	    }
+//	}
 func (rt *Runtime) SkillRegistry() skill.SkillRegistry { return rt.skillReg }
-func (rt *Runtime) RuleRegistry() rule.RuleRegistry   { return rt.ruleReg }
+
+// RuleRegistry returns the Runtime's rule registry for behavioral constraints.
+// Rules define how the agent should behave, what it should avoid, and any
+// operational boundaries. Rules are included in system prompts.
+//
+// Returns:
+//   - rule.RuleRegistry: The rule registry instance. May be nil if not configured.
+//
+// Example:
+//
+//	rules := rt.RuleRegistry()
+//	if rules != nil {
+//	    promptSection := rules.FormatPromptSection()
+//	    fmt.Println(promptSection)
+//	}
+func (rt *Runtime) RuleRegistry() rule.RuleRegistry { return rt.ruleReg }
+
+// ProviderRegistry returns the Runtime's LLM provider registry.
+// Provider configurations can be used for multi-provider setups or fallback logic.
+//
+// Returns:
+//   - config.ProviderRegistry: The provider registry instance. May be nil.
 func (rt *Runtime) ProviderRegistry() config.ProviderRegistry { return rt.providerReg }
 
+// ToolExecutor returns the Runtime's tool execution engine.
+// The executor handles tool invocation with hook support, timeout management,
+// and event emission. It wraps the ToolRegistry with execution logic.
+//
+// Returns:
+//   - tools.ToolExecutor: The tool executor instance.
+//
+// Note: For executing tools in custom code, prefer using this executor rather than
+// calling tools directly, as it includes hook chain and error handling.
 func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
 	return rt.toolExec
 }
 
+// AgentRegistry returns the Runtime's agent configuration registry.
+// Agent configs define roles, descriptions, and introductions used to build
+// identity sections in system prompts.
+//
+// Returns:
+//   - *config.AgentRegistry: The agent registry pointer. May be nil.
+//
+// Example:
+//
+//	agents := rt.AgentRegistry()
+//	if agents != nil {
+//	    cfg := agents.Get("coder")
+//	    if cfg != nil {
+//	        fmt.Printf("Role: %s\n", cfg.Role)
+//	    }
+//	}
 func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.agentReg }
 
+// RegisterTool adds a new tool to the Runtime's tool registry.
+// The tool will be available for the LLM to invoke in subsequent Ask calls.
+// Tool definitions are sent to the LLM as part of the API request.
+//
+// Parameters:
+//   - tool: A FuncTool instance implementing the tool logic.
+//          Must have valid Name, Description, and Parameters in its Info().
+//
+// Returns:
+//   - error: Non-nil if tool registration fails (e.g., duplicate name, invalid config).
+//
+// Example:
+//
+//	customTool := tools.NewFuncTool(tools.Info{
+//	    Name:        "Weather",
+//	    Description: "Get current weather for a city",
+//	    Parameters: []tools.Parameter{
+//	        {Name: "city", Type: "string", Description: "City name"},
+//	    },
+//	}, func(ctx context.Context, params map[string]any) (string, error) {
+//	    city := params["city"].(string)
+//	    return getWeather(city), nil
+//	})
+//
+//	if err := rt.RegisterTool(customTool); err != nil {
+//	    log.Fatalf("Failed to register tool: %v", err)
+//	}
 func (rt *Runtime) RegisterTool(tool tools.FuncTool) error {
 	return rt.toolReg.Register(tool)
 }

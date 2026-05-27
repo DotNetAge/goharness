@@ -10,12 +10,24 @@ import (
 	"github.com/DotNetAge/goreact/events"
 )
 
-// LS lists directory contents with metadata (size, type, permissions, modification time).
+// LS 实现了目录列表工具。
+// 用于浏览文件系统目录结构，返回详细的文件元信息。
+//
+// 特性：
+//   - 返回丰富的元信息：名称、类型、大小、修改时间、权限
+//   - 支持递归列出子目录（2 层深度）
+//   - 可选显示隐藏文件（以 . 开头的文件）
+//   - 结果数量限制防止上下文爆炸
+//
+// 安全级别：LevelSafe（安全），只读操作
 type LS struct {
-	info *ToolInfo
+	info *ToolInfo // 工具元信息
 }
 
-// NewLsTool creates an Ls tool.
+// NewLsTool 创建一个 Ls 工具实例。
+//
+// 返回：
+//   - FuncTool: 配置好的 Ls 工具实例
 func NewLsTool() FuncTool {
 	return &LS{
 		info: &ToolInfo{
@@ -51,14 +63,32 @@ Set show_hidden=true to include dot-files (.gitignore, .env, .config, etc.). Hid
 	}
 }
 
+// Info 返回 Ls 工具的元信息。
 func (l *LS) Info() *ToolInfo {
 	return l.info
 }
 
-// maxLsItems is the maximum number of directory entries to return.
-// Directories with more entries are truncated at this limit.
+// maxLsItems 是目录列表返回的最大条目数。
+// 超过此数量的目录会被截断，防止上下文爆炸。
 const maxLsItems = 500
 
+// Execute 执行目录列表操作。
+//
+// 处理流程：
+//  1. 获取 ToolContext（用于路径验证）
+//  2. 确定目标目录（默认为当前目录）
+//  3. 安全性检查（路径不能超出项目目录）
+//  4. 验证路径存在且是目录
+//  5. 读取目录内容
+//  6. 根据参数过滤和格式化结果
+//
+// 参数：
+//   - ctx: 上下文（包含 ToolContext）
+//   - params: 可选 "path", "recursive", "show_hidden"
+//
+// 返回：
+//   - map[string]any: 包含 success, path, total_items, items 等字段
+//   - error: 路径不存在或不是目录时返回错误
 func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	// Get ToolContext for directory awareness (Design-time safety)
 	tc := GetToolContext(ctx)

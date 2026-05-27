@@ -12,19 +12,32 @@ import (
 	"github.com/DotNetAge/goreact/events"
 )
 
-// Default bash command timeout in milliseconds.
+// defaultBashTimeoutMs 是 Bash 工具的默认超时时间（毫秒）。
+// 默认 30 秒，可通过 timeout 参数覆盖。
 const defaultBashTimeoutMs = 30000
 
-// Maximum output size (in characters) for bash stdout/stderr.
+// maxBashOutputSize 是 Bash 输出的最大字符数（stdout 和 stderr 分别计算）。
+// 超过此限制的输出会被截断，防止上下文爆炸。
 const maxBashOutputSize = 30000
 
-// BashTool implements a tool for executing shell commands with whitelist security.
+// BashTool 实现了 Shell 命令执行工具。
+// 提供安全的命令执行环境，具有以下安全特性：
+//   - 危险命令检测：阻止破坏性命令（如 rm -rf /、fork bomb 等）
+//   - 命令白名单：只允许预定义的安全命令执行
+//   - 超时控制：防止命令无限运行
+//   - 输出限制：防止大量输出导致内存问题
+//
+// 安全级别：LevelHighRisk（高风险），因为可以执行任意 shell 命令
 type BashTool struct {
-	whitelistEnabled bool
-	customWhitelist  map[string]bool
+	whitelistEnabled bool             // 是否启用白名单检查
+	customWhitelist  map[string]bool  // 自定义白名单（如果为空则使用默认白名单）
 }
 
-// NewBashTool creates a Bash tool with default whitelist enabled.
+// NewBashTool 创建一个启用默认白名单的 Bash 工具实例。
+// 使用内置的默认命令白名单，包含常用的安全命令。
+//
+// 返回：
+//   - FuncTool: 配置好的 Bash 工具实例
 func NewBashTool() FuncTool {
 	return &BashTool{
 		whitelistEnabled: true,
@@ -32,7 +45,17 @@ func NewBashTool() FuncTool {
 	}
 }
 
-// NewBashToolWithWhitelist creates a Bash tool with custom whitelist.
+// NewBashToolWithWhitelist 创建一个使用自定义白名单的 Bash 工具。
+//
+// 参数：
+//   - allowedCommands: 允许执行的命令名称列表
+//
+// 返回：
+//   - FuncTool: 配置好的 Bash 工具实例
+//
+// 示例：
+//
+//	bash := NewBashToolWithWhitelist([]string{"git", "npm", "node"})
 func NewBashToolWithWhitelist(allowedCommands []string) FuncTool {
 	wl := make(map[string]bool)
 	for _, cmd := range allowedCommands {
@@ -44,7 +67,13 @@ func NewBashToolWithWhitelist(allowedCommands []string) FuncTool {
 	}
 }
 
-// NewBashToolUnrestricted creates a Bash tool without whitelist (not recommended for production).
+// NewBashToolUnrestricted 创建一个无白名单限制的 Bash 工具（不推荐用于生产环境）。
+// 此模式允许执行任何命令，仅进行危险命令检测。
+//
+// ⚠️ 警告：此模式存在安全风险，应仅在受信任的环境中使用。
+//
+// 返回：
+//   - FuncTool: 无白名单限制的 Bash 工具实例
 func NewBashToolUnrestricted() FuncTool {
 	return &BashTool{
 		whitelistEnabled: false,
@@ -52,8 +81,12 @@ func NewBashToolUnrestricted() FuncTool {
 	}
 }
 
+// baseCommandPattern 是用于提取命令基础名称的正则表达式。
+// 匹配命令行开头的字母数字命令名（如 ls, git, npm 等）。
 var baseCommandPattern = regexp.MustCompile(`^\s*([a-zA-Z][a-zA-Z0-9._\-]*)(\s|$)`)
 
+// Info 返回 Bash 工具的元信息。
+// 包含工具名称、描述、参数定义、安全级别等。
 func (t *BashTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Bash",
@@ -108,6 +141,24 @@ Dedicated tools provide a better user experience and make it easier to review to
 	}
 }
 
+// Execute 执行 Shell 命令。
+//
+// 执行流程：
+//  1. 验证命令参数（必须为非空字符串）
+//  2. 检查命令长度限制（最大 100000 字符）
+//  3. 危险命令检测（阻止破坏性操作）
+//  4. 白名单检查（如果启用）
+//  5. 解析超时参数（默认 30 秒，最小 1 秒，最大 5 分钟）
+//  6. 通过 sh -c 执行命令
+//  7. 收集输出并返回结构化结果
+//
+// 参数：
+//   - ctx: 上下文
+//   - params: 必须包含 "command" 键，可选 "timeout" 和 "working_dir"
+//
+// 返回：
+//   - map[string]any: 包含 stdout、stderr、exit_code、success 等字段
+//   - error: 仅在参数验证失败时返回错误，执行错误在 result 中
 func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	command, ok := params["command"].(string)
 	if !ok {
@@ -239,7 +290,15 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	return result, nil
 }
 
-// truncateOutput truncates a string to maxRunes characters, appending a truncation notice if needed.
+// truncateOutput 截断字符串到指定字符数（按 rune 计算）。
+// 如果字符串超过限制，会在末尾附加截断提示信息。
+//
+// 参数：
+//   - s: 原始字符串
+//   - maxRunes: 最大字符数
+//
+// 返回：
+//   - string: 截断后的字符串（如果未超限则返回原字符串）
 func truncateOutput(s string, maxRunes int) string {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
@@ -248,7 +307,15 @@ func truncateOutput(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "\n... [output truncated due to size] ..."
 }
 
-// truncateForLog truncates a string for safe logging (avoids logging huge commands).
+// truncateForLog 截断字符串用于安全日志记录。
+// 防止在日志中记录过长的命令（可能包含敏感信息）。
+//
+// 参数：
+//   - s: 原始字符串
+//   - maxLen: 最大长度
+//
+// 返回：
+//   - string: 截断后的字符串（如果未超限则返回原字符串）
 func truncateForLog(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -256,10 +323,18 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// dangerousPatterns defines regex patterns for commands that are too destructive to allow.
+// dangerousPatterns 定义了危险命令的检测规则列表。
+// 每个规则包含一个正则表达式和对应的危险原因描述。
+//
+// 检测的危险命令类型包括：
+//   - 文件系统破坏：rm -rf /, dd 写入磁盘等
+//   - 远程代码执行：curl | sh, 命令替换等
+//   - 系统控制：shutdown, reboot 等
+//   - 资源耗尽：fork bomb 等
+//   - 权限修改：chmod 777 /, chown 递归等
 var dangerousPatterns = []struct {
-	pattern *regexp.Regexp
-	reason  string
+	pattern *regexp.Regexp // 匹配正则
+	reason  string         // 危险原因描述
 }{
 	{regexp.MustCompile(`^rm\s+-rf\s+/\s*$`), "destructive: rm -rf / would erase the entire filesystem"},
 	{regexp.MustCompile(`^rm\s+-rf\s+/\*\s*$`), "destructive: rm -rf /* would erase the entire filesystem"},
@@ -277,6 +352,14 @@ var dangerousPatterns = []struct {
 	{regexp.MustCompile(`^reboot\s*$`), "dangerous: system reboot command"},
 }
 
+// detectDangerousCommand 检测命令是否包含危险操作。
+// 遍历所有危险模式进行匹配，返回第一个匹配的原因描述。
+//
+// 参数：
+//   - command: 要检测的 Shell 命令
+//
+// 返回：
+//   - string: 如果匹配到危险模式，返回原因描述；否则返回空字符串
 func detectDangerousCommand(command string) string {
 	lower := strings.ToLower(strings.TrimSpace(command))
 	for _, dp := range dangerousPatterns {
@@ -287,7 +370,17 @@ func detectDangerousCommand(command string) string {
 	return ""
 }
 
-// getDefaultWhitelist returns the default allowed commands for the bash tool.
+// getDefaultWhitelist 返回默认的允许命令列表。
+// 这些命令被认为是安全的，可以正常执行。
+//
+// 列表包含：
+//   - 文件操作：ls, cp, mv, mkdir, rm 等
+//   - 版本控制：git, svn, hg
+//   - 编程语言：python, node, go, cargo 等
+//   - 构建工具：make, cmake, gcc 等
+//   - 容器编排：docker, kubectl, helm
+//   - 网络工具：curl, wget, ssh 等
+//   - 系统工具：ps, top, df, du 等
 func getDefaultWhitelist() []string {
 	return []string{
 		"ls", "wc", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
@@ -311,7 +404,14 @@ func getDefaultWhitelist() []string {
 	}
 }
 
-// extractBaseCommand extracts the base command from a shell command string.
+// extractBaseCommand 从 Shell 命令字符串中提取基础命令名。
+// 例如："git status" → "git", "npm install" → "npm"
+//
+// 参数：
+//   - command: 完整的 Shell 命令字符串
+//
+// 返回：
+//   - string: 提取的基础命令名，如果无法识别则返回空字符串
 func extractBaseCommand(command string) string {
 	matches := baseCommandPattern.FindStringSubmatch(strings.TrimSpace(command))
 	if len(matches) > 1 {
@@ -320,7 +420,14 @@ func extractBaseCommand(command string) string {
 	return ""
 }
 
-// isCommandWhitelisted checks if the command's base executable is in the whitelist.
+// isCommandWhitelisted 检查命令是否在白名单中。
+// 优先检查自定义白名单，如果为空则使用默认白名单。
+//
+// 参数：
+//   - command: 要检查的 Shell 命令
+//
+// 返回：
+//   - bool: 如果命令在白名单中返回 true，否则返回 false
 func (t *BashTool) isCommandWhitelisted(command string) bool {
 	baseCmd := extractBaseCommand(command)
 	if baseCmd == "" {

@@ -8,13 +8,28 @@ import (
 	"time"
 )
 
-// FileEditTool implements a tool for editing files with staleness checks.
+// FileEditTool 实现了文件编辑工具。
+// 支持通过精确字符串匹配进行文件内容替换，具有以下特性：
+//   - 精确匹配：必须完全匹配 old_string 才会替换
+//   - 多种替换模式：单次、全部、限制次数
+//   - 过时检测：通过 last_read_time 防止基于过期内容的编辑
+//   - 安全检查：路径验证和参数验证
+//
+// 适用场景：
+//   - 修改已有文件的小部分内容
+//   - 变量重命名（使用 replace_all）
+//   - 代码重构（使用 limit 控制范围）
 type FileEditTool struct{}
 
+// NewFileEditTool 创建一个 FileEditTool 实例。
+//
+// 返回：
+//   - FuncTool: 配置好的 FileEditTool 实例
 func NewFileEditTool() FuncTool {
 	return &FileEditTool{}
 }
 
+// Info 返回 FileEditTool 的元信息。
 func (t *FileEditTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "FileEdit",
@@ -71,6 +86,31 @@ Usage:
 	}
 }
 
+// Execute 执行文件编辑操作。
+//
+// 处理流程：
+//  1. 验证必需参数（path, old_string, new_string）
+//  2. 解析并验证目标路径
+//  3. 安全性检查（路径不能超出项目目录）
+//  4. 过时检测（如果提供了 last_read_time）
+//  5. 读取文件内容
+//  6. 验证 old_string 存在且匹配规则正确
+//  7. 执行替换操作（根据 replace_all 和 limit 参数）
+//  8. 写入更新后的内容
+//
+// 替换模式：
+//   - limit < -1: 错误
+//   - limit == -1 或 replace_all=true: 替换所有
+//   - limit > 0: 替换前 N 次
+//   - 默认: 只替换第一次
+//
+// 参数：
+//   - ctx: 上下文（包含 ToolContext）
+//   - params: 必须包含 path, old_string, new_string；可选 replace_all, limit, last_read_time
+//
+// 返回：
+//   - string: 成功消息，包含文件路径和作用域
+//   - error: 参数错误、验证失败或 I/O 错误
 func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	filePath, err := ValidateRequiredString(params, "path")
 	if err != nil {

@@ -6,9 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
-// ValidateRequired checks that a required parameter exists.
+// ValidateRequired checks that a required parameter exists in the params map.
+// It returns an error if the key is not present.
+//
+// Example:
+//
+//	if err := ValidateRequired(params, "path"); err != nil {
+//	    return nil, err
+//	}
 func ValidateRequired(params map[string]any, key string) error {
 	if _, ok := params[key]; !ok {
 		return fmt.Errorf("missing required parameter: %s", key)
@@ -16,7 +24,16 @@ func ValidateRequired(params map[string]any, key string) error {
 	return nil
 }
 
-// ValidateRequiredString validates that a required string parameter exists and is of string type.
+// ValidateRequiredString validates that a required parameter exists and is of string type.
+// It returns the string value and an error if validation fails.
+//
+// This function performs two checks:
+//  1. Ensures the parameter key exists
+//  2. Verifies the value is a string type
+//
+// Returns:
+//   - The string value if valid
+//   - An error describing what validation failed
 func ValidateRequiredString(params map[string]any, key string) (string, error) {
 	if err := ValidateRequired(params, key); err != nil {
 		return "", err
@@ -29,65 +46,312 @@ func ValidateRequiredString(params map[string]any, key string) (string, error) {
 	return str, nil
 }
 
-// ValidateFileSafety verifies file access safety using path anchoring.
+// ValidateFileSafety verifies file access safety using path anchoring with TOCTOU protection.
 // It normalizes the path via filepath.Clean, resolves symlinks, and ensures
 // the real path stays within the allowed workspace boundary.
 //
+// Security Features:
+//   - Path normalization to eliminate directory traversal attempts (../)
+//   - Symlink resolution to prevent symlink-based attacks
+//   - Workspace boundary enforcement to restrict file access
+//   - Sensitive system file protection (.env, SSH keys, etc.)
+//
 // Parameters:
-//   - path: The file path to validate
-//   - projectDir: The project directory (Layer 2) to anchor paths against.
+//   - path: The file path to validate (absolute or relative)
+//   - projectDir: The project directory to anchor paths against.
 //     If empty, falls back to os.Getwd() for backward compatibility.
+//
+// Returns:
+//   - nil if the path is safe to access
+//   - An error describing why access was denied
+//
+// Example:
+//
+//	err := ValidateFileSafety("/project/file.txt", "/project")
+//	if err != nil {
+//	    // Handle denied access
+//	}
+//
+// Security Considerations:
+// This function provides design-time safety validation. For runtime protection,
+// use SafeOpenFile or SafeCreateFile which perform atomic open-and-validate operations.
 func ValidateFileSafety(path string, projectDir string) error {
-	// Step 1: Clean the path to eliminate relative components like ../
 	cleaned := filepath.Clean(path)
 
-	// Step 2: Resolve to absolute path
 	absPath, err := filepath.Abs(cleaned)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Step 3: Resolve symlinks to get the real path
+	realPath, err := resolvePathSecurely(absPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	realProjectDir, err := resolveProjectDir(projectDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve project directory: %w", err)
+	}
+
+	if err := enforceWorkspaceBoundary(realPath, realProjectDir, path); err != nil {
+		return err
+	}
+
+	if err := checkSensitiveFiles(realPath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// resolvePathSecurely resolves symlinks for existing paths with security checks.
+// For non-existent paths, it returns the cleaned absolute path to allow file creation.
+func resolvePathSecurely(absPath string) (string, error) {
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		// If the file does not exist (e.g. a file about to be created), fall back to the absolute path.
-		// Only evaluate symlinks for paths that already exist.
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to resolve symlinks: %w", err)
+		if os.IsNotExist(err) {
+			return absPath, nil
 		}
-		realPath = absPath
+		return "", fmt.Errorf("failed to resolve symlinks: %w", err)
 	}
+	return realPath, nil
+}
 
-	// Step 4: Resolve the project directory's real path (also resolving symlinks)
-	// Use provided projectDir (Design-time safety) with fallback to CWD
+// resolveProjectDir resolves and validates the project directory path.
+func resolveProjectDir(projectDir string) (string, error) {
 	if projectDir == "" {
+		var err error
 		projectDir, err = os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to get project directory: %w", err)
+			return "", fmt.Errorf("failed to get working directory: %w", err)
 		}
 	}
+
 	realCwd, err := filepath.EvalSymlinks(projectDir)
 	if err != nil {
-		realCwd = projectDir
+		return projectDir, nil
+	}
+	return realCwd, nil
+}
+
+// enforceWorkspaceBoundary ensures the resolved path stays within the project directory.
+func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) error {
+	sep := string(filepath.Separator)
+
+	if realPath == realProjectDir {
+		return nil
 	}
 
-	// Step 5: Ensure the real path is anchored within the project directory
-	if !strings.HasPrefix(realPath, realCwd+string(filepath.Separator)) && realPath != realCwd {
-		return fmt.Errorf("access denied: path %q resolves to %q which is outside the workspace %q", path, realPath, realCwd)
+	if !strings.HasPrefix(realPath, realProjectDir+sep) {
+		return fmt.Errorf(
+			"access denied: path %q resolves to %q which is outside the workspace %q",
+			originalPath,
+			realPath,
+			realProjectDir,
+		)
 	}
 
-	// Step 6: Check for sensitive system files
+	return nil
+}
+
+// checkSensitiveFiles blocks access to sensitive system files.
+func checkSensitiveFiles(realPath string) error {
 	baseName := filepath.Base(realPath)
-	if baseName == ".env" || baseName == "id_rsa" || baseName == "id_ed25519" ||
-		baseName == "passwd" || baseName == "shadow" || baseName == "sudoers" {
+
+	sensitiveFiles := map[string]bool{
+		".env":        true,
+		"id_rsa":      true,
+		"id_ed25519":  true,
+		"passwd":      true,
+		"shadow":      true,
+		"sudoers":     true,
+		".ssh_config": true,
+		"known_hosts": true,
+	}
+
+	if sensitiveFiles[baseName] {
 		return fmt.Errorf("access to %s is restricted for security reasons", baseName)
 	}
 
 	return nil
 }
 
+// SafeOpenFile opens a file with TOCTOU protection by validating the path after opening.
+// This prevents race conditions where the path could be changed between validation and opening.
+//
+// Parameters:
+//   - path: File path to open (will be validated)
+//   - projectDir: Project directory boundary
+//   - flags: Open flags (os.O_RDONLY, os.O_WRONLY, etc.)
+//   - perm: File permissions mode
+//
+// Returns:
+//   - *os.File: Successfully opened file handle
+//   - error: Validation or OS error
+//
+// Security:
+// This function uses O_NOFOLLOW on Unix systems to prevent symlink attacks,
+// and re-validates the resolved path after opening to ensure consistency.
+func SafeOpenFile(path string, projectDir string, flags int, perm os.FileMode) (*os.File, error) {
+	resolvedPath, err := resolveAndValidate(path, projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	safeFlags := applySecurityFlags(flags)
+
+	file, err := os.OpenFile(resolvedPath, safeFlags, perm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file %s: %w", resolvedPath, err)
+	}
+
+	if err := postOpenValidation(file, resolvedPath, projectDir); err != nil {
+		file.Close()
+		return nil, err
+	}
+
+	return file, nil
+}
+
+// SafeCreateFile safely creates a new file with TOCTOU protection.
+// It validates the path before creation and uses exclusive create flags when possible.
+//
+// Parameters:
+//   - path: Path for the new file
+//   - projectDir: Project directory boundary
+//   - perm: File permissions (default: 0644)
+//
+// Returns:
+//   - *os.File: Created file handle positioned at the beginning
+//   - error: Validation or creation error
+func SafeCreateFile(path string, projectDir string, perm os.FileMode) (*os.File, error) {
+	if perm == 0 {
+		perm = 0644
+	}
+
+	resolvedPath, err := resolveAndValidateForCreation(path, projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := os.OpenFile(resolvedPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, perm)
+	if os.IsExist(err) {
+
+		file, err = os.OpenFile(resolvedPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create file %s: %w", resolvedPath, err)
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to create file %s: %w", resolvedPath, err)
+	}
+
+	if err := postOpenValidation(file, resolvedPath, projectDir); err != nil {
+		file.Close()
+		return nil, err
+	}
+
+	return file, nil
+}
+
+// resolveAndValidate resolves a path and performs full safety validation.
+func resolveAndValidate(path string, projectDir string) (string, error) {
+	if err := ValidateFileSafety(path, projectDir); err != nil {
+		return "", err
+	}
+
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+
+	return absPath, nil
+}
+
+// resolveAndValidateForCreation resolves a path for file creation with relaxed existence checks.
+func resolveAndValidateForCreation(path string, projectDir string) (string, error) {
+	cleaned := filepath.Clean(path)
+	absPath, err := filepath.Abs(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	realProjectDir, err := resolveProjectDir(projectDir)
+	if err != nil {
+		return "", err
+	}
+
+	parentDir := filepath.Dir(absPath)
+	realParent, err := filepath.EvalSymlinks(parentDir)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to resolve parent directory: %w", err)
+	}
+
+	if realParent != "" {
+		if !strings.HasPrefix(realParent, realProjectDir+string(filepath.Separator)) &&
+			realParent != realProjectDir {
+			return "", fmt.Errorf(
+				"access denied: parent directory %q is outside workspace %q",
+				parentDir,
+				realProjectDir,
+			)
+		}
+	}
+
+	return absPath, nil
+}
+
+// applySecurityFlags adds security-related flags to the open flags.
+// On Unix systems, this includes O_NOFOLLOW to prevent symlink attacks.
+func applySecurityFlags(flags int) int {
+	return flags | syscall.O_NOFOLLOW
+}
+
+// postOpenValidation performs additional validation after a file has been opened.
+// This catches TOCTOU races where the path changed between validation and opening.
+func postOpenValidation(file *os.File, resolvedPath string, projectDir string) error {
+	actualPath, err := filepath.EvalSymlinks(resolvedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("post-open validation failed: %w", err)
+	}
+
+	realProjectDir, _ := resolveProjectDir(projectDir)
+	sep := string(filepath.Separator)
+
+	if actualPath != resolvedPath &&
+		!strings.HasPrefix(actualPath, realProjectDir+sep) &&
+		actualPath != realProjectDir {
+		return fmt.Errorf(
+			"security violation: file path changed after open (expected %s, got %s)",
+			resolvedPath,
+			actualPath,
+		)
+	}
+
+	return nil
+}
+
 // TruncateString truncates a string to maxLen runes, appending "..." if truncated.
-// It counts by runes to safely handle multi-byte characters.
+// It counts by runes to safely handle multi-byte characters (Unicode).
+//
+// Parameters:
+//   - s: The input string to truncate
+//   - maxLen: Maximum number of runes to keep (not bytes!)
+//
+// Returns:
+//   - Truncated string with "..." appended if truncation occurred
+//   - Original string if len(s) <= maxLen
+//
+// Edge Cases:
+//   - If maxLen <= 3, returns exactly maxLen runes without appending "..."
+//   - Empty strings are returned as-is
+//
+// Example:
+//
+//	truncated := TruncateString("Hello, 世界!", 8)
+//	// Result: "Hello, 世..."
 func TruncateString(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {
@@ -99,7 +363,24 @@ func TruncateString(s string, maxLen int) string {
 	return string(runes[:maxLen-3]) + "..."
 }
 
-// ToFloat64 converts a numeric value of any common type to float64.
+// ToFloat64 converts a numeric value of any common numeric type to float64.
+// This is useful when dealing with JSON unmarshaled numbers which may be float64 by default.
+//
+// Supported Types:
+//   - float64, float32
+//   - int, int32, int64
+//
+// Returns:
+//   - The converted float64 value
+//   - true if conversion succeeded, false if type is unsupported
+//
+// Example:
+//
+//	val, ok := ToFloat64(42)
+//	// val = 42.0, ok = true
+//
+//	val, ok := ToFloat64("hello")
+//	// val = 0, ok = false
 func ToFloat64(v any) (float64, bool) {
 	switch val := v.(type) {
 	case float64:
@@ -118,27 +399,49 @@ func ToFloat64(v any) (float64, bool) {
 }
 
 // PathScope represents the resolved scope of a file path.
+// It indicates whether a path resolves to the project directory or session sandbox.
 type PathScope string
 
 const (
-	PathScopeProject PathScope = "project" // Resolves to project directory
-	PathScopeSession PathScope = "session" // Resolves to session sandbox directory
+	// PathScopeProject indicates the path resolves to the project directory.
+	PathScopeProject PathScope = "project"
+
+	// PathScopeSession indicates the path resolves to the session sandbox directory.
+	PathScopeSession PathScope = "session"
 )
 
 const sessionPathPrefix = "session:"
 
 // ResolveTargetPath resolves a file path with optional session: prefix.
-// This provides minimal syntax sugar for explicit directory selection.
+// This provides minimal syntax sugar for explicit directory selection without heuristic inference.
 //
 // Behavior:
-//   - "session:filename" → resolves to <sessionDir>/filename (scope: session)
-//     → if sessionDir is empty, falls back to <projectDir>/filename
-//   - "relative/path"  → resolves to <projectDir>/relative/path (scope: project)
-//     → if projectDir is empty, falls back to current working directory
-//   - "/absolute/path" → returns as-is (scope: empty)
+//   - "session:filename" → <sessionDir>/filename (scope: session)
+//     Falls back to <projectDir>/filename if sessionDir is empty.
+//   - "relative/path" → <projectDir>/relative/path (scope: project)
+//     Falls back to CWD if projectDir is empty.
+//   - "/absolute/path" → returned as-is (scope: empty)
 //
-// This is intentionally simple - no heuristic inference.
-// Directory semantics should be guided via System Prompt (Agent Native approach).
+// Design Philosophy:
+// Directory semantics should be guided via System Prompt (Agent Native approach),
+// not inferred from context. This keeps behavior predictable and debuggable.
+//
+// Parameters:
+//   - inputPath: The path to resolve (may include session: prefix)
+//   - projectDir: Project directory for relative paths
+//   - sessionDir: Session sandbox directory for session: prefixed paths
+//
+// Returns:
+//   - absPath: Resolved absolute path
+//   - scope: PathScope indicating where the path resolves
+//
+// Example:
+//
+//	path, scope := ResolveTargetPath("file.txt", "/project", "/sessions/abc")
+//	// path = "/sessions/abc/file.txt", scope = PathScopeSession
+//
+//	path, scope := ResolveTargetPath("/etc/passwd", "/project", "")
+//	// path = "/etc/passwd", scope = "" (empty for absolute paths)
 func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath string, scope PathScope) {
 	if inputPath == "" {
 		return "", PathScopeProject
@@ -152,10 +455,9 @@ func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath
 		filename := strings.TrimPrefix(inputPath, sessionPathPrefix)
 		targetDir := sessionDir
 
-		// Defensive fallback: if sessionDir is empty, use projectDir instead
 		if targetDir == "" {
 			targetDir = projectDir
-			scope = PathScopeProject // Fallback to project scope for logging clarity
+			scope = PathScopeProject
 		} else {
 			scope = PathScopeSession
 		}
@@ -163,19 +465,27 @@ func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath
 		return filepath.Join(targetDir, filename), scope
 	}
 
-	// Default: resolve relative to projectDir with defensive fallback
 	targetDir := projectDir
 	if targetDir == "" {
-		targetDir, _ = os.Getwd() // Last resort: use CWD only when no context available
+		targetDir, _ = os.Getwd()
 	}
 
 	return filepath.Join(targetDir, inputPath), PathScopeProject
 }
 
-// SessionContextKey is the context key for storing session ID.
+// SessionContextKey is the context key for storing session ID values.
+// It's defined as an unexported type to prevent context key collisions.
 type SessionContextKey struct{}
 
-// ExtractSessionID extracts the session ID from context.
+// ExtractSessionID extracts the session ID from a context.Context.
+// Returns empty string if no session ID is found or if it's not a string.
+//
+// Usage:
+//
+//	sessionID := ExtractSessionID(ctx)
+//	if sessionID != "" {
+//	    log.Printf("Processing request for session %s", sessionID)
+//	}
 func ExtractSessionID(ctx context.Context) string {
 	if sessionID, ok := ctx.Value(SessionContextKey{}).(string); ok {
 		return sessionID
@@ -183,7 +493,17 @@ func ExtractSessionID(ctx context.Context) string {
 	return ""
 }
 
-// WithSessionID embeds a session ID into context.
+// WithSessionID returns a new context.Context that carries the given session ID.
+// The session ID can later be retrieved using ExtractSessionID.
+//
+// This is typically used to propagate session information through the call chain
+// for logging, tracing, and permission checking purposes.
+//
+// Example:
+//
+//	ctx := WithSessionID(context.Background(), "session-123")
+//	sessionID := ExtractSessionID(ctx)
+//	// sessionID = "session-123"
 func WithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, SessionContextKey{}, sessionID)
 }

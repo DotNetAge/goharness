@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -407,6 +408,349 @@ func TestValidateFunctions(t *testing.T) {
 		err = ValidateFileSafety("safe_file.txt", "")
 		if err != nil {
 			t.Errorf("Expected no error for safe local path, got %v", err)
+		}
+	})
+}
+
+// ========== 边界情况测试补充 ==========
+
+// TestBash_EdgeCases Bash 工具边界测试
+func TestBash_EdgeCases(t *testing.T) {
+	bash := NewBashToolUnrestricted()
+
+	t.Run("空命令字符串", func(t *testing.T) {
+		_, err := bash.Execute(context.Background(), map[string]any{"command": ""})
+		if err == nil {
+			t.Error("空命令应返回错误")
+		}
+	})
+
+	t.Run("纯空白命令", func(t *testing.T) {
+		_, err := bash.Execute(context.Background(), map[string]any{"command": "   \t  "})
+		if err == nil {
+			t.Error("纯空白命令应返回错误")
+		}
+	})
+
+	t.Run("超长命令（超过 100000 字符）", func(t *testing.T) {
+		longCmd := strings.Repeat("a", 100001)
+		_, err := bash.Execute(context.Background(), map[string]any{"command": longCmd})
+		if err == nil {
+			t.Error("超长命令应返回错误")
+		}
+	})
+
+	t.Run("timeout 参数 - 最小值限制", func(t *testing.T) {
+		result, err := bash.Execute(context.Background(), map[string]any{
+			"command": "echo test",
+			"timeout": float64(100), // 小于最小值 1000
+		})
+		if err != nil {
+			t.Fatalf("小 timeout 不应导致执行失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		if resultMap["success"] != true {
+			t.Error("小 timeout 应被修正为最小值并正常执行")
+		}
+	})
+
+	t.Run("timeout 参数 - 最大值限制", func(t *testing.T) {
+		result, err := bash.Execute(context.Background(), map[string]any{
+			"command": "echo test",
+			"timeout": float64(999999), // 超过最大值 300000
+		})
+		if err != nil {
+			t.Fatalf("大 timeout 不应导致执行失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		if resultMap["success"] != true {
+			t.Error("大 timeout 应被修正为最大值并正常执行")
+		}
+	})
+
+	t.Run("输出截断 - 大 stdout", func(t *testing.T) {
+		cmd := fmt.Sprintf("python3 -c \"print('x' * %d)\"", maxBashOutputSize*2)
+		result, err := bash.Execute(context.Background(), map[string]any{"command": cmd})
+		if err != nil {
+			t.Skipf("跳过: python3 可能不可用: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		stdout := resultMap["stdout"].(string)
+		if len(stdout) > maxBashOutputSize+100 {
+			t.Errorf("stdout 应被截断，但得到 %d 字符", len(stdout))
+		}
+	})
+}
+
+// TestRead_EdgeCases Read 工具边界测试
+func TestRead_EdgeCases(t *testing.T) {
+	read := NewReadTool()
+	tempDir, err := os.MkdirTemp(".", "read_edge_test_*")
+	if err != nil {
+		t.Fatalf("创建临时目录失败: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	t.Run("读取空文件", func(t *testing.T) {
+		emptyFile := filepath.Join(tempDir, "empty.txt")
+		os.WriteFile(emptyFile, []byte(""), 0644)
+
+		result, err := read.Execute(context.Background(), map[string]any{"path": emptyFile})
+		if err != nil {
+			t.Fatalf("读取空文件失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		if resultMap["success"] != true {
+			t.Error("读取空文件应成功")
+		}
+		_ = resultMap["content"]
+	})
+
+	t.Run("offset 和 limit 参数", func(t *testing.T) {
+		multiLineFile := filepath.Join(tempDir, "multiline.txt")
+		lines := make([]string, 20)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("line %d content", i+1)
+		}
+		os.WriteFile(multiLineFile, []byte(strings.Join(lines, "\n")), 0644)
+
+		result, err := read.Execute(context.Background(), map[string]any{
+			"path":   multiLineFile,
+			"offset": float64(5),
+			"limit":  float64(3),
+		})
+		if err != nil {
+			t.Fatalf("分页读取失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		startLine := resultMap["start_line"].(int)
+		linesRead := resultMap["lines_read"].(int)
+
+		if startLine != 5 {
+			t.Errorf("start_line 应为 5，得到 %d", startLine)
+		}
+		if linesRead > 3 {
+			t.Errorf("lines_read 不应超过 limit (3)，得到 %d", linesRead)
+		}
+	})
+
+	t.Run("相对路径处理", func(t *testing.T) {
+		result, err := read.Execute(context.Background(), map[string]any{"path": "./builtin_test.go"})
+		if err != nil {
+			t.Fatalf("相对路径读取失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		if resultMap["success"] != true {
+			t.Error("相对路径应能正常工作")
+		}
+	})
+}
+
+// TestWrite_EdgeCases Write 工具边界测试
+func TestWrite_EdgeCases(t *testing.T) {
+	write := NewWriteTool()
+	tempDir, err := os.MkdirTemp(".", "write_edge_test_*")
+	if err != nil {
+		t.Fatalf("创建临时目录失败: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	t.Run("写入空内容", func(t *testing.T) {
+		emptyFile := filepath.Join(tempDir, "empty_write.txt")
+		result, err := write.Execute(context.Background(), map[string]any{
+			"path":    emptyFile,
+			"content": "",
+		})
+		if err != nil {
+			t.Fatalf("写入空内容失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		bytesWritten := resultMap["bytes_written"].(int)
+		if bytesWritten != 0 {
+			t.Errorf("写入空内容应返回 0 字节，得到 %d", bytesWritten)
+		}
+	})
+
+	t.Run("创建深层目录结构", func(t *testing.T) {
+		deepFile := filepath.Join(tempDir, "a", "b", "c", "deep.txt")
+		result, err := write.Execute(context.Background(), map[string]any{
+			"path":    deepFile,
+			"content": "deep content",
+		})
+		if err != nil {
+			t.Fatalf("创建深层目录失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		if resultMap["success"] != true {
+			t.Error("应自动创建目录结构")
+		}
+	})
+
+	t.Run("append 模式追加到已有文件", func(t *testing.T) {
+		appendFile := filepath.Join(tempDir, "append_test.txt")
+
+		write.Execute(context.Background(), map[string]any{
+			"path":    appendFile,
+			"content": "first line\n",
+		})
+
+		result, err := write.Execute(context.Background(), map[string]any{
+			"path":    appendFile,
+			"content": "second line\n",
+			"append":  true,
+		})
+		if err != nil {
+			t.Fatalf("追加模式失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		totalSize := resultMap["total_size"].(int64)
+		if totalSize < 20 { // "first line\n" + "second line\n"
+			t.Errorf("追加后文件大小应大于 20 字节，得到 %d", totalSize)
+		}
+	})
+
+	t.Run("覆盖模式替换已有内容", func(t *testing.T) {
+		overwriteFile := filepath.Join(tempDir, "overwrite.txt")
+
+		write.Execute(context.Background(), map[string]any{
+			"path":    overwriteFile,
+			"content": strings.Repeat("original ", 100),
+		})
+
+		result, err := write.Execute(context.Background(), map[string]any{
+			"path":    overwriteFile,
+			"content": "new short content",
+		})
+		if err != nil {
+			t.Fatalf("覆盖模式失败: %v", err)
+		}
+		resultMap := result.(map[string]any)
+		totalSize := resultMap["total_size"].(int64)
+		if totalSize != int64(len("new short content")) {
+			t.Errorf("覆盖后文件大小不匹配: 期望 %d，得到 %d", len("new short content"), totalSize)
+		}
+	})
+}
+
+// TestGrep_EdgeCases Grep 工具边界测试
+func TestGrep_EdgeCases(t *testing.T) {
+	grep := NewGrepTool()
+
+	t.Run("无匹配结果", func(t *testing.T) {
+		result, err := grep.Execute(context.Background(), map[string]any{
+			"pattern": "ZZZ_NONEXISTENT_PATTERN_ZZZ",
+			"path":    ".",
+		})
+		if err != nil {
+			t.Fatalf("无匹配搜索失败: %v", err)
+		}
+		resultStr := result.(string)
+		if resultStr == "" {
+			t.Error("无匹配时不应返回空字符串")
+		}
+	})
+
+	t.Run("特殊正则表达式字符", func(t *testing.T) {
+		result, err := grep.Execute(context.Background(), map[string]any{
+			"pattern": `func\s+\w+\(`,
+			"path":    "*.go",
+		})
+		if err != nil {
+			t.Fatalf("正则表达式搜索失败: %v", err)
+		}
+		if result == nil {
+			t.Error("正则表达式搜索不应返回 nil")
+		}
+	})
+
+	t.Run("files_with_matches 输出模式", func(t *testing.T) {
+		result, err := grep.Execute(context.Background(), map[string]any{
+			"pattern":     "package tools",
+			"output_mode": "files_with_matches",
+			"path":        ".",
+		})
+		if err != nil {
+			t.Fatalf("files_with_matches 模式失败: %v", err)
+		}
+		if result == nil {
+			t.Error("结果不应为 nil")
+		}
+	})
+}
+
+// TestEdit_EdgeCases Edit 工具额外边界测试
+func TestEdit_EdgeCases(t *testing.T) {
+	dir, err := os.MkdirTemp(".", "edit_edge_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	t.Run("replace_all 替换全部后验证", func(t *testing.T) {
+		filePath := filepath.Join(dir, "replace_all.txt")
+		content := "apple banana apple cherry apple\n"
+		os.WriteFile(filePath, []byte(content), 0644)
+
+		edit := &FileEditTool{}
+		_, err = edit.Execute(context.Background(), map[string]any{
+			"path":        filePath,
+			"old_string":  "apple",
+			"new_string":  "orange",
+			"replace_all": true,
+		})
+		if err != nil {
+			t.Fatalf("replace_all 失败: %v", err)
+		}
+
+		newContent, _ := os.ReadFile(filePath)
+		expected := "orange banana orange cherry orange\n"
+		if string(newContent) != expected {
+			t.Errorf("replace_all 结果不正确: 得到 '%s'", string(newContent))
+		}
+	})
+
+	t.Run("old_string 为空字符串", func(t *testing.T) {
+		filePath := filepath.Join(dir, "empty_old.txt")
+		os.WriteFile(filePath, []byte("some content"), 0644)
+
+		edit := &FileEditTool{}
+		_, err = edit.Execute(context.Background(), map[string]any{
+			"path":       filePath,
+			"old_string": "",
+			"new_string": "replacement",
+		})
+		if err == nil {
+			t.Error("old_string 为空应返回错误")
+		}
+	})
+
+	t.Run("多次编辑同一文件", func(t *testing.T) {
+		filePath := filepath.Join(dir, "multi_edit.txt")
+		original := "hello world foo bar\n"
+		os.WriteFile(filePath, []byte(original), 0644)
+
+		edit := &FileEditTool{}
+
+		edit.Execute(context.Background(), map[string]any{
+			"path":       filePath,
+			"old_string": "hello",
+			"new_string": "hi",
+		})
+		edit.Execute(context.Background(), map[string]any{
+			"path":       filePath,
+			"old_string": "world",
+			"new_string": "earth",
+		})
+		edit.Execute(context.Background(), map[string]any{
+			"path":       filePath,
+			"old_string": "foo",
+			"new_string": "baz",
+		})
+
+		finalContent, _ := os.ReadFile(filePath)
+		expected := "hi earth baz bar\n"
+		if string(finalContent) != expected {
+			t.Errorf("多次编辑后内容不正确: 得到 '%s'", string(finalContent))
 		}
 	})
 }

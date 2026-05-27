@@ -1,4 +1,5 @@
 package action
+
 import (
 	"github.com/DotNetAge/goreact/hooks"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"github.com/DotNetAge/goreact/tools"
 )
 
+// PermissionHook checks tool execution permissions before allowing tool calls.
+// It uses a permission chain to evaluate whether a tool should be allowed to execute.
 type PermissionHook struct {
 	Chain  permission.PermissionChain
 	Logger logging.Logger
@@ -15,6 +18,8 @@ type PermissionHook struct {
 
 func (h *PermissionHook) Priority() int { return hooks.PriorityPermission }
 
+// Before checks if the tool execution is permitted by the permission chain.
+// Returns an abort result if permission is denied, or an error if the check fails.
 func (h *PermissionHook) Before(sessionID string, toolName string, params map[string]any) hooks.HookResult {
 	if h.Chain == nil {
 		return hooks.HookResult{}
@@ -40,8 +45,10 @@ func (h *PermissionHook) Before(sessionID string, toolName string, params map[st
 	return hooks.HookResult{}
 }
 
+// After is a no-op for PermissionHook.
 func (h *PermissionHook) After(result *hooks.ToolResult) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
+// Abort is a no-op for PermissionHook.
 func (h *PermissionHook) Abort(reason string) {}

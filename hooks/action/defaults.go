@@ -8,6 +8,11 @@ import (
 	"github.com/DotNetAge/goreact/tools"
 )
 
+// Defaults returns the default set of tool hooks for the action phase.
+// The hooks are returned in priority order and include:
+// - PermissionHook: checks tool execution permissions
+// - ToolEventHook: emits tool lifecycle events
+// - ToolLoggerHook: logs tool execution start/end
 func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegistry, logger logging.Logger) []hooks.ToolHook {
 	checkers := []tools.ToolPermissionChecker{
 		permission.NewSkillBasedChecker(skillRegistry),

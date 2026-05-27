@@ -4,15 +4,18 @@ import (
 	"github.com/DotNetAge/goreact/hooks"
 )
 
-// ConvergenceHook 在每次循环后检查是否应该终止。
+// ConvergenceHook checks after each loop iteration whether the loop should terminate
+// due to irrecoverable errors in tool execution results.
 type ConvergenceHook struct{}
 
 func (h *ConvergenceHook) Priority() int { return hooks.PriorityConvergence }
 
+// BeforeLLM is a no-op for ConvergenceHook.
 func (h *ConvergenceHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
+// AfterLLM checks tool results for irrecoverable errors that should terminate the loop.
 func (h *ConvergenceHook) AfterLLM(sessionID string, iteration int, resp *hooks.LLMResponse, results []hooks.ToolResult) hooks.HookResult {
 	for _, tr := range results {
 		if !tr.Success && tr.Error != "" {
@@ -24,8 +27,10 @@ func (h *ConvergenceHook) AfterLLM(sessionID string, iteration int, resp *hooks.
 	return hooks.HookResult{}
 }
 
+// Abort is a no-op for ConvergenceHook.
 func (h *ConvergenceHook) Abort(sessionID string, reason string) {}
 
+// isIrrecoverable checks if an error string indicates an unrecoverable failure.
 func isIrrecoverable(errStr string) bool {
 	if errStr == "" {
 		return false
@@ -43,6 +48,7 @@ func isIrrecoverable(errStr string) bool {
 	return false
 }
 
+// containsLower performs a case-insensitive substring check.
 func containsLower(s, substr string) bool {
 	if len(s) < len(substr) {
 		return false

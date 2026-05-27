@@ -11,20 +11,33 @@ import (
 	"github.com/DotNetAge/goreact/events"
 )
 
+// globDefaultTimeout 是 Glob 工具的默认超时时间。
 const globDefaultTimeout = 30 * time.Second
 
-// GlobTool implements file path discovery using 'find' or 'fd'.
+// GlobTool 实现了文件路径发现工具。
+// 使用 find 命令进行文件模式匹配，支持通配符搜索。
+//
+// 特性：
+//   - 支持通配符模式（如 *.go, **/*.ts）
+//   - 按修改时间排序返回结果
+//   - 结果数量限制防止上下文爆炸
+//
+// 安全级别：LevelSafe（安全），只读操作
 type GlobTool struct {
-	MaxResults int
+	MaxResults int // 最大返回结果数量（默认 200）
 }
 
-// NewGlobTool creates a Glob tool.
+// NewGlobTool 创建一个 Glob 工具实例。
+//
+// 返回：
+//   - FuncTool: 配置好的 Glob 工具实例
 func NewGlobTool() FuncTool {
 	return &GlobTool{
 		MaxResults: 200,
 	}
 }
 
+// Info 返回 Glob 工具的元信息。
 func (t *GlobTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Glob",
@@ -47,13 +60,29 @@ func (t *GlobTool) Info() *ToolInfo {
 			{
 				Name:        "path",
 				Type:        "string",
-				Description: "The directory to search in. Defaults to '.'",
+				Description: "The directory to search in. Defaults to '.'.",
 				Required:    false,
 			},
 		},
 	}
 }
 
+// Execute 执行文件路径搜索操作。
+//
+// 处理流程：
+//  1. 验证 pattern 参数（必须为非空字符串）
+//  2. 确定搜索目录（默认为当前目录）
+//  3. 验证搜索路径存在且是目录
+//  4. 执行 find 命令进行模式匹配
+//  5. 解析结果并限制数量
+//
+// 参数：
+//   - ctx: 上下文
+//   - params: 必须包含 "pattern"，可选 "path"
+//
+// 返回：
+//   - map[string]any: 包含 success, matches_found, files 字段
+//   - error: 参数错误或执行失败时返回错误
 func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	pattern, err := ValidateRequiredString(params, "pattern")
 	if err != nil {

@@ -9,11 +9,18 @@ import (
 	"github.com/DotNetAge/goreact/events"
 )
 
-// Write implements a tool for writing files to the filesystem.
+// Write 实现了文件写入工具。
+// 支持将内容写入本地文件系统，具有以下特性：
+//   - 覆盖模式：默认行为，覆盖已有文件
+//   - 追加模式：通过 append=true 参数启用
+//   - 自动创建目录：如果父目录不存在会自动创建
+//
+// 安全级别：LevelSensitive（敏感），因为会修改文件系统
 type Write struct {
-	info *ToolInfo
+	info *ToolInfo // 工具元信息
 }
 
+// writeDescription 是 Write 工具的简短描述。
 const writeDescription = `Writes a file to the local filesystem.
 
 Usage:
@@ -22,7 +29,10 @@ Usage:
 - ALWAYS prefer editing existing files using file_edit tool in the codebase. NEVER write new files unless explicitly required.
 - The path parameter must be an absolute path, not a relative path.`
 
-// NewWriteTool creates a file write tool.
+// NewWriteTool 创建一个文件写入工具实例。
+//
+// 返回：
+//   - FuncTool: 配置好的 Write 工具实例
 func NewWriteTool() FuncTool {
 	return &Write{
 		info: &ToolInfo{
@@ -41,10 +51,29 @@ Usage:
 	}
 }
 
+// Info 返回 Write 工具的元信息。
 func (w *Write) Info() *ToolInfo {
 	return w.info
 }
 
+// Execute 执行文件写入操作。
+//
+// 处理流程：
+//  1. 验证 path 和 content 参数（必须为非空字符串）
+//  2. 解析并验证目标路径
+//  3. 安全性检查（路径不能超出项目目录）
+//  4. 自动创建父目录（如果不存在）
+//  5. 确定写入模式（覆盖或追加）
+//  6. 写入内容到文件
+//  7. 返回写入结果统计
+//
+// 参数：
+//   - ctx: 上下文（包含 ToolContext）
+//   - params: 必须包含 "path" 和 "content"，可选 "append"
+//
+// 返回：
+//   - map[string]any: 包含 success, path, mode, bytes_written 等字段
+//   - error: 参数错误、路径验证失败或 I/O 错误
 func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error) {
 	path, err := ValidateRequiredString(params, "path")
 	if err != nil {

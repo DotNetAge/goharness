@@ -1,3 +1,4 @@
+// Package events provides an event bus implementation for publishing and subscribing to React events.
 package events
 
 import (
@@ -7,19 +8,30 @@ import (
 	"github.com/DotNetAge/goreact/logging"
 )
 
-const StreamChannelBufferSize = 256
+const (
+	// StreamChannelBufferSize defines the buffer size for subscriber channels.
+	StreamChannelBufferSize = 256
+)
 
+// EventBus defines the interface for an event publishing and subscription system.
+// It allows emitting events and subscribing to them with optional filtering.
 type EventBus interface {
+	// Emit publishes an event to all subscribers.
 	Emit(event ReactEvent)
+	// Subscribe returns a channel of events and a cancellation function to unsubscribe.
 	Subscribe() (ch <-chan ReactEvent, cancel func())
+	// SubscribeFiltered returns a channel of filtered events and a cancellation function.
 	SubscribeFiltered(filter func(ReactEvent) bool) (ch <-chan ReactEvent, cancel func())
 }
 
+// subscriber represents a single subscriber with its channel and optional filter.
 type subscriber struct {
 	ch     chan ReactEvent
 	filter func(ReactEvent) bool
 }
 
+// InProcessEventBus is an in-process implementation of EventBus using channels.
+// It supports filtered subscriptions and graceful shutdown.
 type InProcessEventBus struct {
 	mu          sync.RWMutex
 	subscribers map[string]*subscriber
@@ -28,22 +40,28 @@ type InProcessEventBus struct {
 	logger      logging.Logger
 }
 
+// SetLogger sets the logger for the event bus.
 func (b *InProcessEventBus) SetLogger(logger logging.Logger) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logger = logger
 }
 
+// NewEventBus creates a new InProcessEventBus instance.
 func NewEventBus() *InProcessEventBus {
 	return &InProcessEventBus{
 		subscribers: make(map[string]*subscriber),
 	}
 }
 
+// isCriticalEvent checks if an event type requires guaranteed delivery.
 func isCriticalEvent(eventType ReactEventType) bool {
 	return eventType == PermissionRequest || eventType == PermissionDenied
 }
 
+// Emit publishes an event to all matching subscribers.
+// Critical events (permission-related) are delivered synchronously;
+// non-critical events use non-blocking sends to avoid slow consumer backpressure.
 func (b *InProcessEventBus) Emit(event ReactEvent) {
 	b.mu.RLock()
 	if b.closed {
@@ -72,10 +90,14 @@ func (b *InProcessEventBus) Emit(event ReactEvent) {
 	}
 }
 
+// Subscribe subscribes to all events on the bus.
+// Returns a receive-only channel and a cancel function to unsubscribe.
 func (b *InProcessEventBus) Subscribe() (<-chan ReactEvent, func()) {
 	return b.SubscribeFiltered(nil)
 }
 
+// SubscribeFiltered subscribes to events matching the provided filter function.
+// If filter is nil, all events are received. Returns a channel and cancel function.
 func (b *InProcessEventBus) SubscribeFiltered(filter func(ReactEvent) bool) (<-chan ReactEvent, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -118,6 +140,8 @@ func (b *InProcessEventBus) SubscribeFiltered(filter func(ReactEvent) bool) (<-c
 	return sub.ch, unsubscribe
 }
 
+// Close shuts down the event bus, closing all subscriber channels.
+// Subsequent Emit and Subscribe calls will be no-ops.
 func (b *InProcessEventBus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -136,6 +160,7 @@ func (b *InProcessEventBus) Close() {
 	}
 }
 
+// SubscriberCount returns the current number of active subscribers.
 func (b *InProcessEventBus) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

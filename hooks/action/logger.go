@@ -4,13 +4,14 @@ import (
 	"github.com/DotNetAge/goreact/logging"
 )
 
-// ToolLoggerHook 记录工具执行开始和结束日志。
+// ToolLoggerHook logs the start and end of each tool execution.
 type ToolLoggerHook struct {
 	Logger logging.Logger
 }
 
 func (h *ToolLoggerHook) Priority() int { return hooks.PriorityToolLogger }
 
+// Before logs the start of a tool execution with session ID and tool name.
 func (h *ToolLoggerHook) Before(sessionID string, toolName string, params map[string]any) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -19,6 +20,7 @@ func (h *ToolLoggerHook) Before(sessionID string, toolName string, params map[st
 	return hooks.HookResult{}
 }
 
+// After logs the completion of a tool execution with success status and duration.
 func (h *ToolLoggerHook) After(result *hooks.ToolResult) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -31,4 +33,5 @@ func (h *ToolLoggerHook) After(result *hooks.ToolResult) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
+// Abort is a no-op for ToolLoggerHook.
 func (h *ToolLoggerHook) Abort(reason string) {}

@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// defaultWaitTimeout is the maximum time to wait for an async task result.
 const defaultWaitTimeout = 30 * time.Minute
 
 // TaskResult holds the result of an async task execution.
@@ -17,13 +18,15 @@ type TaskResult struct {
 }
 
 // ResultStore stores and retrieves async task results.
-// collect_results tool blocks on WaitForResult until the task completes.
+// It supports blocking waits for task completion with timeout and context cancellation.
+// The collect_results tool blocks on WaitForResult until the task completes.
 type ResultStore struct {
 	mu      sync.RWMutex
 	results map[string]*TaskResult
 	waiters map[string][]chan *TaskResult
 }
 
+// NewResultStore creates a new empty result store.
 func NewResultStore() *ResultStore {
 	return &ResultStore{
 		results: make(map[string]*TaskResult),
@@ -32,6 +35,8 @@ func NewResultStore() *ResultStore {
 }
 
 // Store writes a task result and notifies all waiters.
+// It is safe to call Store multiple times for the same taskID; subsequent calls will overwrite the result
+// but only notify new waiters added after the previous store operation.
 func (s *ResultStore) Store(taskID string, result *TaskResult) {
 	s.mu.Lock()
 	s.results[taskID] = result

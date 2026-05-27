@@ -13,21 +13,48 @@ import (
 	"time"
 )
 
+// webFetchCacheTTL 是 WebFetch 缓存的生存时间。
 const webFetchCacheTTL = 15 * time.Minute
+
+// webFetchCacheSessionID 是 WebFetch 缓存在 KVStore 中的会话 ID。
 const webFetchCacheSessionID = "__goreact_webfetch_cache__"
+
+// webFetchMaxContentChars 是 WebFetch 返回内容的最大字符数。
 const webFetchMaxContentChars = 50000
 
+// cachedFetch 表示缓存的一次网页获取结果。
 type cachedFetch struct {
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-	URL       string    `json:"url"`
+	Content   string    `json:"content"`   // 页面内容（Markdown 格式）
+	Timestamp time.Time `json:"timestamp"` // 缓存时间
+	URL       string    `json:"url"`       // 原始 URL
 }
 
+// WebFetchTool 实现了网页内容获取工具。
+// 用于获取并转换网页内容为 Markdown 格式，具有以下安全特性：
+//   - SSRF 防护：阻止访问内网 IP 地址
+//   - URL 验证：只允许 http/https 协议
+//   - 重定向限制：最多 10 次重定向
+//   - 内容大小限制：最大 10MB 响应体
+//
+// 内容处理：
+//   - HTML → Markdown 转换
+//   - 非 HTML 内容的原样返回
+//   - 输出截断至 50000 字符
 type WebFetchTool struct {
-	client   *http.Client
-	memCache sync.Map
+	client   *http.Client // HTTP 客户端（带 SSRF 防护）
+	memCache sync.Map     // 内存缓存（进程内）
 }
 
+// NewWebFetchTool 创建一个 WebFetchTool 实例。
+// 配置了 SSRF 防护的 HTTP 客户端，阻止访问内网地址。
+//
+// 安全措施：
+//   - DNS 解析后检查 IP 是否为私有地址
+//   - 重定向时验证目标 URL
+//   - 15 秒连接超时，30 秒总超时
+//
+// 返回：
+//   - FuncTool: 配置好的 WebFetchTool 实例
 func NewWebFetchTool() FuncTool {
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
@@ -64,6 +91,7 @@ func NewWebFetchTool() FuncTool {
 	}
 }
 
+// Info 返回 WebFetch 工具的元信息。
 func (t *WebFetchTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "WebFetch",
@@ -101,6 +129,24 @@ Content Budget:
 	}
 }
 
+// Execute 执行网页内容获取操作。
+//
+// 处理流程：
+//  1. 验证并规范化 URL（强制 HTTPS）
+//  2. 检查内存缓存和 KVStore 缓存
+//  3. 验证 URL 安全性（SSRF 防护）
+//  4. 发送 HTTP GET 请求
+//  5. 处理响应（HTML 转 Markdown 或原样返回）
+//  6. 截断过长的内容
+//  7. 缓存结果
+//
+// 参数：
+//   - ctx: 上下文
+//   - params: 必须包含 "url"，可选 "prompt"
+//
+// 返回：
+//   - string: 格式化的页面内容
+//   - error: URL 无效、访问被拒绝或网络错误时返回错误
 func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	rawURL, err := ValidateRequiredString(params, "url")
 	if err != nil {

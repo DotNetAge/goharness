@@ -11,18 +11,34 @@ import (
 	"github.com/DotNetAge/goreact/store"
 )
 
-// Read implements a tool for reading files from the filesystem.
+// Read 实现了文件读取工具。
+// 支持从本地文件系统读取文件内容，具有以下特性：
+//   - 分页读取：通过 offset 和 limit 参数读取指定行范围
+//   - 文件大小限制：防止读取过大的文件
+//   - Token 预算控制：根据 token 限制截断输出
+//   - 多格式支持：文本文件、图片、PDF、Jupyter notebook 等
+//
+// 安全级别：LevelSafe（安全），只读操作不会修改文件系统
 type Read struct {
-	info   *ToolInfo
-	limits FileReadingLimits
+	info   *ToolInfo          // 工具元信息
+	limits FileReadingLimits // 文件读取限制配置
 }
 
-// NewReadTool creates a file read tool with default limits.
+// NewReadTool 创建一个使用默认限制的文件读取工具。
+//
+// 返回：
+//   - FuncTool: 配置好的 Read 工具实例
 func NewReadTool() FuncTool {
 	return NewReadToolWithLimits(DefaultFileReadingLimits())
 }
 
-// NewReadToolWithLimits creates a read tool with custom limits.
+// NewReadToolWithLimits 创建一个使用自定义限制的文件读取工具。
+//
+// 参数：
+//   - limits: 文件读取限制配置（大小、行数、token 等）
+//
+// 返回：
+//   - FuncTool: 配置好的 Read 工具实例
 func NewReadToolWithLimits(limits FileReadingLimits) FuncTool {
 	return &Read{
 		limits: limits,
@@ -71,10 +87,31 @@ Skills may expose a "Base directory" in their Skill tool result. When a skill sa
 	}
 }
 
+// Info 返回 Read 工具的元信息。
 func (r *Read) Info() *ToolInfo {
 	return r.info
 }
 
+// Execute 执行文件读取操作。
+//
+// 处理流程：
+//  1. 验证 path 参数（必须为非空字符串）
+//  2. 解析并验证文件路径（支持 session: 前缀）
+//  3. 安全性检查（路径不能超出项目目录）
+//  4. 检查文件是否存在、是否为目录
+//  5. 检查文件大小限制
+//  6. 读取文件内容
+//  7. 应用分页参数（offset, limit）
+//  8. Token 预算检查和截断
+//  9. 返回结构化结果
+//
+// 参数：
+//   - ctx: 上下文（包含 ToolContext）
+//   - params: 必须包含 "path"，可选 "offset" 和 "limit"
+//
+// 返回：
+//   - map[string]any: 包含 content, lines_read, total_lines 等字段
+//   - error: 参数错误或文件访问错误
 func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) {
 	path, err := ValidateRequiredString(params, "path")
 	if err != nil {

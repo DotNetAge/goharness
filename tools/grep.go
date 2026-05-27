@@ -8,16 +8,31 @@ import (
 	"time"
 )
 
+// grepDefaultTimeout 是 Grep 工具的默认超时时间。
 const grepDefaultTimeout = 30 * time.Second
 
-// GrepTool implements a high-performance search using ripgrep (rg).
-// It mimics ClaudeCode's GrepTool with output budget management.
+// GrepTool 实现了基于 ripgrep 的高性能文本搜索工具。
+// 使用 ripgrep (rg) 作为后端，提供快速、准确的文件内容搜索。
+//
+// 特性：
+//   - 支持完整正则表达式语法
+//   - 多种输出模式：内容、文件列表、匹配计数
+//   - 文件类型过滤（通过 include 参数）
+//   - 结果数量限制和输出字符数限制
+//
+// 性能优势：
+//   - ripgrep 比 grep/fast 更快
+//   - 自动尊重 .gitignore 规则
+//   - 支持 Unicode 和多行匹配
 type GrepTool struct {
-	MaxResults     int
-	MaxOutputChars int
+	MaxResults     int // 最大返回结果数量（默认 100）
+	MaxOutputChars int // 最大输出字符数（默认 50000）
 }
 
-// NewGrepTool creates a Grep tool.
+// NewGrepTool 创建一个 Grep 工具实例。
+//
+// 返回：
+//   - FuncTool: 配置好的 Grep 工具实例
 func NewGrepTool() FuncTool {
 	return &GrepTool{
 		MaxResults:     100,
@@ -25,6 +40,7 @@ func NewGrepTool() FuncTool {
 	}
 }
 
+// Info 返回 Grep 工具的元信息。
 func (t *GrepTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Grep",
@@ -64,6 +80,21 @@ Usage:
 	}
 }
 
+// Execute 执行文本搜索操作。
+//
+// 处理流程：
+//  1. 提取搜索参数（pattern, include, output_mode）
+//  2. 构建 ripgrep 命令行参数
+//  3. 执行 ripgrep 搜索
+//  4. 处理搜索结果（限制数量和字符数）
+//
+// 参数：
+//   - ctx: 上下文
+//   - params: 必须包含 "pattern"，可选 "include" 和 "output_mode"
+//
+// 返回：
+//   - string: 格式化的搜索结果
+//   - error: 搜索执行失败时返回错误
 func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	pattern, _ := params["pattern"].(string)
 	include, _ := params["include"].(string)
