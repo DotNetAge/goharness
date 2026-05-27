@@ -10,6 +10,8 @@ import (
 	"github.com/DotNetAge/goreact/store"
 )
 
+var subagentSem = make(chan struct{}, 20)
+
 // SpawnFunc creates and runs a sub-agent for a delegated task.
 // Returns the sub-agent's result and any error.
 type SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
@@ -95,8 +97,10 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	})
 
 	// Run sub-agent in background
+	subagentSem <- struct{}{}
 	go func() {
 		startedAt := time.Now()
+		defer func() { <-subagentSem }()
 
 		result, err := t.spawn(ctx, agentName, task)
 		completedAt := time.Now()

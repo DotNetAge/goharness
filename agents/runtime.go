@@ -110,8 +110,10 @@ func (rt *Runtime) registerDefaultTools() {
 
 // Ask creates an AskBuilder for the given agent name, question, and session.
 func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuilder {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &AskBuilder{
-		ctx:       context.Background(),
+		ctx:       ctx,
+		cancel:    cancel,
 		agentName: agentName,
 		question:  question,
 		session:   s,
@@ -188,11 +190,19 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	start := time.Now()
 	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
 	var lastIteration int
+	var prevToolResults []hooks.ToolResult
+
+	setIterResult := func(iter int) {
+		b.resultIterations = iter + 1
+		b.resultDuration = time.Since(start)
+		b.resultUsage = totalUsage
+	}
 
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
 			b.resultErr = err
-			b.resultUsage = totalUsage
+			b.resultTerminationReason = "cancelled"
+			setIterResult(iter)
 			return
 		}
 
@@ -214,20 +224,29 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			if hr.Error != nil {
 				b.resultErr = hr.Error
 				b.resultTerminationReason = "hook_error"
-				b.resultUsage = totalUsage
+				setIterResult(iter)
 				return
 			}
 			b.resultAnswer = hr.AbortReason
 			b.resultTerminationReason = "hook_abort"
-			b.resultIterations = iter + 1
-			b.resultDuration = time.Since(start)
-			b.resultUsage = totalUsage
+			setIterResult(iter)
 			logger.Info("loop aborted by hook", "reason", hr.AbortReason)
 			return
 		}
 
-		// Assemble messages (hooks may have modified systemSections, e.g. MemoryThoughtHook)
-		msgs := rt.assembleMessages(callInput.SystemPromptSections, window, b.question)
+			// Assemble messages (hooks may have modified systemSections, e.g. MemoryThoughtHook)
+		windowHasQuestion := false
+		for _, m := range window {
+			if m.Role == "user" && m.Content == b.question {
+				windowHasQuestion = true
+				break
+			}
+		}
+		question := ""
+		if !windowHasQuestion {
+			question = b.question
+		}
+		msgs := rt.assembleMessages(callInput.SystemPromptSections, window, question)
 
 		// ── Stream LLM ──
 		client := gochat.Client().Config(
@@ -269,7 +288,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Error:     err.Error(),
 			})
 			b.resultErr = fmt.Errorf("llm stream failed: %w", err)
-			b.resultUsage = totalUsage
+			b.resultTerminationReason = "llm_error"
+			setIterResult(iter)
 			return
 		}
 
@@ -313,7 +333,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Error:     streamErr.Error(),
 			})
 			b.resultErr = streamErr
-			b.resultUsage = totalUsage
+			b.resultTerminationReason = "llm_error"
+			setIterResult(iter)
 			return
 		}
 
@@ -327,23 +348,27 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			totalUsage.InputTokens += u.PromptTokens
 			totalUsage.OutputTokens += u.CompletionTokens
 			totalUsage.TotalTokens += u.TotalTokens
+			totalUsage.Timestamp = time.Now()
 		}
 
 		// Build LLM response for hooks from streaming data
 		content := contentBuf.String()
 		reasoning := reasoningBuf.String()
+		usageCopy := totalUsage
 		llmResp := &hooks.LLMResponse{
 			Content:      content,
 			Reasoning:    reasoning,
 			FinishReason: finishReason,
 			ToolCalls:    parseToolInvocations(streamToolCalls),
+			TokenUsage:   &usageCopy,
 		}
 
 		// ── Loop Hooks AfterLLM (with panic recovery) ──
-		if hr := rt.execAfterLLMHooks(sid, iter, llmResp, emit); hr.IsTerminal() {
+		if hr := rt.execAfterLLMHooks(sid, iter, llmResp, prevToolResults, emit); hr.IsTerminal() {
 			if hr.Error != nil {
 				b.resultErr = hr.Error
-				b.resultUsage = totalUsage
+				b.resultTerminationReason = "hook_error"
+				setIterResult(iter)
 				return
 			}
 			llmResp.AbortReason = hr.AbortReason
@@ -354,9 +379,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			emit(events.FinalAnswer, llmResp.Content)
 			b.resultAnswer = llmResp.Content
 			b.resultTerminationReason = "hook_abort"
-			b.resultIterations = iter + 1
-			b.resultDuration = time.Since(start)
-			b.resultUsage = totalUsage
+			setIterResult(iter)
 			return
 		}
 
@@ -402,6 +425,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		invocs := parseToolInvocations(streamToolCalls)
 		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec)
 
+		prevToolResults = toolResults
+
 		// Persist tool results
 		for _, tr := range toolResults {
 			content := hooks.ToolResultSummary(tr)
@@ -414,6 +439,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	// Max iterations reached
 	b.resultErr = fmt.Errorf("max iterations (%d) reached", maxIter)
+	b.resultTerminationReason = "max_iterations"
 	b.resultIterations = lastIteration
 	b.resultDuration = time.Since(start)
 	b.resultUsage = totalUsage
@@ -439,7 +465,7 @@ func (rt *Runtime) execBeforeLLMHooks(sid string, iter int, input *hooks.CallInp
 	return hooks.HookResult{}
 }
 
-func (rt *Runtime) execAfterLLMHooks(sid string, iter int, resp *hooks.LLMResponse, emit func(events.ReactEventType, any)) (result hooks.HookResult) {
+func (rt *Runtime) execAfterLLMHooks(sid string, iter int, resp *hooks.LLMResponse, toolResults []hooks.ToolResult, emit func(events.ReactEventType, any)) (result hooks.HookResult) {
 	defer func() {
 		if p := recover(); p != nil {
 			rt.logger.Error("loop hook panic", fmt.Errorf("%v", p))
@@ -448,7 +474,7 @@ func (rt *Runtime) execAfterLLMHooks(sid string, iter int, resp *hooks.LLMRespon
 		}
 	}()
 	for _, h := range rt.loopHooks {
-		hr := h.AfterLLM(sid, iter, resp, nil)
+		hr := h.AfterLLM(sid, iter, resp, toolResults)
 		if hr.IsTerminal() {
 			rt.notifyLoopAbort(sid, hr.AbortReason)
 			return hr
@@ -707,19 +733,22 @@ func parseToolInvocations(calls []gochatcore.ToolCall) []hooks.ToolCallInvocatio
 	if len(calls) == 0 {
 		return nil
 	}
-	invocs := make([]hooks.ToolCallInvocation, len(calls))
-	for i, tc := range calls {
+	invocs := make([]hooks.ToolCallInvocation, 0, len(calls))
+	for _, tc := range calls {
+		if tc.ID == "" || tc.Name == "" {
+			continue
+		}
 		var params map[string]any
 		if tc.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Arguments), &params); err != nil {
 				params = map[string]any{"raw_args": tc.Arguments}
 			}
 		}
-		invocs[i] = hooks.ToolCallInvocation{
+		invocs = append(invocs, hooks.ToolCallInvocation{
 			ID:        tc.ID,
 			Name:      tc.Name,
 			Arguments: params,
-		}
+		})
 	}
 	return invocs
 }
@@ -765,7 +794,10 @@ func buildParamSchema(params []tools.Parameter) json.RawMessage {
 		}
 		props[p.Name] = prop
 	}
-	b, _ := json.Marshal(schema)
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
 	return b
 }
 

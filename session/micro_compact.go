@@ -92,3 +92,7 @@ func isReadOnlyToolResult(content string) bool {
 	name := content[1:end]
 	return readOnlyToolNames[name]
 }
+
+func IsReadOnlyToolResultName(name string) bool {
+	return readOnlyToolNames[name]
+}

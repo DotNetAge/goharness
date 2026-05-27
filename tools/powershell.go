@@ -13,7 +13,8 @@ import (
 
 const (
 	powershellDefaultMaxOutputBytes = 10000
-	powershellDefaultMaxDuration    = time.Duration(0)
+	powershellDefaultMaxDuration    = 30 * time.Second
+	powershellDefaultWhitelist      = "ls,dir,cd,pwd,echo,Get-*,Set-*,Write-*,Read-*,Test-*,Out-*,Select-*,Where-*,ForEach-*,Sort-*,Group-*,Measure-*,New-*,Remove-*,Copy-*,Move-*,Rename-*,Get-ChildItem,Get-Content,Get-Service,Get-Process,Get-Item,Get-ItemProperty,Test-Path,Get-WmiObject,Get-CimInstance,Get-Command,Get-Module,Get-Help,Write-Host,Write-Output,Out-String,ConvertTo-Json,ConvertFrom-Json,Select-Object,Where-Object,ForEach-Object,Sort-Object,Group-Object,Measure-Object,New-Object,New-Item,Remove-Item,Copy-Item,Move-Item,Rename-Item,Start-Process,Stop-Process,Get-ChildItem,Get-Date,Get-Location,Set-Location,Resolve-Path,Join-Path,Split-Path"
 )
 
 var (
@@ -88,21 +89,37 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 		powershellPath = "powershell.exe"
 	}
 
+	if blocked := detectDangerousPSCommand(command); blocked != "" {
+		return &PowerShellResult{
+			ExitCode: 126,
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("BLOCKED: %s", blocked),
+			Duration: time.Since(time.Now()).String(),
+		}, nil
+	}
+
+	if !isPSCommandWhitelisted(command) {
+		return &PowerShellResult{
+			ExitCode: 126,
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("BLOCKED: command does not match allowed PowerShell command patterns"),
+			Duration: time.Since(time.Now()).String(),
+		}, nil
+	}
+
 	args := []string{
 		"-NoProfile",
 		"-NonInteractive",
-		"-ExecutionPolicy", "Bypass",
 		"-Command", command,
 	}
 
-	var cmd *exec.Cmd
-	if t.maxDuration > 0 {
-		timeoutCtx, cancel := context.WithTimeout(ctx, t.maxDuration)
-		defer cancel()
-		cmd = exec.CommandContext(timeoutCtx, powershellPath, args...)
-	} else {
-		cmd = exec.CommandContext(ctx, powershellPath, args...)
+	maxDur := t.maxDuration
+	if maxDur <= 0 {
+		maxDur = powershellDefaultMaxDuration
 	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, maxDur)
+	defer cancel()
+	cmd := exec.CommandContext(timeoutCtx, powershellPath, args...)
 
 	start := time.Now()
 
@@ -143,6 +160,46 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 		Stderr:   stderrStr,
 		Duration: duration,
 	}, nil
+}
+
+var dangerousPSPatterns = []struct {
+	pattern string
+	reason  string
+}{
+	{`Remove-Item\s+-Recurse`, "dangerous: recursive deletion"},
+	{`Remove-Item\s+.*\*`, "dangerous: wildcard deletion"},
+	{`Remove-Item\s+.*-Force`, "dangerous: forced deletion"},
+	{`Format-Volume`, "dangerous: disk formatting"},
+	{`Clear-Disk`, "dangerous: disk clearing"},
+	{`Set-ExecutionPolicy\s+Unrestricted`, "dangerous: disabling execution policy"},
+	{`Invoke-Expression`, "dangerous: arbitrary code execution"},
+	{`Invoke-Command\s+-ComputerName`, "dangerous: remote command execution"},
+	{`Start-Process\s+.*-Verb\s+RunAs`, "dangerous: privilege escalation"},
+	{`[System.IO.File]::`, "dangerous: direct .NET I/O bypass"},
+	{`Add-Type\s+-TypeDefinition`, "dangerous: dynamic code compilation"},
+	{`(New-Object\s+Net\.WebClient).*Download`, "dangerous: remote download"},
+	{`Stop-Computer`, "dangerous: system shutdown"},
+	{`Restart-Computer`, "dangerous: system restart"},
+}
+
+func detectDangerousPSCommand(command string) string {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	for _, dp := range dangerousPSPatterns {
+		if strings.Contains(lower, strings.ToLower(dp.pattern)) {
+			return dp.reason
+		}
+	}
+	return ""
+}
+
+func isPSCommandWhitelisted(command string) bool {
+	firstCmd := strings.TrimSpace(strings.SplitN(command, " ", 2)[0])
+	for _, allowed := range strings.Split(powershellDefaultWhitelist, ",") {
+		if strings.EqualFold(firstCmd, strings.TrimSpace(allowed)) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyPowerShellCommandSemantics(exitCode int, stderr string) string {

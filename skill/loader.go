@@ -132,7 +132,7 @@ func parseSimpleYaml(yaml string, fm *skillFrontmatter) error {
 				}
 			default:
 			}
-		} else if currentMapKey != "" && strings.HasPrefix(rawLine, "  ") || strings.Contains(line, ":") {
+		} else if currentMapKey != "" && (strings.HasPrefix(rawLine, "  ") || strings.Contains(line, ":")) {
 			if subIdx := strings.Index(line, ":"); subIdx > 0 {
 				subKey := strings.TrimSpace(line[:subIdx])
 				subVal := strings.TrimSpace(line[subIdx+1:])

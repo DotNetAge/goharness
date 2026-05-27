@@ -10,6 +10,7 @@ import (
 
 type AskBuilder struct {
 	ctx       context.Context
+	cancel    context.CancelFunc
 	agentName string
 	question  string
 	session   *session.Session
@@ -139,6 +140,21 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 	return b.on(events.TaskSummary, func(d any) {
 		if v, ok := d.(events.TaskSummaryData); ok { fn(v) }
 	})
+}
+
+// WithContext sets a custom context for the AskBuilder.
+// If the context is cancelled, the execution loop stops.
+// Cancel() will not cancel the custom context — callers should cancel it directly.
+func (b *AskBuilder) WithContext(ctx context.Context) *AskBuilder {
+	b.ctx = ctx
+	return b
+}
+
+// Cancel stops the execution loop.
+func (b *AskBuilder) Cancel() {
+	if b.cancel != nil {
+		b.cancel()
+	}
 }
 
 func (b *AskBuilder) OnAnswer(fn func(answer string)) *AskBuilder {

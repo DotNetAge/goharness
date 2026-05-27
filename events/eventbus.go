@@ -46,16 +46,21 @@ func isCriticalEvent(eventType ReactEventType) bool {
 
 func (b *InProcessEventBus) Emit(event ReactEvent) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	if b.closed {
+		b.mu.RUnlock()
 		return
 	}
 
+	subs := make([]*subscriber, 0, len(b.subscribers))
 	for _, sub := range b.subscribers {
 		if sub.filter != nil && !sub.filter(event) {
 			continue
 		}
+		subs = append(subs, sub)
+	}
+	b.mu.RUnlock()
+
+	for _, sub := range subs {
 		if isCriticalEvent(event.Type) {
 			sub.ch <- event
 		} else {

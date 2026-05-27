@@ -1,6 +1,12 @@
 package store
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+const defaultWaitTimeout = 30 * time.Minute
 
 // TaskResult holds the result of an async task execution.
 type TaskResult struct {
@@ -41,7 +47,8 @@ func (s *ResultStore) Store(taskID string, result *TaskResult) {
 
 // WaitForResult blocks until the task completes, then returns the result.
 // If the task already completed, returns immediately.
-func (s *ResultStore) WaitForResult(taskID string) *TaskResult {
+// It respects context cancellation and a default timeout.
+func (s *ResultStore) WaitForResult(ctx context.Context, taskID string) *TaskResult {
 	s.mu.Lock()
 	if r, ok := s.results[taskID]; ok {
 		s.mu.Unlock()
@@ -52,5 +59,12 @@ func (s *ResultStore) WaitForResult(taskID string) *TaskResult {
 	s.waiters[taskID] = append(s.waiters[taskID], ch)
 	s.mu.Unlock()
 
-	return <-ch
+	select {
+	case r := <-ch:
+		return r
+	case <-ctx.Done():
+		return &TaskResult{TaskID: taskID, Error: "context cancelled", Done: false}
+	case <-time.After(defaultWaitTimeout):
+		return &TaskResult{TaskID: taskID, Error: "timeout waiting for result", Done: false}
+	}
 }

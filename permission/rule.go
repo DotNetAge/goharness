@@ -104,14 +104,18 @@ func extractContentParam(toolName string, params map[string]any) string {
 
 func matchContent(pattern, content string) bool {
 	if strings.Contains(pattern, "*") || strings.Contains(pattern, "?") {
+		if matched, err := filepath.Match(pattern, content); err == nil && matched {
+			return true
+		}
 		prefix := strings.SplitN(pattern, "*", 2)[0]
 		prefix = strings.SplitN(prefix, "?", 2)[0]
 		if prefix != "" && strings.HasPrefix(content, prefix) {
 			return true
 		}
+		return false
 	}
-	if matched, err := filepath.Match(pattern, content); err == nil && matched {
-		return true
+	if pattern == "" {
+		return false
 	}
 	if strings.HasPrefix(content, pattern) {
 		return true

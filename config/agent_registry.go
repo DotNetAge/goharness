@@ -5,22 +5,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/DotNetAge/goreact/logging"
 	"gopkg.in/yaml.v3"
 )
 
 type AgentRegistry struct {
+	mu     sync.RWMutex
 	path   string
 	agents map[string]*AgentConfig
 	logger logging.Logger
 }
 
 func (r *AgentRegistry) Get(name string) *AgentConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.agents[name]
 }
 
 func (r *AgentRegistry) List() []*AgentConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var agents []*AgentConfig
 	for _, agent := range r.agents {
 		agents = append(agents, agent)
@@ -29,11 +35,16 @@ func (r *AgentRegistry) List() []*AgentConfig {
 }
 
 func (r *AgentRegistry) Read(file string) (*AgentConfig, error) {
-	absPath := filepath.Join(r.path, file)
+	r.mu.RLock()
+	path := r.path
+	r.mu.RUnlock()
+	absPath := filepath.Join(path, file)
 	return parseAgentFile(absPath)
 }
 
 func (r *AgentRegistry) Remove(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	_, exists := r.agents[name]
 	if !exists {
 		return fmt.Errorf("agent %s not found", name)
@@ -85,6 +96,8 @@ func (r *AgentRegistry) SaveTo(agent *AgentConfig) error {
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}
+	r.mu.Lock()
 	r.agents[agent.Name] = agent
+	r.mu.Unlock()
 	return nil
 }

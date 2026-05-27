@@ -3,11 +3,13 @@ package config
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
 type ModelRegistry struct {
+	mu          sync.RWMutex
 	settingFile string
 	models      map[string]*ModelConfig
 	providers   map[string]*ProviderConfig
@@ -71,7 +73,9 @@ func (m *ModelRegistry) resolveProvider(cfg *ModelConfig) *ModelConfig {
 }
 
 func (m *ModelRegistry) Get(name string) *ModelConfig {
+	m.mu.RLock()
 	mc := m.models[name]
+	m.mu.RUnlock()
 	if mc == nil {
 		return nil
 	}
@@ -79,19 +83,25 @@ func (m *ModelRegistry) Get(name string) *ModelConfig {
 }
 
 func (m *ModelRegistry) List() []*ModelConfig {
-	var result []*ModelConfig
+	m.mu.RLock()
+	models := make([]*ModelConfig, 0, len(m.models))
 	for name := range m.models {
 		mc := m.resolveProvider(m.models[name])
-		result = append(result, mc)
+		models = append(models, mc)
 	}
-	return result
+	m.mu.RUnlock()
+	return models
 }
 
 func (m *ModelRegistry) GetRaw(name string) *ModelConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.models[name]
 }
 
 func (m *ModelRegistry) ListRaw() []*ModelConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var result []*ModelConfig
 	for _, mc := range m.models {
 		result = append(result, mc)
@@ -100,6 +110,8 @@ func (m *ModelRegistry) ListRaw() []*ModelConfig {
 }
 
 func (m *ModelRegistry) Register(name string, cfg *ModelConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.models == nil {
 		m.models = make(map[string]*ModelConfig)
 	}
@@ -114,10 +126,12 @@ func (m *ModelRegistry) Save(cfg *ModelConfig) error {
 		return fmt.Errorf("model name cannot be empty")
 	}
 
+	m.mu.Lock()
 	if m.models == nil {
 		m.models = make(map[string]*ModelConfig)
 	}
 	m.models[cfg.Name] = cfg
+	m.mu.Unlock()
 
 	return m.saveAll()
 }
@@ -158,6 +172,8 @@ func (m *ModelRegistry) saveAll() error {
 }
 
 func (m *ModelRegistry) Providers() []*ProviderConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var result []*ProviderConfig
 	for _, p := range m.providers {
 		result = append(result, p)
@@ -166,10 +182,14 @@ func (m *ModelRegistry) Providers() []*ProviderConfig {
 }
 
 func (m *ModelRegistry) GetProvider(name string) *ProviderConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.providers[name]
 }
 
 func (m *ModelRegistry) RegisterProvider(name string, provider *ProviderConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.providers == nil {
 		m.providers = make(map[string]*ProviderConfig)
 	}

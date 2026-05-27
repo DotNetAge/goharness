@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const grepDefaultTimeout = 30 * time.Second
 
 // GrepTool implements a high-performance search using ripgrep (rg).
 // It mimics ClaudeCode's GrepTool with output budget management.
@@ -80,7 +83,9 @@ func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 	args = append(args, pattern, ".")
 
-	cmd := exec.CommandContext(ctx, "rg", args...)
+	grepCtx, grepCancel := context.WithTimeout(ctx, grepDefaultTimeout)
+	defer grepCancel()
+	cmd := exec.CommandContext(grepCtx, "rg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// If rg returns 1, it means no matches found

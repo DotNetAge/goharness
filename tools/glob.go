@@ -6,9 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/DotNetAge/goreact/events"
 )
+
+const globDefaultTimeout = 30 * time.Second
 
 // GlobTool implements file path discovery using 'find' or 'fd'.
 type GlobTool struct {
@@ -73,7 +76,9 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	// Use 'find' as a portable fallback, or 'fd' if available.
 	// Here we use 'find' with some exclusions for simplicity.
-	cmd := exec.CommandContext(ctx, "find", searchPath, "-name", pattern, "-not", "-path", "*/.*")
+	globCtx, globCancel := context.WithTimeout(ctx, globDefaultTimeout)
+	defer globCancel()
+	cmd := exec.CommandContext(globCtx, "find", searchPath, "-name", pattern, "-not", "-path", "*/.*")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glob failed: %v", err)

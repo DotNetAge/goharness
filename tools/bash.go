@@ -268,6 +268,8 @@ var dangerousPatterns = []struct {
 	{regexp.MustCompile(`mkfs\.`), "dangerous: disk formatting command"},
 	{regexp.MustCompile(`:\(\)\{\s*\|.*:\s*&\s*;:\s*\}$`), "dangerous: fork bomb detected"},
 	{regexp.MustCompile(`(curl|wget)\s+.*\|\s*(sh|bash)\b`), "dangerous: remote code execution pipe (curl|sh)"},
+	{regexp.MustCompile(`\$\(`), "dangerous: command substitution via $()"},
+	{regexp.MustCompile("`[^`]*`"), "dangerous: command substitution via backticks"},
 	{regexp.MustCompile(`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`), "dangerous: remote binary download to system path"},
 	{regexp.MustCompile(`chmod\s+-R\s+777\s+/`), "dangerous: world-writable root filesystem"},
 	{regexp.MustCompile(`chown\s+-R.*\s+/`), "dangerous: recursive root ownership change"},

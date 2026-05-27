@@ -1,8 +1,6 @@
 package loop
 
 import (
-	"context"
-
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goreact/hooks"
 	"github.com/DotNetAge/goreact/memory"
@@ -23,7 +21,7 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 		return hooks.HookResult{}
 	}
 
-	records, err := h.memory.Retrieve(context.Background(), input.UserMessage,
+	records, err := h.memory.Retrieve(nil, input.UserMessage,
 		memory.WithMemoryTypes(memory.MemoryTypeSession),
 		memory.WithMemorySessionID(sessionID),
 		memory.WithMinScore(0.3),

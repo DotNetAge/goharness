@@ -145,13 +145,18 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 }
 
 func (s *Session) tryCompact(ctx context.Context) {
-	s.mu.RLock()
+	s.mu.Lock()
 	cursor := s.cursor
 	messages := s.messages
 	maxWindowSize := s.maxWindowSize
-	s.mu.RUnlock()
 
 	if maxWindowSize <= 0 {
+		s.mu.Unlock()
+		return
+	}
+
+	if cursor >= len(messages) {
+		s.mu.Unlock()
 		return
 	}
 
@@ -165,6 +170,7 @@ func (s *Session) tryCompact(ctx context.Context) {
 	target := int64(float64(maxWindowSize) * 0.6)
 
 	if tokens <= threshold {
+		s.mu.Unlock()
 		return
 	}
 
@@ -180,7 +186,6 @@ func (s *Session) tryCompact(ctx context.Context) {
 		}
 	}
 
-	s.mu.Lock()
 	if newCursor > s.cursor {
 		slid := make([]Message, newCursor-s.cursor)
 		copy(slid, s.messages[s.cursor:newCursor])
@@ -194,9 +199,14 @@ func (s *Session) tryCompact(ctx context.Context) {
 			}
 		}
 
+		if s.cursor != cursor || len(s.messages) != len(messages) {
+			s.mu.Unlock()
+			return
+		}
+
 		slidCount := newCursor - s.cursor
 		s.messages = append(s.messages[:s.cursor], s.messages[newCursor:]...)
-		s.cursor = len(s.messages) - len(s.messages[s.cursor:])
+		s.cursor = len(s.messages[:s.cursor])
 
 		if s.compactionHandler != nil {
 			s.compactionHandler(CompactionEvent{

@@ -48,7 +48,7 @@ type LLMResponse struct {
 	Reasoning    string
 	FinishReason string
 	ToolCalls    []ToolCallInvocation
-	TokenUsage   session.TokenUsage
+	TokenUsage   *session.TokenUsage
 	AbortReason  string
 }
 

@@ -58,7 +58,7 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("task_id must be a string, got %T", raw)
 		}
-		r := tc.ResultStore.WaitForResult(id)
+		r := tc.ResultStore.WaitForResult(ctx, id)
 		if r.Error != "" {
 			results = append(results, fmt.Sprintf("[%s] failed: %s", id, r.Error))
 		} else {

@@ -29,9 +29,31 @@ type WebFetchTool struct {
 }
 
 func NewWebFetchTool() FuncTool {
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	return &WebFetchTool{
 		client: &http.Client{
 			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					host, _, err := net.SplitHostPort(addr)
+					if err != nil {
+						return nil, err
+					}
+					ips, err := net.LookupIP(host)
+					if err != nil {
+						return nil, fmt.Errorf("failed to resolve host %q: %w", host, err)
+					}
+					for _, ip := range ips {
+						if isPrivateIP(ip) {
+							return nil, fmt.Errorf("access denied: URL resolves to private/internal address %s", ip)
+						}
+					}
+					return dialer.DialContext(ctx, network, addr)
+				},
+			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("too many redirects")
