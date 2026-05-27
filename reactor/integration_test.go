@@ -136,7 +136,7 @@ func newIntTestReactor(mockFn reactor.MockLLMFunc, extraTools ...core.FuncTool) 
 	bus := reactor.NewEventBus()
 	cfg := reactor.ReactorConfig{Model: "qwen3.6-plus", MaxIterations: 15}
 	r := reactor.NewReactor(cfg, reactor.WithMockLLM(mockFn), reactor.WithEventBus(bus), reactor.WithoutBundledTools())
-	r.RegisterThoughtHooks(&intPreCheckHook{}, &intConvergenceHook{})
+	r.RegisterLoopHooks(&intPreCheckHook{}, &intConvergenceHook{})
 	r.RegisterToolHooks(&action.ToolEventHook{})
 	for _, tool := range extraTools {
 		if err := r.RegisterTool(tool); err != nil {
@@ -153,29 +153,24 @@ func newIntTestReactor(mockFn reactor.MockLLMFunc, extraTools ...core.FuncTool) 
 type intPreCheckHook struct{}
 
 func (h *intPreCheckHook) Priority() int { return reactor.PriorityPreCheck }
-func (h *intPreCheckHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
-	if ctx.CurrentIteration >= ctx.MaxIterations {
-		return reactor.HookResult{Abort: true, AbortReason: "max iterations"}
-	}
+func (h *intPreCheckHook) BeforeLLM(sessionID string, iteration int, input *reactor.CallInput) reactor.HookResult {
 	return reactor.HookResult{}
 }
-func (h *intPreCheckHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
+func (h *intPreCheckHook) AfterLLM(sessionID string, iteration int, resp *reactor.LLMResponse, results []reactor.ToolResult) reactor.HookResult {
 	return reactor.HookResult{}
 }
-func (h *intPreCheckHook) Abort(ctx *reactor.ReactContext, reason string) {}
+func (h *intPreCheckHook) Abort(sessionID string, reason string) {}
 
 type intConvergenceHook struct{}
 
 func (h *intConvergenceHook) Priority() int { return reactor.PriorityConvergence }
-func (h *intConvergenceHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
+func (h *intConvergenceHook) BeforeLLM(sessionID string, iteration int, input *reactor.CallInput) reactor.HookResult {
 	return reactor.HookResult{}
 }
-func (h *intConvergenceHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
-	// Let the loop's natural termination (direct_answer logic in runLoop)
-	// handle the answer — this ensures RunResult.Answer is populated properly.
+func (h *intConvergenceHook) AfterLLM(sessionID string, iteration int, resp *reactor.LLMResponse, results []reactor.ToolResult) reactor.HookResult {
 	return reactor.HookResult{}
 }
-func (h *intConvergenceHook) Abort(ctx *reactor.ReactContext, reason string) {}
+func (h *intConvergenceHook) Abort(sessionID string, reason string) {}
 
 // ============================================================================
 // SCENARIO A: Sliding Window — Multi-Round Complex Analysis Triggers Slide

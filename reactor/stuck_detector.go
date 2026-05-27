@@ -40,10 +40,10 @@ type ToolCallSnapshot struct {
 	Error string `json:"error"`
 }
 
-// IterationSnapshot 记录一轮 Think-Act 周期的快照。
+// IterationSnapshot 记录一轮 TAs 迭代的快照。
 type IterationSnapshot struct {
 	Iteration int                `json:"iteration"`
-	Decision  string             `json:"decision"`
+	HasTools  bool               `json:"has_tools"`
 	ToolCalls []ToolCallSnapshot `json:"tool_calls,omitempty"`
 }
 
@@ -168,25 +168,18 @@ func (d *OscillationDetector) Analyze(history []IterationSnapshot) *StuckDiagnos
 		return nil
 	}
 
-	// 检查最近 Threshold 轮的决策是否呈交替模式（A, B, A, B, ...）
-	// 即相邻决策两两不等
+	// 检查最近 Threshold 轮的决策是否呈交替模式 (HasTools: true, false, true, false, ...)
 	lastN := history[n-d.Threshold:]
 	for i := 1; i < len(lastN); i++ {
-		if lastN[i].Decision == lastN[i-1].Decision {
-			return nil // 相邻相等 → 不是交替
+		if lastN[i].HasTools == lastN[i-1].HasTools {
+			return nil // 相邻相同 → 不是交替
 		}
-	}
-
-	// 确认是两值交替还是多值交替
-	unique := map[string]int{}
-	for _, s := range lastN {
-		unique[s.Decision]++
 	}
 
 	return &StuckDiagnosis{
 		Stuck:       true,
 		Pattern:     PatternOscillation,
-		Description: fmt.Sprintf("decision oscillating between %d values for %d iterations", len(unique), d.Threshold),
+		Description: fmt.Sprintf("decision oscillating between tool_use and answer for %d iterations", d.Threshold),
 		NudgePrefix: "Note",
 		NudgeDetail: fmt.Sprintf("Your decisions have been oscillating between states for %d iterations. Pick a direction and commit to it.", d.Threshold),
 	}
@@ -205,11 +198,11 @@ func (d *NoProgressDetector) Analyze(history []IterationSnapshot) *StuckDiagnosi
 		return nil
 	}
 
-	// 从最新迭代倒推，统计连续非 answer 决策的轮数
+	// 从最新迭代倒推，统计连续有工具调用的轮数（未产出答案）
 	noAnswer := 0
 	for i := n - 1; i >= 0; i-- {
-		if history[i].Decision == "answer" || history[i].Decision == "" {
-			break // 有答案或空决策 → 链终止
+		if !history[i].HasTools {
+			break // 无工具调用 → 链终止
 		}
 		noAnswer++
 	}

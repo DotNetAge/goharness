@@ -13,15 +13,12 @@ import (
 )
 
 // CallInput describes what the caller wants from an LLM call.
-// SystemPromptSections contains pre-built SystemMessage sections
-// from the Prompt struct (stable across rounds).
-// History, UserMessage, and Tools provide runtime context.
 type CallInput struct {
-	SessionID            string
-	SystemPromptSections []gochatcore.Message // pre-built system messages (from Prompt)
-	UserMessage          string               // the user's original input
-	History              ConversationHistory  // conversation history to include
-	Tools                []gochatcore.Tool    // native function calling tools (full schema, stable)
+	SessionID            string                 // session identifier
+	SystemPromptSections []gochatcore.Message    // pre-built system messages (from Prompt)
+	UserMessage          string                 // the user's original input
+	History              []core.Message          // conversation history to include
+	Tools                []gochatcore.Tool       // native function calling tools (full schema, stable)
 }
 
 // CallResult holds the response, native tool calls, finish reason, and token usage from a single LLM call.

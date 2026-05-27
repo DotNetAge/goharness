@@ -7,9 +7,9 @@ import (
 func TestToolLoopDetector_NoDetection(t *testing.T) {
 	d := &ToolLoopDetector{Threshold: 3}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Read"}}},
-		{Iteration: 3, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Read"}}},
+		{Iteration: 3, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection, got stuck=%v pattern=%s", diag.Stuck, diag.Pattern)
@@ -19,9 +19,9 @@ func TestToolLoopDetector_NoDetection(t *testing.T) {
 func TestToolLoopDetector_DetectThreeConsecutive(t *testing.T) {
 	d := &ToolLoopDetector{Threshold: 3}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
-		{Iteration: 3, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 3, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
 	}
 	diag := d.Analyze(history)
 	if diag == nil || !diag.Stuck {
@@ -35,9 +35,9 @@ func TestToolLoopDetector_DetectThreeConsecutive(t *testing.T) {
 func TestToolLoopDetector_BreakOnDifferentTool(t *testing.T) {
 	d := &ToolLoopDetector{Threshold: 3}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
-		{Iteration: 3, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Read"}}}, // breaks chain
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 3, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Read"}}},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection after tool change, got stuck=%v", diag.Stuck)
@@ -47,8 +47,8 @@ func TestToolLoopDetector_BreakOnDifferentTool(t *testing.T) {
 func TestToolLoopDetector_NoToolCalls(t *testing.T) {
 	d := &ToolLoopDetector{Threshold: 3}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAnswer},
-		{Iteration: 2, Decision: DecisionAnswer},
+		{Iteration: 1, HasTools: false},
+		{Iteration: 2, HasTools: false},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection without tool calls, got stuck=%v", diag.Stuck)
@@ -58,10 +58,10 @@ func TestToolLoopDetector_NoToolCalls(t *testing.T) {
 func TestErrorLoopDetector_DetectTwoConsecutive(t *testing.T) {
 	d := &ErrorLoopDetector{Threshold: 2}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{
 			{Name: "Bash", Error: "permission denied"},
 		}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{
 			{Name: "Bash", Error: "permission denied"},
 		}},
 	}
@@ -77,11 +77,11 @@ func TestErrorLoopDetector_DetectTwoConsecutive(t *testing.T) {
 func TestErrorLoopDetector_BreakOnSuccess(t *testing.T) {
 	d := &ErrorLoopDetector{Threshold: 2}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{
 			{Name: "Bash", Error: "not found"},
 		}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{
-			{Name: "Bash"}, // success — no error
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{
+			{Name: "Bash"},
 		}},
 	}
 	if diag := d.Analyze(history); diag != nil {
@@ -92,11 +92,11 @@ func TestErrorLoopDetector_BreakOnSuccess(t *testing.T) {
 func TestErrorLoopDetector_DifferentError(t *testing.T) {
 	d := &ErrorLoopDetector{Threshold: 2}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{
 			{Name: "Read", Error: "not found"},
 		}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{
-			{Name: "Read", Error: "permission denied"}, // different error
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{
+			{Name: "Read", Error: "permission denied"},
 		}},
 	}
 	if diag := d.Analyze(history); diag != nil {
@@ -107,10 +107,10 @@ func TestErrorLoopDetector_DifferentError(t *testing.T) {
 func TestOscillationDetector_DetectAlternation(t *testing.T) {
 	d := &OscillationDetector{Threshold: 4}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionAnswer},
-		{Iteration: 3, Decision: DecisionAct},
-		{Iteration: 4, Decision: DecisionAnswer},
+		{Iteration: 1, HasTools: true},
+		{Iteration: 2, HasTools: false},
+		{Iteration: 3, HasTools: true},
+		{Iteration: 4, HasTools: false},
 	}
 	diag := d.Analyze(history)
 	if diag == nil || !diag.Stuck {
@@ -124,10 +124,10 @@ func TestOscillationDetector_DetectAlternation(t *testing.T) {
 func TestOscillationDetector_ThreeWayOscillation(t *testing.T) {
 	d := &OscillationDetector{Threshold: 4}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionAnswer},
-		{Iteration: 3, Decision: DecisionAct},
-		{Iteration: 4, Decision: DecisionAnswer},
+		{Iteration: 1, HasTools: true},
+		{Iteration: 2, HasTools: false},
+		{Iteration: 3, HasTools: true},
+		{Iteration: 4, HasTools: false},
 	}
 	diag := d.Analyze(history)
 	if diag == nil || !diag.Stuck {
@@ -138,8 +138,8 @@ func TestOscillationDetector_ThreeWayOscillation(t *testing.T) {
 func TestOscillationDetector_NotEnoughIterations(t *testing.T) {
 	d := &OscillationDetector{Threshold: 4}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionAnswer},
+		{Iteration: 1, HasTools: true},
+		{Iteration: 2, HasTools: false},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection with insufficient history, got stuck=%v", diag.Stuck)
@@ -149,10 +149,10 @@ func TestOscillationDetector_NotEnoughIterations(t *testing.T) {
 func TestOscillationDetector_NoAlternation(t *testing.T) {
 	d := &OscillationDetector{Threshold: 4}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionAct},
-		{Iteration: 3, Decision: DecisionAct},
-		{Iteration: 4, Decision: DecisionAct},
+		{Iteration: 1, HasTools: true},
+		{Iteration: 2, HasTools: true},
+		{Iteration: 3, HasTools: true},
+		{Iteration: 4, HasTools: true},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection with steady decision, got stuck=%v", diag.Stuck)
@@ -165,7 +165,7 @@ func TestNoProgressDetector_DetectFiveToolCallsNoAnswer(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		history[i] = IterationSnapshot{
 			Iteration: i + 1,
-			Decision:  DecisionAct,
+			HasTools:  true,
 			ToolCalls: []ToolCallSnapshot{{Name: "Bash"}},
 		}
 	}
@@ -181,11 +181,11 @@ func TestNoProgressDetector_DetectFiveToolCallsNoAnswer(t *testing.T) {
 func TestNoProgressDetector_AnswerBreaksChain(t *testing.T) {
 	d := &NoProgressDetector{Threshold: 5}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionAct},
-		{Iteration: 3, Decision: DecisionAct},
-		{Iteration: 4, Decision: DecisionAnswer}, // breaks chain
-		{Iteration: 5, Decision: DecisionAct},
+		{Iteration: 1, HasTools: true},
+		{Iteration: 2, HasTools: true},
+		{Iteration: 3, HasTools: true},
+		{Iteration: 4, HasTools: false},
+		{Iteration: 5, HasTools: true},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection with answer breaking chain, got stuck=%v", diag.Stuck)
@@ -195,9 +195,9 @@ func TestNoProgressDetector_AnswerBreaksChain(t *testing.T) {
 func TestNoProgressDetector_NotEnoughIterations(t *testing.T) {
 	d := &NoProgressDetector{Threshold: 5}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct},
-		{Iteration: 2, Decision: DecisionAct},
-		{Iteration: 3, Decision: DecisionAct},
+		{Iteration: 1, HasTools: true},
+		{Iteration: 2, HasTools: true},
+		{Iteration: 3, HasTools: true},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection before threshold, got stuck=%v", diag.Stuck)
@@ -211,10 +211,9 @@ func TestCompositeDetector_FirstMatchWins(t *testing.T) {
 			&ErrorLoopDetector{Threshold: 2},
 		},
 	}
-	// Both tool loop and error loop patterns present; tool loop goes first
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash", Error: "err1"}}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash", Error: "err1"}}},
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash", Error: "err1"}}},
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash", Error: "err1"}}},
 	}
 	diag := d.Analyze(history)
 	if diag == nil || !diag.Stuck {
@@ -233,8 +232,8 @@ func TestCompositeDetector_NoMatch(t *testing.T) {
 		},
 	}
 	history := []IterationSnapshot{
-		{Iteration: 1, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
-		{Iteration: 2, Decision: DecisionAct, ToolCalls: []ToolCallSnapshot{{Name: "Read"}}},
+		{Iteration: 1, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Bash"}}},
+		{Iteration: 2, HasTools: true, ToolCalls: []ToolCallSnapshot{{Name: "Read"}}},
 	}
 	if diag := d.Analyze(history); diag != nil {
 		t.Errorf("expected no detection, got stuck=%v", diag.Stuck)
@@ -304,7 +303,6 @@ func TestNewDefaultStuckDetector_HasAllPatterns(t *testing.T) {
 	}
 }
 
-// contains reports whether substr is within s.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

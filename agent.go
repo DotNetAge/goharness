@@ -9,7 +9,7 @@ import (
 
 	"github.com/DotNetAge/goreact/core"
 	"github.com/DotNetAge/goreact/internal/reactor/hooks/action"
-	"github.com/DotNetAge/goreact/internal/reactor/hooks/thought"
+	"github.com/DotNetAge/goreact/internal/reactor/hooks/loop"
 	"github.com/DotNetAge/goreact/reactor"
 	"github.com/google/uuid"
 )
@@ -111,11 +111,11 @@ type Agent struct {
 // Result holds the outcome of an Ask or AskStream call.
 // Developers can query token consumption, iterations, tool usage, etc.
 type Result struct {
-	Answer    string          `json:"answer"`
+	Answer     string          `json:"answer"`
 	TokenUsage core.TokenUsage `json:"token_usage"`
-	Duration  string          `json:"duration,omitempty"` // human-readable, e.g. "1.23s"
-	Steps     int             `json:"steps"`              // total Think-Act iterations
-	ToolsUsed int             `json:"tools_used"`         // number of tool invocations
+	Duration   string          `json:"duration,omitempty"` // human-readable, e.g. "1.23s"
+	Steps      int             `json:"steps"`              // total Think-Act iterations
+	ToolsUsed  int             `json:"tools_used"`         // number of tool invocations
 }
 
 // ---------------------------------------------------------------------------
@@ -137,9 +137,9 @@ type agentSetup struct {
 	config *core.AgentConfig
 	model  *core.ModelConfig
 
-	memory          core.Memory
-	sessionMemory   core.Memory
-	sessionID string
+	memory        core.Memory
+	sessionMemory core.Memory
+	sessionID     string
 
 	// Tools & Skills
 	extraTools     []core.FuncTool
@@ -171,11 +171,10 @@ type agentSetup struct {
 	providerRegistry core.ProviderRegistry
 
 	// Hook 注入
-	thoughtHooks     []reactor.ThoughtHook
-	toolHooks        []reactor.ToolHook
+	loopHooks []reactor.LoopHook
+	toolHooks []reactor.ToolHook
 	// Permission rule store (injected externally, nil = skip rule-based checking)
 	permissionRuleStore core.PermissionRuleStore
-
 
 	kvStore core.KVStore
 }
@@ -400,9 +399,12 @@ func WithProviderRegistry(reg core.ProviderRegistry) AgentOption {
 //	    goreact.WithModel(model),
 //	    goreact.WithLogger(zapLogger),  // ← All logs go through Zap
 //	)
-func WithThoughtHooks(hooks ...reactor.ThoughtHook) AgentOption {
+//
+// WithThoughtHooks 注入 ThinkingLoop 阶段钩子。
+// 注意：该方法现在接受 LoopHook 接口。
+func WithThoughtHooks(hooks ...reactor.LoopHook) AgentOption {
 	return func(s *agentSetup) {
-		s.thoughtHooks = append(s.thoughtHooks, hooks...)
+		s.loopHooks = append(s.loopHooks, hooks...)
 	}
 }
 
@@ -411,7 +413,6 @@ func WithToolHooks(hooks ...reactor.ToolHook) AgentOption {
 		s.toolHooks = append(s.toolHooks, hooks...)
 	}
 }
-
 
 func WithPermissionRuleStore(store core.PermissionRuleStore) AgentOption {
 	return func(s *agentSetup) {
@@ -439,7 +440,7 @@ func WithKVStore(store core.KVStore) AgentOption {
 // ---------------------------------------------------------------------------
 
 // buildReactorConfig creates a ReactorConfig from ModelConfig and AgentConfig.
-// If a ProviderRegistry is provided and the model references a provider, 
+// If a ProviderRegistry is provided and the model references a provider,
 // provider-level fields (APIKey, BaseURL, AuthToken) are resolved automatically.
 // This centralizes the field mapping to avoid duplication across NewAgent, Clone, and Switch.
 func buildReactorConfig(model *core.ModelConfig, systemPrompt string, providerRegistry ...core.ProviderRegistry) reactor.ReactorConfig {
@@ -599,8 +600,8 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	}
 
 	// Hook 注入
-	if len(setup.thoughtHooks) > 0 {
-		reactorOpts = append(reactorOpts, reactor.WithThoughtHooks(setup.thoughtHooks...))
+	if len(setup.loopHooks) > 0 {
+		reactorOpts = append(reactorOpts, reactor.WithLoopHooks(setup.loopHooks...))
 	}
 	if len(setup.toolHooks) > 0 {
 		reactorOpts = append(reactorOpts, reactor.WithToolHooks(setup.toolHooks...))
@@ -634,7 +635,7 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 	r := reactor.NewReactor(reactorConfig, reactorOpts...)
 
 	// Register default lifecycle hooks (user hooks already registered as ReactorOptions)
-	r.RegisterThoughtHooks(thought.Defaults(r.Logger())...)
+	r.RegisterLoopHooks(loop.Defaults(r.Logger())...)
 	r.RegisterToolHooks(action.Defaults(setup.permissionRuleStore, r.SkillRegistry(), r.Logger())...)
 
 	// Populate skills catalog and rules on the Prompt
@@ -957,11 +958,11 @@ func (a *Agent) AskWithContext(ctx context.Context, sessionID string, question s
 	}
 
 	result := &Result{
-		Answer:    runResult.Answer,
+		Answer:     runResult.Answer,
 		TokenUsage: runResult.TokenUsage,
-		Duration:  runResult.TotalDuration.String(),
-		Steps:     runResult.TotalIterations,
-		ToolsUsed: len(runResult.Steps),
+		Duration:   runResult.TotalDuration.String(),
+		Steps:      runResult.TotalIterations,
+		ToolsUsed:  runResult.TotalIterations,
 	}
 	a.lastResult = result
 	return result, nil
@@ -1232,7 +1233,7 @@ func (a *Agent) Clone(childConfig *core.AgentConfig, childModel *core.ModelConfi
 
 	subReactorConfig := buildReactorConfig(model, config.Introduction, a.providerRegistry)
 
-	childReactor := a.reactor.CloneReactor(subReactorConfig)
+	childReactor, _ := a.reactor.CloneReactor(subReactorConfig)
 
 	childSessionID := fmt.Sprintf("%s-%s", config.Name, uuid.New().String()[:8])
 	childMaxTokens := int64(model.MaxTokens)
@@ -1282,7 +1283,7 @@ func (a *Agent) Switch(config *core.AgentConfig, model *core.ModelConfig) {
 	switchConfig := buildReactorConfig(a.model, a.config.Introduction, a.providerRegistry)
 	existingCW := a.resolveSessionForRole(a.config.Name)
 
-	newReactor := a.reactor.CloneReactor(switchConfig)
+	newReactor, _ := a.reactor.CloneReactor(switchConfig)
 
 	if existingCW != nil {
 		newReactor.SetContextWindow(existingCW)

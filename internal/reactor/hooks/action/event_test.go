@@ -107,36 +107,27 @@ func (t *mockTool) Execute(ctx context.Context, params map[string]any) (any, err
 type testPreCheckHook struct{}
 
 func (h *testPreCheckHook) Priority() int { return reactor.PriorityPreCheck }
-
-func (h *testPreCheckHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
-	if ctx.CurrentIteration >= ctx.MaxIterations {
-		return reactor.HookResult{Abort: true, AbortReason: "reached max iterations"}
-	}
+func (h *testPreCheckHook) BeforeLLM(sessionID string, iteration int, input *reactor.CallInput) reactor.HookResult {
 	return reactor.HookResult{}
 }
-
-func (h *testPreCheckHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
+func (h *testPreCheckHook) AfterLLM(sessionID string, iteration int, resp *reactor.LLMResponse, results []reactor.ToolResult) reactor.HookResult {
 	return reactor.HookResult{}
 }
-
-func (h *testPreCheckHook) Abort(ctx *reactor.ReactContext, reason string) {}
+func (h *testPreCheckHook) Abort(sessionID string, reason string) {}
 
 type testConvergenceHook struct{}
 
 func (h *testConvergenceHook) Priority() int { return reactor.PriorityConvergence }
-
-func (h *testConvergenceHook) Before(ctx *reactor.ReactContext, input *reactor.CallInput) reactor.HookResult {
+func (h *testConvergenceHook) BeforeLLM(sessionID string, iteration int, input *reactor.CallInput) reactor.HookResult {
 	return reactor.HookResult{}
 }
-
-func (h *testConvergenceHook) After(ctx *reactor.ReactContext, thought *reactor.Thought) reactor.HookResult {
-	if thought != nil && thought.Decision == reactor.DecisionAnswer {
+func (h *testConvergenceHook) AfterLLM(sessionID string, iteration int, resp *reactor.LLMResponse, results []reactor.ToolResult) reactor.HookResult {
+	if resp != nil && len(resp.ToolCalls) == 0 {
 		return reactor.HookResult{Abort: true, AbortReason: "answer produced"}
 	}
 	return reactor.HookResult{}
 }
-
-func (h *testConvergenceHook) Abort(ctx *reactor.ReactContext, reason string) {}
+func (h *testConvergenceHook) Abort(sessionID string, reason string) {}
 
 func newTestReactorWithEvents(mockFn reactor.MockLLMFunc, extraTools ...core.FuncTool) (*reactor.Reactor, reactor.EventBus, *eventCollector) {
 	bus := reactor.NewEventBus()
@@ -154,7 +145,7 @@ func newTestReactorWithEvents(mockFn reactor.MockLLMFunc, extraTools ...core.Fun
 
 	r := reactor.NewReactor(cfg, opts...)
 
-	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
+	r.RegisterLoopHooks(&testPreCheckHook{}, &testConvergenceHook{})
 	r.RegisterToolHooks(action.Defaults(nil, nil, nil)...)
 
 	for _, tool := range extraTools {
@@ -188,7 +179,7 @@ func newTestReactorWithEventsMinimal(mockFn reactor.MockLLMFunc, extraTools ...c
 
 	r := reactor.NewReactor(cfg, opts...)
 
-	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
+	r.RegisterLoopHooks(&testPreCheckHook{}, &testConvergenceHook{})
 	r.RegisterToolHooks(&action.ToolEventHook{})
 
 	for _, tool := range extraTools {
@@ -576,7 +567,7 @@ func TestBranch_Run_MaxIterationsReached(t *testing.T) {
 		}),
 		reactor.WithoutBundledTools(),
 	)
-	r.RegisterThoughtHooks(&testPreCheckHook{}, &testConvergenceHook{})
+	r.RegisterLoopHooks(&testPreCheckHook{}, &testConvergenceHook{})
 	r.RegisterToolHooks(action.Defaults(nil, nil, nil)...)
 	_ = r.RegisterTool(&mockTool{name: "loop_tool"})
 

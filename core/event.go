@@ -95,7 +95,7 @@ type ReactEvent struct {
 	//   - ThinkingDelta: string (text fragment)
 	//   - ContentDelta: string (text content fragment)
 	//   - ToolUseDelta: ToolUseDeltaData
-	//   - ThinkingDone: Thought
+	//   - ThinkingDone: LLMResponse
 	//   - ToolExecStart: ToolExecStartData
 	//   - ToolExecEnd: ToolExecEndData
 	//   - SubtaskSpawned: SubtaskInfo

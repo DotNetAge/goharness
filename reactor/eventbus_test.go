@@ -1,7 +1,6 @@
 package reactor
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -187,12 +186,11 @@ func TestReactContext_EmitEvent(t *testing.T) {
 	})
 	defer cancel()
 
-	ctx := NewReactContextWithIDs(context.Background(), "main", "", "test input", nil, 10)
-	ctx.emitEvent = bus.Emit
+	emit := bus.Emit
 
-	// Emit through context
-	ctx.EmitEvent(core.ToolExecStart, core.ToolExecStartData{ToolName: "Read", Params: map[string]any{"path": "test"}})
-	ctx.EmitEvent(core.ThinkingDelta, "should be filtered")
+	// Emit through event bus
+	emit(core.ReactEvent{SessionID: "test", Type: core.ToolExecStart, Data: core.ToolExecStartData{ToolName: "Read", Params: map[string]any{"path": "test"}}})
+	emit(core.ReactEvent{SessionID: "test", Type: core.ThinkingDelta, Data: "should be filtered"})
 
 	select {
 	case ev := <-ch:
@@ -206,10 +204,8 @@ func TestReactContext_EmitEvent(t *testing.T) {
 }
 
 func TestReactContext_EmitEvent_NilBus(t *testing.T) {
-	// Should not panic when emitEvent is nil
-	ctx := NewReactContext(context.Background(), "test", nil, 10)
-	ctx.emitEvent = nil // explicitly nil
-	ctx.EmitEvent(core.ThinkingDelta, "test") // should be no-op
+	// Nil EventBus is handled at the reactor level (makeEmitter returns no-op).
+	// This test is no longer applicable at the EventBus level.
 }
 
 func TestReactEventTypes(t *testing.T) {

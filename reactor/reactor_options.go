@@ -222,11 +222,11 @@ func WithSessionDir(dir string) ReactorOption {
 
 // ── Hook 注入 Option ───────────────────────────────────────────────────────
 
-// WithThoughtHooks 注入思考阶段 hooks。
+// WithLoopHooks 注入 ThinkingLoop 阶段 hooks。
 // 用户 hooks 在 NewReactor 中追加到内置 hooks 后统一排序。
-func WithThoughtHooks(hooks ...ThoughtHook) ReactorOption {
+func WithLoopHooks(hooks ...LoopHook) ReactorOption {
 	return func(s *reactorSetup) {
-		s.thoughtHooks = append(s.thoughtHooks, hooks...)
+		s.loopHooks = append(s.loopHooks, hooks...)
 	}
 }
 
