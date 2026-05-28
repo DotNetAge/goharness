@@ -20,6 +20,7 @@ type MemorySessionStore struct {
 	store   map[string][]Message
 	metas   map[string]*sessionMeta
 	usage   map[string][]TokenUsage
+	cursors map[string]int // cursor persistence for compaction state
 	handler SlideHandler
 }
 
@@ -28,6 +29,7 @@ func NewMemorySessionStore() *MemorySessionStore {
 		store:   make(map[string][]Message),
 		metas:   make(map[string]*sessionMeta),
 		usage:   make(map[string][]TokenUsage),
+		cursors: make(map[string]int),
 		handler: NoopSlideHandler,
 	}
 }
@@ -274,4 +276,19 @@ func (s *MemorySessionStore) ResolveSessionDir(sessionID string) (string, error)
 		return "", ErrSessionNotFound
 	}
 	return "", nil
+}
+func (s *MemorySessionStore) GetCursor(_ context.Context, sessionID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if cursor, ok := s.cursors[sessionID]; ok {
+		return cursor, nil
+	}
+	return 0, nil // Default cursor is 0 (no compaction)
+}
+
+func (s *MemorySessionStore) SetCursor(_ context.Context, sessionID string, cursor int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cursors[sessionID] = cursor
+	return nil
 }

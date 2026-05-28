@@ -70,6 +70,7 @@ import (
 	"github.com/DotNetAge/goreact/config"
 	"github.com/DotNetAge/goreact/events"
 	"github.com/DotNetAge/goreact/hooks"
+	"github.com/DotNetAge/goreact/hooks/loop"
 	"github.com/DotNetAge/goreact/logging"
 	"github.com/DotNetAge/goreact/memory"
 	"github.com/DotNetAge/goreact/rule"
@@ -518,10 +519,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		eb.Emit(events.NewReactEvent(sid, "", "", typ, data))
 	}
 	defer func() {
+		sessionUsage := b.session.TotalTokenUsage(ctx)
 		emit(events.ExecutionSummary, events.ExecutionSummaryData{
 			TotalIterations:   b.resultIterations,
 			TotalDuration:     b.resultDuration,
-			TokensUsed:        b.resultUsage,
+			TokensUsed:        sessionUsage,
 			TerminationReason: b.resultTerminationReason,
 		})
 	}()
@@ -535,6 +537,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			WindowSize:     ev.WindowSize,
 		})
 	})
+
+	if rt.mem != nil {
+		rt.loopHooks = append([]hooks.LoopHook{loop.NewMemoryThoughtHook(rt.mem)}, rt.loopHooks...)
+	}
 
 	// Tool executor
 	toolExec := tools.NewToolExecutor(rt.toolReg,
@@ -713,9 +719,21 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// Record token usage from stream
 		if u := stream.Usage(); u != nil {
-			totalUsage.InputTokens += u.PromptTokens
-			totalUsage.OutputTokens += u.CompletionTokens
-			totalUsage.TotalTokens += u.TotalTokens
+			callUsage := session.TokenUsage{
+				Timestamp:    time.Now(),
+				InputTokens:  u.PromptTokens,
+				OutputTokens: u.CompletionTokens,
+				TotalTokens:   u.TotalTokens,
+			}
+			if u.PromptTokensDetails != nil {
+				callUsage.CachedTokens = u.PromptTokensDetails.CachedTokens
+			}
+			b.session.RecordTokenUsage(ctx, callUsage)
+
+			totalUsage.InputTokens += callUsage.InputTokens
+			totalUsage.OutputTokens += callUsage.OutputTokens
+			totalUsage.TotalTokens += callUsage.TotalTokens
+			totalUsage.CachedTokens += callUsage.CachedTokens
 			totalUsage.Timestamp = time.Now()
 		}
 
@@ -805,8 +823,16 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		}
 	}
 
-	// Max iterations reached
-	b.resultErr = fmt.Errorf("max iterations (%d) reached", maxIter)
+	// Max iterations reached - emit event (NOT an error)
+	// This is a normal boundary condition, not a failure.
+	// The UI should display a friendly suggestion to the user.
+	emit(events.MaxTurnsReached, events.MaxTurnsReachedData{
+			TurnsCompleted: lastIteration,
+			MaxTurns:       maxIter,
+			Suggestion:     fmt.Sprintf(
+				"已达到最大思考轮次 (%d/%d)。任务可能需要更详细的指令或分步完成。你可以发送\"继续\"让 AI 基于当前进度继续，或者提供更具体的指导。",
+				lastIteration, maxIter),
+		})
 	b.resultTerminationReason = "max_iterations"
 	b.resultIterations = lastIteration
 	b.resultDuration = time.Since(start)

@@ -142,6 +142,24 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 	})
 }
 
+// OnMaxTurnsReached registers a handler for the MaxTurnsReached event.
+// This event fires when the Think-Act loop reaches MaxTurns without producing
+// a final answer. It is NOT an error - it's a normal boundary condition.
+//
+// Use this to display a friendly suggestion to the user instead of an error.
+// Example:
+//
+//	result, err := rt.Ask("agent", "question", session).
+//	    OnMaxTurnsReached(func(data events.MaxTurnsReachedData) {
+//	        fmt.Println(data.Suggestion)
+//	    }).
+//	    Run()
+func (b *AskBuilder) OnMaxTurnsReached(fn func(data events.MaxTurnsReachedData)) *AskBuilder {
+	return b.on(events.MaxTurnsReached, func(d any) {
+		if v, ok := d.(events.MaxTurnsReachedData); ok { fn(v) }
+	})
+}
+
 // WithContext sets a custom context for the AskBuilder.
 // If the context is cancelled, the execution loop stops.
 // Cancel() will not cancel the custom context — callers should cancel it directly.

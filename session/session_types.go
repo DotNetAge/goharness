@@ -86,6 +86,21 @@ type SessionStore interface {
 	Create(ctx context.Context, agentName string, opts ...SessionOption) (*SessionInfo, error)
 	GetMeta(ctx context.Context, sessionID string) (*SessionInfo, error)
 	ResolveSessionDir(sessionID string) (string, error)
+
+	// Cursor persistence for compaction state recovery.
+	// These methods are used internally by Session to save/restore the cursor position.
+	// They are NOT part of the public Session API - external code should never call these.
+	//
+	// When compaction occurs (via tryCompact/executeCompactionPlan), the cursor advances.
+	// Without persisting it, a new Session object would load all messages but start with
+	// cursor=0, causing Current() to return too many messages (exceeding token limits).
+	//
+	// Implementation notes:
+	// - FileSessionStore: stores cursor in meta.json
+	// - MemorySessionStore: stores cursor in memory map
+	// - GetCursor returns 0 if no cursor has been set (no compaction occurred)
+	GetCursor(ctx context.Context, sessionID string) (int, error)
+	SetCursor(ctx context.Context, sessionID string, cursor int) error
 }
 
 // SessionOption is a functional option for configuring session creation.

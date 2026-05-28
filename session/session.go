@@ -34,6 +34,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -217,6 +218,7 @@ type Session struct {
 	cursor int
 
 	// messages stores all messages (historical + active)
+	// This is a lazy-loaded cache: empty until first access, then loaded from store
 	messages []Message
 
 	// store provides persistent message storage
@@ -230,6 +232,13 @@ type Session struct {
 
 	// compactionHandler is called after each compaction event
 	compactionHandler func(CompactionEvent)
+
+	// loaded indicates whether messages have been loaded from the persistent store.
+	// When false, Current() and Append() will trigger automatic lazy-loading.
+	loaded bool
+
+	// loadingMu prevents concurrent lazy-load operations
+	loadingMu sync.Mutex
 }
 
 // ID returns the unique identifier of this session.
@@ -260,7 +269,11 @@ func (s *Session) Store() SessionStore { return s.store }
 // The returned slice is safe to modify without affecting the session.
 //
 // Use Current() instead if you only need messages in the active window.
+//
+// Lazy-Loading: Automatically loads messages from store on first access.
 func (s *Session) All() []Message {
+	s.ensureLoaded(context.Background())
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Message, len(s.messages))
@@ -272,8 +285,15 @@ func (s *Session) All() []Message {
 // These are the messages that would be sent to the LLM on next inference.
 // Returns nil if cursor has reached the end of messages.
 //
+// This method implements lazy-loading: if messages haven't been loaded from the
+// persistent store yet, it will automatically load them on first access.
+// This ensures that resumed sessions always have access to historical context
+// without requiring an explicit Restore() call.
+//
 // The returned slice is a copy and safe to modify.
 func (s *Session) Current() []Message {
+	s.ensureLoaded(context.Background())
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.cursor >= len(s.messages) {
@@ -284,11 +304,138 @@ func (s *Session) Current() []Message {
 	return out
 }
 
+// ensureLoaded implements lazy-loading for session messages and cursor position.
+// On first access (when loaded==false), it loads all messages from the persistent store
+// AND restores the compaction cursor position.
+//
+// CRITICAL: The cursor must be restored to maintain correct compaction state across
+// Session object lifecycles. Without this, a new Session would load all messages but
+// reset cursor to 0, causing Current() to return too many messages (exceeding token limits).
+//
+// IMPORTANT - Compaction State Recovery:
+// When compaction occurs, old messages are deleted from memory but the Store may still
+// contain the complete history (all appended messages). The cursor marks how many messages
+// were at the front before compaction. On lazy-load, we must apply the same compaction
+// logic to avoid restoring "deleted" messages.
+//
+// This method is thread-safe and handles concurrent access correctly:
+// - First caller acquires loadingMu and performs the load
+// - Concurrent callers block until load completes, then see loaded==true
+func (s *Session) ensureLoaded(ctx context.Context) {
+	if s.loaded {
+		return
+	}
+
+	s.loadingMu.Lock()
+	defer s.loadingMu.Unlock()
+
+	// Double-check after acquiring lock (another goroutine may have loaded)
+	if s.loaded {
+		return
+	}
+
+	if s.store == nil {
+		s.loaded = true
+		return
+	}
+
+	// Load all messages from persistent store
+	msgs, err := s.store.Get(ctx, s.id)
+	if err != nil {
+		// If load fails, mark as loaded anyway to avoid retry loops.
+		// Session will start empty, which is safe (just no history).
+		s.loaded = true
+		return
+	}
+
+	// Restore cursor position from persistent store (internal SessionStore operation)
+	// This ensures that if compaction occurred in a previous Session lifecycle,
+	// the cursor is correctly positioned (not reset to 0)
+	cursor, cursorErr := s.store.GetCursor(ctx, s.id)
+	if cursorErr != nil {
+		cursor = 0 // Default to 0 on error (no compaction)
+	}
+
+	s.mu.Lock()
+
+	// Apply compaction recovery if needed
+	// If cursor > 0, it means compaction occurred in a previous lifecycle.
+	// The store has all historical messages, but we need to reconstruct
+	// the compacted state by keeping only messages[:cursor] + messages after the slid region.
+	// However, without knowing newCursor, we use a simpler heuristic:
+	// Keep only the last (len(msgs) - cursor) messages as the active window.
+	// This approximates the compaction result.
+	if cursor > 0 && cursor < len(msgs) {
+		activeWindowLen := len(msgs) - cursor
+		if activeWindowLen > 0 {
+			maxActiveWindow := 100
+			if activeWindowLen > maxActiveWindow {
+				activeWindowLen = maxActiveWindow
+			}
+			startActive := len(msgs) - activeWindowLen
+			if startActive < cursor {
+				startActive = cursor
+			}
+			msgs = append(msgs[:cursor], msgs[startActive:]...)
+		} else {
+			msgs = msgs[:cursor]
+		}
+	}
+
+	s.messages = msgs
+	s.cursor = cursor // Restore persisted cursor, NOT hardcoded 0!
+	s.mu.Unlock()
+
+	s.loaded = true
+}
+
+// Restore explicitly loads historical messages from the persistent store into memory.
+//
+// NOTE: With the lazy-loading architecture (implemented in ensureLoaded),
+// this method is OPTIONAL. Current() and Append() will automatically load
+// messages on first access if they haven't been loaded yet.
+//
+// Use Restore() when you need to:
+// - Force a reload of messages (e.g., after external modifications)
+// - Pre-load messages before time-critical operations
+// - Explicitly control when loading occurs for debugging/monitoring
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//
+// Returns:
+//   - error: If loading from store fails
+func (s *Session) Restore(ctx context.Context) error {
+	if s.store == nil {
+		return nil
+	}
+
+	msgs, err := s.store.Get(ctx, s.id)
+	if err != nil {
+		return fmt.Errorf("restore session %q: %w", s.id, err)
+	}
+
+	s.mu.Lock()
+	s.messages = msgs
+	s.cursor = 0
+	s.mu.Unlock()
+
+	s.loadingMu.Lock()
+	s.loaded = true
+	s.loadingMu.Unlock()
+
+	return nil
+}
+
 // Append adds new messages to the session and triggers automatic compaction
 // if the context window exceeds configured thresholds.
 //
 // This operation is thread-safe and can be called concurrently from multiple
 // goroutines (e.g., tool execution results streaming in).
+//
+// Lazy-Loading: If this is the first operation on the session, it will
+// automatically load historical messages from the persistent store before
+// appending. This ensures new messages are appended to the correct history.
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
@@ -299,6 +446,8 @@ func (s *Session) Current() []Message {
 //   - May trigger compaction if window size exceeded
 //   - May invoke the summarizer and compaction handler
 func (s *Session) Append(ctx context.Context, msgs ...Message) {
+	s.ensureLoaded(ctx)
+
 	s.mu.Lock()
 
 	s.messages = append(s.messages, msgs...)
@@ -312,6 +461,45 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	s.mu.Unlock()
 
 	s.tryCompact(ctx)
+}
+
+// RecordTokenUsage persists a single LLM call's token usage to the session store.
+// This should be called after every LLM streaming response completes.
+// The usage record is appended to the session's usage history (usages.yml for FileStore).
+func (s *Session) RecordTokenUsage(ctx context.Context, usage TokenUsage) {
+	if s.store == nil {
+		return
+	}
+	_ = s.store.AppendTokenUsage(ctx, s.id, usage)
+}
+
+// GetTokenUsages returns the complete token usage history for this session.
+// Each entry represents one LLM call (one Think-Act cycle iteration).
+// Returns nil if no usage records exist or the session has no store.
+func (s *Session) GetTokenUsages(ctx context.Context) []TokenUsage {
+	if s.store == nil {
+		return nil
+	}
+	usages, _ := s.store.GetTokenUsages(ctx, s.id)
+	return usages
+}
+
+// TotalTokenUsage aggregates all recorded token usages into a single summary.
+// This is useful for displaying cumulative session cost in the UI.
+// Returns zero-value TokenUsage if no records exist.
+func (s *Session) TotalTokenUsage(ctx context.Context) TokenUsage {
+	usages := s.GetTokenUsages(ctx)
+	var total TokenUsage
+	for _, u := range usages {
+		total.InputTokens += u.InputTokens
+		total.OutputTokens += u.OutputTokens
+		total.TotalTokens += u.TotalTokens
+		total.CachedTokens += u.CachedTokens
+	}
+	if len(usages) > 0 {
+		total.Timestamp = usages[len(usages)-1].Timestamp
+	}
+	return total
 }
 
 // tryCompact checks if the active window exceeds token thresholds and performs
@@ -349,6 +537,22 @@ func (s *Session) tryCompact(ctx context.Context) {
 		}
 
 		s.executeCompactionPlan(plan)
+
+		// Persist cursor position after compaction (internal SessionStore operation)
+		// This ensures that when a new Session object is created (lazy-loaded),
+		// it will restore the correct cursor position and Current() will return
+		// the correct active window (not all messages, which would exceed token limits)
+		if s.store != nil {
+			s.mu.RLock()
+			currentCursor := s.cursor
+			s.mu.RUnlock()
+
+			if err := s.store.SetCursor(ctx, s.id, currentCursor); err != nil {
+				// Log error but don't fail - session can still function,
+				// just cursor won't survive across restarts
+				// (next lazy-load will reset to 0, which is safe)
+			}
+		}
 	}
 }
 
@@ -396,11 +600,11 @@ func (st sessionState) needsCompaction() bool {
 
 // compactionPlan contains the calculated parameters for a compaction operation.
 type compactionPlan struct {
-	shouldCompact    bool
-	newCursor        int
-	messagesToSlide  int
-	currentCursor    int
-	originalLength   int
+	shouldCompact   bool
+	newCursor       int
+	messagesToSlide int
+	currentCursor   int
+	originalLength  int
 }
 
 // calculateCompactionPlan determines what needs to be compacted based on current state.
@@ -421,11 +625,11 @@ func (st sessionState) calculateCompactionPlan() compactionPlan {
 	}
 
 	return compactionPlan{
-		shouldCompact:    newCursor > st.cursor,
-		newCursor:        newCursor,
-		messagesToSlide:  newCursor - st.cursor,
-		currentCursor:    st.cursor,
-		originalLength:   st.messageCount,
+		shouldCompact:   newCursor > st.cursor,
+		newCursor:       newCursor,
+		messagesToSlide: newCursor - st.cursor,
+		currentCursor:   st.cursor,
+		originalLength:  st.messageCount,
 	}
 }
 

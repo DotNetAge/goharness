@@ -69,4 +69,29 @@ const (
 	// (old messages slid out). Fires when the active window exceeds 80% of
 	// maxWindowSize and messages are trimmed to ~60%.
 	Compaction ReactEventType = "compaction"
+
+	// MaxTurnsReached signals that the Think-Act loop has reached the maximum
+	// number of iterations (MaxTurns) without producing a final answer.
+	// This is NOT an error - it's a normal boundary condition indicating
+	// that the agent needs more specific instructions or the task should be
+	// broken down into smaller steps.
+	//
+	// UI should display this as an informational notice (not an error).
+	// The conversation can continue with a follow-up message from the user.
+	//
+	// Data: MaxTurnsReachedData
+	MaxTurnsReached ReactEventType = "max_turns_reached"
 )
+
+// MaxTurnsReachedData contains details about a max-turns event.
+type MaxTurnsReachedData struct {
+	// TurnsCompleted is the actual number of iterations executed.
+	TurnsCompleted int `json:"turns_completed"`
+
+	// MaxTurns is the configured maximum iteration limit.
+	MaxTurns int `json:"max_turns"`
+
+	// Suggestion is a human-readable hint for the user on how to proceed.
+	// This should be displayed in the UI as a friendly tip.
+	Suggestion string `json:"suggestion"`
+}
