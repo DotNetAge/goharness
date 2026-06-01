@@ -218,11 +218,41 @@ func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, s
 }
 
 func (e *platformScriptExecutor) executeShell(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	shell := e.platform.Shell()
-	cmd := exec.CommandContext(ctx, shell, scriptPath)
-	cmd.Args = append(cmd.Args, args...)
-	cmd.Dir = skillRoot
+	var cmd *exec.Cmd
 
+	if e.platform.IsWindows() {
+		bashPaths := []string{
+			`C:\Program Files\Git\bin\bash.exe`,
+			`C:\Program Files (x86)\Git\bin\bash.exe`,
+			`C:\Windows\System32\bash.exe`,
+		}
+		bashBin := ""
+		for _, p := range bashPaths {
+			if _, err := os.Stat(p); err == nil {
+				bashBin = p
+				break
+			}
+		}
+		if bashBin == "" {
+			if found, err := exec.LookPath("bash"); err == nil {
+				bashBin = found
+			}
+		}
+		if bashBin != "" {
+			cmd = exec.CommandContext(ctx, bashBin, scriptPath)
+			cmd.Args = append(cmd.Args, args...)
+		} else {
+			shell := e.platform.Shell()
+			cmd = exec.CommandContext(ctx, shell, "/c", scriptPath)
+			cmd.Args = append(cmd.Args, args...)
+		}
+	} else {
+		shell := e.platform.Shell()
+		cmd = exec.CommandContext(ctx, shell, scriptPath)
+		cmd.Args = append(cmd.Args, args...)
+	}
+
+	cmd.Dir = skillRoot
 	return runScriptCommand(cmd)
 }
 

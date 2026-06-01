@@ -7,6 +7,7 @@ import (
 	"github.com/DotNetAge/goreact/memory"
 	"github.com/DotNetAge/goreact/rule"
 	"github.com/DotNetAge/goreact/skill"
+	"github.com/DotNetAge/goreact/session"
 	"github.com/DotNetAge/goreact/tools"
 )
 
@@ -50,4 +51,11 @@ func WithLoopHooks(hh ...hooks.LoopHook) RuntimeConfig {
 
 func WithToolHooks(hh ...hooks.ToolHook) RuntimeConfig {
 	return func(r *Runtime) { r.toolHooks = append(r.toolHooks, hh...) }
+}
+
+// WithTokenUsageStore sets the token usage storage backend.
+// The store persists usage records after each LLM streaming response.
+// If not set, a NoopTokenUsageStore is used (no usage tracking).
+func WithTokenUsageStore(store session.TokenUsageStore) RuntimeConfig {
+	return func(r *Runtime) { r.tokenUsageStore = store }
 }

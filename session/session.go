@@ -35,6 +35,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -448,12 +449,22 @@ func (s *Session) Restore(ctx context.Context) error {
 func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	s.ensureLoaded(ctx)
 
+	var filtered []Message
+	for _, m := range msgs {
+		if strings.TrimSpace(m.Content) != "" || len(m.ToolCalls) > 0 {
+			filtered = append(filtered, m)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+
 	s.mu.Lock()
 
-	s.messages = append(s.messages, msgs...)
+	s.messages = append(s.messages, filtered...)
 
 	if s.store != nil {
-		for _, msg := range msgs {
+		for _, msg := range filtered {
 			s.store.Append(ctx, s.id, s.agentName, msg)
 		}
 	}
@@ -461,45 +472,6 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	s.mu.Unlock()
 
 	s.tryCompact(ctx)
-}
-
-// RecordTokenUsage persists a single LLM call's token usage to the session store.
-// This should be called after every LLM streaming response completes.
-// The usage record is appended to the session's usage history (usages.yml for FileStore).
-func (s *Session) RecordTokenUsage(ctx context.Context, usage TokenUsage) {
-	if s.store == nil {
-		return
-	}
-	_ = s.store.AppendTokenUsage(ctx, s.id, usage)
-}
-
-// GetTokenUsages returns the complete token usage history for this session.
-// Each entry represents one LLM call (one Think-Act cycle iteration).
-// Returns nil if no usage records exist or the session has no store.
-func (s *Session) GetTokenUsages(ctx context.Context) []TokenUsage {
-	if s.store == nil {
-		return nil
-	}
-	usages, _ := s.store.GetTokenUsages(ctx, s.id)
-	return usages
-}
-
-// TotalTokenUsage aggregates all recorded token usages into a single summary.
-// This is useful for displaying cumulative session cost in the UI.
-// Returns zero-value TokenUsage if no records exist.
-func (s *Session) TotalTokenUsage(ctx context.Context) TokenUsage {
-	usages := s.GetTokenUsages(ctx)
-	var total TokenUsage
-	for _, u := range usages {
-		total.InputTokens += u.InputTokens
-		total.OutputTokens += u.OutputTokens
-		total.TotalTokens += u.TotalTokens
-		total.CachedTokens += u.CachedTokens
-	}
-	if len(usages) > 0 {
-		total.Timestamp = usages[len(usages)-1].Timestamp
-	}
-	return total
 }
 
 // tryCompact checks if the active window exceeds token thresholds and performs

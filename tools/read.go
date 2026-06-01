@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/DotNetAge/goreact/events"
@@ -134,7 +135,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	}
 
 	// Pre-read: check file exists, size, and type via fs.FS
-	cleanPath := strings.TrimLeft(resolvedPath, "/")
+	cleanPath := strings.TrimLeft(filepath.ToSlash(resolvedPath), "/")
 	info, err := fs.Stat(store.OS, cleanPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

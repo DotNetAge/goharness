@@ -19,7 +19,6 @@ type MemorySessionStore struct {
 	mu      sync.RWMutex
 	store   map[string][]Message
 	metas   map[string]*sessionMeta
-	usage   map[string][]TokenUsage
 	cursors map[string]int // cursor persistence for compaction state
 	handler SlideHandler
 }
@@ -28,7 +27,6 @@ func NewMemorySessionStore() *MemorySessionStore {
 	return &MemorySessionStore{
 		store:   make(map[string][]Message),
 		metas:   make(map[string]*sessionMeta),
-		usage:   make(map[string][]TokenUsage),
 		cursors: make(map[string]int),
 		handler: NoopSlideHandler,
 	}
@@ -128,33 +126,19 @@ func (s *MemorySessionStore) Clear(_ context.Context, sessionID string) error {
 	return nil
 }
 
+func (s *MemorySessionStore) DeleteSession(_ context.Context, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.store, sessionID)
+	delete(s.metas, sessionID)
+	delete(s.cursors, sessionID)
+	return nil
+}
+
 func (s *MemorySessionStore) SetSlideHandler(handler SlideHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handler = handler
-}
-
-func (s *MemorySessionStore) AppendTokenUsage(_ context.Context, sessionID string, usage TokenUsage) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.usage[sessionID] = append(s.usage[sessionID], usage)
-	return nil
-}
-
-func (s *MemorySessionStore) GetTokenUsages(_ context.Context, sessionID string) ([]TokenUsage, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	records := s.usage[sessionID]
-	if records == nil {
-		return nil, nil
-	}
-	out := make([]TokenUsage, len(records))
-	copy(out, records)
-	return out, nil
-}
-
-func (s *MemorySessionStore) Close() error {
-	return nil
 }
 
 func (s *MemorySessionStore) RegisterRole(sessionID, role string) {
@@ -277,6 +261,10 @@ func (s *MemorySessionStore) ResolveSessionDir(sessionID string) (string, error)
 	}
 	return "", nil
 }
+func (s *MemorySessionStore) Close() error {
+	return nil
+}
+
 func (s *MemorySessionStore) GetCursor(_ context.Context, sessionID string) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

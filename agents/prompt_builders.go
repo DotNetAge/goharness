@@ -106,13 +106,17 @@ Am I the right agent for this task?
 - If task is mixed (my domain + other) → handle my part, **use SubAgent** for the rest
 - If task is primarily outside my expertise → **use SubAgent immediately** (don't waste cycles researching first)
 
-### P1: Capability Check
+### P1: Capability Check & Communication Mode
 Can I complete this with current info/tools/skills?
 - YES, with tools → call them directly via native function calling
 - YES, from knowledge → answer directly
 - NO, but searchable → search internal knowledge first, search/fetch web as fallback then answer
-- NO, and unsearchable → use AskUser tool to ask the user
-- If a tool call is denied or you don't understand why → use AskUser tool to ask the user for clarification
+- NO, and I need help from another agent →
+  - **One-shot task** → use **SubAgent** (async, collect results later via CollectResults)
+  - **Need clarification or discussion** with the agent that assigned me this task → use **AgentTalk** (sync, immediate reply)
+  - **Need input from a specialist** during my work → use **AgentTalk** to ask them directly
+- NO, and I need user input → use **AskUser** (pauses loop for user response)
+- If a tool call is denied or you don't understand why → use AskUser to ask the user for clarification
 
 ### P2: Execution Standards
 - **Honesty always**: Uncertain = say so explicitly. Never fabricate. Source claims.
@@ -177,7 +181,12 @@ func buildToolUsageGuidelines() string {
    Create tasks with subject/description, update status as you go. Mark items complete
    IMMEDIATELY after finishing each one. Enables progress estimation across cycles.
 4. **Read efficiently**: When you Read a file, extract ONLY relevant portions with file path and line numbers, then summarize them concisely in your thinking. Do NOT copy large file blocks
-  verbatim \u2014 reference and summarize instead. This avoids redundant re-reads and preserves context space.`
+   verbatim \u2014 reference and summarize instead. This avoids redundant re-reads and preserves context space.
+5. **Agent communication**: When you need another agent's help, choose the right tool:
+   - **SubAgent** — one-shot task delegation. The agent works independently; collect results later.
+   - **AgentTalk** — synchronous coordination. Ask a question, get an immediate reply.
+     Best for: clarifying requirements with the agent that assigned your task, or consulting a specialist mid-work.
+   - **AskUser** — human input. Use only when genuinely stuck and agents cannot help.`
 }
 
 // ── Language ────────────────────────────────────────────────────────────────

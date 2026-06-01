@@ -72,6 +72,8 @@ type ModelConfig struct {
 
 	// MaxTurns 限制了单轮对话的最大交互次数，用于控制会话长度和成本。
 	MaxTurns int `json:"max_turns" yaml:"max_turns"`
+
+
 }
 
 // Config 将 ModelConfig 转换为 gochat.Config 格式，

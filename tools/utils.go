@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // ValidateRequired checks that a required parameter exists in the params map.
@@ -298,12 +297,6 @@ func resolveAndValidateForCreation(path string, projectDir string) (string, erro
 	}
 
 	return absPath, nil
-}
-
-// applySecurityFlags adds security-related flags to the open flags.
-// On Unix systems, this includes O_NOFOLLOW to prevent symlink attacks.
-func applySecurityFlags(flags int) int {
-	return flags | syscall.O_NOFOLLOW
 }
 
 // postOpenValidation performs additional validation after a file has been opened.

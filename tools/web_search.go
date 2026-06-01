@@ -534,7 +534,11 @@ collectLoop:
 		}
 	}
 
-	return formatSearchResults(query, results) + adapterNote, nil
+	formatted := formatSearchResults(query, results) + adapterNote
+	if logger := getLogger(ctx); logger != nil {
+		logger.Info("WebSearch result", "query", query, "result_count", len(results), "formatted_len", len(formatted), "adapters_tried", len(adapters))
+	}
+	return formatted, nil
 }
 
 // ---- Cache query API (knowledge reuse via KVStore) ----

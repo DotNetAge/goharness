@@ -3,41 +3,33 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/DotNetAge/goreact/events"
 )
 
-// globDefaultTimeout 是 Glob 工具的默认超时时间。
 const globDefaultTimeout = 30 * time.Second
 
-// GlobTool 实现了文件路径发现工具。
-// 使用 find 命令进行文件模式匹配，支持通配符搜索。
-//
-// 特性：
-//   - 支持通配符模式（如 *.go, **/*.ts）
-//   - 按修改时间排序返回结果
-//   - 结果数量限制防止上下文爆炸
-//
-// 安全级别：LevelSafe（安全），只读操作
-type GlobTool struct {
-	MaxResults int // 最大返回结果数量（默认 200）
+type fileEntry struct {
+	path    string
+	modTime time.Time
 }
 
-// NewGlobTool 创建一个 Glob 工具实例。
-//
-// 返回：
-//   - FuncTool: 配置好的 Glob 工具实例
+type GlobTool struct {
+	MaxResults int
+}
+
 func NewGlobTool() FuncTool {
 	return &GlobTool{
 		MaxResults: 200,
 	}
 }
 
-// Info 返回 Glob 工具的元信息。
 func (t *GlobTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Glob",
@@ -67,22 +59,6 @@ func (t *GlobTool) Info() *ToolInfo {
 	}
 }
 
-// Execute 执行文件路径搜索操作。
-//
-// 处理流程：
-//  1. 验证 pattern 参数（必须为非空字符串）
-//  2. 确定搜索目录（默认为当前目录）
-//  3. 验证搜索路径存在且是目录
-//  4. 执行 find 命令进行模式匹配
-//  5. 解析结果并限制数量
-//
-// 参数：
-//   - ctx: 上下文
-//   - params: 必须包含 "pattern"，可选 "path"
-//
-// 返回：
-//   - map[string]any: 包含 success, matches_found, files 字段
-//   - error: 参数错误或执行失败时返回错误
 func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	pattern, err := ValidateRequiredString(params, "pattern")
 	if err != nil {
@@ -94,7 +70,6 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		searchPath = p
 	}
 
-	// Verify the search path exists and is a directory
 	info, err := os.Stat(searchPath)
 	if err != nil {
 		return nil, fmt.Errorf("search path error: %w", err)
@@ -103,28 +78,55 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil, fmt.Errorf("search path is not a directory: %s", searchPath)
 	}
 
-	// Use 'find' as a portable fallback, or 'fd' if available.
-	// Here we use 'find' with some exclusions for simplicity.
-	globCtx, globCancel := context.WithTimeout(ctx, globDefaultTimeout)
-	defer globCancel()
-	cmd := exec.CommandContext(globCtx, "find", searchPath, "-name", pattern, "-not", "-path", "*/.*")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("glob failed: %v", err)
+	matchPattern := normalizeGlobPattern(pattern)
+
+	var entries []fileEntry
+	walkErr := filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if path == searchPath {
+			return nil
+		}
+
+		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+
+		matched, matchErr := filepath.Match(matchPattern, d.Name())
+		if matchErr != nil || !matched {
+			return nil
+		}
+
+		fi, statErr := d.Info()
+		if statErr != nil {
+			return nil
+		}
+
+		entries = append(entries, fileEntry{path: path, modTime: fi.ModTime()})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("glob failed: %w", walkErr)
 	}
 
-	files := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(files) == 1 && files[0] == "" {
-		return map[string]any{
-			"success":       true,
-			"matches_found": 0,
-			"files":         []string{},
-		}, nil
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].modTime.After(entries[j].modTime)
+	})
+
+	if t.MaxResults > 0 && len(entries) > t.MaxResults {
+		entries = entries[:t.MaxResults]
 	}
 
-	// Limit the number of results to prevent context explosion
-	if t.MaxResults > 0 && len(files) > t.MaxResults {
-		files = files[:t.MaxResults]
+	files := make([]string, len(entries))
+	for i, e := range entries {
+		files[i] = e.path
 	}
 
 	return map[string]any{
@@ -132,4 +134,24 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		"matches_found": len(files),
 		"files":         files,
 	}, nil
+}
+
+func normalizeGlobPattern(pattern string) string {
+	cleaned := strings.TrimSpace(pattern)
+	cleaned = strings.ReplaceAll(cleaned, "\\", "/")
+
+	for strings.HasPrefix(cleaned, "**/") {
+		cleaned = cleaned[3:]
+	}
+	cleaned = strings.ReplaceAll(cleaned, "/**/", "/")
+
+	if idx := strings.LastIndex(cleaned, "/"); idx >= 0 {
+		cleaned = cleaned[idx+1:]
+	}
+
+	if cleaned == "" || cleaned == "*" || cleaned == "**" {
+		cleaned = "*"
+	}
+
+	return cleaned
 }

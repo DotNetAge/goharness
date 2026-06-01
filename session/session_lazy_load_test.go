@@ -14,99 +14,6 @@ type mockStore struct {
 	msgs    map[string][]Message
 	appends []appendRecord
 	cursors map[string]int // cursor persistence (internal to Session)
-	usages  map[string][]TokenUsage
-}
-func TestTokenUsage_RecordAndRetrieve(t *testing.T) {
-	store := newMockStore()
-	sess := NewSession("tu-test", "test-agent", WithStore(store))
-	ctx := context.Background()
-
-	usage1 := TokenUsage{
-		Timestamp:    time.Now().Add(-2 * time.Minute),
-		InputTokens:  1000,
-		OutputTokens: 500,
-		TotalTokens:  1500,
-		CachedTokens: 200,
-	}
-	usage2 := TokenUsage{
-		Timestamp:    time.Now().Add(-1 * time.Minute),
-		InputTokens:  2000,
-		OutputTokens: 800,
-		TotalTokens:  2800,
-		CachedTokens: 300,
-	}
-
-	sess.RecordTokenUsage(ctx, usage1)
-	sess.RecordTokenUsage(ctx, usage2)
-
-	usages := sess.GetTokenUsages(ctx)
-	if len(usages) != 2 {
-		t.Fatalf("expected 2 usages, got %d", len(usages))
-	}
-	if usages[0].InputTokens != 1000 {
-		t.Errorf("usage[0].InputTokens = %d, want 1000", usages[0].InputTokens)
-	}
-	if usages[1].OutputTokens != 800 {
-		t.Errorf("usage[1].OutputTokens = %d, want 800", usages[1].OutputTokens)
-	}
-}
-
-func TestTokenUsage_TotalAggregation(t *testing.T) {
-	store := newMockStore()
-	sess := NewSession("tu-total", "agent", WithStore(store))
-	ctx := context.Background()
-
-	sess.RecordTokenUsage(ctx, TokenUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500, CachedTokens: 200})
-	sess.RecordTokenUsage(ctx, TokenUsage{InputTokens: 2000, OutputTokens: 800, TotalTokens: 2800, CachedTokens: 300})
-	sess.RecordTokenUsage(ctx, TokenUsage{InputTokens: 500, OutputTokens: 200, TotalTokens: 700})
-
-	total := sess.TotalTokenUsage(ctx)
-
-	if total.InputTokens != 3500 {
-		t.Errorf("Total.InputTokens = %d, want 3500", total.InputTokens)
-	}
-	if total.OutputTokens != 1500 {
-		t.Errorf("Total.OutputTokens = %d, want 1500", total.OutputTokens)
-	}
-	if total.TotalTokens != 5000 {
-		t.Errorf("Total.TotalTokens = %d, want 5000", total.TotalTokens)
-	}
-	if total.CachedTokens != 500 {
-		t.Errorf("Total.CachedTokens = %d, want 500", total.CachedTokens)
-	}
-}
-
-func TestTokenUsage_DefaultStoreWorks(t *testing.T) {
-	sess := NewSession("default-store-tu", "agent")
-	ctx := context.Background()
-
-	sess.RecordTokenUsage(ctx, TokenUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CachedTokens: 10})
-	usages := sess.GetTokenUsages(ctx)
-	if len(usages) != 1 {
-		t.Fatalf("expected 1 usage from default store, got %d", len(usages))
-	}
-	if usages[0].TotalTokens != 150 {
-		t.Errorf("usage.TotalTokens = %d, want 150", usages[0].TotalTokens)
-	}
-	total := sess.TotalTokenUsage(ctx)
-	if total.TotalTokens != 150 {
-		t.Errorf("total.TotalTokens = %d, want 150", total.TotalTokens)
-	}
-}
-
-func TestTokenUsage_EmptyHistory(t *testing.T) {
-	store := newMockStore()
-	sess := NewSession("empty-tu", "agent", WithStore(store))
-	ctx := context.Background()
-
-	usages := sess.GetTokenUsages(ctx)
-	if usages != nil {
-		t.Error("expected nil for empty history")
-	}
-	total := sess.TotalTokenUsage(ctx)
-	if total.TotalTokens != 0 || total.InputTokens != 0 {
-		t.Error("expected zero-value for empty history")
-	}
 }
 
 type appendRecord struct {
@@ -119,7 +26,6 @@ func newMockStore() *mockStore {
 	return &mockStore{
 		msgs:    make(map[string][]Message),
 		cursors: make(map[string]int),
-		usages:  make(map[string][]TokenUsage),
 	}
 }
 
@@ -142,7 +48,7 @@ func (m *mockStore) Get(_ context.Context, sessionID string) ([]Message, error) 
 
 	msgs, ok := m.msgs[sessionID]
 	if !ok {
-		return nil, nil // Return empty for new sessions
+		return nil, nil
 	}
 
 	result := make([]Message, len(msgs))
@@ -164,28 +70,18 @@ func (m *mockStore) Clear(_ context.Context, _ string) error {
 
 func (m *mockStore) SetSlideHandler(_ SlideHandler) {}
 func (m *mockStore) Close() error                      { return nil }
+func (m *mockStore) DeleteSession(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.msgs, sessionID)
+	delete(m.cursors, sessionID)
+	return nil
+}
 func (m *mockStore) GetByRole(_ context.Context, _ string) (*SessionInfo, error) {
 	return nil, ErrSessionNotFound
 }
 func (m *mockStore) ListSessions(_ context.Context) ([]SessionInfo, error) {
 	return nil, nil
-}
-func (m *mockStore) AppendTokenUsage(_ context.Context, sessionID string, usage TokenUsage) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.usages[sessionID] = append(m.usages[sessionID], usage)
-	return nil
-}
-func (m *mockStore) GetTokenUsages(_ context.Context, sessionID string) ([]TokenUsage, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	usages := m.usages[sessionID]
-	if usages == nil {
-		return nil, nil
-	}
-	out := make([]TokenUsage, len(usages))
-	copy(out, usages)
-	return out, nil
 }
 func (m *mockStore) Create(_ context.Context, _ string, _ ...SessionOption) (*SessionInfo, error) {
 	return &SessionInfo{SessionID: "test-sess"}, nil
@@ -209,12 +105,124 @@ func (m *mockStore) SetCursor(_ context.Context, sessionID string, cursor int) e
 	return nil
 }
 
-// ============================================================
-// TEST SUITE: Lazy-Loading Architecture
-// ============================================================
+func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
+	store := NewInMemoryTokenUsageStore()
+	ctx := context.Background()
 
-// TestLazyLoad_CurrentTriggersAutoLoad verifies that Current()
-// automatically loads messages from the store on first access.
+	now := time.Now()
+	records := []TokenUsageRecord{
+		{
+			ID:               NewRecordID(),
+			SessionID:        "sess-1",
+			ConversationID:   "conv-1",
+			ModelName:        "gpt-4o",
+			ProviderName:     "openai",
+			AgentName:        "coder",
+			PromptTokens:     1000,
+			CompletionTokens: 500,
+			CachedTokens:     200,
+			TotalTokens:      1700,
+			Timestamp:        now.Add(-2 * time.Minute),
+		},
+		{
+			ID:               NewRecordID(),
+			SessionID:        "sess-1",
+			ConversationID:   "conv-2",
+			ModelName:        "gpt-4o",
+			ProviderName:     "openai",
+			AgentName:        "coder",
+			PromptTokens:     2000,
+			CompletionTokens: 800,
+			CachedTokens:     300,
+			TotalTokens:      3100,
+			Timestamp:        now.Add(-1 * time.Minute),
+		},
+		{
+			ID:               NewRecordID(),
+			SessionID:        "sess-2",
+			ConversationID:   "conv-1",
+			ModelName:        "claude-sonnet-4",
+			ProviderName:     "anthropic",
+			AgentName:        "architect",
+			PromptTokens:     500,
+			CompletionTokens: 200,
+			TotalTokens:      700,
+			Timestamp:        now,
+		},
+	}
+
+	for _, r := range records {
+		if err := store.Append(ctx, r); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	// Query all records for sess-1
+	result, err := store.Query(ctx, TokenUsageFilter{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 records for sess-1, got %d", len(result))
+	}
+	if result[0].PromptTokens != 1000 {
+		t.Errorf("result[0].PromptTokens = %d, want 1000", result[0].PromptTokens)
+	}
+	if result[1].CompletionTokens != 800 {
+		t.Errorf("result[1].CompletionTokens = %d, want 800", result[1].CompletionTokens)
+	}
+
+	// Query by agent
+	result, err = store.Query(ctx, TokenUsageFilter{AgentName: "architect"})
+	if err != nil {
+		t.Fatalf("Query by agent failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 record for architect, got %d", len(result))
+	}
+
+	// Query by model
+	result, err = store.Query(ctx, TokenUsageFilter{ModelName: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("Query by model failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 records for gpt-4o, got %d", len(result))
+	}
+}
+
+func TestTokenUsageStore_EmptyQuery(t *testing.T) {
+	store := NewInMemoryTokenUsageStore()
+	ctx := context.Background()
+
+	result, err := store.Query(ctx, TokenUsageFilter{SessionID: "nonexistent"})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %d records", len(result))
+	}
+}
+
+func TestTokenUsageStore_NoopStore(t *testing.T) {
+	store := NewNoopTokenUsageStore()
+	ctx := context.Background()
+
+	if err := store.Append(ctx, TokenUsageRecord{}); err != nil {
+		t.Errorf("Noop Append should not fail: %v", err)
+	}
+	result, err := store.Query(ctx, TokenUsageFilter{})
+	if err != nil {
+		t.Fatalf("Noop Query failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result from Noop store, got %d records", len(result))
+	}
+}
+
+
+
+
 func TestLazyLoad_CurrentTriggersAutoLoad(t *testing.T) {
 	store := newMockStore()
 	sessionID := "lazy-test-1"

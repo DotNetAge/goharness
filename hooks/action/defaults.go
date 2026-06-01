@@ -1,4 +1,5 @@
 package action
+
 import (
 	"github.com/DotNetAge/goreact/hooks"
 	"github.com/DotNetAge/goreact/logging"
@@ -9,10 +10,16 @@ import (
 )
 
 // Defaults returns the default set of tool hooks for the action phase.
-// The hooks are returned in priority order and include:
-// - PermissionHook: checks tool execution permissions
-// - ToolEventHook: emits tool lifecycle events
-// - ToolLoggerHook: logs tool execution start/end
+// Hooks are returned in priority order (lower = earlier execution).
+//
+// ToolExecStart and ToolExecEnd events are emitted DIRECTLY by
+// Runtime.executeSingleTool(). No event-emission hook is included here.
+//
+// Registered hooks:
+//   - PermissionHook (41): Evaluates tool execution permissions via a 3-level chain:
+//                           SkillBasedChecker → RuleBasedChecker → FallbackChecker.
+//                           Denies execution and aborts loop on permission failure.
+//   - ToolLoggerHook (46): Logs tool execution start/end when Logger is configured.
 func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegistry, logger logging.Logger) []hooks.ToolHook {
 	checkers := []tools.ToolPermissionChecker{
 		permission.NewSkillBasedChecker(skillRegistry),
@@ -24,7 +31,6 @@ func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegis
 
 	return []hooks.ToolHook{
 		&PermissionHook{Chain: permission.NewPermissionChain(checkers...), Logger: logger},
-		&ToolEventHook{},
 		&ToolLoggerHook{Logger: logger},
 	}
 }

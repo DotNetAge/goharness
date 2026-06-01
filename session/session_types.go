@@ -7,7 +7,8 @@ import (
 )
 
 // TokenUsage records the token consumption for a single LLM call.
-// It is both returned in CallResult and persisted via SessionStore for billing/monitoring.
+// It is used as a transfer value type in events and LLM streaming.
+// For persistent storage with grouping dimensions, use TokenUsageRecord instead.
 //
 // Detailed fields (CachedTokens, ReasoningTokens, etc.) are provider-specific.
 // When the provider returns detailed token breakdowns (e.g., OpenAI's
@@ -81,24 +82,31 @@ type SessionStore interface {
 	Close() error
 	GetByRole(ctx context.Context, agent string) (*SessionInfo, error)
 	ListSessions(ctx context.Context) ([]SessionInfo, error)
-	AppendTokenUsage(ctx context.Context, sessionID string, usage TokenUsage) error
-	GetTokenUsages(ctx context.Context, sessionID string) ([]TokenUsage, error)
 	Create(ctx context.Context, agentName string, opts ...SessionOption) (*SessionInfo, error)
 	GetMeta(ctx context.Context, sessionID string) (*SessionInfo, error)
 	ResolveSessionDir(sessionID string) (string, error)
+	DeleteSession(ctx context.Context, sessionID string) error
+	GetCursor(ctx context.Context, sessionID string) (int, error)
+	SetCursor(ctx context.Context, sessionID string, cursor int) error
+}
 
-	// Cursor persistence for compaction state recovery.
-	// These methods are used internally by Session to save/restore the cursor position.
-	// They are NOT part of the public Session API - external code should never call these.
-	//
-	// When compaction occurs (via tryCompact/executeCompactionPlan), the cursor advances.
-	// Without persisting it, a new Session object would load all messages but start with
-	// cursor=0, causing Current() to return too many messages (exceeding token limits).
-	//
-	// Implementation notes:
-	// - FileSessionStore: stores cursor in meta.json
-	// - MemorySessionStore: stores cursor in memory map
-	// - GetCursor returns 0 if no cursor has been set (no compaction occurred)
+// Cursor persistence for compaction state recovery.
+// These methods are used internally by Session to save/restore the cursor position.
+// They are NOT part of the public Session API - external code should never call these.
+//
+// When compaction occurs (via tryCompact/executeCompactionPlan), the cursor advances.
+// Without persisting it, a new Session object would load all messages but start with
+// cursor=0, causing Current() to return too many messages (exceeding token limits).
+//
+// Implementation notes:
+//   - FileSessionStore: stores cursor in meta.json
+//   - MemorySessionStore: stores cursor in memory map
+//   - GetCursor returns 0 if no cursor has been set (no compaction occurred)
+type cursorCursorMethods struct{}
+
+// CursorStore is an optional interface for session stores that support cursor persistence.
+// Stores may implement this to support cursor-based compaction.
+type CursorStore interface {
 	GetCursor(ctx context.Context, sessionID string) (int, error)
 	SetCursor(ctx context.Context, sessionID string, cursor int) error
 }

@@ -31,15 +31,15 @@
 //
 // The core execution flow (exec method) implements a ReAct loop:
 //
-//	1. Build system prompts from registries + session state
-//	2. Execute BeforeLLM hooks (can abort/modify)
-//	3. Assemble messages (system + history + user question)
-//	4. Stream LLM response (content + thinking + tool calls)
-//	5. Execute AfterLLM hooks (can abort/modify)
-//	6. If no tool calls → return final answer
-//	7. If tool calls → execute tools with hook chain
-//	8. Append results to session → repeat from step 1
-//	9. Terminate: completed / max_iterations / cancelled / error
+//  1. Build system prompts from registries + session state
+//  2. Execute BeforeLLM hooks (can abort/modify)
+//  3. Assemble messages (system + history + user question)
+//  4. Stream LLM response (content + thinking + tool calls)
+//  5. Execute AfterLLM hooks (can abort/modify)
+//  6. If no tool calls → return final answer
+//  7. If tool calls → execute tools with hook chain
+//  8. Append results to session → repeat from step 1
+//  9. Terminate: completed / max_iterations / cancelled / error
 //
 // # Thread Safety
 //
@@ -70,6 +70,7 @@ import (
 	"github.com/DotNetAge/goreact/config"
 	"github.com/DotNetAge/goreact/events"
 	"github.com/DotNetAge/goreact/hooks"
+	"github.com/DotNetAge/goreact/hooks/action"
 	"github.com/DotNetAge/goreact/hooks/loop"
 	"github.com/DotNetAge/goreact/logging"
 	"github.com/DotNetAge/goreact/memory"
@@ -157,6 +158,10 @@ type Runtime struct {
 
 	asyncTimeout time.Duration
 	syncTimeout  time.Duration
+	
+	// tokenUsageStore persists LLM token usage records with grouping dimensions and cost.
+	// Default: NoopTokenUsageStore (no-op). Inject via WithTokenUsageStore().
+	tokenUsageStore session.TokenUsageStore
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -209,19 +214,20 @@ type RunResult struct {
 // # Parameters
 //
 // opts: Variadic list of RuntimeConfig functions that configure the Runtime.
-//       Available options include:
-//   - WithModel(config.ModelConfig): Set LLM model configuration (required)
-//   - WithToolRegistry(tools.ToolRegistry): Use custom tool registry
-//   - WithSkillRegistry(skill.SkillRegistry): Use custom skill registry
-//   - WithRuleRegistry(rule.RuleRegistry): Use custom rule registry
-//   - WithAgentRegistry(*config.AgentRegistry): Use custom agent registry
-//   - WithProviderRegistry(config.ProviderRegistry): Use custom provider registry
-//   - WithMemory(memory.Memory): Set memory/RAG backend
-//   - WithLogger(logging.Logger): Set custom logger
-//   - WithLoopHooks(...hooks.LoopHook): Add loop lifecycle hooks
-//   - WithToolHooks(...hooks.ToolHook): Add tool execution hooks
-//   - WithAsyncTimeout(time.Duration): Set timeout for async tools (default: 5min)
-//   - WithSyncTimeout(time.Duration): Set timeout for sync tools (default: 5min)
+//
+//	    Available options include:
+//	- WithModel(config.ModelConfig): Set LLM model configuration (required)
+//	- WithToolRegistry(tools.ToolRegistry): Use custom tool registry
+//	- WithSkillRegistry(skill.SkillRegistry): Use custom skill registry
+//	- WithRuleRegistry(rule.RuleRegistry): Use custom rule registry
+//	- WithAgentRegistry(*config.AgentRegistry): Use custom agent registry
+//	- WithProviderRegistry(config.ProviderRegistry): Use custom provider registry
+//	- WithMemory(memory.Memory): Set memory/RAG backend
+//	- WithLogger(logging.Logger): Set custom logger
+//	- WithLoopHooks(...hooks.LoopHook): Add loop lifecycle hooks
+//	- WithToolHooks(...hooks.ToolHook): Add tool execution hooks
+//	- WithAsyncTimeout(time.Duration): Set timeout for async tools (default: 5min)
+//	- WithSyncTimeout(time.Duration): Set timeout for sync tools (default: 5min)
 //
 // # Default Behavior
 //
@@ -236,17 +242,19 @@ type RunResult struct {
 // # Built-in Tools
 //
 // The following tools are automatically registered:
-//   File Operations: Grep, Glob, Read, Write, FileEdit, Ls
-//   Execution: Bash, RunScript
-//   Web Access: WebSearch, WebFetch
-//   Interaction: AskUser
-//   Task Management: CollectResults, TaskList, TaskGet, TaskUpdate
-//   Platform-specific: PowerShell (Windows only)
+//
+//	File Operations: Grep, Glob, Read, Write, FileEdit, Ls
+//	Execution: Bash, RunScript
+//	Web Access: WebSearch, WebFetch
+//	Interaction: AskUser
+//	Task Management: CollectResults, TaskList, TaskGet, TaskUpdate
+//	Platform-specific: PowerShell (Windows only)
 //
 // # Return Value
 //
 // *Runtime: A fully initialized Runtime ready for use. The Runtime is NOT
-//           safe for concurrent use. Create separate instances or synchronize externally.
+//
+//	safe for concurrent use. Create separate instances or synchronize externally.
 //
 // # Example: Minimal Setup
 //
@@ -294,8 +302,12 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	for _, opt := range opts {
 		opt(r)
 	}
+	if r.tokenUsageStore == nil {
+		r.tokenUsageStore = session.NewNoopTokenUsageStore()
+	}
 	r.toolExec = tools.NewToolExecutor(r.toolReg)
 	r.registerDefaultTools()
+	r.registerDefaultHooks()
 	return r
 }
 
@@ -327,6 +339,8 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TaskList", func() tools.FuncTool { return tools.NewTaskListTool() }},
 		{"TaskGet", func() tools.FuncTool { return tools.NewTaskGetTool() }},
 		{"TaskUpdate", func() tools.FuncTool { return tools.NewTaskUpdateTool() }},
+		{"SubAgent", func() tools.FuncTool { return tools.NewSubAgentTool(rt.spawnSubAgent) }},
+		{"AgentTalk", func() tools.FuncTool { return tools.NewAgentTalkTool(rt.agentTalk) }},
 	}
 	for _, b := range bundled {
 		if t := b.factory(); t != nil {
@@ -338,6 +352,102 @@ func (rt *Runtime) registerDefaultTools() {
 			_ = rt.toolReg.Register(ps)
 		}
 	}
+}
+
+// registerDefaultHooks registers the default set of loop and tool hooks.
+// Called automatically by NewRuntime during initialization.
+//
+// Loop hooks (executed in priority order per iteration):
+//   - LoopLoggerHook (45): LLM call logging
+//   - ConvergenceHook (49): Irrecoverable error detection → Abort
+//   - MemoryThoughtHook (50): RAG context injection (prepended if mem set)
+//
+// Tool hooks (executed in priority order per tool call):
+//   - PermissionHook (41): Permission chain evaluation → Deny + Abort
+//   - ToolLoggerHook (46): Tool execution logging
+func (rt *Runtime) registerDefaultHooks() {
+	rt.loopHooks = append(rt.loopHooks, loop.Defaults(rt.logger)...)
+	if rt.mem != nil {
+		rt.loopHooks = append([]hooks.LoopHook{loop.NewMemoryThoughtHook(rt.mem)}, rt.loopHooks...)
+	}
+
+	var permStore rule.PermissionRuleStore
+	if rt.ruleReg != nil {
+		if ps, ok := rt.ruleReg.(rule.PermissionRuleStore); ok {
+			permStore = ps
+		}
+	}
+	rt.toolHooks = append(rt.toolHooks, action.Defaults(permStore, rt.skillReg, rt.logger)...)
+}
+
+// ── AgentTalk: synchronous inter-agent communication ──────────────────────────
+
+// agentTalk implements AgentTalkFunc for synchronous inter-agent communication.
+// The target agent runs in its own independent session (session isolation principle),
+// avoiding the SubAgent + AgentTalk deadlock where a parent is blocked on CollectResults.
+//
+// Design decisions:
+//   - Creates a fresh session per call using the provided sessionID
+//   - Target agent runs via Runtime.Ask() — same ThinkLoop as any other agent
+//   - Independent ThinkLoop means the target agent can use tools, do its own work
+//   - Session isolation: target agent's messages are completely separate from caller's session
+//
+// The sessionID parameter enables conversation continuity:
+//   - New sessionID = start a fresh conversation with the target agent
+//   - Reused sessionID = continue an existing conversation thread
+//   (Session caching for continuity is a future enhancement — current impl creates fresh sessions)
+func (rt *Runtime) agentTalk(ctx context.Context, to, sessionID, message string) (string, error) {
+	if rt.agentReg != nil {
+		if cfg := rt.agentReg.Get(to); cfg == nil {
+			return "", fmt.Errorf("agent %q not found in registry", to)
+		}
+	}
+
+	sess := session.NewSession(sessionID, to)
+	rt.logger.Info("agent talk started",
+		"to", to,
+		"session_id", sessionID,
+	)
+
+	result, err := rt.Ask(to, message, sess).Run()
+	if err != nil {
+		return "", fmt.Errorf("agent talk to %q: %w", to, err)
+	}
+
+	return result.Answer, nil
+}
+
+// ── SubAgent: async task delegation ────────────────────────────────────────────
+
+// spawnSubAgent implements SpawnFunc for creating and running sub-agents.
+// Sub-agents run in the background via an independent ThinkLoop, and their results
+// are collected later via CollectResultsTool.
+//
+// Design decisions mirror agentTalk but with key differences:
+//   - Creates a unique session per spawn (no session reuse — one-shot task)
+//   - Runs via Runtime.Ask() — same ThinkLoop as the main agent
+//   - Independent session = full isolation from the parent's context
+func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (string, error) {
+	if rt.agentReg != nil {
+		if cfg := rt.agentReg.Get(agentName); cfg == nil {
+			return "", fmt.Errorf("agent %q not found in registry", agentName)
+		}
+	}
+
+	sess := session.NewSession(
+		fmt.Sprintf("subagent-%s-%d", agentName, time.Now().UnixNano()),
+		agentName,
+	)
+	rt.logger.Info("sub-agent spawn started",
+		"agent_name", agentName,
+	)
+
+	result, err := rt.Ask(agentName, task, sess).Run()
+	if err != nil {
+		return "", fmt.Errorf("sub-agent %q: %w", agentName, err)
+	}
+
+	return result.Answer, nil
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -360,7 +470,7 @@ func (rt *Runtime) registerDefaultTools() {
 //     appended to the session as a user message and sent to the LLM.
 //     Can be any natural language query, code request, or task description.
 //     Example: "What files are in this directory?", "Explain this function",
-//             "Refactor this code to use generics", "Search the web for..."
+//     "Refactor this code to use generics", "Search the web for..."
 //
 //   - s: A Session instance that maintains conversation history and state.
 //     The session handles message storage, compaction, and provides context
@@ -370,24 +480,25 @@ func (rt *Runtime) registerDefaultTools() {
 // # Return Value
 //
 // *AskBuilder: A builder that can be configured and then executed.
-//              Call builder.Execute() to run the thinking loop and get results.
-//              Call builder.OnEvent() to register event handlers for real-time updates.
+//
+//	Call builder.Execute() to run the thinking loop and get results.
+//	Call builder.OnEvent() to register event handlers for real-time updates.
 //
 // # Execution Flow
 //
 // When Execute() is called on the returned builder:
 //
-//	1. Append user question to session
-//	2. Build system prompt from agent config + registries + session state
-//	3. For each iteration (up to MaxTurns):
-//	   a. Run BeforeLLM hooks (can modify/abort)
-//	   b. Assemble messages (system + history + user)
-//	   c. Stream LLM response (content + thinking + tool calls)
-//	   d. Run AfterLLM hooks (can modify/abort)
-//	   e. If no tool calls → return answer (termination)
-//	   f. If tool calls → execute tools with hook chain
-//	   g. Append tool results to session → next iteration
-//	4. Return RunResult with answer, usage, duration, termination reason
+//  1. Append user question to session
+//  2. Build system prompt from agent config + registries + session state
+//  3. For each iteration (up to MaxTurns):
+//     a. Run BeforeLLM hooks (can modify/abort)
+//     b. Assemble messages (system + history + user)
+//     c. Stream LLM response (content + thinking + tool calls)
+//     d. Run AfterLLM hooks (can modify/abort)
+//     e. If no tool calls → return answer (termination)
+//     f. If tool calls → execute tools with hook chain
+//     g. Append tool results to session → next iteration
+//  4. Return RunResult with answer, usage, duration, termination reason
 //
 // # Event Handling
 //
@@ -465,25 +576,25 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 //
 // # Execution Flow
 //
-// 1. Initialize event bus and wire up event handlers from builder
-// 2. Set session compaction handler for token limit management
-// 3. Create tool executor with event emission and logging
-// 4. Determine max iterations from model config (default: 20)
-// 5. Append user question to session
-// 6. Build tool definitions (stable across iterations)
-// 7. For each iteration:
-//    a. Check context cancellation
-//    b. Build system prompts from registries + session state
-//    c. Execute BeforeLLM hooks (can abort/modify)
-//    d. Assemble messages (system sections + history + user question)
-//    e. Stream LLM response with full configuration
-//    f. Parse streaming events (content, thinking, tool calls, errors)
-//    g. Execute AfterLLM hooks (can abort/modify)
-//    h. Persist assistant message to session
-//    i. If no tool calls → emit FinalAnswer and return
-//    j. If tool calls → execute tools with hook chain
-//    k. Persist tool results to session → next iteration
-// 8. On max iterations: return error with termination reason
+//  1. Initialize event bus and wire up event handlers from builder
+//  2. Set session compaction handler for token limit management
+//  3. Create tool executor with event emission and logging
+//  4. Determine max iterations from model config (default: 20)
+//  5. Append user question to session
+//  6. Build tool definitions (stable across iterations)
+//  7. For each iteration:
+//     a. Check context cancellation
+//     b. Build system prompts from registries + session state
+//     c. Execute BeforeLLM hooks (can abort/modify)
+//     d. Assemble messages (system sections + history + user question)
+//     e. Stream LLM response with full configuration
+//     f. Parse streaming events (content, thinking, tool calls, errors)
+//     g. Execute AfterLLM hooks (can abort/modify)
+//     h. Persist assistant message to session
+//     i. If no tool calls → emit FinalAnswer and return
+//     j. If tool calls → execute tools with hook chain
+//     k. Persist tool results to session → next iteration
+//  8. On max iterations: return error with termination reason
 //
 // # Termination Conditions
 //
@@ -503,6 +614,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	sid := b.session.ID()
 	logger := rt.logger
 
+	logger.Info("exec started", "session", sid, "agent", b.agentName, "model", rt.model.Name)
+
 	// Event bus
 	eb := events.NewEventBus()
 	_, cancel := eb.SubscribeFiltered(func(ev events.ReactEvent) bool {
@@ -518,12 +631,13 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	emit := func(typ events.ReactEventType, data any) {
 		eb.Emit(events.NewReactEvent(sid, "", "", typ, data))
 	}
+	conversationID := session.NewRecordID()
+	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
 	defer func() {
-		sessionUsage := b.session.TotalTokenUsage(ctx)
 		emit(events.ExecutionSummary, events.ExecutionSummaryData{
 			TotalIterations:   b.resultIterations,
 			TotalDuration:     b.resultDuration,
-			TokensUsed:        sessionUsage,
+			TokensUsed:        totalUsage,
 			TerminationReason: b.resultTerminationReason,
 		})
 	}()
@@ -537,10 +651,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			WindowSize:     ev.WindowSize,
 		})
 	})
-
-	if rt.mem != nil {
-		rt.loopHooks = append([]hooks.LoopHook{loop.NewMemoryThoughtHook(rt.mem)}, rt.loopHooks...)
-	}
 
 	// Tool executor
 	toolExec := tools.NewToolExecutor(rt.toolReg,
@@ -557,12 +667,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	b.session.Append(ctx, session.Message{
 		Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
 	})
-
 	// Build tool definitions once (stable across iterations)
 	toolDefs := rt.buildToolDefinitions()
 
 	start := time.Now()
-	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
 	var lastIteration int
 	var prevToolResults []hooks.ToolResult
 
@@ -585,6 +693,13 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// Get current conversation window
 		window := b.session.Current()
+		logger.Info("session.Current() window", "session", sid, "iter", iter, "msg_count", len(window), "total_chars", func() int {
+			total := 0
+			for _, m := range window {
+				total += len(m.Content)
+			}
+			return total
+		}())
 
 		// ── Loop Hooks BeforeLLM (with panic recovery) ──
 		callInput := &hooks.CallInput{
@@ -608,7 +723,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			return
 		}
 
-			// Assemble messages (hooks may have modified systemSections, e.g. MemoryThoughtHook)
+		// Assemble messages (hooks may have modified systemSections, e.g. MemoryThoughtHook)
 		windowHasQuestion := false
 		for _, m := range window {
 			if m.Role == "user" && m.Content == b.question {
@@ -627,7 +742,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			gochat.WithAPIKey(rt.model.APIKey),
 			gochat.WithBaseURL(rt.model.BaseURL),
 			gochat.WithTimeout(4*time.Minute),
-		)
+		).WithContext(ctx)
 		builder := client.
 			Messages(msgs...).
 			Model(rt.model.Name).
@@ -653,8 +768,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			builder = builder.Tools(toolDefs...)
 		}
 
+		logger.Info("llm stream started", "session", sid, "iter", iter)
+
 		stream, err := builder.GetStream()
 		if err != nil {
+			logger.Error("llm GetStream failed", err, "session", sid, "iter", iter)
 			emit(events.LLMTimeout, events.LLMTimeoutData{
 				SessionID: sid,
 				Timeout:   4 * time.Minute,
@@ -718,23 +836,45 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		emit(events.ThinkingDone, nil)
 
 		// Record token usage from stream
-		if u := stream.Usage(); u != nil {
+		u := stream.Usage()
+		if u != nil {
 			callUsage := session.TokenUsage{
 				Timestamp:    time.Now(),
 				InputTokens:  u.PromptTokens,
 				OutputTokens: u.CompletionTokens,
-				TotalTokens:   u.TotalTokens,
+				TotalTokens:  u.TotalTokens,
 			}
 			if u.PromptTokensDetails != nil {
 				callUsage.CachedTokens = u.PromptTokensDetails.CachedTokens
 			}
-			b.session.RecordTokenUsage(ctx, callUsage)
+			if u.CompletionTokensDetails != nil {
+				callUsage.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+			}
 
+			// Build and persist TokenUsageRecord with five-dimension grouping keys
+			record := session.TokenUsageRecord{
+				ID:               session.NewRecordID(),
+				SessionID:        sid,
+				ConversationID:   conversationID,
+				ModelName:        rt.model.Name,
+				ProviderName:     rt.model.Provider,
+				AgentName:        b.agentName,
+				PromptTokens:     callUsage.InputTokens,
+				CompletionTokens: callUsage.OutputTokens,
+				CachedTokens:     callUsage.CachedTokens,
+				ReasoningTokens:  callUsage.ReasoningTokens,
+				TotalTokens:      callUsage.TotalTokens,
+				Timestamp:        time.Now(),
+			}
+			_ = rt.tokenUsageStore.Append(ctx, record)
 			totalUsage.InputTokens += callUsage.InputTokens
 			totalUsage.OutputTokens += callUsage.OutputTokens
 			totalUsage.TotalTokens += callUsage.TotalTokens
 			totalUsage.CachedTokens += callUsage.CachedTokens
 			totalUsage.Timestamp = time.Now()
+			logger.Info("token usage recorded", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
+		} else {
+			logger.Warn("stream.Usage() returned nil — provider may not support streaming token usage", "session", sid, "iter", iter, "model", rt.model.Name)
 		}
 
 		// Build LLM response for hooks from streaming data
@@ -784,7 +924,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		emit(events.CycleEnd, events.CycleInfo{
 			Iteration: lastIteration, Duration: time.Since(start),
 		})
-
 		// ── No tool calls → answer complete ──
 		if len(streamToolCalls) == 0 {
 			answer := content
@@ -813,9 +952,17 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		prevToolResults = toolResults
 
-		// Persist tool results
+		// Persist tool results (full content, not truncated)
 		for _, tr := range toolResults {
-			content := hooks.ToolResultSummary(tr)
+			var content string
+			if tr.Error != "" {
+				content = fmt.Sprintf("[%s] error: %s", tr.ToolName, tr.Error)
+			} else if tr.Result != "" {
+				content = tr.Result
+			} else {
+				content = fmt.Sprintf("[%s] returned: (empty result)", tr.ToolName)
+			}
+			logger.Info("tool result persisted", "session", sid, "tool", tr.ToolName, "content_len", len(content))
 			b.session.Append(ctx, session.Message{
 				Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 				ToolCallID: tr.ToolCallID,
@@ -827,12 +974,12 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// This is a normal boundary condition, not a failure.
 	// The UI should display a friendly suggestion to the user.
 	emit(events.MaxTurnsReached, events.MaxTurnsReachedData{
-			TurnsCompleted: lastIteration,
-			MaxTurns:       maxIter,
-			Suggestion:     fmt.Sprintf(
-				"已达到最大思考轮次 (%d/%d)。任务可能需要更详细的指令或分步完成。你可以发送\"继续\"让 AI 基于当前进度继续，或者提供更具体的指导。",
-				lastIteration, maxIter),
-		})
+		TurnsCompleted: lastIteration,
+		MaxTurns:       maxIter,
+		Suggestion: fmt.Sprintf(
+			"已达到最大思考轮次 (%d/%d)。任务可能需要更详细的指令或分步完成。你可以发送\"继续\"让 AI 基于当前进度继续，或者提供更具体的指导。",
+			lastIteration, maxIter),
+	})
 	b.resultTerminationReason = "max_iterations"
 	b.resultIterations = lastIteration
 	b.resultDuration = time.Since(start)
@@ -1020,8 +1167,9 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 //
 // 1. System sections (from buildSystemPrompts) - multiple system messages
 // 2. Conversation history (micro-compacted, max 2 consecutive same-role msgs)
-//    - Converted from session.Message to gochatcore.Message format
-//    - Preserves tool calls and tool call IDs in assistant/tool messages
+//   - Converted from session.Message to gochatcore.Message format
+//   - Preserves tool calls and tool call IDs in assistant/tool messages
+//
 // 3. User question (if not already present as last message in history)
 //
 // # Compaction
@@ -1162,15 +1310,17 @@ func (rt *Runtime) isToolAsync(name string) bool {
 // # Execution Flow:
 //
 // 1. ToolHook.Before chain:
-//    - Each hook can inspect and approve/deny the execution
-//    - If any hook aborts, returns failed result immediately
+//   - Each hook can inspect and approve/deny the execution
+//   - If any hook aborts, returns failed result immediately
+//
 // 2. Emit ToolExecStart event
 // 3. Create timeout context (asyncTimeout or syncTimeout)
 // 4. Execute tool via ToolExecutor.Execute()
 // 5. Build ToolResult from execution result or error
 // 6. ToolHook.After chain:
-//    - Each hook can inspect and modify the result
-//    - If any hook aborts, replaces result with failure
+//   - Each hook can inspect and modify the result
+//   - If any hook aborts, replaces result with failure
+//
 // 7. Emit ToolExecEnd event with final result
 // 8. Return ToolResult
 //
@@ -1211,7 +1361,6 @@ func (rt *Runtime) executeSingleTool(
 		ToolName: inv.Name,
 		Params:   inv.Arguments,
 	})
-
 	execCtx, execCancel := context.WithTimeout(ctx, timeout)
 	defer execCancel()
 
@@ -1239,7 +1388,6 @@ func (rt *Runtime) executeSingleTool(
 		Result:     tr.Result,
 		Error:      tr.Error,
 	})
-
 	return tr
 }
 
@@ -1548,13 +1696,15 @@ func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
 //	}
 func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.agentReg }
 
+
+
 // RegisterTool adds a new tool to the Runtime's tool registry.
 // The tool will be available for the LLM to invoke in subsequent Ask calls.
 // Tool definitions are sent to the LLM as part of the API request.
 //
 // Parameters:
 //   - tool: A FuncTool instance implementing the tool logic.
-//          Must have valid Name, Description, and Parameters in its Info().
+//     Must have valid Name, Description, and Parameters in its Info().
 //
 // Returns:
 //   - error: Non-nil if tool registration fails (e.g., duplicate name, invalid config).

@@ -113,4 +113,7 @@ DESIGN-LLMCALL.md             ─── LLM 调用层：gochat 适配、流式�
 - [ ] 自动摘要
 - [ ] 思维循环的细粒度控制
 - [ ] 简化Task
-- [ ] 
+  
+--- 
+
+- [ ] 增加对TokenUsage的独立管理。提取 TokenUsageStore 接口

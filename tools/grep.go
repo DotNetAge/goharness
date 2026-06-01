@@ -1,38 +1,25 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// grepDefaultTimeout 是 Grep 工具的默认超时时间。
 const grepDefaultTimeout = 30 * time.Second
 
-// GrepTool 实现了基于 ripgrep 的高性能文本搜索工具。
-// 使用 ripgrep (rg) 作为后端，提供快速、准确的文件内容搜索。
-//
-// 特性：
-//   - 支持完整正则表达式语法
-//   - 多种输出模式：内容、文件列表、匹配计数
-//   - 文件类型过滤（通过 include 参数）
-//   - 结果数量限制和输出字符数限制
-//
-// 性能优势：
-//   - ripgrep 比 grep/fast 更快
-//   - 自动尊重 .gitignore 规则
-//   - 支持 Unicode 和多行匹配
 type GrepTool struct {
-	MaxResults     int // 最大返回结果数量（默认 100）
-	MaxOutputChars int // 最大输出字符数（默认 50000）
+	MaxResults     int
+	MaxOutputChars int
 }
 
-// NewGrepTool 创建一个 Grep 工具实例。
-//
-// 返回：
-//   - FuncTool: 配置好的 Grep 工具实例
 func NewGrepTool() FuncTool {
 	return &GrepTool{
 		MaxResults:     100,
@@ -40,7 +27,6 @@ func NewGrepTool() FuncTool {
 	}
 }
 
-// Info 返回 Grep 工具的元信息。
 func (t *GrepTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Grep",
@@ -80,26 +66,27 @@ Usage:
 	}
 }
 
-// Execute 执行文本搜索操作。
-//
-// 处理流程：
-//  1. 提取搜索参数（pattern, include, output_mode）
-//  2. 构建 ripgrep 命令行参数
-//  3. 执行 ripgrep 搜索
-//  4. 处理搜索结果（限制数量和字符数）
-//
-// 参数：
-//   - ctx: 上下文
-//   - params: 必须包含 "pattern"，可选 "include" 和 "output_mode"
-//
-// 返回：
-//   - string: 格式化的搜索结果
-//   - error: 搜索执行失败时返回错误
 func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	pattern, _ := params["pattern"].(string)
 	include, _ := params["include"].(string)
 	outputMode, _ := params["output_mode"].(string)
 
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+
+	if isRgAvailable() {
+		return t.executeWithRg(ctx, pattern, include, outputMode)
+	}
+	return t.executeNative(ctx, pattern, include, outputMode)
+}
+
+func isRgAvailable() bool {
+	_, err := exec.LookPath("rg")
+	return err == nil
+}
+
+func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMode string) (any, error) {
 	args := []string{"--no-heading", "--color", "never", "--smart-case"}
 	switch outputMode {
 	case "files_with_matches":
@@ -119,7 +106,6 @@ func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, err
 	cmd := exec.CommandContext(grepCtx, "rg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// If rg returns 1, it means no matches found
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return "No matches found.", nil
 		}
@@ -131,13 +117,112 @@ func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, err
 		output = []byte(strings.Join(lines[:t.MaxResults], "\n"))
 	}
 
-	// Second layer defense: limit total output characters
 	resultStr := string(output)
 	if t.MaxOutputChars > 0 && len(resultStr) > t.MaxOutputChars {
 		runes := []rune(resultStr)
 		resultStr = string(runes[:t.MaxOutputChars]) +
 			fmt.Sprintf("\n... (output truncated at %d chars, showing first %d of %d matches) ...",
 				t.MaxOutputChars, t.MaxResults, len(lines))
+	}
+
+	return resultStr, nil
+}
+
+func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMode string) (any, error) {
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex pattern: %w", err)
+		}
+	}
+
+	searchDir := "."
+	var results []string
+	totalMatchCount := 0
+
+	walkFn := func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if include != "" {
+			matched, matchErr := filepath.Match(include, d.Name())
+			if matchErr != nil || !matched {
+				return nil
+			}
+		}
+
+		relPath := path
+		if strings.HasPrefix(path, "./") {
+			relPath = path
+		} else if path != "." {
+			relPath = "." + string(filepath.Separator) + path
+		}
+
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return nil
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		lineNum := 0
+		fileMatchCount := 0
+
+		for scanner.Scan() {
+			lineNum++
+			line := scanner.Text()
+			if re.MatchString(line) {
+				fileMatchCount++
+				totalMatchCount++
+
+				switch outputMode {
+				case "files_with_matches":
+					if fileMatchCount == 1 {
+						results = append(results, relPath)
+					}
+				case "count":
+					continue
+				default:
+					results = append(results, fmt.Sprintf("%s:%d:%s", relPath, lineNum, line))
+				}
+			}
+		}
+
+		if outputMode == "count" && fileMatchCount > 0 {
+			results = append(results, fmt.Sprintf("%s:%d", relPath, fileMatchCount))
+		}
+
+		return nil
+	}
+
+	if err := filepath.WalkDir(searchDir, walkFn); err != nil {
+		return nil, fmt.Errorf("grep failed: %w", err)
+	}
+
+	if totalMatchCount == 0 {
+		return "No matches found.", nil
+	}
+
+	if t.MaxResults > 0 && len(results) > t.MaxResults {
+		results = results[:t.MaxResults]
+	}
+
+	resultStr := strings.Join(results, "\n")
+	if t.MaxOutputChars > 0 && len(resultStr) > t.MaxOutputChars {
+		runes := []rune(resultStr)
+		resultStr = string(runes[:t.MaxOutputChars]) +
+			fmt.Sprintf("\n... (output truncated at %d chars, showing first %d of %d matches) ...",
+				t.MaxOutputChars, t.MaxResults, totalMatchCount)
 	}
 
 	return resultStr, nil

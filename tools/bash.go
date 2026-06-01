@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -220,7 +221,12 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", command)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(timeoutCtx, "cmd", "/c", command)
+	} else {
+		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", command)
+	}
 
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
 		wd = filepath.Clean(wd)
@@ -333,8 +339,8 @@ func truncateForLog(s string, maxLen int) string {
 //   - 资源耗尽：fork bomb 等
 //   - 权限修改：chmod 777 /, chown 递归等
 var dangerousPatterns = []struct {
-	pattern *regexp.Regexp // 匹配正则
-	reason  string         // 危险原因描述
+	pattern *regexp.Regexp
+	reason  string
 }{
 	{regexp.MustCompile(`^rm\s+-rf\s+/\s*$`), "destructive: rm -rf / would erase the entire filesystem"},
 	{regexp.MustCompile(`^rm\s+-rf\s+/\*\s*$`), "destructive: rm -rf /* would erase the entire filesystem"},
@@ -350,6 +356,19 @@ var dangerousPatterns = []struct {
 	{regexp.MustCompile(`chown\s+-R.*\s+/`), "dangerous: recursive root ownership change"},
 	{regexp.MustCompile(`shutdown\s+(now|-h|-r)\b`), "dangerous: system shutdown command"},
 	{regexp.MustCompile(`^reboot\s*$`), "dangerous: system reboot command"},
+	{regexp.MustCompile(`(?i)format\s+[a-z]:\s*/q`), "dangerous: disk formatting on Windows"},
+	{regexp.MustCompile(`(?i)del\s+/[fs]\s+.*\\\*\.\*`), "dangerous: forced recursive deletion on Windows"},
+	{regexp.MustCompile(`(?i)rd\s+/[fs]\s+\\`), "dangerous: forced directory deletion on Windows"},
+	{regexp.MustCompile(`(?i)reg\s+delete\s+HK`), "dangerous: registry key deletion"},
+	{regexp.MustCompile(`(?i)diskpart`), "dangerous: disk partition manipulation"},
+	{regexp.MustCompile(`(?i)icacls\s+.*\s+/grant\s+.*:F`), "dangerous: granting full permissions"},
+	{regexp.MustCompile(`(?i)takeown\s+/f`), "dangerous: taking ownership of files"},
+	{regexp.MustCompile(`(?i)cipher\s+/w:`), "dangerous: disk wiping operation"},
+	{regexp.MustCompile(`(?i)bcdedit\s+/set`), "dangerous: boot configuration modification"},
+	{regexp.MustCompile(`(?i)powercfg\s+/h\s+off`), "dangerous: system configuration modification"},
+	{regexp.MustCompile(`(?i)net\s+user\s+.*\s+/add`), "dangerous: user account creation"},
+	{regexp.MustCompile(`(?i)net\s+localgroup\s+.*\s+/add`), "dangerous: user group modification"},
+	{regexp.MustCompile(`(?i)sc\s+delete`), "dangerous: service deletion"},
 }
 
 // detectDangerousCommand 检测命令是否包含危险操作。
@@ -382,7 +401,7 @@ func detectDangerousCommand(command string) string {
 //   - 网络工具：curl, wget, ssh 等
 //   - 系统工具：ps, top, df, du 等
 func getDefaultWhitelist() []string {
-	return []string{
+	baseCmds := []string{
 		"ls", "wc", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
 		"chmod", "chown", "ln", "tar", "gzip", "gunzip", "zip", "unzip",
 		"git", "svn", "hg",
@@ -402,6 +421,19 @@ func getDefaultWhitelist() []string {
 		"sha256sum", "md5sum", "sha1sum", "shasum",
 		"openssl", "gpg", "ssh-keygen",
 	}
+
+	if runtime.GOOS == "windows" {
+		baseCmds = append(baseCmds,
+			"dir", "type", "findstr", "where", "tasklist", "taskkill",
+			"systeminfo", "ver", "netstat", "ipconfig", "ping", "tracert",
+			"nslookup", "route", "netsh", "powershell", "pwsh",
+			"attrib", "cacls", "icacls", "compact", "chkdsk",
+			"fc", "comp", "more", "sort", "tree", "xcopy", "robocopy",
+			"cscript", "wscript", "mshta",
+		)
+	}
+
+	return baseCmds
 }
 
 // extractBaseCommand 从 Shell 命令字符串中提取基础命令名。

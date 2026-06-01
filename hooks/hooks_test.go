@@ -305,10 +305,7 @@ func TestPriorityConstants(t *testing.T) {
 		value    int
 		expected int
 	}{
-		{"PreCheck", PriorityPreCheck, 40},
 		{"Permission", PriorityPermission, 41},
-		{"LoopEvent", PriorityLoopEvent, 42},
-		{"ToolEvent", PriorityToolEvent, 43},
 		{"LoopLogger", PriorityLoopLogger, 45},
 		{"ToolLogger", PriorityToolLogger, 46},
 		{"Convergence", PriorityConvergence, 49},

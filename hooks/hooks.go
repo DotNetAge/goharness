@@ -13,14 +13,8 @@ import (
 // Hook priority constants define the execution order of hooks.
 // Lower values indicate higher priority (executed first).
 const (
-	// PriorityPreCheck is the priority for pre-check hooks that run before any processing.
-	PriorityPreCheck = 40
 	// PriorityPermission is the priority for permission-checking hooks.
 	PriorityPermission = 41
-	// PriorityLoopEvent is the priority for general loop event hooks.
-	PriorityLoopEvent = 42
-	// PriorityToolEvent is the priority for tool-related event hooks.
-	PriorityToolEvent = 43
 	// PriorityLoopLogger is the priority for loop logging hooks.
 	PriorityLoopLogger = 45
 	// PriorityToolLogger is the priority for tool logging hooks.
