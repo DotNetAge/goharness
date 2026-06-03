@@ -240,6 +240,14 @@ type Session struct {
 
 	// loadingMu prevents concurrent lazy-load operations
 	loadingMu sync.Mutex
+
+	// modifyFiles tracks file paths that have been modified during this session.
+	// Each entry is an absolute path to a file that was written/edited,
+	// with a backup stored in the session's backup directory.
+	modifyFiles []string
+
+	// fileModifyHandler is called when files are tracked, confirmed, or rolled back.
+	fileModifyHandler FileModifyHandler
 }
 
 // ID returns the unique identifier of this session.

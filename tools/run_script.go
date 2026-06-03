@@ -487,99 +487,31 @@ func NewRunScriptTool() FuncTool {
 }
 
 func buildRunScriptInfo(platform Platform) *ToolInfo {
-	var description string
-	switch platform {
-	case PlatformWindows:
-		description = "Execute a script file from a skill's scripts/ directory. Supports Python (.py), Batch (.bat/.cmd), PowerShell (.ps1), VBScript (.vbs), Shell (.sh), Ruby (.rb), Node.js (.js), and executables (.exe) on Windows."
-	case PlatformMacOS:
-		description = "Execute a script file from a skill's scripts/ directory. Supports Python (.py), Shell (.sh/.zsh), AppleScript (.scpt), Ruby (.rb), Node.js (.js), and Bash on macOS."
-	case PlatformLinux:
-		description = "Execute a script file from a skill's scripts/ directory. Supports Python (.py), Shell (.sh/.bash), Ruby (.rb), Node.js (.js), Perl (.pl), PHP (.php), and Bash on Linux."
-	default:
-		description = "Execute a script file from a skill's scripts/ directory. Supports Python, Shell, Node, Ruby, and other interpreters."
-	}
+	description := "Execute a script file from a skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate interpreter."
 
-	var prompt string
-	switch platform {
-	case PlatformWindows:
-		prompt = `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate executor.
+	prompt := `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate executor.
 
-Supported script types on Windows:
+Common supported script types (all platforms):
 - Python (.py) — auto-manages virtual environments and requirements.txt
-- Batch (.bat, .cmd) — runs via cmd.exe /c
-- PowerShell (.ps1) — runs via pwsh or powershell.exe with Bypass policy
-- VBScript (.vbs) — runs via cscript //Nologo
-- Shell (.sh) — runs via bash or sh if available
-- Ruby (.rb) — runs via ruby interpreter
-- Node.js (.js) — runs via node
-- Executables (.exe) — runs directly
-
-Usage:
-- Pass the command exactly as specified in the skill's instructions.
-- Include the interpreter if needed (e.g. "python scripts/analyze.py").
-- For batch files, you can just pass the .bat path directly.
-- For PowerShell scripts, include "powershell" or "pwsh" prefix.
-- For VBScript, include "cscript" or "wscript" prefix.
-- The working_dir defaults to the project directory.
-- Use the args parameter for additional arguments.
-
-Notes:
-- Python virtual environments are managed automatically when available.
-- Output is truncated at 2KB to save context.`
-	case PlatformMacOS:
-		prompt = `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate executor.
-
-Supported script types on macOS:
-- Python (.py) — auto-manages virtual environments and requirements.txt
-- Shell (.sh, .zsh, .bash) — runs via /bin/zsh (default macOS shell)
-- AppleScript (.scpt, .applescript) — runs via osascript
+- Shell (.sh, .bash, .zsh) — runs via the default platform shell
 - Ruby (.rb) — runs via ruby interpreter
 - Node.js (.js) — runs via node
 - Perl (.pl) — runs via perl
 - PHP (.php) — runs via php
 
-Usage:
-- Pass the command exactly as specified in the skill's instructions.
-- Include the interpreter if needed (e.g. "python scripts/analyze.py").
-- For AppleScript, use "osascript scripts/myscript.scpt" or just the .scpt path.
-- Shell scripts run in zsh by default (macOS standard).
-- The working_dir defaults to the project directory.
-- Use the args parameter for additional arguments.
-
-Notes:
-- Python virtual environments are managed automatically when available.
-- AppleScript can interact with macOS apps (Finder, Safari, Mail, etc.).
-- Output is truncated at 2KB to save context.`
-	case PlatformLinux:
-		prompt = `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate executor.
-
-Supported script types on Linux:
-- Python (.py) — auto-manages virtual environments and requirements.txt
-- Shell (.sh, .bash, .zsh) — runs via /bin/bash (or detected shell)
-- Ruby (.rb) — runs via ruby interpreter
-- Node.js (.js) — runs via node
-- Perl (.pl) — runs via perl
-- PHP (.php) — runs via php
+Platform-specific:
+- macOS also: AppleScript (.scpt, .applescript) — runs via osascript
+- Windows also: Batch (.bat, .cmd), PowerShell (.ps1), VBScript (.vbs), Executables (.exe)
 
 Usage:
 - Pass the command exactly as specified in the skill's instructions.
 - Include the interpreter if needed (e.g. "python scripts/analyze.py").
-- Shell scripts run in bash by default.
 - The working_dir defaults to the project directory.
 - Use the args parameter for additional arguments.
 
 Notes:
 - Python virtual environments are managed automatically when available.
 - Output is truncated at 2KB to save context.`
-	default:
-		prompt = `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the command and routes to the appropriate executor. For Python scripts, automatically manages virtual environments and dependencies from requirements.txt.
-
-Usage:
-- Pass the command exactly as specified in the skill's instructions.
-- Include the interpreter if needed (e.g. "python scripts/analyze.py --input data.json").
-- The working_dir defaults to the project directory.
-- Use the args parameter for additional arguments.`
-	}
 
 	return &ToolInfo{
 		Name:               "RunScript",

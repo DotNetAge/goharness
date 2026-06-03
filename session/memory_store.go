@@ -16,19 +16,21 @@ type sessionMeta struct {
 }
 
 type MemorySessionStore struct {
-	mu      sync.RWMutex
-	store   map[string][]Message
-	metas   map[string]*sessionMeta
-	cursors map[string]int // cursor persistence for compaction state
-	handler SlideHandler
+	mu          sync.RWMutex
+	store       map[string][]Message
+	metas       map[string]*sessionMeta
+	cursors     map[string]int // cursor persistence for compaction state
+	modifyFiles map[string][]string
+	handler     SlideHandler
 }
 
 func NewMemorySessionStore() *MemorySessionStore {
 	return &MemorySessionStore{
-		store:   make(map[string][]Message),
-		metas:   make(map[string]*sessionMeta),
-		cursors: make(map[string]int),
-		handler: NoopSlideHandler,
+		store:       make(map[string][]Message),
+		metas:       make(map[string]*sessionMeta),
+		cursors:     make(map[string]int),
+		modifyFiles: make(map[string][]string),
+		handler:     NoopSlideHandler,
 	}
 }
 
@@ -132,6 +134,7 @@ func (s *MemorySessionStore) DeleteSession(_ context.Context, sessionID string) 
 	delete(s.store, sessionID)
 	delete(s.metas, sessionID)
 	delete(s.cursors, sessionID)
+	delete(s.modifyFiles, sessionID)
 	return nil
 }
 
@@ -279,4 +282,29 @@ func (s *MemorySessionStore) SetCursor(_ context.Context, sessionID string, curs
 	defer s.mu.Unlock()
 	s.cursors[sessionID] = cursor
 	return nil
+}
+
+func (s *MemorySessionStore) SaveModifyFiles(sessionID string, files []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if files == nil {
+		s.modifyFiles[sessionID] = nil
+	} else {
+		copied := make([]string, len(files))
+		copy(copied, files)
+		s.modifyFiles[sessionID] = copied
+	}
+	return nil
+}
+
+func (s *MemorySessionStore) GetModifyFiles(sessionID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	files, ok := s.modifyFiles[sessionID]
+	if !ok || files == nil {
+		return nil, nil
+	}
+	out := make([]string, len(files))
+	copy(out, files)
+	return out, nil
 }

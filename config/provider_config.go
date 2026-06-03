@@ -26,4 +26,8 @@ type ProviderConfig struct {
 	// 或其他自定义认证机制。当同时设置 APIKey 和 AuthToken 时，
 	// 优先级取决于具体实现的认证策略。
 	AuthToken string `json:"auth_token" yaml:"auth_token"`
+
+	// IsLocal 标识该供应商是否为本地模型（如 Ollama、vLLM 等）。
+	// 本地模型不需要 BaseURL 和 APIKey，直接通过本地端口访问。
+	IsLocal bool `json:"is_local" yaml:"is_local"`
 }

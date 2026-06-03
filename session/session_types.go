@@ -65,9 +65,11 @@ type SlideHandler func(ctx context.Context, event SlideEvent)
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
+	Title          string    `json:"title,omitempty"` // First user message content (for session list display)
 	ProjectDir     string    `json:"project_dir,omitempty"` // Working directory at session creation time
 	SessionDir     string    `json:"session_dir,omitempty"` // Session sandbox directory (managed by Store)
 	Messages       []Message `json:"messages"`
+	ModifyFiles    []string  `json:"modify_files,omitempty"`  // Tracked modified file paths
 	LastActivityAt time.Time `json:"last_activity_at"`
 	CreatedAt      time.Time `json:"created_at"`
 }
@@ -88,6 +90,10 @@ type SessionStore interface {
 	DeleteSession(ctx context.Context, sessionID string) error
 	GetCursor(ctx context.Context, sessionID string) (int, error)
 	SetCursor(ctx context.Context, sessionID string, cursor int) error
+
+	// ModifyFiles persistence for file change tracking
+	SaveModifyFiles(sessionID string, files []string) error
+	GetModifyFiles(sessionID string) ([]string, error)
 }
 
 // Cursor persistence for compaction state recovery.

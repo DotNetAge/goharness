@@ -37,7 +37,7 @@ func NewAskUserTool() FuncTool {
 	return &AskUser{
 		info: &ToolInfo{
 			Name:        "AskUser",
-			Description: "Asks the user multiple choice questions to gather information, clarify ambiguity, understand preferences, make decisions or offer them choices.",
+			Description: "Ask the user a question to gather information, clarify ambiguity, or make decisions.",
 			Prompt: `Use this tool when you need to ask the user questions during execution. This allows you to:
 	1. Gather user preferences or requirements
 	2. Clarify ambiguous instructions

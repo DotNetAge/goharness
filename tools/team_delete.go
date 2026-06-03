@@ -14,7 +14,7 @@ func NewTeamDeleteTool() *TeamDeleteTool {
 func (t *TeamDeleteTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TeamDelete",
-		Description: "Delete a team and clean up its associated data. All team members must be idle before deletion.",
+		Description: "Delete a team and clean up its associated data.",
 		Prompt: `Delete a team and clean up its data.
 
 Use this to:

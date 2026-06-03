@@ -36,7 +36,14 @@ func (a *WeixinAdapter) Search(ctx context.Context, query string, opts SearchOpt
 	for i := range results {
 		results[i].URL = resolveWeixinURL(results[i].URL)
 	}
-	return filterResults(results, opts), nil
+	// Drop unresolved sogou.com redirect URLs
+	filtered := make([]SearchResult, 0, len(results))
+	for _, r := range results {
+		if strings.HasPrefix(r.URL, "http") && !strings.Contains(r.URL, "sogou.com") {
+			filtered = append(filtered, r)
+		}
+	}
+	return filterResults(filtered, opts), nil
 }
 
 func resolveWeixinURL(href string) string {

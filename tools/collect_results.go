@@ -18,7 +18,7 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "CollectResults",
 		MaxResultSizeChars: 50000,
-		Description:        "Wait for one or more async tasks to complete and return their results. Blocks until all specified tasks are done.",
+		Description:        "Wait for one or more async tasks to complete and return their results.",
 		Prompt: `Wait for async tasks (started by SubAgent) to finish and collect their results.
 
 This tool blocks until ALL specified task_ids have completed. Use it after SubAgent() to retrieve results.

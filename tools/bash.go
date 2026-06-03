@@ -92,7 +92,7 @@ func (t *BashTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Bash",
 		MaxResultSizeChars: 60000,
-		Description:        "Execute shell commands and return their output. Use dedicated tools instead of bash when available.",
+		Description:        "Execute a POSIX shell command in the workspace environment. On Linux/proot, the environment is extensible — packages can be installed. On macOS, commands run natively via /bin/bash.",
 		Prompt: `Executes a given bash command and returns its output. The project directory persists between commands, but shell state does not.
 
 IMPORTANT: The following commands are blocked by the Bash tool whitelist — use dedicated tools instead:

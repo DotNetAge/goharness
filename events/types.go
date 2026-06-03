@@ -81,6 +81,25 @@ const (
 	//
 	// Data: MaxTurnsReachedData
 	MaxTurnsReached ReactEventType = "max_turns_reached"
+
+	// FileModified signals that a file has been tracked for modification.
+	// Emitted when a file-modifying tool (Write, FileEdit) is about to execute
+	// and the file is newly added to the session's ModifyFiles list.
+	//
+	// Data: FileModifiedData
+	FileModified ReactEventType = "file_modified"
+
+	// FileConfirmed signals that backup files have been deleted (changes confirmed).
+	// Emitted when ConfirmModify is called on the session.
+	//
+	// Data: FileConfirmData
+	FileConfirmed ReactEventType = "file_confirmed"
+
+	// FileRolledBack signals that files have been restored from backup.
+	// Emitted when Rollback is called on the session.
+	//
+	// Data: FileRollbackData
+	FileRolledBack ReactEventType = "file_rolled_back"
 )
 
 // MaxTurnsReachedData contains details about a max-turns event.
@@ -92,6 +111,27 @@ type MaxTurnsReachedData struct {
 	MaxTurns int `json:"max_turns"`
 
 	// Suggestion is a human-readable hint for the user on how to proceed.
-	// This should be displayed in the UI as a friendly tip.
+	// This should be displayed in the UI as a friendly notice (not an error).
 	Suggestion string `json:"suggestion"`
+}
+
+// FileModifiedData carries details when a file is newly tracked for modification.
+type FileModifiedData struct {
+	// FilePath is the absolute path of the file that was backed up and tracked.
+	FilePath string `json:"file_path"`
+
+	// BackupPath is where the original content was saved to.
+	BackupPath string `json:"backup_path"`
+}
+
+// FileConfirmData carries details when file modifications are confirmed.
+type FileConfirmData struct {
+	// FilePaths are the files that were confirmed (backups deleted).
+	FilePaths []string `json:"file_paths"`
+}
+
+// FileRollbackData carries details when file modifications are rolled back.
+type FileRollbackData struct {
+	// FilePaths are the files that were restored from backup.
+	FilePaths []string `json:"file_paths"`
 }

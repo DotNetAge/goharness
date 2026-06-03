@@ -116,4 +116,15 @@ DESIGN-LLMCALL.md             ─── LLM 调用层：gochat 适配、流式�
   
 --- 
 
-- [ ] 增加对TokenUsage的独立管理。提取 TokenUsageStore 接口
+- [x] 增加对TokenUsage的独立管理。提取 TokenUsageStore 接口
+- [x] 增加独立的摘要器, 构造时必须输入Model配置，可用WithSystemPrompt传入自定义SystemPrompt，调用gochat对输入内容进行摘要化处理。
+- [ ] Session功能要进行增强，
+  - 1. Session要增加一个ModifyFiles的字符串数组，用于记录会话中修改的文件路径。当会话中使用到Write,Replace一类会修改原目录内容的工具前，先将原有文件备份到Session的Backup目录中，然后将修改的文件路径保存到ModifyFiles数组中，如果Backup文件已存在，而又发生第二次修改就不要再重新备份，备份只保留一次就可了，也就是说ModifyFiles数组中如果已经有文件路径存在就不进行备份处理了。
+  - 2. Session 要增加一个 ComfirmModify 方法与 Rollback 方法 ConfirmModify 是将备份文件的内容直接删除；Rollback 方法就是将的备份文件恢复到原有位置上，这两个方法执行都会移除ModifyFiles数组中相对应的文件路径。ConfirmModify 与 Rollback是可以同时对多个文件进行操作的。
+  - 3. 凡是 ModifyFiles中有新的文件加入都要发出一个对应事件；
+- 客户端 Mindx 
+  - [ ] 1. 在SessionStore实现上可以获取存储SessionModifyFiles数组中的文件，同时Daemon也要增加对应的接口，在SessionInfo中携带ModifyFiles数组，这样和 TUI, WebUI 就可以获得会话中修改的文件路径。
+  - [ ] 2. Daemon 可以删除HistoryFile的监控服务，因为daemon 不需要监听 HistoryFile 的变化，这样会减少 daemon 的资源消耗。
+  - [ ] 3. Daemon 要将文件修改事件透传给客户端；
+  - [ ] 4. 当界面收到文件修改事件又或者加载Session时如果modify_files不为空，就在输入框的上方显示一个提标框，布局如下： 图标 + Dropdown(文件名) + 全部撤销 全部保留 (右侧对齐)。右则的两个按钮分别向Daemon发送 ConfirmModify 与 Rollback指令以操作服务端的Session进行同步操作；
+  

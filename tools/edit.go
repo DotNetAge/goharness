@@ -33,7 +33,7 @@ func NewFileEditTool() FuncTool {
 func (t *FileEditTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "FileEdit",
-		Description: "Edit files by replacing exact strings. Supports single, all, or limited-count replacements with staleness check.",
+		Description: "Edit files by replacing exact strings.",
 		Prompt: `Performs exact string replacements in files.
 
 Usage:

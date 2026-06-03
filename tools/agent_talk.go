@@ -28,7 +28,7 @@ func NewAgentTalkTool(talk AgentTalkFunc) *AgentTalkTool {
 func (t *AgentTalkTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "AgentTalk",
-		Description: "Send a message to another agent and get a reply. The agent continues its existing conversation when session_id is reused.",
+		Description: "Send a message to another agent and get a reply.",
 		Prompt: `Send a message to a known agent and get a reply. Use this for ongoing coordination — checking status, giving feedback, discussing shared work.
 
 Unlike SubAgent (spawns a temporary agent for a one-shot task), AgentTalk talks to an agent that already exists and may have ongoing work. The session_id keeps the conversation thread alive across multiple exchanges.

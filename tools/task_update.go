@@ -15,7 +15,7 @@ func NewTaskUpdateTool() *TaskUpdateTool {
 func (t *TaskUpdateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskUpdate",
-		Description: "Update a task's subject, description, status, owner, or dependency relationships.",
+		Description: "Advance a task through its lifecycle or update its metadata. Enforces valid status transitions and auto-detects circular dependencies.",
 		Prompt: `Update a task's metadata or advance it through its lifecycle.
 
 Use cases:

@@ -105,6 +105,14 @@ func (m *mockStore) SetCursor(_ context.Context, sessionID string, cursor int) e
 	return nil
 }
 
+func (m *mockStore) SaveModifyFiles(sessionID string, files []string) error {
+	return nil // mock: no-op for tests that don't test modify files
+}
+
+func (m *mockStore) GetModifyFiles(sessionID string) ([]string, error) {
+	return nil, nil // mock: no-op for tests that don't test modify files
+}
+
 func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
 	store := NewInMemoryTokenUsageStore()
 	ctx := context.Background()

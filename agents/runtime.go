@@ -158,10 +158,14 @@ type Runtime struct {
 
 	asyncTimeout time.Duration
 	syncTimeout  time.Duration
-	
+
 	// tokenUsageStore persists LLM token usage records with grouping dimensions and cost.
 	// Default: NoopTokenUsageStore (no-op). Inject via WithTokenUsageStore().
 	tokenUsageStore session.TokenUsageStore
+
+	// fileModifyTracker provides TrackFunc per sessionID for FileModifyHook.
+	// Set via WithFileModifyTracker() to enable automatic file backup before Write/FileEdit.
+	fileModifyTracker action.TrackerProvider
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -377,7 +381,7 @@ func (rt *Runtime) registerDefaultHooks() {
 			permStore = ps
 		}
 	}
-	rt.toolHooks = append(rt.toolHooks, action.Defaults(permStore, rt.skillReg, rt.logger)...)
+	rt.toolHooks = append(rt.toolHooks, action.Defaults(permStore, rt.skillReg, rt.logger, rt.fileModifyTracker)...)
 }
 
 // ── AgentTalk: synchronous inter-agent communication ──────────────────────────
@@ -395,7 +399,7 @@ func (rt *Runtime) registerDefaultHooks() {
 // The sessionID parameter enables conversation continuity:
 //   - New sessionID = start a fresh conversation with the target agent
 //   - Reused sessionID = continue an existing conversation thread
-//   (Session caching for continuity is a future enhancement — current impl creates fresh sessions)
+//     (Session caching for continuity is a future enhancement — current impl creates fresh sessions)
 func (rt *Runtime) agentTalk(ctx context.Context, to, sessionID, message string) (string, error) {
 	if rt.agentReg != nil {
 		if cfg := rt.agentReg.Get(to); cfg == nil {
@@ -836,8 +840,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		emit(events.ThinkingDone, nil)
 
 		// Record token usage from stream
+		fmt.Printf("[SSE-TRACE L4] About to call stream.Usage(), session=%s, iter=%d\n", sid, iter)
 		u := stream.Usage()
 		if u != nil {
+			fmt.Printf("[SSE-TRACE L4] stream.Usage() NON-NIL: prompt=%d, completion=%d, total=%d, session=%s\n",
+				u.PromptTokens, u.CompletionTokens, u.TotalTokens, sid)
 			callUsage := session.TokenUsage{
 				Timestamp:    time.Now(),
 				InputTokens:  u.PromptTokens,
@@ -866,7 +873,13 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				TotalTokens:      callUsage.TotalTokens,
 				Timestamp:        time.Now(),
 			}
-			_ = rt.tokenUsageStore.Append(ctx, record)
+			if err := rt.tokenUsageStore.Append(ctx, record); err != nil {
+				logger.Error("token usage store Append failed", err, "session", sid)
+				fmt.Printf("[SSE-TRACE L4] Append FAILED: %v, session=%s\n", err, sid)
+			} else {
+				fmt.Printf("[SSE-TRACE L4] Append OK: prompt=%d, completion=%d, total=%d, cached=%d, session=%s\n",
+					callUsage.InputTokens, callUsage.OutputTokens, callUsage.TotalTokens, callUsage.CachedTokens, sid)
+			}
 			totalUsage.InputTokens += callUsage.InputTokens
 			totalUsage.OutputTokens += callUsage.OutputTokens
 			totalUsage.TotalTokens += callUsage.TotalTokens
@@ -875,6 +888,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			logger.Info("token usage recorded", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
 		} else {
 			logger.Warn("stream.Usage() returned nil — provider may not support streaming token usage", "session", sid, "iter", iter, "model", rt.model.Name)
+			fmt.Printf("[SSE-TRACE L4] stream.Usage() returned NIL! session=%s, iter=%d, model=%s\n", sid, iter, rt.model.Name)
 		}
 
 		// Build LLM response for hooks from streaming data
@@ -909,9 +923,12 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			return
 		}
 
-		// Persist assistant message
+		// Persist assistant message (content + reasoning + tool_calls)
 		assistantMsg := session.Message{
-			Role: "assistant", Content: content, Timestamp: time.Now().Unix(),
+			Role:             "assistant",
+			Content:          content,
+			ReasoningContent: reasoningBuf.String(),
+			Timestamp:        time.Now().Unix(),
 		}
 		for _, tc := range streamToolCalls {
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, session.ToolCall{
@@ -948,6 +965,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// ── Execute tools with hooks ──
 		invocs := parseToolInvocations(streamToolCalls)
+
 		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec)
 
 		prevToolResults = toolResults
@@ -1198,6 +1216,7 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 			msgs = append(msgs, gochatcore.NewUserMessage(m.Content))
 		case "assistant":
 			msg := gochatcore.NewTextMessage("assistant", m.Content)
+			msg.ReasoningContent = m.ReasoningContent
 			for _, tc := range m.ToolCalls {
 				msg.ToolCalls = append(msg.ToolCalls, gochatcore.ToolCall{
 					ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
@@ -1696,7 +1715,24 @@ func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
 //	}
 func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.agentReg }
 
-
+// WithFileModifyTracker sets the file modification tracker provider for this Runtime.
+// When set, a FileModifyHook is automatically registered in the default tool hooks
+// to backup files before Write/FileEdit tools execute.
+//
+// The provider function receives a sessionID and returns the session's TrackModify
+// function (or false if tracking is not available for that session).
+//
+// Example:
+//
+//	rt.WithFileModifyTracker(func(sessionID string) (action.TrackFunc, bool) {
+//	    sess := getSessionByID(sessionID)
+//	    if sess == nil { return nil, false }
+//	    return sess.TrackModify, true
+//	})
+func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
+	rt.fileModifyTracker = provider
+	// 重建 tool hooks 以包含 FileModifyHook（在 NewRuntime 中已通过 Defaults 注册）
+}
 
 // RegisterTool adds a new tool to the Runtime's tool registry.
 // The tool will be available for the LLM to invoke in subsequent Ask calls.

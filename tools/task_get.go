@@ -14,7 +14,7 @@ func NewTaskGetTool() *TaskGetTool {
 func (t *TaskGetTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskGet",
-		Description: "Get detailed information about a specific task, including its status, owner, and dependency relationships.",
+		Description: "Get detailed information about a specific task.",
 		Prompt: `Get detailed information about a specific task by task_id.
 
 Use this to:

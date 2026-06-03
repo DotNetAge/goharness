@@ -33,7 +33,7 @@ func NewLsTool() FuncTool {
 		info: &ToolInfo{
 			Name:               "Ls",
 			MaxResultSizeChars: 30000,
-			Description:        "List directory contents with file metadata — size, type, permissions, modification time. Supports recursive tree view and hidden files.",
+			Description:        "List directory contents with file metadata. Use this to explore project layout before reading files. Prefer Glob for pattern-based file search.",
 			Prompt: `List the contents of a directory to browse the filesystem structure. Use this when you need to see what files exist in a directory, check file sizes, or explore the project layout before reading or editing files.
 
 ## Operations

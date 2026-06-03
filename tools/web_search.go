@@ -173,7 +173,7 @@ func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, ex
 	}
 	req.Header.Set("User-Agent", randomUA())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}

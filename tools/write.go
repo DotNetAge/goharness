@@ -21,13 +21,7 @@ type Write struct {
 }
 
 // writeDescription 是 Write 工具的简短描述。
-const writeDescription = `Writes a file to the local filesystem.
-
-Usage:
-- This tool will overwrite the existing file if there is one at the provided path unless append mode is true.
-- If this is an existing file, you should normally use the read tool first to get the current contents.
-- ALWAYS prefer editing existing files using file_edit tool in the codebase. NEVER write new files unless explicitly required.
-- The path parameter must be an absolute path, not a relative path.`
+const writeDescription = `Write content to a file. Creates parent directories automatically. Use append=true to append instead of overwrite.`
 
 // NewWriteTool 创建一个文件写入工具实例。
 //
@@ -47,6 +41,11 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`,
 			Tags:          []string{"file", "filesystem", "write", "create"},
 			SecurityLevel: events.LevelSensitive,
+			Parameters: []Parameter{
+				{Name: "path", Type: "string", Description: "Absolute file path to write to.", Required: true},
+				{Name: "content", Type: "string", Description: "File content to write.", Required: true},
+				{Name: "append", Type: "boolean", Description: "If true, append to existing file instead of overwriting.", Required: false},
+			},
 		},
 	}
 }

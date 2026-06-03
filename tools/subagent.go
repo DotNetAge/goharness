@@ -59,7 +59,7 @@ func NewSubAgentTool(spawn SpawnFunc) *SubAgentTool {
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
-		Description: "Spawn a sub-agent for a task. Returns immediately with a task_id. Use CollectResults to retrieve the result later.",
+		Description: "Spawn a sub-agent for a task. Use CollectResults to retrieve the result later.",
 		Prompt: `Spawn a sub-agent to handle a task. Use this for two scenarios:
 
 1. **Expertise handoff** — the task falls outside your role, and a specialist agent is better suited.
