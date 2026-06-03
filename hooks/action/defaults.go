@@ -36,36 +36,26 @@ func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegis
 	}
 	checkers = append(checkers, tools.NewFallbackPermissionChecker())
 
-	result := []hooks.ToolHook{
-		&PermissionHook{Chain: permission.NewPermissionChain(checkers...), Logger: logger},
-		&ToolLoggerHook{Logger: logger},
+	// FileModifyHook 始终被注册（provider 可为 nil），
+	// 以便后期通过 FileModifyHook.SetProvider() 动态注入 tracker。
+	// 见 Runtime.WithFileModifyTracker()。
+	var tp TrackerProvider
+	if len(trackerProvider) > 0 {
+		tp = trackerProvider[0]
+	}
+	fmHook := &FileModifyHook{
+		Logger:           logger,
+		trackerProvider:   tp,
+		priority:         PriorityFileModify,
 	}
 
-	// 可选：当提供了 trackerProvider 时，注册 FileModifyHook
-	if len(trackerProvider) > 0 && trackerProvider[0] != nil {
-		fmHook := &FileModifyHook{
-			Logger:           logger,
-			trackerProvider:   trackerProvider[0],
-			priority:         PriorityFileModify,
-		}
-		// 插入到正确位置：Permission(41) < FileModify(42) < Logger(46)
-		result = insertHookByPriority(result, fmHook)
+	result := []hooks.ToolHook{
+		&PermissionHook{Chain: permission.NewPermissionChain(checkers...), Logger: logger},
+		fmHook,
+		&ToolLoggerHook{Logger: logger},
 	}
 
 	return result
 }
 
-// insertHookByPriority 将 hook 按优先级顺序插入到已有列表中。
-func insertHookByPriority(list []hooks.ToolHook, newHook hooks.ToolHook) []hooks.ToolHook {
-	p := newHook.Priority()
-	for i, h := range list {
-		if h.Priority() > p {
-			result := make([]hooks.ToolHook, 0, len(list)+1)
-			result = append(result, list[:i]...)
-			result = append(result, newHook)
-			result = append(result, list[i:]...)
-			return result
-		}
-	}
-	return append(list, newHook)
-}
+

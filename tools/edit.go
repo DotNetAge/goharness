@@ -128,8 +128,10 @@ func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any,
 		"scope", scope,
 	)
 
-	// Security check
-	if err := ValidateFileSafety(resolvedPath, tc.ProjectDir); err != nil {
+	// Security check: block sensitive system files.
+	// Workspace boundary enforcement is handled by FileBoundaryChecker
+	// at the permission chain level (executor).
+	if err := checkSensitiveFiles(resolvedPath); err != nil {
 		return nil, err
 	}
 

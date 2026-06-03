@@ -177,26 +177,43 @@ func TestDefaults_WithTrackerProvider(t *testing.T) {
 func TestDefaults_WithoutTrackerProvider(t *testing.T) {
 	hooks := Defaults(nil, nil, nil)
 
-	// 不提供 tracker 时只有 2 个默认 hooks
-	if len(hooks) != 2 {
-		t.Fatalf("期望 2 个 hooks（无 FileModifyHook），得到 %d", len(hooks))
+	// FileModifyHook 始终被注册（即使 provider 为 nil）
+	if len(hooks) != 3 {
+		t.Fatalf("期望 3 个 hooks（PermissionHook + FileModifyHook + ToolLoggerHook），得到 %d", len(hooks))
 	}
 
-	// 确认没有 FileModifyHook
+	// 确认 FileModifyHook 存在，但 provider 为 nil
+	found := false
 	for _, h := range hooks {
-		if _, ok := h.(*FileModifyHook); ok {
-			t.Error("未提供 tracker 时不应包含 FileModifyHook")
+		if fmh, ok := h.(*FileModifyHook); ok {
+			found = true
+			if fmh.trackerProvider != nil {
+				t.Error("未提供 tracker 时 FileModifyHook 的 provider 应为 nil")
+			}
 		}
+	}
+	if !found {
+		t.Error("应包含 FileModifyHook（即使 provider 为 nil）")
 	}
 }
 
 func TestDefaults_NilTrackerProvider(t *testing.T) {
 	hooks := Defaults(nil, nil, nil, nil)
 
-	// 显式传 nil 也不应注册 FileModifyHook
+	// 显式传 nil 也应注册 FileModifyHook（provider 为 nil）
+	if len(hooks) != 3 {
+		t.Fatalf("期望 3 个 hooks，得到 %d", len(hooks))
+	}
+
+	// 确认 FileModifyHook 存在
+	found := false
 	for _, h := range hooks {
 		if _, ok := h.(*FileModifyHook); ok {
-			t.Error("nil tracker provider 不应注册 FileModifyHook")
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Error("nil provider 时也应包含 FileModifyHook")
 	}
 }

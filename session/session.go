@@ -418,6 +418,10 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 	}
 	s.mu.Unlock()
 
+	// Restore tracked modified files from store (if any).
+	// modify_files.yml is written by persistModifyFilesLocked during Write/FileEdit.
+	s.loadModifyFiles()
+
 	s.loaded = true
 }
 

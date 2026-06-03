@@ -166,6 +166,10 @@ type Runtime struct {
 	// fileModifyTracker provides TrackFunc per sessionID for FileModifyHook.
 	// Set via WithFileModifyTracker() to enable automatic file backup before Write/FileEdit.
 	fileModifyTracker action.TrackerProvider
+
+	// fileModifyHook holds a reference to the registered FileModifyHook,
+	// allowing WithFileModifyTracker to dynamically update its provider after init.
+	fileModifyHook *action.FileModifyHook
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -368,6 +372,7 @@ func (rt *Runtime) registerDefaultTools() {
 //
 // Tool hooks (executed in priority order per tool call):
 //   - PermissionHook (41): Permission chain evaluation → Deny + Abort
+//   - FileModifyHook (42): File backup/before Write/FileEdit (provider may be nil)
 //   - ToolLoggerHook (46): Tool execution logging
 func (rt *Runtime) registerDefaultHooks() {
 	rt.loopHooks = append(rt.loopHooks, loop.Defaults(rt.logger)...)
@@ -381,7 +386,18 @@ func (rt *Runtime) registerDefaultHooks() {
 			permStore = ps
 		}
 	}
-	rt.toolHooks = append(rt.toolHooks, action.Defaults(permStore, rt.skillReg, rt.logger, rt.fileModifyTracker)...)
+	defaultHooks := action.Defaults(permStore, rt.skillReg, rt.logger, rt.fileModifyTracker)
+
+	// Capture FileModifyHook reference for late binding via WithFileModifyTracker.
+	rt.fileModifyHook = nil
+	for _, h := range defaultHooks {
+		if fmh, ok := h.(*action.FileModifyHook); ok {
+			rt.fileModifyHook = fmh
+			break
+		}
+	}
+
+	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
 }
 
 // ── AgentTalk: synchronous inter-agent communication ──────────────────────────
@@ -668,6 +684,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		tools.WithExecutorSessionID(b.session.ID()),
 		tools.WithProjectDirExecutor(b.session.ProjectDir()),
 		tools.WithSessionDirExecutor(b.session.SessionDir()),
+		tools.WithPermissionChecker(tools.NewFileBoundaryChecker(
+			b.session.ProjectDir(),
+			b.session.SessionDir(),
+		)),
 	)
 
 	maxIter := rt.model.MaxTurns
@@ -1739,7 +1759,9 @@ func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.agentReg }
 //	})
 func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	rt.fileModifyTracker = provider
-	// 重建 tool hooks 以包含 FileModifyHook（在 NewRuntime 中已通过 Defaults 注册）
+	if rt.fileModifyHook != nil {
+		rt.fileModifyHook.SetProvider(provider)
+	}
 }
 
 // RegisterTool adds a new tool to the Runtime's tool registry.

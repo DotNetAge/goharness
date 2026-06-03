@@ -96,6 +96,13 @@ func (h *FileModifyHook) After(result *hooks.ToolResult) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
+// SetProvider 动态更新 tracker provider，支持后期注入。
+// 当 Runtime 在初始化后才设置 fileModifyTracker 时，
+// 可以通过此方法直接更新已注册的 FileModifyHook 的 provider。
+func (h *FileModifyHook) SetProvider(provider TrackerProvider) {
+	h.trackerProvider = provider
+}
+
 // Abort is a no-op for FileModifyHook.
 func (h *FileModifyHook) Abort(reason string) {}
 
