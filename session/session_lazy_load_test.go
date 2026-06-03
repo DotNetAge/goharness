@@ -14,6 +14,10 @@ type mockStore struct {
 	msgs    map[string][]Message
 	appends []appendRecord
 	cursors map[string]int // cursor persistence (internal to Session)
+
+	// getMetaResult allows tests to configure what GetMeta returns.
+	// If nil, GetMeta returns a default SessionInfo with empty ProjectDir.
+	getMetaResult *SessionInfo
 }
 
 type appendRecord struct {
@@ -87,6 +91,9 @@ func (m *mockStore) Create(_ context.Context, _ string, _ ...SessionOption) (*Se
 	return &SessionInfo{SessionID: "test-sess"}, nil
 }
 func (m *mockStore) GetMeta(_ context.Context, _ string) (*SessionInfo, error) {
+	if m.getMetaResult != nil {
+		return m.getMetaResult, nil
+	}
 	return &SessionInfo{SessionID: "test-sess"}, nil
 }
 func (m *mockStore) ResolveSessionDir(_ string) (string, error) { return "", nil }
@@ -1060,4 +1067,91 @@ func TestCursorBehavior_CrossRequestCompactedSession(t *testing.T) {
 	}
 
 	t.Log("\n✅ SUCCESS: Cross-request session resume works correctly")
+}
+
+// TestLazyLoad_ProjectDirLoadedFromStore verifies that ensureLoaded loads
+// ProjectDir from the store's GetMeta, so that Session.ProjectDir() returns
+// the correct project working directory for file operations.
+func TestLazyLoad_ProjectDirLoadedFromStore(t *testing.T) {
+	expectedProjectDir := "/home/user/my-project"
+	store := newMockStore()
+	store.getMetaResult = &SessionInfo{
+		SessionID:  "project-dir-test",
+		ProjectDir: expectedProjectDir,
+	}
+
+	s := NewSession("project-dir-test", "agent", WithStore(store))
+
+	// Before ensureLoaded, ProjectDir should be empty
+	if s.ProjectDir() != "" {
+		t.Errorf("Before lazy-load: ProjectDir() = %q, want empty", s.ProjectDir())
+	}
+
+	// Call Current() to trigger ensureLoaded → should load ProjectDir from store
+	_ = s.Current()
+
+	// Verify ProjectDir is now set from store's metadata
+	if s.ProjectDir() != expectedProjectDir {
+		t.Errorf("After lazy-load: ProjectDir() = %q, want %q", s.ProjectDir(), expectedProjectDir)
+	}
+
+	// Verify session is loaded
+	if !s.loaded {
+		t.Error("Session should be marked as loaded after Current()")
+	}
+}
+
+// TestLazyLoad_ProjectDirLoadedByAppend verifies that Append() also triggers
+// loading of ProjectDir (same ensureLoaded path).
+func TestLazyLoad_ProjectDirLoadedByAppend(t *testing.T) {
+	expectedProjectDir := "/home/user/another-project"
+	store := newMockStore()
+	store.getMetaResult = &SessionInfo{
+		SessionID:  "project-dir-append-test",
+		ProjectDir: expectedProjectDir,
+	}
+
+	s := NewSession("project-dir-append-test", "agent", WithStore(store))
+
+	// Append triggers ensureLoaded which loads ProjectDir from store
+	s.Append(context.Background(), Message{
+		Role: "user", Content: "hello", Timestamp: time.Now().Unix(),
+	})
+
+	// Verify ProjectDir is now set
+	if s.ProjectDir() != expectedProjectDir {
+		t.Errorf("After Append: ProjectDir() = %q, want %q", s.ProjectDir(), expectedProjectDir)
+	}
+}
+
+// TestLazyLoad_WithProjectDirOptionOverridesStore verifies that WithProjectDir
+// at construction time takes precedence over the store's metadata.
+func TestLazyLoad_WithProjectDirOptionOverridesStore(t *testing.T) {
+	storeProjectDir := "/home/user/store-project"
+	explicitProjectDir := "/home/user/explicit-project"
+
+	store := newMockStore()
+	store.getMetaResult = &SessionInfo{
+		SessionID:  "project-dir-override-test",
+		ProjectDir: storeProjectDir,
+	}
+
+	// Create with explicit WithProjectDir
+	s := NewSession("project-dir-override-test", "agent",
+		WithStore(store),
+		WithProjectDir(explicitProjectDir),
+	)
+
+	// Before lazy-load, ProjectDir should be the explicit value
+	if s.ProjectDir() != explicitProjectDir {
+		t.Errorf("Before lazy-load: ProjectDir() = %q, want %q (explicit)", s.ProjectDir(), explicitProjectDir)
+	}
+
+	// Trigger lazy-load
+	_ = s.Current()
+
+	// ensureLoaded should NOT overwrite ProjectDir since it was explicitly set
+	if s.ProjectDir() != explicitProjectDir {
+		t.Errorf("After lazy-load: ProjectDir() = %q, want %q (explicit should not be overwritten)", s.ProjectDir(), explicitProjectDir)
+	}
 }

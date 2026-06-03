@@ -135,12 +135,16 @@ func resolveProjectDir(projectDir string) (string, error) {
 
 // enforceWorkspaceBoundary ensures the resolved path stays within the project directory.
 func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) error {
-	sep := string(filepath.Separator)
-
 	if realPath == realProjectDir {
 		return nil
 	}
 
+	// 根目录作为工作区时，所有绝对路径都在边界内
+	if realProjectDir == "/" {
+		return nil
+	}
+
+	sep := string(filepath.Separator)
 	if !strings.HasPrefix(realPath, realProjectDir+sep) {
 		return fmt.Errorf(
 			"access denied: path %q resolves to %q which is outside the workspace %q",

@@ -68,7 +68,7 @@ type SessionInfo struct {
 	Title          string    `json:"title,omitempty"` // First user message content (for session list display)
 	ProjectDir     string    `json:"project_dir,omitempty"` // Working directory at session creation time
 	SessionDir     string    `json:"session_dir,omitempty"` // Session sandbox directory (managed by Store)
-	Messages       []Message `json:"messages"`
+	Messages       []Message `json:"messages,omitempty"`
 	ModifyFiles    []string  `json:"modify_files,omitempty"`  // Tracked modified file paths
 	LastActivityAt time.Time `json:"last_activity_at"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -120,9 +120,9 @@ type CursorStore interface {
 // SessionOption is a functional option for configuring session creation.
 type SessionOption func(*SessionInfo)
 
-// WithProjectDir sets the project working directory for a new session.
+// WithProjectDirOption sets the project working directory for a new session info.
 // If not provided, the implementation should use os.Getwd() as default.
-func WithProjectDir(dir string) SessionOption {
+func WithProjectDirOption(dir string) SessionOption {
 	return func(s *SessionInfo) {
 		s.ProjectDir = dir
 	}

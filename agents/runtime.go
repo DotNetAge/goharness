@@ -656,10 +656,18 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		})
 	})
 
+	// Pre-load session metadata (projectDir, cursor, messages) from store
+	// before creating the tool executor, so that WithProjectDirExecutor receives
+	// the correct project directory from the persisted session metadata.
+	b.session.Current()
+
 	// Tool executor
 	toolExec := tools.NewToolExecutor(rt.toolReg,
 		tools.WithEventEmitter(func(ev events.ReactEvent) { eb.Emit(ev) }),
 		tools.WithLogger(logger),
+		tools.WithExecutorSessionID(b.session.ID()),
+		tools.WithProjectDirExecutor(b.session.ProjectDir()),
+		tools.WithSessionDirExecutor(b.session.SessionDir()),
 	)
 
 	maxIter := rt.model.MaxTurns

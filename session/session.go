@@ -259,6 +259,18 @@ func (s *Session) AgentName() string { return s.agentName }
 // ProjectDir returns the working directory associated with this session.
 func (s *Session) ProjectDir() string { return s.projectDir }
 
+// WithProjectDir sets the project working directory for file operations.
+// This enables tools like Write, FileEdit resolve relative paths relative to this directory.
+// Example:
+//
+//	session := NewSession("id", "agent",
+//	    WithStore(store),
+//	    WithProjectDir("/home/user/project"),
+//	)
+func WithProjectDir(dir string) SessionConfig {
+	return func(s *Session) { s.projectDir = dir }
+}
+
 // SessionDir returns the filesystem path where session data is stored.
 // Returns empty string if no persistent store is configured or if
 // the store cannot resolve the session directory.
@@ -365,6 +377,14 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 		cursor = 0 // Default to 0 on error (no compaction)
 	}
 
+	// Restore project directory from session metadata for file operations.
+	// meta.json already contains ProjectWorkingDir (stored by FileSessionStore.Create
+	// or statSessionInfo fallback), but Session.projectDir was never populated from it.
+	var projectDir string
+	if info, infoErr := s.store.GetMeta(ctx, s.id); infoErr == nil {
+		projectDir = info.ProjectDir
+	}
+
 	s.mu.Lock()
 
 	// Apply compaction recovery if needed
@@ -393,6 +413,9 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 
 	s.messages = msgs
 	s.cursor = cursor // Restore persisted cursor, NOT hardcoded 0!
+	if s.projectDir == "" {
+		s.projectDir = projectDir // Load project dir from session metadata (only if not set at construction)
+	}
 	s.mu.Unlock()
 
 	s.loaded = true
