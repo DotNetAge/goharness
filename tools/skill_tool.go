@@ -32,15 +32,9 @@ func (t *SkillTool) Info() *ToolInfo {
 		Name:               "Skill",
 		MaxResultSizeChars: 50000,
 		Description:        "Load a specialized skill by name. Call this tool when a skill can help with the current task.",
-		Prompt: `Load a specialized capability (skill) by name.
+		Prompt: `Load a specialized skill's full instructions by name. Call this when a skill from the capabilities list matches the current task.
 
-When you identify a skill from the available capabilities list that matches the current task, call this tool to load its full instructions. The skill's instructions will be provided in the tool result.
-
-Always load a skill before attempting tasks that require its domain expertise.
-
-Skills may expose a "Base directory" in their result. When present, Use the Read tool to access files in that directory for detailed reference material — the Skill instructions are a guide, not the full reference.
-
-Available skills are listed in the system prompt under "## Capacities (Available Skills)".`,
+The result includes instructions and may include a base directory — use Read to access reference files in that directory.`,
 		Tags: []string{"skill", "capability"},
 		Parameters: []Parameter{
 			{

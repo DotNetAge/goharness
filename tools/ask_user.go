@@ -38,16 +38,9 @@ func NewAskUserTool() FuncTool {
 		info: &ToolInfo{
 			Name:        "AskUser",
 			Description: "Ask the user a question to gather information, clarify ambiguity, or make decisions.",
-			Prompt: `Use this tool when you need to ask the user questions during execution. This allows you to:
-	1. Gather user preferences or requirements
-	2. Clarify ambiguous instructions
-	3. Get decisions on implementation choices as you work
-	4. Offer choices to the user about what direction to take.
+			Prompt: `Ask the user a question during execution. Use this to gather info, clarify ambiguity, or get decisions.
 
-Usage notes:
-- Users will always be able to select "Other" to provide custom text input
-- Use multiSelect: true to allow multiple answers to be selected for a question
-- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`,
+Users can always type a custom answer via "Other". Use multiSelect: true for non-exclusive choices.`,
 			Tags:          []string{"interaction", "question", "clarify", "human"},
 			IsReadOnly:    false,
 			SecurityLevel: events.LevelSensitive,

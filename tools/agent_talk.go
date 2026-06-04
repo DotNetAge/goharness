@@ -29,28 +29,11 @@ func (t *AgentTalkTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "AgentTalk",
 		Description: "Send a message to another agent and get a reply.",
-		Prompt: `Send a message to a known agent and get a reply. Use this for ongoing coordination — checking status, giving feedback, discussing shared work.
+		Prompt: `Send a message to another agent and get an immediate reply. This tool is SYNC — the reply arrives in the same round.
 
-Unlike SubAgent (spawns a temporary agent for a one-shot task), AgentTalk talks to an agent that already exists and may have ongoing work. The session_id keeps the conversation thread alive across multiple exchanges.
+Unlike SubAgent (one-shot, async), AgentTalk maintains a conversation thread via session_id.
 
-When to use:
-- Check status or progress on an ongoing task
-- Give feedback or clarification to an agent you assigned work to
-- Discuss next steps after receiving a result
-- Ask for input from a specialist agent
-
-Do NOT use for one-shot task delegation — use SubAgent instead.
-
-The session_id is your conversation thread:
-- First contact → pick a meaningful ID (e.g., project-task name)
-- Follow-up → reuse the same ID so the agent remembers context
-
-Parameters:
-- agent_name: Target agent (e.g., "@writer", "code-reviewer")
-- session_id: Thread ID. New = start fresh. Reused = continue thread.
-- message: What to say. Include enough context for a meaningful reply.
-
-Returns: {reply (the agent's response), agent_name, session_id}`,
+Key: reuse the same session_id for follow-ups so the agent remembers context. Pick a meaningful ID for first contact (e.g., "project-review").`,
 		Tags: []string{"orchestration", "talk", "agent-talk", "coordination"},
 		Parameters: []Parameter{
 			{Name: "agent_name", Type: "string", Description: "Target agent name (e.g. @writer, code-reviewer).", Required: true},

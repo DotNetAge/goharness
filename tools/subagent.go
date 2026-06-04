@@ -60,26 +60,11 @@ func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
 		Description: "Spawn a sub-agent for a task. Use CollectResults to retrieve the result later.",
-		Prompt: `Spawn a sub-agent to handle a task. Use this for two scenarios:
+		Prompt: `Spawn a sub-agent for a one-shot delegated task. Returns immediately with {task_id, status: "running"}.
 
-1. **Expertise handoff** — the task falls outside your role, and a specialist agent is better suited.
-2. **Parallelization** — the workload is large and can be split into independent sub-tasks that run concurrently to save time.
+Key constraint: This tool is ASYNC. You will NOT see the result in the same round. Use CollectResults(task_ids) to retrieve results later.
 
-Returns {task_id, status: "running"} immediately. The actual result must be collected later using the CollectResults tool.
-
-When to spawn:
-- The task is outside your defined area of expertise — do your own work first.
-- A specialist agent exists whose role matches the task.
-- The user explicitly asks for another agent to handle the task.
-- The task has many independent parts — spawn multiple sub-agents in parallel to finish faster.
-
-Usage:
-- Name the sub-agent based on its role (e.g., "code_reviewer", "data_analyst") or reuse your own role for parallel workers.
-- The task description should be clear and self-contained.
-- Multiple SubAgent calls in the same Act phase run in parallel.
-- For sequential sub-tasks, call SubAgent one per round, waiting for CollectResults between rounds.
-
-Don't race: After spawning a sub-agent, you know nothing about what it found until you call CollectResults.`,
+Multiple SubAgent calls in the same response run in parallel. Name the agent based on its role (e.g. "code_reviewer"). The task description should be self-contained — the sub-agent does not see your conversation context.`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
 		Parameters: []Parameter{

@@ -46,20 +46,9 @@ func NewReadToolWithLimits(limits FileReadingLimits) FuncTool {
 		info: &ToolInfo{
 			Name:        "Read",
 			Description: "Reads a file from the local filesystem.",
-			Prompt: `Reads a file from the local filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+			Prompt: `Read a file from the local filesystem. Supports text, images (PNG/JPG), PDFs (use pages param for large PDFs), and Jupyter notebooks.
 
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 2000 lines starting from the beginning of the file
-- Results are returned using cat -n format, with line numbers starting at 1
-- This tool allows reading images (eg PNG, JPG, etc). When reading an image file the contents are presented visually
-- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges
-- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs
-- This tool can only read files, not directories. To read a directory, use an ls command via the bash tool
-- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path
-
-Skills may expose a "Base directory" in their Skill tool result. When a skill says "Base directory: <path>", use Read to access reference files in that directory — the skill instructions are a guide, not the full reference.`,
+Results use cat -n format with line numbers. Use offset/limit to read specific ranges — the default reads up to 2000 lines from the start.`,
 			Tags:               []string{"file", "filesystem", "read", "content"},
 			SecurityLevel:      events.LevelSafe,
 			IsReadOnly:         true,

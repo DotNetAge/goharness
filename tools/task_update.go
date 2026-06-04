@@ -16,30 +16,13 @@ func (t *TaskUpdateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskUpdate",
 		Description: "Advance a task through its lifecycle or update its metadata. Enforces valid status transitions and auto-detects circular dependencies.",
-		Prompt: `Update a task's metadata or advance it through its lifecycle.
+		Prompt: `Update a task's status or metadata. At least one field must change.
 
-Use cases:
-- Update subject or description to clarify what needs to be done
-- Mark a task as in_progress when starting work
-- Mark a task as completed when finished
-- Cancel a task that is no longer needed
-- Assign a task to yourself or a teammate via owner
-- Express dependencies between tasks with blocks/blockedBy
+Valid status transitions:
+- pending → in_progress | completed | cancelled
+- in_progress → completed | cancelled
 
-Status transitions:
-- pending → in_progress (start working)
-- pending → completed (skip)
-- pending → cancelled (abandon)
-- in_progress → completed (finish)
-- in_progress → cancelled (abandon)
-
-Dependencies:
-- Use addBlocks to say "this task blocks the listed tasks"
-- Use addBlockedBy to say "this task is blocked by the listed tasks"
-- Example: Task A blocks Task B → B can't start until A is completed
-- Cycle detection is automatic: if A depends on B and B already depends on A, the update is rejected
-
-At least one of subject, description, status, owner, addBlocks, or addBlockedBy must be provided.`,
+Dependencies: use addBlocks/addBlockedBy to express task ordering. Circular dependencies are auto-rejected (e.g., A blocks B and B blocks A).`,
 		Tags: []string{"task", "update", "status", "planning"},
 		Parameters: []Parameter{
 			{Name: "task_id", Type: "string", Description: "The ID of the task to update.", Required: true},

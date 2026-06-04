@@ -702,6 +702,9 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// Build tool definitions once (stable across iterations)
 	toolDefs := rt.buildToolDefinitions()
 
+	// Build system prompt sections once (static per session — none change between rounds)
+	systemSections := rt.buildSystemPrompts(sid, b.session)
+
 	start := time.Now()
 	var lastIteration int
 	var prevToolResults []hooks.ToolResult
@@ -719,9 +722,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			setIterResult(iter)
 			return
 		}
-
-		// Build system prompt sections from Runtime's registries
-		systemSections := rt.buildSystemPrompts(sid, b.session)
 
 		// Get current conversation window
 		window := b.session.Current()
@@ -1160,10 +1160,22 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 		}
 	}
 
-	// 2. Skills catalog
-	if rt.skillReg != nil {
-		if skills := rt.skillReg.ListSkills(); len(skills) > 0 {
-			if catalog := buildSkillsCatalog(skills); catalog != "" {
+	// 2. Skills catalog — filtered to current agent's declared skills only
+	if rt.skillReg != nil && rt.agentReg != nil {
+		cfg := rt.agentReg.Get(s.AgentName())
+		if cfg != nil && len(cfg.Skills) > 0 {
+			allSkills := rt.skillReg.ListSkills()
+			allowed := make(map[string]bool, len(cfg.Skills))
+			for _, name := range cfg.Skills {
+				allowed[name] = true
+			}
+			var agentSkills []*skill.Skill
+			for _, sk := range allSkills {
+				if allowed[sk.Name] {
+					agentSkills = append(agentSkills, sk)
+				}
+			}
+			if catalog := buildSkillsCatalog(agentSkills); catalog != "" {
 				msgs = append(msgs, gochatcore.NewSystemMessage(catalog))
 			}
 		}

@@ -18,29 +18,11 @@ func (t *TaskCreateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskCreate",
 		Description: "Create a task in the task list for tracking and planning work. Use TaskUpdate to mark progress, TaskGet/TaskList to check status.",
-		Prompt: `Create a task in the task list to break down complex work into manageable steps.
+		Prompt: `Create a planning record in the task list. This is for TRACKING only — use SubAgent or tools for actual execution.
 
-Use cases:
-- Break down a complex request into smaller, trackable sub-tasks
-- Plan your approach before executing: create tasks first, then work through them
-- Track progress across multiple steps of a workflow
-- Coordinate with team members by assigning tasks via owner field
+Workflow: create tasks first → work through them one by one → mark complete via TaskUpdate immediately when done.
 
-Each task has:
-- subject: short title (like a headline)
-- description: detailed description of what needs to be done
-- status: pending → in_progress → completed (update via TaskUpdate)
-- owner: who is responsible (set via TaskUpdate)
-- blocks / blockedBy: express dependencies between tasks
-
-This tool only creates the planning record. Use SubAgent/Agent tools for actual execution.
-
-Usage:
-- Create tasks with clear subject and description
-- After creating all tasks, work through them one by one
-- Use TaskUpdate(status="in_progress") when starting work on a task
-- Use TaskUpdate(status="completed") when finished
-- Use blocks/blockedBy (via TaskUpdate) to express task ordering`,
+Status lifecycle: pending → in_progress → completed (or cancelled).`,
 		Tags:    []string{"task", "create", "planning", "tracking"},
 		IsAsync: false,
 		Parameters: []Parameter{
