@@ -142,6 +142,15 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 	})
 }
 
+// OnTokenUsageRecorded registers a handler for per-LLM-call token usage updates.
+// This fires after each individual LLM API call's tokens are persisted to the
+// TokenUsageStore. Use this for real-time token usage tracking in the UI.
+func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)) *AskBuilder {
+	return b.on(events.TokenUsageRecorded, func(d any) {
+		if v, ok := d.(session.TokenUsageRecord); ok { fn(v) }
+	})
+}
+
 // OnMaxTurnsReached registers a handler for the MaxTurnsReached event.
 // This event fires when the Think-Act loop reaches MaxTurns without producing
 // a final answer. It is NOT an error - it's a normal boundary condition.

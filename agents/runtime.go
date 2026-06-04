@@ -907,6 +907,9 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			} else {
 				fmt.Printf("[SSE-TRACE L4] Append OK: prompt=%d, completion=%d, total=%d, cached=%d, session=%s\n",
 					callUsage.InputTokens, callUsage.OutputTokens, callUsage.TotalTokens, callUsage.CachedTokens, sid)
+
+				// Emit per-call token usage event for real-time client notification
+				emit(events.TokenUsageRecorded, record)
 			}
 			totalUsage.InputTokens += callUsage.InputTokens
 			totalUsage.OutputTokens += callUsage.OutputTokens

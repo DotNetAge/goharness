@@ -100,6 +100,13 @@ const (
 	//
 	// Data: FileRollbackData
 	FileRolledBack ReactEventType = "file_rolled_back"
+
+	// TokenUsageRecorded signals that an LLM call has completed and its token
+	// usage has been persisted to the TokenUsageStore. Emitted after each
+	// individual LLM API call within the Think-Act loop.
+	//
+	// Data: session.TokenUsageRecord
+	TokenUsageRecorded ReactEventType = "token_usage_recorded"
 )
 
 // MaxTurnsReachedData contains details about a max-turns event.
