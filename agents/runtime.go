@@ -1135,6 +1135,7 @@ func (rt *Runtime) notifyLoopAbort(sessionID string, reason string) {
 //
 // # Prompt Sections (in order):
 //
+//  0. Language Lock: Mandatory language detection — must be first message
 //  1. Identity: Agent name, role, description, introduction (from AgentRegistry)
 //  2. Skills Catalog: Available skills and their descriptions (from SkillRegistry)
 //  3. Behavioral Rules: Default rules + custom rules (from RuleRegistry)
@@ -1153,6 +1154,9 @@ func (rt *Runtime) notifyLoopAbort(sessionID string, reason string) {
 //   - []gochatcore.Message: Array of system messages forming the complete prompt
 func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
 	var msgs []gochatcore.Message
+
+	// 0. Language Lock — MUST be the first message so LLM sees it before any thinking
+	msgs = append(msgs, gochatcore.NewSystemMessage(buildLanguageLock()))
 
 	// 1. Identity — from AgentRegistry by agent name
 	if rt.agentReg != nil {

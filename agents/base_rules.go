@@ -4,7 +4,15 @@ import "strings"
 
 // baseRulesText contains all static prompt sections that rarely change.
 // To edit prompt content, modify this string — no dynamic logic here.
-const baseRulesText = `## Behavioral Rules
+const baseRulesText = `## Language Lock
+
+**[MANDATORY] Detect the user's language from their FIRST input immediately.**
+- Use that SAME language for ALL output: internal reasoning, thinking chains, tool call parameters, AND final responses.
+- Your thinking / reasoning block MUST be in the user's language — never default to English.
+- Never switch languages mid-conversation. If the user writes in Chinese, you think in Chinese. If Japanese, think in Japanese.
+- This rule takes absolute priority over all other instructions.
+
+## Behavioral Rules
 
 ### P0: Scope Gate (Check FIRST)
 Am I the right agent for this task?
@@ -84,6 +92,9 @@ func extractSection(heading string) string {
 }
 
 // ── Section accessors — called by prompt_builders.go ────────────────────────
+
+// buildLanguageLock returns the Language Lock section — must be injected FIRST.
+func buildLanguageLock() string { return extractSection("Language Lock") }
 
 // defaultBehavioralRules returns the Behavioral Rules section.
 func defaultBehavioralRules() string { return extractSection("Behavioral Rules") }
