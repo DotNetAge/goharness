@@ -6,8 +6,9 @@ import (
 	"github.com/DotNetAge/goreact/logging"
 	"github.com/DotNetAge/goreact/memory"
 	"github.com/DotNetAge/goreact/rule"
-	"github.com/DotNetAge/goreact/skill"
 	"github.com/DotNetAge/goreact/session"
+	"github.com/DotNetAge/goreact/skill"
+	"github.com/DotNetAge/goreact/store"
 	"github.com/DotNetAge/goreact/tools"
 )
 
@@ -58,4 +59,23 @@ func WithToolHooks(hh ...hooks.ToolHook) RuntimeConfig {
 // If not set, a NoopTokenUsageStore is used (no usage tracking).
 func WithTokenUsageStore(store session.TokenUsageStore) RuntimeConfig {
 	return func(r *Runtime) { r.tokenUsageStore = store }
+}
+
+// WithKVStore sets the session-scoped key-value storage backend.
+// The store is injected into the ToolContext so task management tools
+// (TaskCreate/TaskGet/TaskUpdate/TaskList) and other KV-aware tools
+// can persist per-session state. If not set, those tools will return
+// "KVStore not available" at execution time.
+func WithKVStore(kv store.KVStore) RuntimeConfig {
+	return func(r *Runtime) { r.kvStore = kv }
+}
+
+// WithResultStore sets the async task result store.
+// The store is injected into the ToolContext so SubAgentTool can persist
+// results of spawned sub-agents and CollectResultsTool can block-wait for
+// them. If not set, CollectResults will return
+// "collect_results tool requires ToolContext with ResultStore" and
+// SubAgent results will not be retrievable.
+func WithResultStore(rs *store.ResultStore) RuntimeConfig {
+	return func(r *Runtime) { r.resultStore = rs }
 }

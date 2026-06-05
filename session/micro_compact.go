@@ -21,6 +21,22 @@ func MicroCompact(messages []Message, keepRecent int) []Message {
 		keepRecent = 1
 	}
 
+	// Build a lookup from tool_call_id -> tool name using the assistant
+	// messages' ToolCalls lists. We prefer this over parsing the tool
+	// message's Content, because the runtime may not always prefix the
+	// result with "[ToolName]" (e.g. when the tool returns a raw string).
+	toolNameByID := make(map[string]string)
+	for _, m := range messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" && tc.Name != "" {
+				toolNameByID[tc.ID] = tc.Name
+			}
+		}
+	}
+
 	var asstIdxs []int
 	for i, m := range messages {
 		if m.Role == "assistant" {
@@ -46,7 +62,21 @@ func MicroCompact(messages []Message, keepRecent int) []Message {
 			continue
 		}
 
-		if !isReadOnlyToolResult(m.Content) {
+		// Resolve the tool name either from the assistant's ToolCalls map
+		// (preferred) or by falling back to the content prefix for legacy
+		// session files that predate the ToolName field.
+		name := toolNameByID[m.ToolCallID]
+		if name == "" {
+			name = parseToolNameFromContent(m.Content)
+		}
+		if name != "" && !IsReadOnlyToolResultName(name) {
+			result = append(result, m)
+			continue
+		}
+		// If we can't determine the name, keep the tool message rather than
+		// drop it blindly — losing it would leave the assistant.ToolCalls
+		// out of sync.
+		if name == "" {
 			result = append(result, m)
 			continue
 		}
@@ -69,10 +99,11 @@ func MicroCompact(messages []Message, keepRecent int) []Message {
 			}
 			if len(kept) != len(result[i].ToolCalls) {
 				result[i] = Message{
-					Role:      result[i].Role,
-					Content:   result[i].Content,
-					Timestamp: result[i].Timestamp,
-					ToolCalls: kept,
+					Role:             result[i].Role,
+					Content:          result[i].Content,
+					ReasoningContent: result[i].ReasoningContent,
+					Timestamp:        result[i].Timestamp,
+					ToolCalls:        kept,
 				}
 			}
 		}
@@ -81,16 +112,19 @@ func MicroCompact(messages []Message, keepRecent int) []Message {
 	return result
 }
 
-func isReadOnlyToolResult(content string) bool {
+func parseToolNameFromContent(content string) string {
 	if len(content) < 3 || content[0] != '[' {
-		return false
+		return ""
 	}
 	end := strings.IndexByte(content, ']')
 	if end == -1 || end == 1 {
-		return false
+		return ""
 	}
-	name := content[1:end]
-	return readOnlyToolNames[name]
+	return content[1:end]
+}
+
+func isReadOnlyToolResult(content string) bool {
+	return IsReadOnlyToolResultName(parseToolNameFromContent(content))
 }
 
 func IsReadOnlyToolResultName(name string) bool {

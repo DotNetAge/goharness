@@ -306,6 +306,86 @@ func TestMicroCompact_PreservesRecentAssistantMessages(t *testing.T) {
 	}
 }
 
+// TestMicroCompact_ReadOnlyByAssistantToolCallName covers the fix for the case
+// where a tool message's Content does NOT start with "[ToolName]" (which happens
+// whenever the tool returns a raw string). The read-only detection should fall
+// back to the tool name resolved from the preceding assistant.ToolCalls list.
+func TestMicroCompact_ReadOnlyByAssistantToolCallName(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "q1"},
+		{
+			Role: "assistant", Content: "a1",
+			ToolCalls: []ToolCall{
+				{ID: "call_r1", Name: "Read", Arguments: "{}"},
+			},
+		},
+		// Tool message whose Content does NOT have the [Read] prefix. Previously
+		// the read-only detection would miss this and never drop it.
+		{Role: "tool", Content: "raw file content", ToolCallID: "call_r1"},
+		{Role: "user", Content: "q2"},
+		{
+			Role: "assistant", Content: "a2",
+			ToolCalls: []ToolCall{
+				{ID: "call_p1", Name: "PowerShell", Arguments: "{}"},
+			},
+		},
+		{Role: "tool", Content: "powershell result", ToolCallID: "call_p1"},
+	}
+
+	compacted := MicroCompact(messages, 1)
+
+	// We keep 1 recent assistant -> keepFromIdx is the index of "a2" -> the
+	// tool message for "call_r1" (Read) is in the dropped section and should
+	// be dropped. The tool message for "call_p1" (PowerShell) is in the
+	// kept section and should be kept.
+	for _, msg := range compacted {
+		if msg.Role == "tool" && msg.ToolCallID == "call_r1" {
+			t.Errorf("Read tool result should be dropped, but it was kept: %+v", msg)
+		}
+	}
+
+	// The assistant message for "a1" (which is in the dropped section, since
+	// keepRecent=1) should have its read-only tool_call removed to keep
+	// the message stream consistent.
+	for _, msg := range compacted {
+		if msg.Role == "assistant" && msg.Content == "a1" {
+			if len(msg.ToolCalls) != 0 {
+				t.Errorf("a1's ToolCalls should be empty after compacting, got %+v", msg.ToolCalls)
+			}
+		}
+	}
+}
+
+// TestMicroCompact_PreservesReasoningContent ensures the post-processing pass
+// that strips dropped tool_calls does NOT lose the assistant's ReasoningContent
+// (used by DeepSeek-R1 / QwQ style thinking models).
+func TestMicroCompact_PreservesReasoningContent(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "q1"},
+		{
+			Role:             "assistant",
+			Content:          "a1",
+			ReasoningContent: "thinking hard about q1",
+			ToolCalls: []ToolCall{
+				{ID: "call_r1", Name: "Read", Arguments: "{}"},
+			},
+		},
+		{Role: "tool", Content: "[Read] ok", ToolCallID: "call_r1"},
+		{Role: "user", Content: "q2"},
+		{Role: "assistant", Content: "a2", ReasoningContent: "thinking about q2"},
+	}
+
+	compacted := MicroCompact(messages, 1)
+
+	for _, msg := range compacted {
+		if msg.Role == "assistant" && msg.Content == "a1" {
+			if msg.ReasoningContent != "thinking hard about q1" {
+				t.Errorf("ReasoningContent was lost during MicroCompact: %+v", msg)
+			}
+		}
+	}
+}
+
 func TestIsReadOnlyTool(t *testing.T) {
 	readOnlyTools := []string{"Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill", "AskUser"}
 	writeTools := []string{"Write", "Bash", "FileEdit"}

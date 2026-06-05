@@ -77,6 +77,7 @@ import (
 	"github.com/DotNetAge/goreact/rule"
 	"github.com/DotNetAge/goreact/session"
 	"github.com/DotNetAge/goreact/skill"
+	"github.com/DotNetAge/goreact/store"
 	"github.com/DotNetAge/goreact/tools"
 )
 
@@ -151,6 +152,19 @@ type Runtime struct {
 	agentReg    *config.AgentRegistry
 	providerReg config.ProviderRegistry
 	toolExec    tools.ToolExecutor
+
+	// kvStore provides session-scoped key-value storage for tools that
+	// need per-session persistence (TaskCreate/TaskGet/TaskUpdate/TaskList).
+	// If nil, those tools return "KVStore not available". Configured via
+	// WithKVStore().
+	kvStore store.KVStore
+
+	// resultStore holds the results of asynchronously executed tools
+	// (currently SubAgent). SubAgentTool stores results here and
+	// CollectResultsTool blocks on it. If nil, CollectResults returns
+	// "collect_results tool requires ToolContext with ResultStore" and
+	// SubAgent results are dropped. Configured via WithResultStore().
+	resultStore *store.ResultStore
 
 	logger    logging.Logger
 	loopHooks []hooks.LoopHook
@@ -313,7 +327,13 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	if r.tokenUsageStore == nil {
 		r.tokenUsageStore = session.NewNoopTokenUsageStore()
 	}
-	r.toolExec = tools.NewToolExecutor(r.toolReg)
+	if r.resultStore == nil {
+		r.resultStore = store.NewResultStore()
+	}
+	r.toolExec = tools.NewToolExecutor(r.toolReg,
+		tools.WithResultStore(r.resultStore),
+		tools.WithKVStore(r.kvStore),
+	)
 	r.registerDefaultTools()
 	r.registerDefaultHooks()
 	return r
@@ -688,6 +708,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			b.session.ProjectDir(),
 			b.session.SessionDir(),
 		)),
+		tools.WithResultStore(rt.resultStore),
+		tools.WithKVStore(rt.kvStore),
 	)
 
 	maxIter := rt.model.MaxTurns
@@ -955,15 +977,34 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		}
 
 		// Persist assistant message (content + reasoning + tool_calls)
+		//
+		// Some LLM providers (DeepSeek, Qwen, local vLLM, etc.) may emit tool
+		// calls without a tool_call_id in their streaming response. OpenAI's
+		// strict message format requires that every tool_call in an assistant
+		// message be followed by a tool message with a matching tool_call_id,
+		// otherwise the next request returns 400 with
+		// "insufficient tool messages following tool_calls message".
+		//
+		// To keep the assistant.ToolCalls list and the subsequently persisted
+		// tool.ToolCallID in sync, we backfill a synthetic ID for any tool call
+		// that arrives without one. The same ID is then used by parseToolInvocations
+		// and executeTools, so the pair is always matched.
 		assistantMsg := session.Message{
 			Role:             "assistant",
 			Content:          content,
 			ReasoningContent: reasoningBuf.String(),
 			Timestamp:        time.Now().Unix(),
 		}
-		for _, tc := range streamToolCalls {
+		for i := range streamToolCalls {
+			if streamToolCalls[i].ID == "" {
+				streamToolCalls[i].ID = "syn_" + session.NewRecordID()
+				logger.Warn("tool call arrived without id; backfilled synthetic id",
+					"session", sid, "iter", iter, "tool", streamToolCalls[i].Name, "id", streamToolCalls[i].ID)
+			}
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, session.ToolCall{
-				ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
+				ID:        streamToolCalls[i].ID,
+				Name:      streamToolCalls[i].Name,
+				Arguments: streamToolCalls[i].Arguments,
 			})
 		}
 		b.session.Append(ctx, assistantMsg)
@@ -996,6 +1037,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// ── Execute tools with hooks ──
 		invocs := parseToolInvocations(streamToolCalls)
+		executed := make(map[string]struct{}, len(invocs))
+		for _, inv := range invocs {
+			executed[inv.ID] = struct{}{}
+		}
 
 		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec)
 
@@ -1015,6 +1060,28 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			b.session.Append(ctx, session.Message{
 				Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 				ToolCallID: tr.ToolCallID,
+			})
+		}
+
+		// Backfill "skipped" tool results for any tool_call that the assistant
+		// message advertised but executeTools did not handle (e.g. an empty Name
+		// or a not-found tool). Without this, the assistant.ToolCalls list
+		// would be out of sync with the tool messages and the next LLM request
+		// would fail with OpenAI's "insufficient tool messages" error.
+		for _, tc := range streamToolCalls {
+			if _, ok := executed[tc.ID]; ok {
+				continue
+			}
+			name := tc.Name
+			if name == "" {
+				name = "<unknown>"
+			}
+			skippedContent := fmt.Sprintf("[%s] skipped: no executor handled this tool_call (id=%s)", name, tc.ID)
+			logger.Warn("tool call skipped, backfilling tool result",
+				"session", sid, "tool", name, "tool_call_id", tc.ID)
+			b.session.Append(ctx, session.Message{
+				Role: "tool", Content: skippedContent, Timestamp: time.Now().Unix(),
+				ToolCallID: tc.ID,
 			})
 		}
 	}
