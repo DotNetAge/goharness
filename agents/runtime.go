@@ -940,8 +940,51 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			totalUsage.Timestamp = time.Now()
 			logger.Info("token usage recorded", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
 		} else {
-			logger.Warn("stream.Usage() returned nil — provider may not support streaming token usage", "session", sid, "iter", iter, "model", rt.model.Name)
-			fmt.Printf("[SSE-TRACE L4] stream.Usage() returned NIL! session=%s, iter=%d, model=%s\n", sid, iter, rt.model.Name)
+			// Fallback: 某些 Provider（如 Qwen/DashScope）流式响应不返回 usage 数据
+			// 基于内容长度估算 token 数量（中英混合约 4 字符/token），确保统计不为 0
+			contentLen := len(contentBuf.String())
+			reasoningLen := len(reasoningBuf.String())
+			estimatedInput := (contentLen + reasoningLen) / 4 // 粗略估算输入（含历史上下文无法精确计算）
+			estimatedOutput := contentLen / 4                 // 输出 token 估算
+			if estimatedOutput < 1 {
+				estimatedOutput = 1 // 至少记录 1 个 output token
+			}
+			estimatedTotal := estimatedInput + estimatedOutput
+
+			logger.Warn("stream.Usage() returned nil — using estimated tokens",
+				"session", sid, "iter", iter, "model", rt.model.Name,
+				"estimated_input", estimatedInput, "estimated_output", estimatedOutput)
+
+			callUsage := session.TokenUsage{
+				Timestamp:    time.Now(),
+				InputTokens:  estimatedInput,
+				OutputTokens: estimatedOutput,
+				TotalTokens:  estimatedTotal,
+			}
+
+			record := session.TokenUsageRecord{
+				ID:               session.NewRecordID(),
+				SessionID:        sid,
+				ConversationID:   conversationID,
+				ModelName:        rt.model.Name,
+				ProviderName:     rt.model.Provider,
+				AgentName:        b.agentName,
+				PromptTokens:     callUsage.InputTokens,
+				CompletionTokens: callUsage.OutputTokens,
+				CachedTokens:     0,
+				ReasoningTokens:  reasoningLen / 4,
+				TotalTokens:      callUsage.TotalTokens,
+				Timestamp:        time.Now(),
+			}
+			if err := rt.tokenUsageStore.Append(ctx, record); err != nil {
+				logger.Error("token usage store Append (estimated) failed", err, "session", sid)
+			} else {
+				emit(events.TokenUsageRecorded, record)
+			}
+			totalUsage.InputTokens += callUsage.InputTokens
+			totalUsage.OutputTokens += callUsage.OutputTokens
+			totalUsage.TotalTokens += callUsage.TotalTokens
+			totalUsage.Timestamp = time.Now()
 		}
 
 		// Build LLM response for hooks from streaming data
@@ -970,6 +1013,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// Handle abort from AfterLLM hook
 		if llmResp.AbortReason != "" {
 			emit(events.FinalAnswer, llmResp.Content)
+			emit(events.TaskSummary, events.TaskSummaryData{
+				Summary:     llmResp.Content,
+				TokenUsage:  totalUsage,
+			})
 			b.resultAnswer = llmResp.Content
 			b.resultTerminationReason = "hook_abort"
 			setIterResult(iter)
@@ -1028,6 +1075,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				b.resultTerminationReason = "completed"
 			}
 			emit(events.FinalAnswer, answer)
+			emit(events.TaskSummary, events.TaskSummaryData{
+				Summary:     answer,
+				TokenUsage:  totalUsage,
+			})
 			b.resultAnswer = answer
 			b.resultIterations = lastIteration
 			b.resultDuration = time.Since(start)
