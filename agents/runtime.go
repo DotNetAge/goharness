@@ -364,10 +364,15 @@ func (rt *Runtime) registerDefaultTools() {
 		{"AskUser", func() tools.FuncTool { return tools.NewAskUserTool() }},
 		{"Ls", func() tools.FuncTool { return tools.NewLsTool() }},
 		{"CollectResults", func() tools.FuncTool { return tools.NewCollectResultsTool() }},
+		{"TaskCreate", func() tools.FuncTool { return tools.NewTaskCreateTool() }},
 		{"TaskList", func() tools.FuncTool { return tools.NewTaskListTool() }},
 		{"TaskGet", func() tools.FuncTool { return tools.NewTaskGetTool() }},
 		{"TaskUpdate", func() tools.FuncTool { return tools.NewTaskUpdateTool() }},
 		{"SubAgent", func() tools.FuncTool { return tools.NewSubAgentTool(rt.spawnSubAgent) }},
+		{"TeamCreate", func() tools.FuncTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }},
+		{"TeamDelete", func() tools.FuncTool { return tools.NewTeamDeleteTool() }},
+		{"TeamList", func() tools.FuncTool { return tools.NewTeamListTool() }},
+		{"TeamGetTasks", func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
 		{"AgentTalk", func() tools.FuncTool { return tools.NewAgentTalkTool(rt.agentTalk) }},
 	}
 	for _, b := range bundled {
@@ -1014,8 +1019,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		if llmResp.AbortReason != "" {
 			emit(events.FinalAnswer, llmResp.Content)
 			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:     llmResp.Content,
-				TokenUsage:  totalUsage,
+				Summary:    llmResp.Content,
+				TokenUsage: totalUsage,
 			})
 			b.resultAnswer = llmResp.Content
 			b.resultTerminationReason = "hook_abort"
@@ -1076,8 +1081,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			}
 			emit(events.FinalAnswer, answer)
 			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:     answer,
-				TokenUsage:  totalUsage,
+				Summary:    answer,
+				TokenUsage: totalUsage,
 			})
 			b.resultAnswer = answer
 			b.resultIterations = lastIteration
