@@ -3,7 +3,7 @@ module github.com/DotNetAge/goreact
 go 1.26
 
 require (
-	github.com/DotNetAge/gochat v0.2.6
+	github.com/DotNetAge/gochat v0.2.7
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/google/uuid v1.6.0
 	gopkg.in/yaml.v3 v3.0.1
