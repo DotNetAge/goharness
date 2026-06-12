@@ -127,11 +127,7 @@ func (r *AgentRegistry) SaveTo(agent *AgentConfig) error {
 		return fmt.Errorf("failed to marshal YAML frontmatter: %w", err)
 	}
 
-	body := agent.Body
-	if body == "" {
-		body = agent.Introduction
-	}
-	content := fmt.Sprintf("---\n%s---\n%s", string(yamlData), body)
+	content := fmt.Sprintf("---\n%s---\n%s", string(yamlData), agent.Introduction)
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}

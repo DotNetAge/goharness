@@ -729,6 +729,23 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// Build tool definitions once (stable across iterations)
 	toolDefs := rt.buildToolDefinitions()
 
+	// If the agent config specifies ExcludeTools, filter them out
+	if rt.agentReg != nil {
+		if cfg := rt.agentReg.Get(b.agentName); cfg != nil && len(cfg.ExcludeTools) > 0 {
+			exclude := make(map[string]struct{}, len(cfg.ExcludeTools))
+			for _, name := range cfg.ExcludeTools {
+				exclude[name] = struct{}{}
+			}
+			filtered := make([]gochatcore.Tool, 0, len(toolDefs))
+			for _, td := range toolDefs {
+				if _, ok := exclude[td.Name]; !ok {
+					filtered = append(filtered, td)
+				}
+			}
+			toolDefs = filtered
+		}
+	}
+
 	// Build system prompt sections once (static per session — none change between rounds)
 	systemSections := rt.buildSystemPrompts(sid, b.session)
 

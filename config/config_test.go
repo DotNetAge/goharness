@@ -16,7 +16,6 @@ func TestAgentConfig_CreationAndValidation(t *testing.T) {
 			Description: "A helpful coding assistant",
 			Model:       "gpt-4",
 			Skills:      []string{"coding", "debugging"},
-			Body:        "This is a test agent body content.",
 		}
 
 		if agent.Name != "test-agent" {
@@ -62,7 +61,7 @@ func TestAgentConfig_CreationAndValidation(t *testing.T) {
 		meta := map[string]any{
 			"version": "1.0.0",
 			"author":  "test",
-			"tags":   []string{"ai", "assistant"},
+			"tags":    []string{"ai", "assistant"},
 		}
 		agent := &AgentConfig{
 			Name: "meta-agent",
@@ -77,20 +76,6 @@ func TestAgentConfig_CreationAndValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("agent config orchestration flags", func(t *testing.T) {
-		agent := &AgentConfig{
-			Name:                "orchestration-agent",
-			EnableOrchestration: true,
-			MaxDecomposeDepth:   5,
-		}
-
-		if !agent.EnableOrchestration {
-			t.Error("expected EnableOrchestration to be true")
-		}
-		if agent.MaxDecomposeDepth != 5 {
-			t.Errorf("expected MaxDecomposeDepth 5, got %d", agent.MaxDecomposeDepth)
-		}
-	})
 }
 
 func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
@@ -184,20 +169,20 @@ func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
 
 	t.Run("complete model config creation", func(t *testing.T) {
 		cfg := ModelConfig{
-			Name:              "gpt-4",
-			Title:             "GPT-4",
-			Description:       "Advanced language model",
-			Provider:          "openai",
-			BaseURL:           "https://api.openai.com/v1",
-			APIKey:            "test-key",
-			MaxTokens:         8192,
-			ContextLength:     128000,
-			FuncCalling:       true,
-			Structuring:       true,
-			TopP:              0.9,
-			Temperature:       0.7,
-			Enabled:           true,
-			MaxTurns:          10,
+			Name:          "gpt-4",
+			Title:         "GPT-4",
+			Description:   "Advanced language model",
+			Provider:      "openai",
+			BaseURL:       "https://api.openai.com/v1",
+			APIKey:        "test-key",
+			MaxTokens:     8192,
+			ContextLength: 128000,
+			FuncCalling:   true,
+			Structuring:   true,
+			TopP:          0.9,
+			Temperature:   0.7,
+			Enabled:       true,
+			MaxTurns:      10,
 		}
 
 		if cfg.Name != "gpt-4" {
@@ -231,10 +216,10 @@ func TestAgentRegistry_CRUDOperations(t *testing.T) {
 	t.Run("save and get agent", func(t *testing.T) {
 		registry, _ := LoadAgentsFrom(tmpDir)
 		agent := &AgentConfig{
-			Name:        "test-get",
-			Role:        "tester",
-			Description: "Test agent for Get operation",
-			Model:       "gpt-4",
+			Name:         "test-get",
+			Role:         "tester",
+			Description:  "Test agent for Get operation",
+			Model:        "gpt-4",
 			Introduction: "This is the introduction text.",
 		}
 
@@ -327,13 +312,12 @@ func TestAgentRegistry_CRUDOperations(t *testing.T) {
 	t.Run("read agent from file", func(t *testing.T) {
 		registry, _ := LoadAgentsFrom(tmpDir)
 		original := &AgentConfig{
-			Name:          "read-test",
-			Role:          "reader",
-			Description:   "For reading test",
-			Model:         "claude-3",
-			Skills:        []string{"reading"},
-			Introduction:  "Original introduction",
-			Body:          "Custom body content",
+			Name:         "read-test",
+			Role:         "reader",
+			Description:  "For reading test",
+			Model:        "claude-3",
+			Skills:       []string{"reading"},
+			Introduction: "Original introduction",
 		}
 
 		err := registry.SaveTo(original)
@@ -347,9 +331,6 @@ func TestAgentRegistry_CRUDOperations(t *testing.T) {
 		}
 		if read.Name != "read-test" {
 			t.Errorf("expected name 'read-test', got '%s'", read.Name)
-		}
-		if read.Body == "" && read.Introduction == "" {
-			t.Error("expected either Body or Introduction to be set")
 		}
 	})
 

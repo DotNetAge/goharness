@@ -23,14 +23,11 @@ type AgentConfig struct {
 	// Skills 列出了 Agent 具备的技能集合，用于能力匹配和任务路由。
 	Skills []string `json:"skills,omitempty" yaml:"skills,omitempty"`
 
+	// ExcludeTools 列出了 Agent 要排除的工具集合（可选），用于任务执行。
+	ExcludeTools []string `json:"exclude_tools,omitempty" yaml:"exclude_tools,omitempty"`
+
 	// Body 存储了 Agent 的详细说明内容，如果为空则使用 Introduction 作为替代。
-	Body string `json:"body,omitempty" yaml:"body,omitempty"`
-
-	// EnableOrchestration 控制是否启用多 Agent 协作编排功能。
-	EnableOrchestration bool `json:"enable_orchestration" yaml:"enable_orchestration"`
-
-	// MaxDecomposeDepth 定义了任务分解的最大深度层级，0 表示不限制。
-	MaxDecomposeDepth int `json:"max_decompose_depth,omitempty" yaml:"max_decompose_depth,omitempty"`
+	// Body string `json:"body,omitempty" yaml:"body,omitempty"`
 
 	// Meta 存储了扩展的元数据键值对，可以用于自定义属性和第三方集成。
 	Meta map[string]any `json:"meta,omitempty" yaml:"meta,omitempty"`
