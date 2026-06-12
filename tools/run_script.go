@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // ---------------------------------------------------------------------------

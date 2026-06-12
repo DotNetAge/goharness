@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 func TestRunScript_Info(t *testing.T) {

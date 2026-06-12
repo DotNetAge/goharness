@@ -3,9 +3,9 @@ package tools
 import (
 	"context"
 
-	"github.com/DotNetAge/goreact/events"
-	"github.com/DotNetAge/goreact/logging"
-	"github.com/DotNetAge/goreact/store"
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/store"
 )
 
 type toolCtxKeyType struct{}

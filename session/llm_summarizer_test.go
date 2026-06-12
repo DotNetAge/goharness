@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/DotNetAge/goreact/config"
+	"github.com/DotNetAge/goharness/config"
 )
 
 func TestNewLLMSummarizer_RequiredModelConfig(t *testing.T) {

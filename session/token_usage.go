@@ -45,7 +45,7 @@ type TokenUsageFilter struct {
 
 // TokenUsageStore is the storage interface for token usage records.
 //
-// GoReact is a development framework — the storage implementation is injected
+// goharness is a development framework — the storage implementation is injected
 // from outside. Implementations may use SQLite, PostgreSQL, or any other backend.
 // An in-memory implementation is provided as a framework fallback default.
 //

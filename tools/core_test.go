@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // mockTool 是用于测试的 FuncTool 模拟实现

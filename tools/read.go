@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/DotNetAge/goreact/events"
-	"github.com/DotNetAge/goreact/store"
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/store"
 )
 
 // Read 实现了文件读取工具。
@@ -21,7 +21,7 @@ import (
 //
 // 安全级别：LevelSafe（安全），只读操作不会修改文件系统
 type Read struct {
-	info   *ToolInfo          // 工具元信息
+	info   *ToolInfo         // 工具元信息
 	limits FileReadingLimits // 文件读取限制配置
 }
 

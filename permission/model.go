@@ -1,6 +1,6 @@
 package permission
 
-import "github.com/DotNetAge/goreact/tools"
+import "github.com/DotNetAge/goharness/tools"
 
 // PermissionResult is an alias for tools.PermissionResult.
 // It represents the result of a permission check operation.

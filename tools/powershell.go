@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 const (

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // LS 实现了目录列表工具。

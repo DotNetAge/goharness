@@ -7,16 +7,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // mockExecutorTool 是用于测试执行器的模拟工具
 type mockExecutorTool struct {
-	name        string
-	result      any
-	err         error
-	execDelay   time.Duration
-	executeFunc func(ctx context.Context, params map[string]any) (any, error)
+	name          string
+	result        any
+	err           error
+	execDelay     time.Duration
+	executeFunc   func(ctx context.Context, params map[string]any) (any, error)
 	maxResultSize int
 }
 
@@ -260,9 +260,9 @@ func TestToolExecutor_ResetCycle(t *testing.T) {
 func TestToolExecutionResult(t *testing.T) {
 	t.Run("成功结果", func(t *testing.T) {
 		result := &ToolExecutionResult{
-			Result:    "test content",
+			Result:   "test content",
 			Duration: 100 * time.Millisecond,
-			ToolName:  "TestTool",
+			ToolName: "TestTool",
 		}
 
 		if result.Result != "test content" {

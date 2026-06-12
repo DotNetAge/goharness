@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/logging"
 	md "github.com/JohannesKaufmann/html-to-markdown"
 )
 
@@ -155,7 +155,7 @@ type SearchOptions struct {
 const searchCacheTTL = 48 * time.Hour
 
 // cacheSessionID is a virtual session ID for KVStore-scoped search cache entries.
-const cacheSessionID = "__goreact_search_cache__"
+const cacheSessionID = "__goharness_search_cache__"
 
 type cachedSearch struct {
 	Results   []SearchResult `json:"results"`

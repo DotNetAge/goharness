@@ -2,8 +2,8 @@ package loop
 
 import (
 	gochatcore "github.com/DotNetAge/gochat/core"
-	"github.com/DotNetAge/goreact/hooks"
-	"github.com/DotNetAge/goreact/memory"
+	"github.com/DotNetAge/goharness/hooks"
+	"github.com/DotNetAge/goharness/memory"
 )
 
 // MemoryThoughtHook retrieves relevant memory records before each LLM call

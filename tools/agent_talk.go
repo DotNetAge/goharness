@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // AgentTalkFunc sends a message to another agent in a specific session and returns the reply.

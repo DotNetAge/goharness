@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // AskUser 实现了用户交互工具。

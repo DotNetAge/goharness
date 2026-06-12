@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
-	"github.com/DotNetAge/goreact/store"
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/store"
 )
 
 // subagentSem 是子代理的并发信号量。

@@ -1,7 +1,7 @@
-# Goreact 项目"工作目录"概念引用归档
+# goharness 项目"工作目录"概念引用归档
 
 > 生成时间: 2026-05-12
-> 搜索范围: /Users/ray/workspaces/ai-ecosystem/goreact
+> 搜索范围: /Users/ray/workspaces/ai-ecosystem/goharness
 
 ---
 
@@ -202,7 +202,7 @@ func DefaultSandboxConfig() *SandboxConfig {
         Profile:      ProfileWorkspace,       // 默认使用 Workspace 模式
         AllowedPaths: []string{cwd},          // 当前工作目录是唯一允许的路径
         AllowNetwork: true,
-        TempDir:      filepath.Join(os.TempDir(), "goreact-sandbox"),
+        TempDir:      filepath.Join(os.TempDir(), "goharness-sandbox"),
     }
 }
 ```
@@ -223,10 +223,10 @@ func RestrictedSandboxConfig(allowedPaths ...string) *SandboxConfig {
 ```
 
 ### 4. 平台特定实现
-| 平台 | 文件 | 相关行号 |
-|------|------|----------|
-| macOS | `sandbox_darwin.go` | L64-65, L69, L128 (`generateWorkspaceProfile`) |
-| Linux | `sandbox_linux.go` | L67, L134, L188, L225 |
+| 平台    | 文件                 | 相关行号                                       |
+| ------- | -------------------- | ---------------------------------------------- |
+| macOS   | `sandbox_darwin.go`  | L64-65, L69, L128 (`generateWorkspaceProfile`) |
+| Linux   | `sandbox_linux.go`   | L67, L134, L188, L225                          |
 | Windows | `sandbox_windows.go` | L26-27, L45 (`applyWindowsWorkspaceIsolation`) |
 
 ---
@@ -292,13 +292,13 @@ func findWorkspace(t *testing.T) string {
 
 ## 六、统计汇总
 
-| 类别 | 数量 |
-|------|------|
-| 中文"工作目录"直接提及 | 1 处 |
-| 英文 "Working Directory" 引用 | 15 处 |
-| `os.Getwd()` 调用 | 12 处 |
-| "workspace"/"Workspace" 引用 | 63 处 |
-| 涉及文件总数 | 约 15 个文件 |
+| 类别                          | 数量         |
+| ----------------------------- | ------------ |
+| 中文"工作目录"直接提及        | 1 处         |
+| 英文 "Working Directory" 引用 | 15 处        |
+| `os.Getwd()` 调用             | 12 处        |
+| "workspace"/"Workspace" 引用  | 63 处        |
+| 涉及文件总数                  | 约 15 个文件 |
 
 ---
 
@@ -339,7 +339,7 @@ func findWorkspace(t *testing.T) string {
 思路1: 将 SessionID 与 工作目录绑定，一个会话就必须与一个工作目录绑定；
 ```
 
-goreact 项目已经具备了以下基础设施支持这一思路：
+goharness 项目已经具备了以下基础设施支持这一思路：
 
 ✅ 已有 SessionID 和 Pwd 在系统提示词中暴露  
 ✅ 已有基于工作目录的安全校验机制  

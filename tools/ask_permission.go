@@ -3,7 +3,7 @@ package tools
 import (
 	"fmt"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 type fallbackPermissionChecker struct{}

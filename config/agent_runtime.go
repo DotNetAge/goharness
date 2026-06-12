@@ -88,7 +88,7 @@ type AgentRuntimeMeta struct {
 //   - LastActive: time.Now()（创建时间）
 func NewAgentRuntimeMeta(config *AgentConfig) *AgentRuntimeMeta {
 	if config == nil {
-		panic("goreact: NewAgentRuntimeMeta called with nil AgentConfig")
+		panic("goharness: NewAgentRuntimeMeta called with nil AgentConfig")
 	}
 	return &AgentRuntimeMeta{
 		Config:     config,

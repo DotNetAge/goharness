@@ -1,12 +1,12 @@
 package action
 
 import (
-	"github.com/DotNetAge/goreact/hooks"
-	"github.com/DotNetAge/goreact/logging"
-	"github.com/DotNetAge/goreact/permission"
-	"github.com/DotNetAge/goreact/rule"
-	"github.com/DotNetAge/goreact/skill"
-	"github.com/DotNetAge/goreact/tools"
+	"github.com/DotNetAge/goharness/hooks"
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/permission"
+	"github.com/DotNetAge/goharness/rule"
+	"github.com/DotNetAge/goharness/skill"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 // TrackerProvider 根据 sessionID 返回对应的文件修改追踪函数。
@@ -21,11 +21,11 @@ type TrackerProvider func(sessionID string) (TrackFunc, bool)
 //
 // Registered hooks:
 //   - PermissionHook (41): Evaluates tool execution permissions via a 3-level chain:
-//                           SkillBasedChecker → RuleBasedChecker → FallbackChecker.
-//                           Denies execution and aborts loop on permission failure.
+//     SkillBasedChecker → RuleBasedChecker → FallbackChecker.
+//     Denies execution and aborts loop on permission failure.
 //   - FileModifyHook (42): Tracks file modifications (Write/FileEdit) by backing up
-//                           files before they are modified. Only active when tracker
-//                           provider is non-nil.
+//     files before they are modified. Only active when tracker
+//     provider is non-nil.
 //   - ToolLoggerHook (46): Logs tool execution start/end when Logger is configured.
 func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegistry, logger logging.Logger, trackerProvider ...TrackerProvider) []hooks.ToolHook {
 	checkers := []tools.ToolPermissionChecker{
@@ -44,9 +44,9 @@ func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegis
 		tp = trackerProvider[0]
 	}
 	fmHook := &FileModifyHook{
-		Logger:           logger,
-		trackerProvider:   tp,
-		priority:         PriorityFileModify,
+		Logger:          logger,
+		trackerProvider: tp,
+		priority:        PriorityFileModify,
 	}
 
 	result := []hooks.ToolHook{
@@ -57,5 +57,3 @@ func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegis
 
 	return result
 }
-
-

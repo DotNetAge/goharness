@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DotNetAge/goreact/skill"
-	"github.com/DotNetAge/goreact/tools"
+	"github.com/DotNetAge/goharness/skill"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 // SkillBasedChecker implements permission checking based on skill definitions.

@@ -1,6 +1,6 @@
 package permission
 
-import "github.com/DotNetAge/goreact/tools"
+import "github.com/DotNetAge/goharness/tools"
 
 // PermissionDecision represents the final decision from a permission chain check.
 // It includes the behavior determination, an optional message, and any

@@ -1,8 +1,8 @@
-# GoReact TODO
+# goharness TODO
 
 ## 架构定位
 
-GoReact = Agent Operating System。所有待办事项基于此定位组织。
+goharness = Agent Operating System。所有待办事项基于此定位组织。
 
 ---
 

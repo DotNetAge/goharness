@@ -1,4 +1,4 @@
-module github.com/DotNetAge/goreact
+module github.com/DotNetAge/goharness
 
 go 1.26
 

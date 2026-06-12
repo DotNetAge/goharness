@@ -17,7 +17,7 @@ import (
 const webFetchCacheTTL = 15 * time.Minute
 
 // webFetchCacheSessionID 是 WebFetch 缓存在 KVStore 中的会话 ID。
-const webFetchCacheSessionID = "__goreact_webfetch_cache__"
+const webFetchCacheSessionID = "__goharness_webfetch_cache__"
 
 // webFetchMaxContentChars 是 WebFetch 返回内容的最大字符数。
 const webFetchMaxContentChars = 50000

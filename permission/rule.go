@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/DotNetAge/goreact/rule"
-	"github.com/DotNetAge/goreact/tools"
+	"github.com/DotNetAge/goharness/rule"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 // MatchResult represents the outcome of a permission rule matching operation.

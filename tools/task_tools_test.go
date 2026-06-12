@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/DotNetAge/goreact/events"
-	"github.com/DotNetAge/goreact/store"
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/store"
 )
 
 func newTestKVStore(t *testing.T) (store.KVStore, func()) {

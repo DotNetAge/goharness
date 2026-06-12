@@ -1,7 +1,8 @@
 package loop
+
 import (
-	"github.com/DotNetAge/goreact/hooks"
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/hooks"
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // LoopLoggerHook logs the start and end of each LLM call in the Think-Act loop.

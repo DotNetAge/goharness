@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/logging"
 )
 
 const (

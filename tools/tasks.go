@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/store"
+	"github.com/DotNetAge/goharness/store"
 )
 
 type TaskStatus string

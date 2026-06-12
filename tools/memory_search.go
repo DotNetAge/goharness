@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DotNetAge/goreact/memory"
+	"github.com/DotNetAge/goharness/memory"
 )
 
 // MemorySearch implements a tool for searching long-term and session memory.

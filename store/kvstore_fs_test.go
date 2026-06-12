@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewFileSystemKVStore(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, err := NewFileSystemKVStore(tmpDir)
@@ -40,7 +40,7 @@ func TestNewFileSystemKVStore_DefaultDir(t *testing.T) {
 }
 
 func TestFileSystemKVStore_SetAndGet(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -64,7 +64,7 @@ func TestFileSystemKVStore_SetAndGet(t *testing.T) {
 }
 
 func TestFileSystemKVStore_Get_NonExistent(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -80,7 +80,7 @@ func TestFileSystemKVStore_Get_NonExistent(t *testing.T) {
 }
 
 func TestFileSystemKVStore_SetWithTTL(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -114,7 +114,7 @@ func TestFileSystemKVStore_SetWithTTL(t *testing.T) {
 }
 
 func TestFileSystemKVStore_SetWithNegativeTTL(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -135,7 +135,7 @@ func TestFileSystemKVStore_SetWithNegativeTTL(t *testing.T) {
 }
 
 func TestFileSystemKVStore_Delete(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -160,7 +160,7 @@ func TestFileSystemKVStore_Delete(t *testing.T) {
 }
 
 func TestFileSystemKVStore_Delete_NonExistent(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -173,7 +173,7 @@ func TestFileSystemKVStore_Delete_NonExistent(t *testing.T) {
 }
 
 func TestFileSystemKVStore_ListKeys(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -199,7 +199,7 @@ func TestFileSystemKVStore_ListKeys(t *testing.T) {
 }
 
 func TestFileSystemKVStore_ListKeys_EmptySession(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -215,7 +215,7 @@ func TestFileSystemKVStore_ListKeys_EmptySession(t *testing.T) {
 }
 
 func TestFileSystemKVStore_ClearSession(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -242,7 +242,7 @@ func TestFileSystemKVStore_ClearSession(t *testing.T) {
 }
 
 func TestFileSystemKVStore_MultipleSessions(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -270,7 +270,7 @@ func TestFileSystemKVStore_MultipleSessions(t *testing.T) {
 }
 
 func TestFileSystemKVStore_SpecialCharactersInKey(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-kv", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-kv", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemKVStore(tmpDir)
@@ -353,7 +353,7 @@ func TestSanitizeKey(t *testing.T) {
 }
 
 func TestNewFileSystemFileStore(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, err := NewFileSystemFileStore(tmpDir)
@@ -366,7 +366,7 @@ func TestNewFileSystemFileStore(t *testing.T) {
 }
 
 func TestFileSystemFileStore_WriteAndReadFile(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)
@@ -398,7 +398,7 @@ func TestFileSystemFileStore_WriteAndReadFile(t *testing.T) {
 }
 
 func TestFileSystemFileStore_ReadFile_NotFound(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)
@@ -415,7 +415,7 @@ func TestFileSystemFileStore_ReadFile_NotFound(t *testing.T) {
 }
 
 func TestFileSystemFileStore_DeleteFile(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)
@@ -437,7 +437,7 @@ func TestFileSystemFileStore_DeleteFile(t *testing.T) {
 }
 
 func TestFileSystemFileStore_ListFiles(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)
@@ -476,7 +476,7 @@ func TestFileSystemFileStore_ListFiles_WithPrefix(t *testing.T) {
 }
 
 func TestFileSystemFileStore_ClearSession(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)
@@ -499,7 +499,7 @@ func TestFileSystemFileStore_ClearSession(t *testing.T) {
 }
 
 func TestFileSystemFileStore_PathTraversalPrevention(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)
@@ -522,7 +522,7 @@ func TestFileSystemFileStore_PathTraversalPrevention(t *testing.T) {
 }
 
 func TestFileSystemFileStore_GetSessionPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "goreact-test-fs", t.Name())
+	tmpDir := filepath.Join(os.TempDir(), "goharness-test-fs", t.Name())
 	defer os.RemoveAll(tmpDir)
 
 	store, _ := NewFileSystemFileStore(tmpDir)

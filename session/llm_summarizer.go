@@ -8,7 +8,7 @@ import (
 	gochat "github.com/DotNetAge/gochat"
 	gochatcore "github.com/DotNetAge/gochat/core"
 
-	"github.com/DotNetAge/goreact/config"
+	"github.com/DotNetAge/goharness/config"
 )
 
 // SummarizerOption 是 LLMSummarizer 的构造选项函数类型

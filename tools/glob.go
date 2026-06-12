@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 const globDefaultTimeout = 30 * time.Second

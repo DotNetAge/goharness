@@ -1,7 +1,7 @@
 package loop
 
 import (
-	"github.com/DotNetAge/goreact/hooks"
+	"github.com/DotNetAge/goharness/hooks"
 )
 
 // ConvergenceHook checks after each loop iteration whether the loop should terminate

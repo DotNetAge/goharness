@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/DotNetAge/goreact/skill"
+	"github.com/DotNetAge/goharness/skill"
 )
 
 // SkillLookupFunc looks up a skill by name and returns it if found.

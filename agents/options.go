@@ -1,15 +1,15 @@
 package agents
 
 import (
-	"github.com/DotNetAge/goreact/config"
-	"github.com/DotNetAge/goreact/hooks"
-	"github.com/DotNetAge/goreact/logging"
-	"github.com/DotNetAge/goreact/memory"
-	"github.com/DotNetAge/goreact/rule"
-	"github.com/DotNetAge/goreact/session"
-	"github.com/DotNetAge/goreact/skill"
-	"github.com/DotNetAge/goreact/store"
-	"github.com/DotNetAge/goreact/tools"
+	"github.com/DotNetAge/goharness/config"
+	"github.com/DotNetAge/goharness/hooks"
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/memory"
+	"github.com/DotNetAge/goharness/rule"
+	"github.com/DotNetAge/goharness/session"
+	"github.com/DotNetAge/goharness/skill"
+	"github.com/DotNetAge/goharness/store"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 type RuntimeConfig func(*Runtime)

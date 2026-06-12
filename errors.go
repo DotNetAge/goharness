@@ -1,10 +1,10 @@
-// Package goreact is the main package for the AI agent framework.
+// Package goharness is the main package for the AI agent framework.
 // It provides unified error definitions aliased from sub-packages for backward compatibility.
-package goreact
+package goharness
 
 import (
-	"github.com/DotNetAge/goreact/memory"
-	"github.com/DotNetAge/goreact/skill"
+	"github.com/DotNetAge/goharness/memory"
+	"github.com/DotNetAge/goharness/skill"
 )
 
 // Skill errors (aliased here for backward compatibility)

@@ -3,7 +3,7 @@ package events
 import (
 	"time"
 
-	"github.com/DotNetAge/goreact/session"
+	"github.com/DotNetAge/goharness/session"
 )
 
 type ExecutionSummaryData struct {

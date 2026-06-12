@@ -3,8 +3,8 @@ package permission
 import (
 	"testing"
 
-	"github.com/DotNetAge/goreact/rule"
-	"github.com/DotNetAge/goreact/tools"
+	"github.com/DotNetAge/goharness/rule"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 func TestRuleMatcher_Match_NoRules(t *testing.T) {

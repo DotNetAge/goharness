@@ -1,24 +1,24 @@
 package tools
 
 import (
-	"github.com/DotNetAge/goreact/events"
-	"github.com/DotNetAge/goreact/logging"
-	"github.com/DotNetAge/goreact/store"
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/store"
 )
 
 // executorConfig 是工具执行器的配置结构体。
 // 包含执行器运行所需的所有依赖和配置项。
 type executorConfig struct {
-	registry          ToolRegistry           // 工具注册表
-	permissionChecker ToolPermissionChecker  // 权限检查器
+	registry          ToolRegistry            // 工具注册表
+	permissionChecker ToolPermissionChecker   // 权限检查器
 	eventEmitter      func(events.ReactEvent) // 事件发射函数
-	resultStore       *store.ResultStore     // 结果存储（用于异步工具）
-	kvStore           store.KVStore          // KV 存储（用于缓存）
-	fileStore         store.FileStore        // 文件存储
-	sessionID         string                 // 会话 ID
-	logger            logging.Logger         // 日志记录器
-	projectDir        string                 // 项目目录
-	sessionDir        string                 // 会话目录
+	resultStore       *store.ResultStore      // 结果存储（用于异步工具）
+	kvStore           store.KVStore           // KV 存储（用于缓存）
+	fileStore         store.FileStore         // 文件存储
+	sessionID         string                  // 会话 ID
+	logger            logging.Logger          // 日志记录器
+	projectDir        string                  // 项目目录
+	sessionDir        string                  // 会话目录
 }
 
 // ExecutorOption 是执行器选项函数类型。

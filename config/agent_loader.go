@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/logging"
 	"gopkg.in/yaml.v3"
 )
 
@@ -68,19 +68,19 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 // parseAgentFile 解析单个 Agent 配置文件，返回解析后的 AgentConfig 对象。
 //
 // 文件格式要求：
-//  - 必须以 "---" 开头（YAML frontmatter 开始标记）
-//  - 必须包含两个 "---" 分隔符（frontmatter 开始和结束）
-//  - frontmatter 部分必须是有效的 YAML 格式
-//  - 两个分隔符之间的内容为 YAML 元数据
-//  - 第二个分隔符之后的内容为正文（Introduction/Body）
+//   - 必须以 "---" 开头（YAML frontmatter 开始标记）
+//   - 必须包含两个 "---" 分隔符（frontmatter 开始和结束）
+//   - frontmatter 部分必须是有效的 YAML 格式
+//   - 两个分隔符之间的内容为 YAML 元数据
+//   - 第二个分隔符之后的内容为正文（Introduction/Body）
 //
 // 支持的字段：
-//  - name (必需): Agent 名称
-//  - role 或 title: Agent 角色（优先使用 role，回退到 title）
-//  - description: 描述信息
-//  - model: 默认模型名称
-//  - skills: 技能列表（数组）
-//  - meta: 扩展元数据（支持 map 或数组格式）
+//   - name (必需): Agent 名称
+//   - role 或 title: Agent 角色（优先使用 role，回退到 title）
+//   - description: 描述信息
+//   - model: 默认模型名称
+//   - skills: 技能列表（数组）
+//   - meta: 扩展元数据（支持 map 或数组格式）
 //
 // 该函数会处理 Windows 换行符（\r\n）并自动转换为 Unix 格式（\n）。
 func parseAgentFile(filePath string) (*AgentConfig, error) {

@@ -3,8 +3,8 @@ package action
 import (
 	"fmt"
 
-	"github.com/DotNetAge/goreact/hooks"
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/hooks"
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // PriorityFileModify is the priority for file modification tracking hooks.
@@ -31,8 +31,8 @@ type TrackFunc func(filePath string) error
 //	PermissionHook(41) → FileModifyHook(42) → ToolLoggerHook(46) → 工具执行
 type FileModifyHook struct {
 	trackerProvider TrackerProvider
-	Logger           logging.Logger
-	priority         int
+	Logger          logging.Logger
+	priority        int
 }
 
 // NewFileModifyHook 创建一个文件修改追踪 Hook。
@@ -43,8 +43,8 @@ type FileModifyHook struct {
 func NewFileModifyHook(provider TrackerProvider, logger logging.Logger) *FileModifyHook {
 	return &FileModifyHook{
 		trackerProvider: provider,
-		Logger:         logger,
-		priority:       PriorityFileModify,
+		Logger:          logger,
+		priority:        PriorityFileModify,
 	}
 }
 

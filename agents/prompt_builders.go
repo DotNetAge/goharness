@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/DotNetAge/goreact/skill"
+	"github.com/DotNetAge/goharness/skill"
 )
 
 // ── Identity ────────────────────────────────────────────────────────────────

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
-	"github.com/DotNetAge/goreact/session"
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/session"
 )
 
 type AskBuilder struct {
@@ -19,7 +19,7 @@ type AskBuilder struct {
 	resultErr error
 
 	resultAnswer            string
-	resultUsage              session.TokenUsage
+	resultUsage             session.TokenUsage
 	resultIterations        int
 	resultDuration          time.Duration
 	resultTerminationReason string
@@ -32,19 +32,25 @@ func (b *AskBuilder) on(typ events.ReactEventType, fn func(data any)) *AskBuilde
 
 func (b *AskBuilder) OnThinking(fn func(chunk string)) *AskBuilder {
 	return b.on(events.ThinkingDelta, func(d any) {
-		if s, ok := d.(string); ok { fn(s) }
+		if s, ok := d.(string); ok {
+			fn(s)
+		}
 	})
 }
 
 func (b *AskBuilder) OnContent(fn func(chunk string)) *AskBuilder {
 	return b.on(events.ContentDelta, func(d any) {
-		if s, ok := d.(string); ok { fn(s) }
+		if s, ok := d.(string); ok {
+			fn(s)
+		}
 	})
 }
 
 func (b *AskBuilder) OnToolUseDelta(fn func(data events.ToolUseDeltaData)) *AskBuilder {
 	return b.on(events.ToolUseDelta, func(d any) {
-		if v, ok := d.(events.ToolUseDeltaData); ok { fn(v) }
+		if v, ok := d.(events.ToolUseDeltaData); ok {
+			fn(v)
+		}
 	})
 }
 
@@ -54,91 +60,121 @@ func (b *AskBuilder) OnThinkingDone(fn func()) *AskBuilder {
 
 func (b *AskBuilder) OnToolStart(fn func(data events.ToolExecStartData)) *AskBuilder {
 	return b.on(events.ToolExecStart, func(d any) {
-		if v, ok := d.(events.ToolExecStartData); ok { fn(v) }
+		if v, ok := d.(events.ToolExecStartData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnToolEnd(fn func(data events.ToolExecEndData)) *AskBuilder {
 	return b.on(events.ToolExecEnd, func(d any) {
-		if v, ok := d.(events.ToolExecEndData); ok { fn(v) }
+		if v, ok := d.(events.ToolExecEndData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnSubtaskSpawned(fn func(data events.SubtaskInfo)) *AskBuilder {
 	return b.on(events.SubtaskSpawned, func(d any) {
-		if v, ok := d.(events.SubtaskInfo); ok { fn(v) }
+		if v, ok := d.(events.SubtaskInfo); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnSubtaskCompleted(fn func(data events.SubtaskResult)) *AskBuilder {
 	return b.on(events.SubtaskCompleted, func(d any) {
-		if v, ok := d.(events.SubtaskResult); ok { fn(v) }
+		if v, ok := d.(events.SubtaskResult); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnAgentTalkStart(fn func(data events.AgentTalkInfo)) *AskBuilder {
 	return b.on(events.AgentTalkStart, func(d any) {
-		if v, ok := d.(events.AgentTalkInfo); ok { fn(v) }
+		if v, ok := d.(events.AgentTalkInfo); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnAgentTalkEnd(fn func(data events.AgentTalkResult)) *AskBuilder {
 	return b.on(events.AgentTalkEnd, func(d any) {
-		if v, ok := d.(events.AgentTalkResult); ok { fn(v) }
+		if v, ok := d.(events.AgentTalkResult); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnPermissionRequest(fn func(data events.PermissionRequestData)) *AskBuilder {
 	return b.on(events.PermissionRequest, func(d any) {
-		if v, ok := d.(events.PermissionRequestData); ok { fn(v) }
+		if v, ok := d.(events.PermissionRequestData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnPermissionDenied(fn func(reason string)) *AskBuilder {
 	return b.on(events.PermissionDenied, func(d any) {
-		if s, ok := d.(string); ok { fn(s) }
+		if s, ok := d.(string); ok {
+			fn(s)
+		}
 	})
 }
 
 func (b *AskBuilder) OnAskUser(fn func(data events.AskUserRequestData)) *AskBuilder {
 	return b.on(events.AskUserRequest, func(d any) {
-		if v, ok := d.(events.AskUserRequestData); ok { fn(v) }
+		if v, ok := d.(events.AskUserRequestData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnExecutionSummary(fn func(data events.ExecutionSummaryData)) *AskBuilder {
 	return b.on(events.ExecutionSummary, func(d any) {
-		if v, ok := d.(events.ExecutionSummaryData); ok { fn(v) }
+		if v, ok := d.(events.ExecutionSummaryData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnCompaction(fn func(data events.CompactionData)) *AskBuilder {
 	return b.on(events.Compaction, func(d any) {
-		if v, ok := d.(events.CompactionData); ok { fn(v) }
+		if v, ok := d.(events.CompactionData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnError(fn func(err string)) *AskBuilder {
 	return b.on(events.Error, func(d any) {
-		if s, ok := d.(string); ok { fn(s) }
+		if s, ok := d.(string); ok {
+			fn(s)
+		}
 	})
 }
 
 func (b *AskBuilder) OnLLMTimeout(fn func(data events.LLMTimeoutData)) *AskBuilder {
 	return b.on(events.LLMTimeout, func(d any) {
-		if v, ok := d.(events.LLMTimeoutData); ok { fn(v) }
+		if v, ok := d.(events.LLMTimeoutData); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnCycleEnd(fn func(data events.CycleInfo)) *AskBuilder {
 	return b.on(events.CycleEnd, func(d any) {
-		if v, ok := d.(events.CycleInfo); ok { fn(v) }
+		if v, ok := d.(events.CycleInfo); ok {
+			fn(v)
+		}
 	})
 }
 
 func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBuilder {
 	return b.on(events.TaskSummary, func(d any) {
-		if v, ok := d.(events.TaskSummaryData); ok { fn(v) }
+		if v, ok := d.(events.TaskSummaryData); ok {
+			fn(v)
+		}
 	})
 }
 
@@ -147,7 +183,9 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 // TokenUsageStore. Use this for real-time token usage tracking in the UI.
 func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)) *AskBuilder {
 	return b.on(events.TokenUsageRecorded, func(d any) {
-		if v, ok := d.(session.TokenUsageRecord); ok { fn(v) }
+		if v, ok := d.(session.TokenUsageRecord); ok {
+			fn(v)
+		}
 	})
 }
 
@@ -165,7 +203,9 @@ func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)
 //	    Run()
 func (b *AskBuilder) OnMaxTurnsReached(fn func(data events.MaxTurnsReachedData)) *AskBuilder {
 	return b.on(events.MaxTurnsReached, func(d any) {
-		if v, ok := d.(events.MaxTurnsReachedData); ok { fn(v) }
+		if v, ok := d.(events.MaxTurnsReachedData); ok {
+			fn(v)
+		}
 	})
 }
 
@@ -186,7 +226,9 @@ func (b *AskBuilder) Cancel() {
 
 func (b *AskBuilder) OnAnswer(fn func(answer string)) *AskBuilder {
 	return b.on(events.FinalAnswer, func(d any) {
-		if s, ok := d.(string); ok { fn(s) }
+		if s, ok := d.(string); ok {
+			fn(s)
+		}
 	})
 }
 

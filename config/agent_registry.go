@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/logging"
 	"gopkg.in/yaml.v3"
 )
 

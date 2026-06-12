@@ -1,12 +1,13 @@
 package action
 
 import (
-	"github.com/DotNetAge/goreact/hooks"
 	"fmt"
 
-	"github.com/DotNetAge/goreact/logging"
-	"github.com/DotNetAge/goreact/permission"
-	"github.com/DotNetAge/goreact/tools"
+	"github.com/DotNetAge/goharness/hooks"
+
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/permission"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 // PermissionHook checks tool execution permissions before allowing tool calls.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // defaultBashTimeoutMs 是 Bash 工具的默认超时时间（毫秒）。
@@ -30,8 +30,8 @@ const maxBashOutputSize = 30000
 //
 // 安全级别：LevelHighRisk（高风险），因为可以执行任意 shell 命令
 type BashTool struct {
-	whitelistEnabled bool             // 是否启用白名单检查
-	customWhitelist  map[string]bool  // 自定义白名单（如果为空则使用默认白名单）
+	whitelistEnabled bool            // 是否启用白名单检查
+	customWhitelist  map[string]bool // 自定义白名单（如果为空则使用默认白名单）
 }
 
 // NewBashTool 创建一个启用默认白名单的 Bash 工具实例。

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DotNetAge/goreact/memory"
+	"github.com/DotNetAge/goharness/memory"
 )
 
 // mockMemory implements memory.Memory for testing

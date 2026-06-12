@@ -1,6 +1,6 @@
 package config
 
-import "github.com/DotNetAge/goreact/logging"
+import "github.com/DotNetAge/goharness/logging"
 
 type agentRegistryOption struct {
 	logger logging.Logger

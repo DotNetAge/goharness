@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/DotNetAge/goreact/logging"
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // DefaultToolRegistry is the default implementation of ToolRegistry.

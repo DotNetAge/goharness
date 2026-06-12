@@ -17,7 +17,7 @@ package tools
 import (
 	"context"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 // FuncTool 定义了工具的基本接口。

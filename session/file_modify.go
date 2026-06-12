@@ -256,7 +256,7 @@ func (s *Session) resolveBackupDir() string {
 	sessionDir := s.SessionDir()
 	if sessionDir == "" {
 		// 无持久化存储时使用临时目录
-		sessionDir = filepath.Join(os.TempDir(), "goreact-backups", s.id)
+		sessionDir = filepath.Join(os.TempDir(), "goharness-backups", s.id)
 	}
 	backupDir := filepath.Join(sessionDir, "backup")
 	os.MkdirAll(backupDir, 0755)

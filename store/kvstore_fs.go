@@ -31,7 +31,7 @@ type FileSystemKVStore struct {
 // Creates the base directory if it doesn't exist.
 func NewFileSystemKVStore(baseDir string) (*FileSystemKVStore, error) {
 	if baseDir == "" {
-		baseDir = filepath.Join(os.TempDir(), "goreact", "kvstore")
+		baseDir = filepath.Join(os.TempDir(), "goharness", "kvstore")
 	}
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create KVStore base directory: %w", err)
@@ -167,7 +167,7 @@ type FileSystemFileStore struct {
 // Creates the base directory if it doesn't exist.
 func NewFileSystemFileStore(baseDir string) (*FileSystemFileStore, error) {
 	if baseDir == "" {
-		baseDir = filepath.Join(os.TempDir(), "goreact", "filestore")
+		baseDir = filepath.Join(os.TempDir(), "goharness", "filestore")
 	}
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create FileStore base directory: %w", err)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 func mustAbs(t *testing.T, path string) string {
@@ -285,7 +285,7 @@ func TestWrite(t *testing.T) {
 	write := NewWriteTool()
 
 	t.Run("write to temp file", func(t *testing.T) {
-		testFile := "goreact_test_write.txt"
+		testFile := "goharness_test_write.txt"
 		result, err := write.Execute(context.Background(), map[string]any{
 			"path":    testFile,
 			"content": "hello world",
@@ -304,7 +304,7 @@ func TestWrite(t *testing.T) {
 	})
 
 	t.Run("append to file", func(t *testing.T) {
-		testFile := "goreact_test_append.txt"
+		testFile := "goharness_test_append.txt"
 		write.Execute(context.Background(), map[string]any{"path": testFile, "content": "line1\n"})
 		result, err := write.Execute(context.Background(), map[string]any{
 			"path":    testFile,

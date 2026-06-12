@@ -1,6 +1,6 @@
 package events
 
-import "github.com/DotNetAge/goreact/session"
+import "github.com/DotNetAge/goharness/session"
 
 type TaskSummaryData struct {
 	Summary    string             `json:"summary"`

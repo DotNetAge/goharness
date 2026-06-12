@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"github.com/DotNetAge/goreact/events"
+	"github.com/DotNetAge/goharness/events"
 )
 
 func TestFallbackPermissionChecker_AllowSafeTool(t *testing.T) {

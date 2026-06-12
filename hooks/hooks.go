@@ -7,7 +7,7 @@ import (
 	"time"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
-	"github.com/DotNetAge/goreact/session"
+	"github.com/DotNetAge/goharness/session"
 )
 
 // Hook priority constants define the execution order of hooks.

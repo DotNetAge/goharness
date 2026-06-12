@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/DotNetAge/goreact/events"
+import "github.com/DotNetAge/goharness/events"
 
 // ToolRegistry manages the registration and discovery of FuncTool instances.
 // This is a DYNAMIC registry: tools can be registered/unregistered at runtime
