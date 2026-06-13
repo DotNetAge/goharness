@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// FileEditTool 实现了文件编辑工具。
+// EditTool 实现了文件编辑工具。
 // 支持通过精确字符串匹配进行文件内容替换，具有以下特性：
 //   - 精确匹配：必须完全匹配 old_string 才会替换
 //   - 多种替换模式：单次、全部、限制次数
@@ -19,20 +19,20 @@ import (
 //   - 修改已有文件的小部分内容
 //   - 变量重命名（使用 replace_all）
 //   - 代码重构（使用 limit 控制范围）
-type FileEditTool struct{}
+type EditTool struct{}
 
-// NewFileEditTool 创建一个 FileEditTool 实例。
+// NewEditTool 创建一个 EditTool 实例。
 //
 // 返回：
-//   - FuncTool: 配置好的 FileEditTool 实例
-func NewFileEditTool() FuncTool {
-	return &FileEditTool{}
+//   - FuncTool: 配置好的 EditTool 实例
+func NewEditTool() FuncTool {
+	return &EditTool{}
 }
 
-// Info 返回 FileEditTool 的元信息。
-func (t *FileEditTool) Info() *ToolInfo {
+// Info 返回 EditTool 的元信息。
+func (t *EditTool) Info() *ToolInfo {
 	return &ToolInfo{
-		Name:        "FileEdit",
+		Name:        "Edit",
 		Description: "Edit files by replacing exact strings.",
 		Prompt: `Performs exact string replacements in files.
 
@@ -111,7 +111,7 @@ Usage:
 // 返回：
 //   - string: 成功消息，包含文件路径和作用域
 //   - error: 参数错误、验证失败或 I/O 错误
-func (t *FileEditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	filePath, err := ValidateRequiredString(params, "path")
 	if err != nil {
 		return nil, err

@@ -356,7 +356,7 @@ func (rt *Runtime) registerDefaultTools() {
 		{"Glob", func() tools.FuncTool { return tools.NewGlobTool() }},
 		{"Read", func() tools.FuncTool { return tools.NewReadTool() }},
 		{"Write", func() tools.FuncTool { return tools.NewWriteTool() }},
-		{"FileEdit", func() tools.FuncTool { return tools.NewFileEditTool() }},
+		{"Edit", func() tools.FuncTool { return tools.NewEditTool() }},
 		{"Bash", func() tools.FuncTool { return tools.NewBashTool() }},
 		{"RunScript", func() tools.FuncTool { return tools.NewRunScriptTool() }},
 		{"WebSearch", func() tools.FuncTool { return tools.NewWebSearchTool() }},
@@ -374,6 +374,7 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TeamList", func() tools.FuncTool { return tools.NewTeamListTool() }},
 		{"TeamGetTasks", func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
 		{"AgentTalk", func() tools.FuncTool { return tools.NewAgentTalkTool(rt.agentTalk) }},
+		{"Sleep", func() tools.FuncTool { return tools.NewSleepTool() }},
 	}
 	for _, b := range bundled {
 		if t := b.factory(); t != nil {

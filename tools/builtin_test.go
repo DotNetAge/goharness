@@ -691,7 +691,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 		content := "apple banana apple cherry apple\n"
 		os.WriteFile(filePath, []byte(content), 0644)
 
-		edit := &FileEditTool{}
+		edit := &EditTool{}
 		_, err = edit.Execute(context.Background(), map[string]any{
 			"path":        filePath,
 			"old_string":  "apple",
@@ -713,7 +713,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 		filePath := filepath.Join(dir, "empty_old.txt")
 		os.WriteFile(filePath, []byte("some content"), 0644)
 
-		edit := &FileEditTool{}
+		edit := &EditTool{}
 		_, err = edit.Execute(context.Background(), map[string]any{
 			"path":       filePath,
 			"old_string": "",
@@ -729,7 +729,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 		original := "hello world foo bar\n"
 		os.WriteFile(filePath, []byte(original), 0644)
 
-		edit := &FileEditTool{}
+		edit := &EditTool{}
 
 		edit.Execute(context.Background(), map[string]any{
 			"path":       filePath,

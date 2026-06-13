@@ -80,6 +80,7 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 //   - description: 描述信息
 //   - model: 默认模型名称
 //   - skills: 技能列表（数组）
+//   - exclude_tools: 要排除的工具列表（数组）
 //   - meta: 扩展元数据（支持 map 或数组格式）
 //
 // 该函数会处理 Windows 换行符（\r\n）并自动转换为 Unix 格式（\n）。
@@ -149,6 +150,13 @@ func parseAgentFile(filePath string) (*AgentConfig, error) {
 		for _, s := range skillsList {
 			if str, ok := s.(string); ok {
 				agent.Skills = append(agent.Skills, str)
+			}
+		}
+	}
+	if excludeList, ok := meta["exclude_tools"].([]any); ok {
+		for _, e := range excludeList {
+			if str, ok := e.(string); ok {
+				agent.ExcludeTools = append(agent.ExcludeTools, str)
 			}
 		}
 	}

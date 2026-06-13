@@ -134,7 +134,7 @@ func TestExtractFilePath(t *testing.T) {
 
 func TestFileModifyingTools_Set(t *testing.T) {
 	// 验证 Write 和 FileEdit 在集合中
-	for _, name := range []string{"Write", "FileEdit"} {
+	for _, name := range []string{"Write", "Edit"} {
 		if !fileModifyingTools[name] {
 			t.Errorf("工具 %q 应在 fileModifyingTools 集合中", name)
 		}

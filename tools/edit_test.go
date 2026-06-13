@@ -20,7 +20,7 @@ func TestEdit(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       filePath,
@@ -71,7 +71,7 @@ func TestEdit(t *testing.T) {
 }
 
 func TestEditFileNotFound(t *testing.T) {
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       "./nonexistent/file.txt",
@@ -98,7 +98,7 @@ func TestEditWithSpecialCharacters(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       filePath,
@@ -131,7 +131,7 @@ func TestEditUnicodeContent(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       filePath,
@@ -163,7 +163,7 @@ func TestEditEmptyFile(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       filePath,
@@ -190,7 +190,7 @@ func TestEditReplaceAll(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":        filePath,
@@ -224,7 +224,7 @@ func TestEditLimit(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       filePath,
@@ -258,7 +258,7 @@ func TestEditStringNotFound(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"path":       filePath,
@@ -273,7 +273,7 @@ func TestEditStringNotFound(t *testing.T) {
 }
 
 func TestEditMissingPath(t *testing.T) {
-	edit := &FileEditTool{}
+	edit := &EditTool{}
 	ctx := context.Background()
 	params := map[string]any{
 		"old_string": "foo",

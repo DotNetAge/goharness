@@ -131,8 +131,11 @@ func parseSimpleYaml(yaml string, fm *skillFrontmatter) error {
 					parseInlineMap(value, fm.Metadata)
 				}
 			default:
+			if currentMapKey == "metadata" && fm.Metadata != nil {
+				fm.Metadata[key] = value
 			}
-		} else if currentMapKey != "" && (strings.HasPrefix(rawLine, "  ") || strings.Contains(line, ":")) {
+		}
+	} else if currentMapKey != "" && (strings.HasPrefix(rawLine, "  ") || strings.Contains(line, ":")) {
 			if subIdx := strings.Index(line, ":"); subIdx > 0 {
 				subKey := strings.TrimSpace(line[:subIdx])
 				subVal := strings.TrimSpace(line[subIdx+1:])
@@ -231,7 +234,22 @@ func loadSkillFromDir(dir string, source string) (*Skill, error) {
 		}
 		return nil, fmt.Errorf("failed to read SKILL.md: %w", err)
 	}
-	return parseSkillMd(data, dir, source)
+	skill, err := parseSkillMd(data, dir, source)
+	if err != nil {
+		return nil, err
+	}
+
+	// If a LICENSE.txt file exists in the skill directory, read its full content
+	// into the License field (overrides any license: value from YAML frontmatter)
+	licensePath := filepath.Join(dir, "LICENSE.txt")
+	if _, err := os.Stat(licensePath); err == nil {
+		licenseData, readErr := os.ReadFile(licensePath)
+		if readErr == nil {
+			skill.License = string(licenseData)
+		}
+	}
+
+	return skill, nil
 }
 
 func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {

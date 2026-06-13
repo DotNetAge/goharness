@@ -388,7 +388,7 @@ func TestMicroCompact_PreservesReasoningContent(t *testing.T) {
 
 func TestIsReadOnlyTool(t *testing.T) {
 	readOnlyTools := []string{"Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill", "AskUser"}
-	writeTools := []string{"Write", "Bash", "FileEdit"}
+	writeTools := []string{"Write", "Bash", "Edit"}
 
 	for _, tool := range readOnlyTools {
 		if !IsReadOnlyTool(tool) {

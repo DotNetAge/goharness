@@ -37,11 +37,11 @@ func NewFileBoundaryChecker(projectDir, sessionDir string) ToolPermissionChecker
 //   - 敏感文件保护（ValidateFileSafety → checkSensitiveFiles）
 func (c *FileBoundaryChecker) CheckPermissions(ctx *ToolUseContext) PermissionResult {
 	// 只处理文件操作工具
-	if ctx.ToolName != "Write" && ctx.ToolName != "FileEdit" {
+	if ctx.ToolName != "Write" && ctx.ToolName != "Edit" {
 		return PermissionResult{Behavior: PermissionAllow}
 	}
 
-	// 提取路径参数（Write 用 "path"，FileEdit 用 "path"）
+	// 提取路径参数（Write 用 "path"，Edit 用 "path"）
 	path, _ := ctx.Params["path"].(string)
 	if path == "" {
 		return PermissionResult{Behavior: PermissionAllow}
