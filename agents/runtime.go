@@ -1338,26 +1338,20 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	}
 	msgs = append(msgs, gochatcore.NewSystemMessage("## Behavioral Rules\n"+rules))
 
-	// 4. Tool usage guidelines
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildToolUsageGuidelines()))
-
-	// 5. Tone & style
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildToneAndStyle()))
-
-	// 6. Environment info
+	// 4. Environment info
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildEnvironmentInfo(environmentInfoParams{
 		SessionID:  sessionID,
 		SessionDir: s.SessionDir(),
 		ProjectDir: s.ProjectDir(),
 	})))
 
-	// 7. System reminders
+	// 5. System reminders
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildSystemReminders()))
 
-	// 8. Dynamic boundary (KV cache split point)
+	// 6. Dynamic boundary (KV cache split point)
 	msgs = append(msgs, gochatcore.NewSystemMessage("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"))
 
-	// 9. Output efficiency (dynamic section)
+	// 7. Output efficiency (dynamic section)
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildOutputEfficiency()))
 
 	return msgs
