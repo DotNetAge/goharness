@@ -216,7 +216,8 @@ func (l *FileSystemSkillLoader) Load() ([]*Skill, error) {
 		skillDir := filepath.Join(l.RootDir, entry.Name())
 		skill, err := loadSkillFromDir(skillDir, "filesystem")
 		if err != nil {
-			return nil, fmt.Errorf("failed to load skill from %q: %w", skillDir, err)
+			fmt.Fprintf(os.Stderr, "[skill loader] warning: skipping %q: %v\n", skillDir, err)
+			continue
 		}
 		if skill != nil {
 			skills = append(skills, skill)
