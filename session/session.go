@@ -748,3 +748,35 @@ func (s *Session) Reset() {
 	s.messages = make([]Message, 0)
 	s.cursor = 0
 }
+
+// Truncate removes all messages at and after the given index, keeping
+// only the first keepCount messages. This is used for retry scenarios
+// where the last exchange needs to be undone before resending.
+//
+// The cursor is also adjusted if it points beyond the truncated boundary.
+// Changes are persisted to the SessionStore if one is configured.
+func (s *Session) Truncate(ctx context.Context, keepCount int) error {
+	s.ensureLoaded(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if keepCount < 0 {
+		return fmt.Errorf("keepCount must be >= 0, got %d", keepCount)
+	}
+	if keepCount >= len(s.messages) {
+		return nil // nothing to truncate
+	}
+
+	s.messages = s.messages[:keepCount]
+	if s.cursor > keepCount {
+		s.cursor = keepCount
+	}
+
+	if s.store != nil {
+		if err := s.store.Truncate(ctx, s.id, keepCount); err != nil {
+			return fmt.Errorf("store truncate failed: %w", err)
+		}
+	}
+
+	return nil
+}

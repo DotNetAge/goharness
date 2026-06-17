@@ -94,6 +94,9 @@ type SessionStore interface {
 	// ModifyFiles persistence for file change tracking
 	SaveModifyFiles(sessionID string, files []string) error
 	GetModifyFiles(sessionID string) ([]string, error)
+
+		// Truncate removes messages after keepCount, keeping only the first keepCount messages.
+		Truncate(ctx context.Context, sessionID string, keepCount int) error
 }
 
 // Cursor persistence for compaction state recovery.

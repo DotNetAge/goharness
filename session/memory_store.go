@@ -308,3 +308,18 @@ func (s *MemorySessionStore) GetModifyFiles(sessionID string) ([]string, error) 
 	copy(out, files)
 	return out, nil
 }
+
+func (s *MemorySessionStore) Truncate(_ context.Context, sessionID string, keepCount int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs, ok := s.store[sessionID]
+	if !ok {
+		return nil
+	}
+	if keepCount >= len(msgs) {
+		return nil
+	}
+	s.store[sessionID] = msgs[:keepCount]
+	return nil
+}
