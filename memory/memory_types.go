@@ -34,14 +34,15 @@ const (
 
 // MemoryRecord represents a single memory entry with metadata.
 type MemoryRecord struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id,omitempty"`
-	Type      MemoryType `json:"type"`
-	Title     string     `json:"title"`
-	Content   string     `json:"content"`
-	Tags      []string   `json:"tags,omitempty"`
-	Score     float64    `json:"score,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        string            `json:"id"`
+	SessionID string            `json:"session_id,omitempty"`
+	Type      MemoryType        `json:"type"`
+	Title     string            `json:"title"`
+	Content   string            `json:"content"`
+	Tags      []string          `json:"tags,omitempty"`
+	Score     float64           `json:"score,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	Metadata  map[string]any    `json:"metadata,omitempty"` // 扩展元数据（来自 Hit/Chunk.Metadata）
 }
 
 // Memory defines the interface for memory storage and retrieval operations.
