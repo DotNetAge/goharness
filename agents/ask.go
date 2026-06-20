@@ -18,6 +18,11 @@ type AskBuilder struct {
 	onEvent   map[events.ReactEventType][]func(data any)
 	resultErr error
 
+	// parentEmit forwards ReactEvent to the parent EventBus.
+	// When set (sub-agent), all events from this execution are also
+	// emitted to the parent, enabling cross-agent event visibility.
+	parentEmit func(events.ReactEvent)
+
 	resultAnswer            string
 	resultUsage             session.TokenUsage
 	resultIterations        int

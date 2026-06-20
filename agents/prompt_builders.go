@@ -101,13 +101,18 @@ func buildSkillsCatalog(skills []*skill.Skill) string {
 const directorySemanticsPrompt = "## File Operation Guidelines\n\n" +
 	"You have two workspaces:\n\n" +
 	"### Project Directory (%s)\n" +
-	"**Persistent \u2014 files survive after session ends.**\n" +
-	"Use for: source code, configs, docs, anything user expects to keep long-term.\n\n" +
+	"**Default workspace — files persist permanently.**\n" +
+	"Use for: source code, configs, docs, and all outputs the user may want to keep or review later.\n" +
+	"Most of your work (reading, writing, creating files) should happen here unless there's a\n" +
+	"strong reason not to.\n\n" +
 	"### Session Directory (%s)\n" +
-	"**Ephemeral sandbox \u2014 temporary workspace for this conversation only.**\n" +
-	"Use for: drafts, reports, analysis, temp files, artifacts generated during this chat.\n\n" +
+	"**Ephemeral temp space — deleted when the conversation ends.**\n" +
+	"Use ONLY for: one-off throwaway outputs, intermediate scratch files, quick experiments\n" +
+	"that have no value beyond this chat.\n\n" +
 	"### Quick Rules\n" +
-	"- Modifying user's existing files? \u2192 Project Dir | Your outputs? \u2192 Session Dir | Unsure? \u2192 default to Session\n" +
+	"- Modifying user's existing files? \u2192 Project Dir | Producing something useful? \u2192 Project Dir\n" +
+	"- Truly temporary scratch (drafts, experiments)? \u2192 Session Dir\n" +
+	"- Unsure? \u2192 default to **Project Dir** — it is safer to persist than to lose work\n" +
 	"- Path syntax: relative paths \u2192 Project Dir | `session:<path>` \u2192 Session Dir\n" +
 	"- Never overwrite Project files without reading them first\n"
 

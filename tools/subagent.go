@@ -120,9 +120,8 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	taskID := fmt.Sprintf("subagent-%d", t.counter.Add(1))
 
 	tc.EmitEvent(events.ReactEvent{
-		AgentID: "main",
-		Type:    events.SubtaskSpawned,
-		Data:    map[string]any{"task_id": taskID, "agent_name": agentName, "task": task},
+		Type: events.SubtaskSpawned,
+		Data: map[string]any{"task_id": taskID, "agent_name": agentName, "task": task},
 	})
 
 	// Run sub-agent in background

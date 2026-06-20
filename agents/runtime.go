@@ -463,6 +463,10 @@ func (rt *Runtime) agentTalk(ctx context.Context, to, sessionID, message string)
 	return result.Answer, nil
 }
 
+// parentEmitKey is a context key for passing the parent EventBus emitter
+// from a parent exec() to its sub-agents, enabling cross-agent event forwarding.
+type parentEmitKeyType struct{}
+
 // ── SubAgent: async task delegation ────────────────────────────────────────────
 
 // spawnSubAgent implements SpawnFunc for creating and running sub-agents.
@@ -488,7 +492,13 @@ func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (s
 		"agent_name", agentName,
 	)
 
-	result, err := rt.Ask(agentName, task, sess).Run()
+	builder := rt.Ask(agentName, task, sess)
+	// Forward this sub-agent's events to the parent EventBus
+	// so clients subscribed to the parent can see all agent events.
+	if pe, ok := ctx.Value(parentEmitKeyType{}).(func(events.ReactEvent)); ok {
+		builder.parentEmit = pe
+	}
+	result, err := builder.Run()
 	if err != nil {
 		return "", fmt.Errorf("sub-agent %q: %w", agentName, err)
 	}
@@ -665,6 +675,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// Event bus
 	eb := events.NewEventBus()
 	_, cancel := eb.SubscribeFiltered(func(ev events.ReactEvent) bool {
+		// Forward to parent EventBus if this is a sub-agent,
+		// enabling client-side visibility across agent boundaries.
+		if b.parentEmit != nil {
+			b.parentEmit(ev)
+		}
 		if handlers, ok := b.onEvent[ev.Type]; ok {
 			for _, h := range handlers {
 				h(ev.Data)
@@ -675,8 +690,19 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	defer cancel()
 
 	emit := func(typ events.ReactEventType, data any) {
-		eb.Emit(events.NewReactEvent(sid, "", "", typ, data))
+		eb.Emit(events.ReactEvent{
+			SessionID: sid,
+			AgentID:   b.agentName,
+			Type:      typ,
+			Data:      data,
+			Timestamp: time.Now().UnixMilli(),
+		})
 	}
+	// Store parent EventBus emitter in context so sub-agents (spawnSubAgent)
+	// can retrieve it and forward their events to the parent's EventBus.
+	ctx = context.WithValue(ctx, parentEmitKeyType{}, func(ev events.ReactEvent) {
+		eb.Emit(ev)
+	})
 	conversationID := session.NewRecordID()
 	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
 	defer func() {
