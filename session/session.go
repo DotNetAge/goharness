@@ -34,65 +34,15 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/DotNetAge/goharness/memory"
 )
-
-// inMemoryMemory provides an in-memory implementation of MemoryStore for development
-// and testing purposes. For production use, consider implementing a persistent backend.
-type inMemoryMemory struct {
-	mu   sync.RWMutex
-	data map[string][]string
-}
-
-// newInMemoryMemory creates a new in-memory store initialized with an empty data map.
-func newInMemoryMemory() *inMemoryMemory {
-	return &inMemoryMemory{data: make(map[string][]string)}
-}
-
-// Store saves content to the memory store under the given session ID.
-// Content is appended to existing entries for the same session.
-// This operation is thread-safe.
-func (m *inMemoryMemory) Store(_ context.Context, sessionID, title, content string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.data[sessionID] = append(m.data[sessionID], content)
-	return nil
-}
-
-// Retrieve fetches stored content for a session, limited to the most recent `limit` entries.
-// Returns nil if no content exists for the session.
-// This operation is thread-safe and does not block writes.
-func (m *inMemoryMemory) Retrieve(_ context.Context, query, sessionID string, limit int) ([]string, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	all := m.data[sessionID]
-	if len(all) == 0 {
-		return nil, nil
-	}
-	if len(all) > limit {
-		out := make([]string, limit)
-		copy(out, all[len(all)-limit:])
-		return out, nil
-	}
-	out := make([]string, len(all))
-	copy(out, all)
-	return out, nil
-}
-
-// MemoryStore defines the interface for storing and retrieving session memory/summaries.
-// Implementations can use various backends (Redis, database, file system, etc.)
-//
-// The Store method is called during compaction to persist context summaries,
-// while Retrieve can be used to load historical context when needed.
-type MemoryStore interface {
-	// Store persists content (typically a summary) associated with a session.
-	Store(ctx context.Context, sessionID, title, content string) error
-
-	// Retrieve loads content for a session, returning up to `limit` most recent entries.
-	Retrieve(ctx context.Context, query, sessionID string, limit int) ([]string, error)
-}
 
 // SessionConfig is a functional option for configuring Session instances.
 // This pattern allows for flexible, readable configuration without breaking changes
@@ -536,11 +486,10 @@ func (s *Session) tryCompact(ctx context.Context) {
 
 	if plan.shouldCompact {
 
-		var summary string
 		if s.summarizer != nil && plan.messagesToSlide > 0 {
 			slided := s.getMessagesToSlide(plan)
-			summary = s.generateSummary(ctx, slided)
-			s.persistSummary(ctx, summary)
+			chunks := s.generateSummary(ctx, slided)
+			s.persistSummary(ctx, chunks)
 		}
 
 		s.executeCompactionPlan(plan)
@@ -655,26 +604,38 @@ func (s *Session) getMessagesToSlide(plan compactionPlan) []Message {
 }
 
 // generateSummary calls the summarizer outside of any locks to prevent deadlocks.
-func (s *Session) generateSummary(ctx context.Context, messages []Message) string {
+func (s *Session) generateSummary(ctx context.Context, messages []Message) []memory.MemoryChunk {
 	if s.summarizer == nil || len(messages) == 0 {
-		return ""
+		return nil
 	}
 
-	summary, err := s.summarizer.Summarize(ctx, messages)
-	if err != nil || summary == "" {
-		return ""
+	chunks, err := s.summarizer.Summarize(ctx, messages)
+	if err != nil || len(chunks) == 0 {
+		return nil
 	}
 
-	return summary
+	// Enrich chunks with agent name, session ID, and timestamp
+	now := time.Now()
+	for i := range chunks {
+		chunks[i].AgentName = s.agentName
+		chunks[i].SessionID = s.id
+		chunks[i].Timestamp = now
+		if chunks[i].ID == "" && chunks[i].Content != "" {
+			h := sha256.Sum256([]byte(chunks[i].Content))
+			chunks[i].ID = hex.EncodeToString(h[:])
+		}
+	}
+
+	return chunks
 }
 
-// persistSummary stores the generated summary in the memory store.
-func (s *Session) persistSummary(ctx context.Context, summary string) {
-	if s.mem == nil || summary == "" {
+// persistSummary stores the generated memory chunks in the memory store.
+func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChunk) {
+	if s.mem == nil || len(chunks) == 0 {
 		return
 	}
 
-	_ = s.mem.Store(ctx, s.id, "context summary", summary)
+	_ = s.mem.StoreChunks(ctx, s.id, chunks)
 }
 
 // executeCompactionPlan applies the compaction plan under write lock with CAS semantics.

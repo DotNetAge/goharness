@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DotNetAge/goharness/memory"
 )
 
 func TestNewSession_BasicCreation(t *testing.T) {
@@ -154,9 +156,11 @@ func TestSession_ConcurrentAccess(t *testing.T) {
 func TestSession_WithMaxWindowSize(t *testing.T) {
 	summarizerCalled := false
 	mockSummarizer := &mockSummarizer{
-		SummarizeFunc: func(ctx context.Context, msgs []Message) (string, error) {
+		SummarizeFunc: func(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error) {
 			summarizerCalled = true
-			return "summary of old messages", nil
+			return []memory.MemoryChunk{
+				{Summary: "summary of old messages", Content: "compacted content"},
+			}, nil
 		},
 	}
 
@@ -210,28 +214,27 @@ func TestSession_SetCompactionHandler(t *testing.T) {
 }
 
 type mockSummarizer struct {
-	SummarizeFunc func(ctx context.Context, msgs []Message) (string, error)
+	SummarizeFunc func(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error)
 }
 
-func (m *mockSummarizer) Summarize(ctx context.Context, msgs []Message) (string, error) {
+func (m *mockSummarizer) Summarize(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error) {
 	if m.SummarizeFunc != nil {
 		return m.SummarizeFunc(ctx, msgs)
 	}
-	return "", nil
+	return nil, nil
 }
 
 func TestInMemoryMemory_StoreAndRetrieve(t *testing.T) {
 	store := newInMemoryMemory()
 	ctx := context.Background()
 
-	err := store.Store(ctx, "session-1", "title-1", "content-1")
-	if err != nil {
-		t.Fatalf("Store() unexpected error: %v", err)
+	chunks := []memory.MemoryChunk{
+		{Summary: "title-1", Content: "content-1", Tags: []string{}},
+		{Summary: "title-2", Content: "content-2", Tags: []string{}},
 	}
-
-	err = store.Store(ctx, "session-1", "title-2", "content-2")
+	err := store.StoreChunks(ctx, "session-1", chunks)
 	if err != nil {
-		t.Fatalf("Store() second call unexpected error: %v", err)
+		t.Fatalf("StoreChunks() unexpected error: %v", err)
 	}
 
 	results, err := store.Retrieve(ctx, "", "session-1", 10)
@@ -243,7 +246,7 @@ func TestInMemoryMemory_StoreAndRetrieve(t *testing.T) {
 		t.Errorf("Retrieve() returned %d items, want 2", len(results))
 	}
 
-	if results[0] != "content-1" || results[1] != "content-2" {
+	if results[0].Content != "content-1" || results[1].Content != "content-2" {
 		t.Errorf("Retrieve() content mismatch: %v", results)
 	}
 }
@@ -252,9 +255,15 @@ func TestInMemoryMemory_RetrieveLimit(t *testing.T) {
 	store := newInMemoryMemory()
 	ctx := context.Background()
 
+	chunks := make([]memory.MemoryChunk, 10)
 	for i := 0; i < 10; i++ {
-		store.Store(ctx, "session-limit", "title", "content")
+		chunks[i] = memory.MemoryChunk{
+			Summary: "title",
+			Content: "content",
+			Tags:    []string{},
+		}
 	}
+	store.StoreChunks(ctx, "session-limit", chunks)
 
 	results, err := store.Retrieve(ctx, "", "session-limit", 5)
 	if err != nil {
@@ -442,16 +451,18 @@ func TestSessionConfig_FunctionalOptions(t *testing.T) {
 }
 
 type mockMemoryStoreImpl struct {
-	stored []string
+	stored []memory.MemoryChunk
 }
 
-func (m *mockMemoryStoreImpl) Store(_ context.Context, _ string, _ string, content string) error {
-	m.stored = append(m.stored, content)
+func (m *mockMemoryStoreImpl) StoreChunks(_ context.Context, _ string, chunks []memory.MemoryChunk) error {
+	m.stored = append(m.stored, chunks...)
 	return nil
 }
 
-func (m *mockMemoryStoreImpl) Retrieve(_ context.Context, _ string, _ string, _ int) ([]string, error) {
-	return m.stored, nil
+func (m *mockMemoryStoreImpl) Retrieve(_ context.Context, _ string, _ string, _ int) ([]memory.MemoryChunk, error) {
+	out := make([]memory.MemoryChunk, len(m.stored))
+	copy(out, m.stored)
+	return out, nil
 }
 
 func TestMessage_Structure(t *testing.T) {

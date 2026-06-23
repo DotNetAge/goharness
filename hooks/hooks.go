@@ -93,6 +93,7 @@ type ToolResult struct {
 // CallInput contains the input data for an LLM call.
 type CallInput struct {
 	SessionID            string
+	AgentName            string
 	SystemPromptSections []gochatcore.Message
 	UserMessage          string
 	History              []session.Message

@@ -103,72 +103,58 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		"limit", limit,
 	)
 
-	records, err := t.memory.Retrieve(ctx, query, opts...)
+	chunks, err := t.memory.Retrieve(ctx, query, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("memory search failed: %w", err)
 	}
 
-	if len(records) == 0 {
+	if len(chunks) == 0 {
 		return fmt.Sprintf("No memories found for query: %q\n\nThe memory is empty or no relevant information was found. Try rephrasing your query or search the internet instead.", query), nil
 	}
 
-	if len(records) > limit {
-		records = records[:limit]
+	if len(chunks) > limit {
+		chunks = chunks[:limit]
 	}
 
-	result := formatMemorySearchResults(query, records)
+	result := formatMemorySearchResults(query, chunks)
 	logger.Info("memory search completed",
 		"query", truncateStr(query, 100),
-		"result_count", len(records),
+		"result_count", len(chunks),
 	)
 
 	return result, nil
 }
 
-func formatMemorySearchResults(query string, records []memory.MemoryRecord) string {
+func formatMemorySearchResults(query string, chunks []memory.MemoryChunk) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Memory search results for query: %q\n\n", query)
-	fmt.Fprintf(&sb, "Found %d relevant memory record(s):\n\n", len(records))
+	fmt.Fprintf(&sb, "Found %d relevant memory record(s):\n\n", len(chunks))
 
-	for i, r := range records {
+	for i, c := range chunks {
 		fmt.Fprintf(&sb, "--- Record %d ---\n", i+1)
 
-		if r.ID != "" {
-			fmt.Fprintf(&sb, "ID: %s\n", r.ID)
+		if c.ID != "" {
+			fmt.Fprintf(&sb, "ID: %s\n", c.ID)
+		}
+		if c.Summary != "" {
+			fmt.Fprintf(&sb, "Summary: %s\n", c.Summary)
+		}
+		if c.AgentName != "" {
+			fmt.Fprintf(&sb, "Agent: %s\n", c.AgentName)
+		}
+		if len(c.Tags) > 0 {
+			fmt.Fprintf(&sb, "Tags: [%s]\n", strings.Join(c.Tags, ", "))
+		}
+		if !c.Timestamp.IsZero() {
+			fmt.Fprintf(&sb, "Time: %s\n", c.Timestamp.Format("2006-01-02 15:04:05"))
 		}
 
-		typeLabel := memoryTypeLabel(r.Type)
-		fmt.Fprintf(&sb, "Type: %s\n", typeLabel)
+		fmt.Fprintf(&sb, "\n%s\n", c.Content)
 
-		if r.Title != "" {
-			fmt.Fprintf(&sb, "Title: %s\n", r.Title)
-		}
-
-		if r.Score > 0 {
-			fmt.Fprintf(&sb, "Relevance: %.2f\n", r.Score)
-		}
-
-		if len(r.Tags) > 0 {
-			fmt.Fprintf(&sb, "Tags: [%s]\n", strings.Join(r.Tags, ", "))
-		}
-
-		fmt.Fprintf(&sb, "\n%s\n", r.Content)
-
-		if i < len(records)-1 {
+		if i < len(chunks)-1 {
 			fmt.Fprintln(&sb)
 		}
 	}
 
 	return sb.String()
-}
-
-func memoryTypeLabel(t memory.MemoryType) string {
-	switch t {
-	case memory.MemoryTypeSession:
-		return "Session Memory"
-	case memory.MemoryTypeLongTerm:
-		return "Long-term Knowledge"
-	default:
-		return "Unknown"
-	}
 }

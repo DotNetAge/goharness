@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,11 +12,11 @@ import (
 
 // mockMemory implements memory.Memory for testing
 type mockMemory struct {
-	records []memory.MemoryRecord
-	err     error
+	chunks []memory.MemoryChunk
+	err    error
 }
 
-func (m *mockMemory) Retrieve(_ context.Context, query string, _ ...memory.RetrieveOption) ([]memory.MemoryRecord, error) {
+func (m *mockMemory) Retrieve(_ context.Context, query string, _ ...memory.RetrieveOption) ([]memory.MemoryChunk, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -23,14 +24,14 @@ func (m *mockMemory) Retrieve(_ context.Context, query string, _ ...memory.Retri
 		return nil, errors.New("memory retrieval failed")
 	}
 
-	var results []memory.MemoryRecord
-	for _, r := range m.records {
-		results = append(results, r)
+	var results []memory.MemoryChunk
+	for _, c := range m.chunks {
+		results = append(results, c)
 	}
 	return results, nil
 }
 
-func (m *mockMemory) Store(_ context.Context, record memory.MemoryRecord) (string, error) {
+func (m *mockMemory) Store(_ context.Context, chunk memory.MemoryChunk) (string, error) {
 	return "test-id", nil
 }
 
@@ -93,24 +94,22 @@ func TestMemorySearch_Info(t *testing.T) {
 
 func TestMemorySearch_Execute_Success(t *testing.T) {
 	mem := &mockMemory{
-		records: []memory.MemoryRecord{
+		chunks: []memory.MemoryChunk{
 			{
 				ID:        "mem-1",
-				Type:      memory.MemoryTypeLongTerm,
-				Title:     "User Prefers TypeScript",
+				Summary:   "User Prefers TypeScript",
 				Content:   "User explicitly prefers TypeScript over JavaScript for all new projects",
 				Tags:      []string{"preference", "typescript"},
-				Score:     0.95,
-				CreatedAt: time.Now(),
+				AgentName: "test-agent",
+				Timestamp: time.Now(),
 			},
 			{
 				ID:        "mem-2",
-				Type:      memory.MemoryTypeSession,
-				Title:     "Current Project Structure",
+				Summary:   "Current Project Structure",
 				Content:   "Project uses monorepo structure with packages in /packages directory",
 				Tags:      []string{"project", "structure"},
-				Score:     0.85,
-				CreatedAt: time.Now(),
+				AgentName: "test-agent",
+				Timestamp: time.Now(),
 			},
 		},
 	}
@@ -138,17 +137,14 @@ func TestMemorySearch_Execute_Success(t *testing.T) {
 	if !contains(resultStr, "2 relevant memory record") {
 		t.Error("result should indicate 2 records found")
 	}
-	if !contains(resultStr, "Long-term Knowledge") {
-		t.Error("result should contain memory type label")
-	}
-	if !contains(resultStr, "Relevance:") {
-		t.Error("result should show relevance score")
+	if !contains(resultStr, "User Prefers TypeScript") {
+		t.Error("result should contain summary")
 	}
 }
 
 func TestMemorySearch_Execute_EmptyResult(t *testing.T) {
 	mem := &mockMemory{
-		records: []memory.MemoryRecord{},
+		chunks: []memory.MemoryChunk{},
 	}
 
 	tool := NewMemorySearch(mem).(*MemorySearch)
@@ -215,12 +211,12 @@ func TestMemorySearch_Execute_ShortQuery(t *testing.T) {
 
 func TestMemorySearch_Execute_WithTypesFilter(t *testing.T) {
 	mem := &mockMemory{
-		records: []memory.MemoryRecord{
+		chunks: []memory.MemoryChunk{
 			{
-				ID:      "mem-1",
-				Type:    memory.MemoryTypeLongTerm,
-				Title:   "Long Term Memory",
-				Content: "This is long-term knowledge",
+				ID:        "mem-1",
+				Summary:   "Long Term Memory",
+				Content:   "This is long-term knowledge",
+				AgentName: "test-agent",
 			},
 		},
 	}
@@ -243,8 +239,15 @@ func TestMemorySearch_Execute_WithTypesFilter(t *testing.T) {
 }
 
 func TestMemorySearch_LimitValidation(t *testing.T) {
+	chunks := make([]memory.MemoryChunk, 25)
+	for i := range chunks {
+		chunks[i] = memory.MemoryChunk{
+			ID:      fmt.Sprintf("mem-%d", i),
+			Content: "test",
+		}
+	}
 	mem := &mockMemory{
-		records: make([]memory.MemoryRecord, 25),
+		chunks: chunks,
 	}
 
 	tool := NewMemorySearch(mem).(*MemorySearch)
@@ -266,19 +269,18 @@ func TestMemorySearch_LimitValidation(t *testing.T) {
 }
 
 func TestMemorySearch_FormatResults(t *testing.T) {
-	records := []memory.MemoryRecord{
+	chunks := []memory.MemoryChunk{
 		{
 			ID:        "test-123",
-			Type:      memory.MemoryTypeSession,
-			Title:     "Test Memory",
+			Summary:   "Test Memory",
 			Content:   "This is test content",
 			Tags:      []string{"tag1", "tag2"},
-			Score:     0.92,
-			CreatedAt: time.Now(),
+			AgentName: "test-agent",
+			Timestamp: time.Now(),
 		},
 	}
 
-	result := formatMemorySearchResults("test query", records)
+	result := formatMemorySearchResults("test query", chunks)
 
 	if !contains(result, "test query") {
 		t.Error("formatted result should contain the query")
@@ -289,40 +291,14 @@ func TestMemorySearch_FormatResults(t *testing.T) {
 	if !contains(result, "test-123") {
 		t.Error("formatted result should contain record ID")
 	}
-	if !contains(result, "Session Memory") {
-		t.Error("formatted result should contain type label")
-	}
 	if !contains(result, "Test Memory") {
-		t.Error("formatted result should contain title")
+		t.Error("formatted result should contain summary")
 	}
 	if !contains(result, "tag1") || !contains(result, "tag2") {
 		t.Error("formatted result should contain tags")
 	}
-	if !contains(result, "0.92") {
-		t.Error("formatted result should contain score")
-	}
 	if !contains(result, "This is test content") {
 		t.Error("formatted result should contain content")
-	}
-}
-
-func TestMemoryTypeLabel(t *testing.T) {
-	tests := []struct {
-		input memory.MemoryType
-		want  string
-	}{
-		{memory.MemoryTypeSession, "Session Memory"},
-		{memory.MemoryTypeLongTerm, "Long-term Knowledge"},
-		{memory.MemoryType(999), "Unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			got := memoryTypeLabel(tt.input)
-			if got != tt.want {
-				t.Errorf("memoryTypeLabel(%v) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
 	}
 }
 

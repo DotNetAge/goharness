@@ -70,8 +70,8 @@ func TestNewLLMSummarizer_DefaultValues(t *testing.T) {
 	if summarizer.systemPrompt != defaultSystemPrompt {
 		t.Errorf("默认 systemPrompt 应为 defaultSystemPrompt，得到 %q", summarizer.systemPrompt)
 	}
-	if summarizer.maxTokens != 1024 {
-		t.Errorf("默认 maxTokens 应为 1024，得到 %d", summarizer.maxTokens)
+	if summarizer.maxTokens != 2048 {
+		t.Errorf("默认 maxTokens 应为 2048，得到 %d", summarizer.maxTokens)
 	}
 }
 
@@ -83,12 +83,12 @@ func TestLLMSummarizer_Summarize_EmptyMessages(t *testing.T) {
 	}
 
 	s := NewLLMSummarizer(model)
-	summary, err := s.Summarize(context.Background(), nil)
+	chunks, err := s.Summarize(context.Background(), nil)
 	if err != nil {
 		t.Errorf("空消息列表不应返回错误: %v", err)
 	}
-	if summary != "" {
-		t.Errorf("空消息列表应返回空字符串，得到 %q", summary)
+	if chunks != nil {
+		t.Errorf("空消息列表应返回 nil，得到 %v", chunks)
 	}
 }
 
@@ -190,12 +190,12 @@ func TestLLMSummarizer_Summarize_InterfaceCompliance(t *testing.T) {
 	var _ Summarizer = s
 
 	// 空消息列表应安全返回
-	summary, err := s.Summarize(context.Background(), nil)
+	chunks, err := s.Summarize(context.Background(), nil)
 	if err != nil {
 		t.Errorf("nil 消息列表不应返回错误: %v", err)
 	}
-	if summary != "" {
-		t.Errorf("nil 消息列表应返回空字符串，得到 %q", summary)
+	if chunks != nil {
+		t.Errorf("nil 消息列表应返回 nil，得到 %v", chunks)
 	}
 }
 

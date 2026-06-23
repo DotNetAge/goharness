@@ -10,6 +10,26 @@ import (
 	"time"
 )
 
+// Filter keys for memory retrieval scoping.
+// These are used as Query.AddFilter keys to scope retrieval to specific agents/sessions.
+const (
+	FilterKeyAgentName = "agent_name"
+	FilterKeySessionID = "session_id"
+)
+
+// MemoryChunk represents a single memory piece with full metadata.
+// It is the core data structure for the memory system, distinct from
+// the knowledge base (graph) storage.
+type MemoryChunk struct {
+	ID        string    `json:"id"`
+	Summary   string    `json:"summary"`
+	Content   string    `json:"content"`
+	AgentName string    `json:"agent_name"`
+	SessionID string    `json:"session_id"`
+	Tags      []string  `json:"tags"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // ErrMemoryNotFound is returned when a requested memory record doesn't exist.
 var ErrMemoryNotFound = errors.New("memory not found")
 
@@ -19,7 +39,7 @@ var ErrMemoryStorage = errors.New("memory storage failed")
 // ErrMemoryRetrieval is returned when a memory retrieval operation fails.
 var ErrMemoryRetrieval = errors.New("memory retrieval failed")
 
-// MemoryType defines the type of memory record.
+// MemoryType defines the type of memory for retrieval filtering.
 type MemoryType int
 
 const (
@@ -32,26 +52,13 @@ const (
 	MemoryTypeLongTerm
 )
 
-// MemoryRecord represents a single memory entry with metadata.
-type MemoryRecord struct {
-	ID        string            `json:"id"`
-	SessionID string            `json:"session_id,omitempty"`
-	Type      MemoryType        `json:"type"`
-	Title     string            `json:"title"`
-	Content   string            `json:"content"`
-	Tags      []string          `json:"tags,omitempty"`
-	Score     float64           `json:"score,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	Metadata  map[string]any    `json:"metadata,omitempty"` // 扩展元数据（来自 Hit/Chunk.Metadata）
-}
-
 // Memory defines the interface for memory storage and retrieval operations.
 type Memory interface {
-	// Retrieve searches for memory records matching the query with optional filters.
-	Retrieve(ctx context.Context, query string, opts ...RetrieveOption) ([]MemoryRecord, error)
-	// Store persists a new memory record and returns its ID.
-	Store(ctx context.Context, record MemoryRecord) (string, error)
-	// Delete removes a memory record by ID.
+	// Retrieve searches for memory chunks matching the query with optional filters.
+	Retrieve(ctx context.Context, query string, opts ...RetrieveOption) ([]MemoryChunk, error)
+	// Store persists a new memory chunk and returns its ID.
+	Store(ctx context.Context, chunk MemoryChunk) (string, error)
+	// Delete removes a memory chunk by ID.
 	Delete(ctx context.Context, id string) error
 }
 
@@ -60,37 +67,21 @@ func DefaultRetrieveConfig() RetrieveConfig {
 	return RetrieveConfig{Limit: 5}
 }
 
-// FormatMemoryRecords formats memory records into a human-readable string
-// suitable for inclusion in AI prompts. Uses Markdown headings for titles.
-func FormatMemoryRecords(records []MemoryRecord) string {
-	if len(records) == 0 {
+// FormatMemoryRecords formats memory chunks into a human-readable string
+// suitable for inclusion in AI prompts.
+func FormatMemoryRecords(chunks []MemoryChunk) string {
+	if len(chunks) == 0 {
 		return ""
 	}
 	var sb strings.Builder
-	for _, r := range records {
-		typeName := memoryTypeLabel(r.Type)
-		if r.Title != "" {
+	for _, c := range chunks {
+		if c.Summary != "" {
 			sb.WriteString("## ")
-			sb.WriteString(typeName)
-			sb.WriteString(": ")
-			sb.WriteString(r.Title)
+			sb.WriteString(c.Summary)
 			sb.WriteString("\n")
 		}
-		sb.WriteString(r.Content)
+		sb.WriteString(c.Content)
 		sb.WriteString("\n\n")
 	}
 	return strings.TrimSpace(sb.String())
 }
-
-// memoryTypeLabel returns a human-readable label for a memory type.
-func memoryTypeLabel(t MemoryType) string {
-	switch t {
-	case MemoryTypeSession:
-		return "Session Memory"
-	case MemoryTypeLongTerm:
-		return "Long-term Knowledge"
-	default:
-		return "Unknown"
-	}
-}
-

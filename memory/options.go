@@ -4,6 +4,7 @@ package memory
 type RetrieveConfig struct {
 	Types     []MemoryType
 	SessionID string
+	AgentName string
 	Limit     int
 	MinScore  float64
 }
@@ -35,4 +36,10 @@ func WithMinScore(score float64) RetrieveOption {
 // Memory implementations should filter by this field for session-scoped recall.
 func WithMemorySessionID(sessionID string) RetrieveOption {
 	return func(c *RetrieveConfig) { c.SessionID = sessionID }
+}
+
+// WithAgentName scopes memory retrieval to a specific agent.
+// Used for both short-term (AgentName + SessionID) and long-term (AgentName only) filtering.
+func WithAgentName(agentName string) RetrieveOption {
+	return func(c *RetrieveConfig) { c.AgentName = agentName }
 }

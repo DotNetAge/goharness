@@ -120,6 +120,10 @@ func (m *mockStore) GetModifyFiles(sessionID string) ([]string, error) {
 	return nil, nil // mock: no-op for tests that don't test modify files
 }
 
+func (m *mockStore) Truncate(_ context.Context, _ string, _ int) error {
+	return nil // mock: no-op for lazy load tests
+}
+
 func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
 	store := NewInMemoryTokenUsageStore()
 	ctx := context.Background()

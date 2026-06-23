@@ -8,6 +8,12 @@ import (
 
 // MemoryThoughtHook retrieves relevant memory records before each LLM call
 // and injects them as context into the system prompt.
+//
+// Two retrievals are performed:
+//  1. Current-session memory: scoped by SessionID for conversation continuity
+//  2. Cross-session memory: scoped by AgentName for long-term knowledge
+//
+// Both are injected as separate sections so the LLM can distinguish context sources.
 type MemoryThoughtHook struct {
 	memory memory.Memory
 }
@@ -27,20 +33,75 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 		return hooks.HookResult{}
 	}
 
-	records, err := h.memory.Retrieve(nil, input.UserMessage,
-		memory.WithMemoryTypes(memory.MemoryTypeSession),
+	added := false
+
+	// 1. Session-scoped retrieval (current conversation)
+	sessionRecords, err := h.memory.Retrieve(nil, input.UserMessage,
 		memory.WithMemorySessionID(sessionID),
 		memory.WithMinScore(0.3),
 	)
-	if err != nil || len(records) == 0 {
-		return hooks.HookResult{}
+	if err == nil && len(sessionRecords) > 0 {
+		if content := memory.FormatMemoryRecords(sessionRecords); content != "" {
+			input.SystemPromptSections = append(
+				input.SystemPromptSections,
+				gochatcore.NewSystemMessage(
+					"## Current Session Context\n"+
+						"The following are memories from the current conversation session. "+
+						"Use them as recent context for your response:\n\n"+
+						content,
+				),
+			)
+			added = true
+		}
 	}
 
-	if memContent := memory.FormatMemoryRecords(records); memContent != "" {
-		input.SystemPromptSections = append(
-			input.SystemPromptSections,
-			gochatcore.NewSystemMessage("## Relevant Context\n"+memContent),
+	// 2. Cross-session retrieval (other sessions for this agent)
+	if input.AgentName != "" {
+		crossRecords, err := h.memory.Retrieve(nil, input.UserMessage,
+			memory.WithAgentName(input.AgentName),
+			memory.WithMinScore(0.3),
 		)
+		if err == nil && len(crossRecords) > 0 {
+			// Deduplicate: skip chunks already shown in session context
+			seen := make(map[string]struct{}, len(sessionRecords))
+			for _, r := range sessionRecords {
+				seen[r.ID] = struct{}{}
+			}
+			filtered := make([]memory.MemoryChunk, 0, len(crossRecords))
+			for _, r := range crossRecords {
+				if _, dup := seen[r.ID]; !dup {
+					filtered = append(filtered, r)
+				}
+			}
+			if len(filtered) > 0 {
+				if content := memory.FormatMemoryRecords(filtered); content != "" {
+					input.SystemPromptSections = append(
+						input.SystemPromptSections,
+						gochatcore.NewSystemMessage(
+							"## Similar Content from Other Sessions\n"+
+								"The following are related memories from other sessions. "+
+								"They may contain relevant context — use your judgment on applicability:\n\n"+
+								content,
+						),
+					)
+					added = true
+				}
+			}
+		}
+	}
+
+	// Fallback: if only one retrieval succeeded, inject as generic context
+	if !added && len(sessionRecords) > 0 {
+		if content := memory.FormatMemoryRecords(sessionRecords); content != "" {
+			input.SystemPromptSections = append(
+				input.SystemPromptSections,
+				gochatcore.NewSystemMessage(
+					"## Relevant Context\n"+
+						"The following are relevant historical memories:\n\n"+
+						content,
+				),
+			)
+		}
 	}
 	return hooks.HookResult{}
 }

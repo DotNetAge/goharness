@@ -807,6 +807,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// ── Loop Hooks BeforeLLM (with panic recovery) ──
 		callInput := &hooks.CallInput{
 			SessionID:            sid,
+			AgentName:            b.agentName,
 			SystemPromptSections: systemSections,
 			UserMessage:          b.question,
 			History:              window,
