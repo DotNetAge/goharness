@@ -1365,6 +1365,9 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	}
 	msgs = append(msgs, gochatcore.NewSystemMessage("## Behavioral Rules\n"+rules))
 
+	// 3b. Search priority — how to prioritize local vs web search
+	msgs = append(msgs, gochatcore.NewSystemMessage(buildSearchPriority()))
+
 	// 4. Environment info
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildEnvironmentInfo(environmentInfoParams{
 		SessionID:  sessionID,
