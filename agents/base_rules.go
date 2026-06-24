@@ -54,9 +54,8 @@ Every claim in your output must be grounded in verifiable sources or tool output
 ## Search Priority
 
 When searching for information:
-- If the user does not specify a search source, search **local data first**, then fall back to the internet.
-- Use local tools to check the knowledge base, codebase, and local documents before reaching out to the web.
-- Only use web search when local results are insufficient or the query explicitly requires real-time or online information.
+- Search the **knowledge base first**, then fall back to the web.
+- Only use web search when the knowledge base has no relevant results or the query explicitly requires real-time or online information.
 
 ## System Notes
 - Context management: old results from read-only tools (Read, Grep, Glob, WebSearch, WebFetch, Skill, AskUser) may be removed between rounds to save space (micro-compaction). Your reasoning about those results is preserved. If you need to re-examine something, simply call the tool again.`
