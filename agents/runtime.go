@@ -1420,6 +1420,11 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 
 	// Compact and convert session messages to gochat messages
 	window := session.MicroCompact(history, 2)
+	// Strip orphaned tool_calls that don't have corresponding tool responses.
+	// This prevents DeepSeek's strict validation from rejecting requests after
+	// a cancelled thinking loop where assistant+ToolCalls was persisted but
+	// the tool results were not (race between old exec cleanup and new message).
+	window = stripOrphanedToolCalls(window)
 	for _, m := range window {
 		switch m.Role {
 		case "system":
@@ -1452,6 +1457,49 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 	}
 
 	return msgs
+}
+
+// stripOrphanedToolCalls removes tool_calls from assistant messages that don't
+// have a corresponding tool response message. This prevents DeepSeek's strict
+// validation from rejecting requests with orphaned tool_calls, which can happen
+// when the thinking loop is cancelled mid-execution — the assistant message with
+// ToolCalls may be persisted before tool results are written, creating a race
+// condition when a new message is sent immediately after cancellation.
+func stripOrphanedToolCalls(history []session.Message) []session.Message {
+	// Collect all tool_call_ids that have a matching tool response
+	toolCallIDs := make(map[string]bool)
+	for _, m := range history {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			toolCallIDs[m.ToolCallID] = true
+		}
+	}
+
+	result := make([]session.Message, 0, len(history))
+	for _, m := range history {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			kept := make([]session.ToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				if toolCallIDs[tc.ID] {
+					kept = append(kept, tc)
+				}
+			}
+
+			// If no tool_calls remain after filtering, drop the message
+			// entirely unless it has text content worth preserving.
+			if len(kept) == 0 && strings.TrimSpace(m.Content) == "" {
+				continue
+			}
+			if len(kept) == 0 {
+				m.ToolCalls = nil
+			} else {
+				m.ToolCalls = kept
+			}
+			result = append(result, m)
+		} else {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // ── Tool Execution ──────────────────────────────────────────────────────────
