@@ -680,6 +680,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		if b.parentEmit != nil {
 			b.parentEmit(ev)
 		}
+		// Fire catch-all OnEvent handlers before type-specific handlers.
+		// Used by the daemon to track agent_id across forwarded events.
+		for _, h := range b.onAnyEvent {
+			h(ev)
+		}
 		if handlers, ok := b.onEvent[ev.Type]; ok {
 			for _, h := range handlers {
 				h(ev.Data)

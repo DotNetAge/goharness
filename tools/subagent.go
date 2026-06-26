@@ -121,7 +121,11 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	tc.EmitEvent(events.ReactEvent{
 		Type: events.SubtaskSpawned,
-		Data: map[string]any{"task_id": taskID, "agent_name": agentName, "task": task},
+		Data: events.SubtaskInfo{
+			TaskID:      taskID,
+			AgentName:   agentName,
+			Description: task,
+		},
 	})
 
 	// Run sub-agent in background
@@ -160,7 +164,10 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		tc.EmitEvent(events.ReactEvent{
 			AgentID: agentName,
 			Type:    events.SubtaskCompleted,
-			Data:    map[string]any{"task_id": taskID, "success": err == nil},
+			Data: events.SubtaskResult{
+				TaskID:  taskID,
+				Success: err == nil,
+			},
 		})
 	}()
 

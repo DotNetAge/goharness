@@ -18,6 +18,11 @@ type AskBuilder struct {
 	onEvent   map[events.ReactEventType][]func(data any)
 	resultErr error
 
+	// onAnyEvent fires for every ReactEvent emitted by the execution loop,
+	// before type-specific handlers (onEvent). Used by the daemon to track
+	// agent_id across forwarded sub-agent events.
+	onAnyEvent []func(events.ReactEvent)
+
 	// parentEmit forwards ReactEvent to the parent EventBus.
 	// When set (sub-agent), all events from this execution are also
 	// emitted to the parent, enabling cross-agent event visibility.
@@ -192,6 +197,15 @@ func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)
 			fn(v)
 		}
 	})
+}
+
+// OnEvent registers a catch-all handler that fires for every ReactEvent
+// emitted by the execution loop, before type-specific handlers.
+// The handler receives the full ReactEvent including AgentID, SessionID, Type, and Data.
+// This is useful for tracking metadata like which agent produced an event.
+func (b *AskBuilder) OnEvent(fn func(events.ReactEvent)) *AskBuilder {
+	b.onAnyEvent = append(b.onAnyEvent, fn)
+	return b
 }
 
 // OnMaxTurnsReached registers a handler for the MaxTurnsReached event.
