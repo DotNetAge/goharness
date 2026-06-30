@@ -375,6 +375,7 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TeamGetTasks", func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
 		{"AgentTalk", func() tools.FuncTool { return tools.NewAgentTalkTool(rt.agentTalk) }},
 		{"Sleep", func() tools.FuncTool { return tools.NewSleepTool() }},
+		{"Skill", func() tools.FuncTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }},
 	}
 	for _, b := range bundled {
 		if t := b.factory(); t != nil {
