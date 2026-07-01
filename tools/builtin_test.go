@@ -9,7 +9,19 @@ import (
 	"testing"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/session"
 )
+
+// testCtx creates a context with a ToolContext containing a session for testing.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	cwd, _ := os.Getwd()
+	sess := session.New("test-agent", "", cwd)
+	return WithToolContext(context.Background(), &ToolContext{
+		Session:   sess,
+		EmitEvent: func(e events.ReactEvent) {},
+	})
+}
 
 func mustAbs(t *testing.T, path string) string {
 	t.Helper()
@@ -100,9 +112,10 @@ func TestBash(t *testing.T) {
 
 func TestLS(t *testing.T) {
 	ls := NewLsTool()
+	ctx := testCtx(t)
 
 	t.Run("list current directory", func(t *testing.T) {
-		result, err := ls.Execute(context.Background(), map[string]any{"path": "."})
+		result, err := ls.Execute(ctx, map[string]any{"path": "."})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -116,21 +129,21 @@ func TestLS(t *testing.T) {
 	})
 
 	t.Run("non-existent directory", func(t *testing.T) {
-		_, err := ls.Execute(context.Background(), map[string]any{"path": "/nonexistent_dir_12345"})
+		_, err := ls.Execute(ctx, map[string]any{"path": "/nonexistent_dir_12345"})
 		if err == nil {
 			t.Error("Expected error for non-existent directory")
 		}
 	})
 
 	t.Run("path is not a directory", func(t *testing.T) {
-		_, err := ls.Execute(context.Background(), map[string]any{"path": "builtin_test.go"})
+		_, err := ls.Execute(ctx, map[string]any{"path": "builtin_test.go"})
 		if err == nil {
 			t.Error("Expected error when path is not a directory")
 		}
 	})
 
 	t.Run("show hidden files", func(t *testing.T) {
-		result, err := ls.Execute(context.Background(), map[string]any{"path": ".", "show_hidden": true})
+		result, err := ls.Execute(ctx, map[string]any{"path": ".", "show_hidden": true})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -216,10 +229,11 @@ func TestGlob(t *testing.T) {
 
 func TestRead(t *testing.T) {
 	read := NewReadTool()
+	ctx := testCtx(t)
 	absPath := mustAbs(t, "builtin_test.go")
 
 	t.Run("read this test file", func(t *testing.T) {
-		result, err := read.Execute(context.Background(), map[string]any{"path": absPath})
+		result, err := read.Execute(ctx, map[string]any{"path": absPath})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -233,7 +247,7 @@ func TestRead(t *testing.T) {
 	})
 
 	t.Run("read with line range", func(t *testing.T) {
-		result, err := read.Execute(context.Background(), map[string]any{
+		result, err := read.Execute(ctx, map[string]any{
 			"path":       absPath,
 			"start_line": 1.0,
 			"end_line":   5.0,
@@ -248,21 +262,21 @@ func TestRead(t *testing.T) {
 	})
 
 	t.Run("missing path", func(t *testing.T) {
-		_, err := read.Execute(context.Background(), map[string]any{})
+		_, err := read.Execute(ctx, map[string]any{})
 		if err == nil {
 			t.Error("Expected error for missing path")
 		}
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		_, err := read.Execute(context.Background(), map[string]any{"path": "/nonexistent_file_12345.txt"})
+		_, err := read.Execute(ctx, map[string]any{"path": "/nonexistent_file_12345.txt"})
 		if err == nil {
 			t.Error("Expected error for non-existent file")
 		}
 	})
 
 	t.Run("path is a directory", func(t *testing.T) {
-		_, err := read.Execute(context.Background(), map[string]any{"path": "."})
+		_, err := read.Execute(ctx, map[string]any{"path": "."})
 		if err == nil {
 			t.Error("Expected error when path is a directory")
 		}
@@ -283,10 +297,11 @@ func TestRead(t *testing.T) {
 
 func TestWrite(t *testing.T) {
 	write := NewWriteTool()
+	ctx := testCtx(t)
 
 	t.Run("write to temp file", func(t *testing.T) {
 		testFile := "goharness_test_write.txt"
-		result, err := write.Execute(context.Background(), map[string]any{
+		result, err := write.Execute(ctx, map[string]any{
 			"path":    testFile,
 			"content": "hello world",
 		})
@@ -305,8 +320,8 @@ func TestWrite(t *testing.T) {
 
 	t.Run("append to file", func(t *testing.T) {
 		testFile := "goharness_test_append.txt"
-		write.Execute(context.Background(), map[string]any{"path": testFile, "content": "line1\n"})
-		result, err := write.Execute(context.Background(), map[string]any{
+		write.Execute(ctx, map[string]any{"path": testFile, "content": "line1\n"})
+		result, err := write.Execute(ctx, map[string]any{
 			"path":    testFile,
 			"content": "line2\n",
 			"append":  true,
@@ -322,14 +337,14 @@ func TestWrite(t *testing.T) {
 	})
 
 	t.Run("missing path", func(t *testing.T) {
-		_, err := write.Execute(context.Background(), map[string]any{"content": "hello"})
+		_, err := write.Execute(ctx, map[string]any{"content": "hello"})
 		if err == nil {
 			t.Error("Expected error for missing path")
 		}
 	})
 
 	t.Run("missing content", func(t *testing.T) {
-		_, err := write.Execute(context.Background(), map[string]any{"path": "/tmp/test.txt"})
+		_, err := write.Execute(ctx, map[string]any{"path": "/tmp/test.txt"})
 		if err == nil {
 			t.Error("Expected error for missing content")
 		}
@@ -485,6 +500,7 @@ func TestBash_EdgeCases(t *testing.T) {
 // TestRead_EdgeCases Read 工具边界测试
 func TestRead_EdgeCases(t *testing.T) {
 	read := NewReadTool()
+	ctx := testCtx(t)
 	tempDir, err := os.MkdirTemp(".", "read_edge_test_*")
 	if err != nil {
 		t.Fatalf("创建临时目录失败: %v", err)
@@ -495,7 +511,7 @@ func TestRead_EdgeCases(t *testing.T) {
 		emptyFile := filepath.Join(tempDir, "empty.txt")
 		os.WriteFile(emptyFile, []byte(""), 0644)
 
-		result, err := read.Execute(context.Background(), map[string]any{"path": emptyFile})
+		result, err := read.Execute(ctx, map[string]any{"path": emptyFile})
 		if err != nil {
 			t.Fatalf("读取空文件失败: %v", err)
 		}
@@ -514,7 +530,7 @@ func TestRead_EdgeCases(t *testing.T) {
 		}
 		os.WriteFile(multiLineFile, []byte(strings.Join(lines, "\n")), 0644)
 
-		result, err := read.Execute(context.Background(), map[string]any{
+		result, err := read.Execute(ctx, map[string]any{
 			"path":   multiLineFile,
 			"offset": float64(5),
 			"limit":  float64(3),
@@ -535,7 +551,7 @@ func TestRead_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("相对路径处理", func(t *testing.T) {
-		result, err := read.Execute(context.Background(), map[string]any{"path": "./builtin_test.go"})
+		result, err := read.Execute(ctx, map[string]any{"path": "./builtin_test.go"})
 		if err != nil {
 			t.Fatalf("相对路径读取失败: %v", err)
 		}
@@ -549,6 +565,7 @@ func TestRead_EdgeCases(t *testing.T) {
 // TestWrite_EdgeCases Write 工具边界测试
 func TestWrite_EdgeCases(t *testing.T) {
 	write := NewWriteTool()
+	ctx := testCtx(t)
 	tempDir, err := os.MkdirTemp(".", "write_edge_test_*")
 	if err != nil {
 		t.Fatalf("创建临时目录失败: %v", err)
@@ -557,7 +574,7 @@ func TestWrite_EdgeCases(t *testing.T) {
 
 	t.Run("写入空内容", func(t *testing.T) {
 		emptyFile := filepath.Join(tempDir, "empty_write.txt")
-		result, err := write.Execute(context.Background(), map[string]any{
+		result, err := write.Execute(ctx, map[string]any{
 			"path":    emptyFile,
 			"content": "",
 		})
@@ -573,7 +590,7 @@ func TestWrite_EdgeCases(t *testing.T) {
 
 	t.Run("创建深层目录结构", func(t *testing.T) {
 		deepFile := filepath.Join(tempDir, "a", "b", "c", "deep.txt")
-		result, err := write.Execute(context.Background(), map[string]any{
+		result, err := write.Execute(ctx, map[string]any{
 			"path":    deepFile,
 			"content": "deep content",
 		})
@@ -589,12 +606,12 @@ func TestWrite_EdgeCases(t *testing.T) {
 	t.Run("append 模式追加到已有文件", func(t *testing.T) {
 		appendFile := filepath.Join(tempDir, "append_test.txt")
 
-		write.Execute(context.Background(), map[string]any{
+		write.Execute(ctx, map[string]any{
 			"path":    appendFile,
 			"content": "first line\n",
 		})
 
-		result, err := write.Execute(context.Background(), map[string]any{
+		result, err := write.Execute(ctx, map[string]any{
 			"path":    appendFile,
 			"content": "second line\n",
 			"append":  true,
@@ -612,12 +629,12 @@ func TestWrite_EdgeCases(t *testing.T) {
 	t.Run("覆盖模式替换已有内容", func(t *testing.T) {
 		overwriteFile := filepath.Join(tempDir, "overwrite.txt")
 
-		write.Execute(context.Background(), map[string]any{
+		write.Execute(ctx, map[string]any{
 			"path":    overwriteFile,
 			"content": strings.Repeat("original ", 100),
 		})
 
-		result, err := write.Execute(context.Background(), map[string]any{
+		result, err := write.Execute(ctx, map[string]any{
 			"path":    overwriteFile,
 			"content": "new short content",
 		})
@@ -680,6 +697,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 
 // TestEdit_EdgeCases Edit 工具额外边界测试
 func TestEdit_EdgeCases(t *testing.T) {
+	ctx := testCtx(t)
 	dir, err := os.MkdirTemp(".", "edit_edge_test_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -692,7 +710,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 		os.WriteFile(filePath, []byte(content), 0644)
 
 		edit := &EditTool{}
-		_, err = edit.Execute(context.Background(), map[string]any{
+		_, err = edit.Execute(ctx, map[string]any{
 			"path":        filePath,
 			"old_string":  "apple",
 			"new_string":  "orange",
@@ -714,7 +732,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 		os.WriteFile(filePath, []byte("some content"), 0644)
 
 		edit := &EditTool{}
-		_, err = edit.Execute(context.Background(), map[string]any{
+		_, err = edit.Execute(ctx, map[string]any{
 			"path":       filePath,
 			"old_string": "",
 			"new_string": "replacement",
@@ -731,17 +749,17 @@ func TestEdit_EdgeCases(t *testing.T) {
 
 		edit := &EditTool{}
 
-		edit.Execute(context.Background(), map[string]any{
+		edit.Execute(ctx, map[string]any{
 			"path":       filePath,
 			"old_string": "hello",
 			"new_string": "hi",
 		})
-		edit.Execute(context.Background(), map[string]any{
+		edit.Execute(ctx, map[string]any{
 			"path":       filePath,
 			"old_string": "world",
 			"new_string": "earth",
 		})
-		edit.Execute(context.Background(), map[string]any{
+		edit.Execute(ctx, map[string]any{
 			"path":       filePath,
 			"old_string": "foo",
 			"new_string": "baz",

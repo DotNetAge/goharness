@@ -120,7 +120,7 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 	logger := getLogger(ctx)
 
 	tc := GetToolContext(ctx)
-	resolvedPath, scope := ResolveTargetPath(filePath, tc.ProjectDir, tc.SessionDir)
+	resolvedPath, scope := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
 	logger.Info("editing file",
 		"input_path", filePath,

@@ -36,11 +36,11 @@ Returns:
 
 func (t *TeamListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TeamList requires ToolContext with SessionID")
 	}
 
-	teamNames, err := ListTeams(ctx, tc.SessionID)
+	teamNames, err := ListTeams(ctx, tc.Session.ID())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list teams: %w", err)
 	}
@@ -54,7 +54,7 @@ func (t *TeamListTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	var teams []map[string]any
 	for _, name := range teamNames {
-		team, err := GetTeam(ctx, tc.SessionID, name)
+		team, err := GetTeam(ctx, tc.Session.ID(), name)
 		if err != nil || team == nil {
 			continue
 		}

@@ -24,7 +24,7 @@
 //
 // Usage:
 //
-//	session := session.NewSession("session-123", "assistant")
+//	session := session.New("agent-name", "", "/home/user/project")
 //	session.Append(ctx, session.Message{
 //	    Role:    "user",
 //	    Content: "Hello!",
@@ -34,14 +34,18 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/DotNetAge/goharness/memory"
+	"github.com/oklog/ulid/v2"
 )
 
 // SessionConfig is a functional option for configuring Session instances.
@@ -91,7 +95,91 @@ func WithCompactionHandler(h func(CompactionEvent)) SessionConfig {
 	return func(s *Session) { s.compactionHandler = h }
 }
 
+// New creates a new conversation session with an auto-generated ULID.
+//
+// This is Mode 1 ("全新 Session") construction:
+//   - Sponsor: identifies the session's creator (empty = user, non-empty = another agent)
+//   - AgentName(Owner): the agent operating this session
+//   - ProjectDir: the working directory for file operations (REQUIRED)
+//   - ID: auto-generated ULID
+//
+// Parameters:
+//   - agentName: Name of the agent operating this session
+//   - sponsor: Agent that created/sponsored this session. Empty = user-initiated.
+//   - projectDir: Working directory for file operations (must not be empty)
+//   - opts: Optional configuration functions (WithStore, WithMemory, etc.)
+//
+// Returns:
+//   - A fully initialized Session ready to receive messages
+//
+// Thread Safety: All operations on the returned Session are thread-safe.
+func New(agentName, sponsor, projectDir string, opts ...SessionConfig) *Session {
+	entropy := ulid.Monotonic(rand.Reader, 0)
+	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy)
+
+	s := &Session{
+		id:         id.String(),
+		agentName:  agentName,
+		sponsor:    sponsor,
+		projectDir: projectDir,
+		messages:   make([]Message, 0),
+		store:      NewMemorySessionStore(),
+		mem:        newInMemoryMemory(),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.projectDir == "" {
+		log.Printf("[SESSION] FATAL: session %s (agent=%s) created without ProjectDir — this is a severe bug", s.id, agentName)
+		fmt.Fprintf(os.Stderr, "[SESSION] FATAL: session %s (agent=%s) created without ProjectDir\n", s.id, agentName)
+	}
+	return s
+}
+
+// Load reconstructs a Session from an existing session ID using persistent storage.
+//
+// This is Mode 2 ("从 ID 中加载") construction:
+//   - sessionID: The existing session's ULID
+//   - agentName: Name of the agent operating this session
+//   - store: The persistent SessionStore to load from (REQUIRED)
+//   - opts: Optional configuration functions (WithMemory, WithSummarizer, etc.)
+//
+// Load verifies the session exists by calling store.GetMeta(). If the session
+// is not found in the store, an error is returned — the caller should handle
+// this as "session does not exist".
+//
+// ProjectDir is automatically restored from stored session metadata.
+// Sponsor is left empty (user-initiated) for loaded sessions.
+func Load(sessionID, agentName string, store SessionStore, opts ...SessionConfig) (*Session, error) {
+	if store == nil {
+		return nil, fmt.Errorf("session store is required for Load")
+	}
+
+	info, err := store.GetMeta(context.Background(), sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session %q not found: %w", sessionID, err)
+	}
+
+	s := &Session{
+		id:         sessionID,
+		agentName:  agentName,
+		projectDir: info.ProjectDir,
+		messages:   make([]Message, 0),
+		store:      store,
+		mem:        newInMemoryMemory(),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
 // NewSession creates a new conversation session with the given ID and agent name.
+//
+// Deprecated: Use New() for creating fresh sessions or Load() for loading
+// existing sessions from persistent storage. NewSession exists for compatibility
+// with legacy code paths.
+//
 // Sessions are created with sensible defaults:
 //   - In-memory message store
 //   - In-memory summary store
@@ -117,6 +205,15 @@ func NewSession(id, agentName string, opts ...SessionConfig) *Session {
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	// ProjectDir must be set at construction time.
+	// This is the authoritative source; store metadata lazy-load is only a
+	// restore mechanism for existing sessions, NOT an alternative to providing it.
+	if s.projectDir == "" {
+		log.Printf("[SESSION] FATAL: session %s (agent=%s) created without ProjectDir — this is a severe bug", id, agentName)
+		// Also write to stderr for visibility in daemon logs
+		fmt.Fprintf(os.Stderr, "[SESSION] FATAL: session %s (agent=%s) created without ProjectDir\n", id, agentName)
 	}
 	return s
 }
@@ -158,6 +255,11 @@ type Session struct {
 
 	// agentName identifies which agent owns this session
 	agentName string
+
+	// sponsor identifies the agent that created/sponsored this session.
+	// Empty means user-initiated (agent ↔ user conversation).
+	// Non-empty means agent-spawned (SubAgent from another agent).
+	sponsor string
 
 	// projectDir is the working directory for file operations
 	projectDir string
@@ -219,6 +321,21 @@ func (s *Session) ProjectDir() string { return s.projectDir }
 //	)
 func WithProjectDir(dir string) SessionConfig {
 	return func(s *Session) { s.projectDir = dir }
+}
+
+// WithSponsor sets the sponsor agent that created this session.
+// When empty, the session is considered user-initiated (agent ↔ user conversation).
+// When set, the session was created by another agent (SubAgent).
+func WithSponsor(name string) SessionConfig {
+	return func(s *Session) { s.sponsor = name }
+}
+
+// Sponsor returns the name of the agent that created/sponsored this session.
+// Returns empty string for user-initiated sessions.
+func (s *Session) Sponsor() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sponsor
 }
 
 // SessionDir returns the filesystem path where session data is stored.

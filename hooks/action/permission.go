@@ -12,16 +12,32 @@ import (
 
 // PermissionHook checks tool execution permissions before allowing tool calls.
 // It uses a permission chain to evaluate whether a tool should be allowed to execute.
+// If GrantCache is set, it is checked first — cached grants bypass the permission chain.
 type PermissionHook struct {
 	Chain  permission.PermissionChain
 	Logger logging.Logger
+
+	// GrantCache is an optional function that checks if a tool has been
+	// pre-granted permission for a session. If it returns true, the permission
+	// chain is bypassed and the tool is allowed to execute.
+	// Set by the daemon to implement non-blocking permission resumption.
+	GrantCache func(sessionID, toolName string) bool
 }
 
 func (h *PermissionHook) Priority() int { return hooks.PriorityPermission }
 
-// Before checks if the tool execution is permitted by the permission chain.
-// Returns an abort result if permission is denied, or an error if the check fails.
+// Before checks if the tool execution is permitted.
+// If GrantCache returns true for this (sessionID, toolName), the tool is
+// allowed immediately without consulting the permission chain.
 func (h *PermissionHook) Before(sessionID string, toolName string, params map[string]any) hooks.HookResult {
+	// Check grant cache first (non-blocking permission resumption)
+	if h.GrantCache != nil && h.GrantCache(sessionID, toolName) {
+		if h.Logger != nil {
+			h.Logger.Debug("[permission_hook] cached grant", "tool", toolName, "session", sessionID)
+		}
+		return hooks.HookResult{}
+	}
+
 	if h.Chain == nil {
 		return hooks.HookResult{}
 	}

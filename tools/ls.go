@@ -100,7 +100,7 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	}
 
 	// Security check
-	if err := ValidateFileSafety(dirPath, tc.ProjectDir); err != nil {
+	if err := ValidateFileSafety(dirPath, tc.Session.ProjectDir()); err != nil {
 		return nil, err
 	}
 

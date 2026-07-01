@@ -3,30 +3,27 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/DotNetAge/goharness/events"
 )
 
-// AskUser 实现了用户交互工具。
-// 用于在执行过程中向用户提问，收集信息、澄清歧义或获取决策。
-//
+// AskUser 实现了非阻塞用户交互工具。
 // 与旧设计的区别：
-//   - 不再返回 _interaction marker
-//   - 通过 AskUserRequest 事件发送结构化问题
-//   - 权限对话框收集答案，通过 UpdatedInput 注入参数
-//   - Execute() 是恒等函数，将答案格式化为自然语言消息
+//   - 非阻塞设计：工具直接返回，不等待用户输入
+//   - SecurityLevel 为 LevelSafe，不触发权限检查
+//   - 思考循环在工具执行后被 runtime 检测并暂停
+//   - 用户的回答作为普通用户消息发送给 LLM
 //
 // 交互流程：
 //  1. LLM 调用 AskUser 工具并传入问题
-//  2. 执行器检测到 AskUser，发送 AskUserRequest 事件
-//  3. 前端显示问题对话框
-//  4. 用户选择或输入答案
-//  5. 答案通过 UpdatedInput 注入回 params
-//  6. Execute() 格式化答案返回给 LLM
+//  2. 工具直接返回提示消息
+//  3. Runtime 检测到 AskUser 调用，发射 AskUserPending 事件
+//  4. 思考循环暂停
+//  5. 前端显示问题对话框
+//  6. 用户选择答案后通过普通消息发送
+//  7. LLM 从新对话周期继续推理
 type AskUser struct {
-	info *ToolInfo // 工具元信息
+	info *ToolInfo
 }
 
 // NewAskUserTool 创建一个 AskUser 工具实例。
@@ -43,7 +40,7 @@ func NewAskUserTool() FuncTool {
 Users can always type a custom answer via "Other". Use multiSelect: true for non-exclusive choices.`,
 			Tags:          []string{"interaction", "question", "clarify", "human"},
 			IsReadOnly:    false,
-			SecurityLevel: events.LevelSensitive,
+			SecurityLevel: events.LevelSafe,
 			Parameters: []Parameter{
 				{
 					Name:        "question",
@@ -73,17 +70,16 @@ func (t *AskUser) Info() *ToolInfo {
 	return t.info
 }
 
-// Execute 执行用户提问操作。
-// 这是一个恒等函数：实际的交互（显示问题对话框、收集用户答案）
-// 由执行器的 awaitUserResponse 通过 AskUserRequest 事件处理。
-// 用户答案通过 params["answers"] 注入。
+// Execute 执行非阻塞用户提问操作。
+// 直接返回提示消息，告诉 LLM 问题已提出，等待用户响应。
+// Runtime 会检测 AskUser 调用并暂停思考循环。
 //
 // 参数：
 //   - ctx: 上下文
 //   - params: 必须包含 "question"，可选 "options" 和 "multiSelect"
 //
 // 返回：
-//   - string: 格式化的答案结果或提示消息
+//   - string: 提示消息
 //   - error: 缺少必需参数时返回错误
 func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, error) {
 	question, ok := params["question"].(string)
@@ -91,38 +87,5 @@ func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, erro
 		return nil, fmt.Errorf("missing required parameter: question")
 	}
 
-	// If answers are present (injected via permission UpdatedInput), format them
-	if answers, ok := params["answers"].(map[string]any); ok && len(answers) > 0 {
-		return formatAnswerResult(question, answers), nil
-	}
-
-	// Fallback: permission was granted without explicit answers (e.g., auto-allow)
-	return fmt.Sprintf(`Asked user: "%s". Proceed based on the response.`, question), nil
-}
-
-// formatAnswerResult 构建自然语言的答案结果字符串。
-// 遵循 Claude Code 的方式，告诉模型如何处理答案。
-// 键按字母顺序排序以确保确定性输出。
-//
-// 参数：
-//   - question: 原始问题
-//   - answers: 用户答案映射（键为问题标识，值为答案）
-//
-// 返回：
-//   - string: 格式化的答案结果
-func formatAnswerResult(question string, answers map[string]any) string {
-	// Sort keys for deterministic output
-	keys := make([]string, 0, len(answers))
-	for k := range answers {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var parts []string
-	for _, q := range keys {
-		parts = append(parts, fmt.Sprintf(`"%s" = "%v"`, q, answers[q]))
-	}
-	return fmt.Sprintf(
-		"User has answered your questions: %s. You can now continue with the user's answers in mind.",
-		strings.Join(parts, ", "),
-	)
+	return fmt.Sprintf(`Asked user: "%s". Waiting for their response...`, question), nil
 }

@@ -45,11 +45,11 @@ func (t *TeamDeleteTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TeamDelete requires ToolContext with SessionID")
 	}
 
-	team, err := GetTeam(ctx, tc.SessionID, teamName)
+	team, err := GetTeam(ctx, tc.Session.ID(), teamName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get team: %w", err)
 	}
@@ -57,7 +57,7 @@ func (t *TeamDeleteTool) Execute(ctx context.Context, params map[string]any) (an
 		return nil, fmt.Errorf("team %q not found", teamName)
 	}
 
-	if err := DeleteTeam(ctx, tc.SessionID, teamName); err != nil {
+	if err := DeleteTeam(ctx, tc.Session.ID(), teamName); err != nil {
 		return nil, fmt.Errorf("failed to delete team: %w", err)
 	}
 

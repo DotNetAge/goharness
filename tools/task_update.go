@@ -45,11 +45,11 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TaskUpdate requires ToolContext with SessionID")
 	}
 
-	task, err := GetTask(ctx, tc.SessionID, taskID)
+	task, err := GetTask(ctx, tc.Session.ID(), taskID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get task: %w", err)
 	}
@@ -110,17 +110,17 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	if rawBlocks, ok := params["addBlocks"].([]any); ok && len(rawBlocks) > 0 {
 		for _, raw := range rawBlocks {
 			if blockID, ok := raw.(string); ok && blockID != "" {
-				if canReach(ctx, tc.SessionID, blockID, taskID) {
+				if canReach(ctx, tc.Session.ID(), blockID, taskID) {
 					return nil, fmt.Errorf("adding block %q would create a circular dependency", blockID)
 				}
 				if !slices.Contains(task.Blocks, blockID) {
 					task.Blocks = append(task.Blocks, blockID)
 				}
-				blockedTask, err := GetTask(ctx, tc.SessionID, blockID)
+				blockedTask, err := GetTask(ctx, tc.Session.ID(), blockID)
 				if err == nil && blockedTask != nil {
 					if !slices.Contains(blockedTask.BlockedBy, taskID) {
 						blockedTask.BlockedBy = append(blockedTask.BlockedBy, taskID)
-						if err := UpdateTask(ctx, tc.SessionID, blockedTask); err != nil {
+						if err := UpdateTask(ctx, tc.Session.ID(), blockedTask); err != nil {
 							getLogger(ctx).Warn("failed to update inverse dependency",
 								"task_id", blockID, "error", err)
 						}
@@ -135,17 +135,17 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	if rawBlockedBy, ok := params["addBlockedBy"].([]any); ok && len(rawBlockedBy) > 0 {
 		for _, raw := range rawBlockedBy {
 			if depID, ok := raw.(string); ok && depID != "" {
-				if canReach(ctx, tc.SessionID, taskID, depID) {
+				if canReach(ctx, tc.Session.ID(), taskID, depID) {
 					return nil, fmt.Errorf("adding blockedBy %q would create a circular dependency", depID)
 				}
 				if !slices.Contains(task.BlockedBy, depID) {
 					task.BlockedBy = append(task.BlockedBy, depID)
 				}
-				blockingTask, err := GetTask(ctx, tc.SessionID, depID)
+				blockingTask, err := GetTask(ctx, tc.Session.ID(), depID)
 				if err == nil && blockingTask != nil {
 					if !slices.Contains(blockingTask.Blocks, taskID) {
 						blockingTask.Blocks = append(blockingTask.Blocks, taskID)
-						if err := UpdateTask(ctx, tc.SessionID, blockingTask); err != nil {
+						if err := UpdateTask(ctx, tc.Session.ID(), blockingTask); err != nil {
 							getLogger(ctx).Warn("failed to update inverse dependency",
 								"task_id", depID, "error", err)
 						}
@@ -163,7 +163,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		}, nil
 	}
 
-	if err := UpdateTask(ctx, tc.SessionID, task); err != nil {
+	if err := UpdateTask(ctx, tc.Session.ID(), task); err != nil {
 		return nil, fmt.Errorf("failed to update task: %w", err)
 	}
 
@@ -177,9 +177,9 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	// Verification nudge: when completing tasks, suggest verifying after every 3 completions
 	if task.Status == TaskCompleted {
 		completedCount := 0
-		allIDs, _ := ListTasks(ctx, tc.SessionID)
+		allIDs, _ := ListTasks(ctx, tc.Session.ID())
 		for _, id := range allIDs {
-			t, _ := GetTask(ctx, tc.SessionID, id)
+			t, _ := GetTask(ctx, tc.Session.ID(), id)
 			if t != nil && t.Status == TaskCompleted {
 				completedCount++
 			}

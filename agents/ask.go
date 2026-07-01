@@ -20,7 +20,7 @@ type AskBuilder struct {
 
 	// onAnyEvent fires for every ReactEvent emitted by the execution loop,
 	// before type-specific handlers (onEvent). Used by the daemon to track
-	// agent_id across forwarded sub-agent events.
+	// agent_name across forwarded sub-agent events.
 	onAnyEvent []func(events.ReactEvent)
 
 	// parentEmit forwards ReactEvent to the parent EventBus.
@@ -100,22 +100,6 @@ func (b *AskBuilder) OnSubtaskCompleted(fn func(data events.SubtaskResult)) *Ask
 	})
 }
 
-func (b *AskBuilder) OnAgentTalkStart(fn func(data events.AgentTalkInfo)) *AskBuilder {
-	return b.on(events.AgentTalkStart, func(d any) {
-		if v, ok := d.(events.AgentTalkInfo); ok {
-			fn(v)
-		}
-	})
-}
-
-func (b *AskBuilder) OnAgentTalkEnd(fn func(data events.AgentTalkResult)) *AskBuilder {
-	return b.on(events.AgentTalkEnd, func(d any) {
-		if v, ok := d.(events.AgentTalkResult); ok {
-			fn(v)
-		}
-	})
-}
-
 func (b *AskBuilder) OnPermissionRequest(fn func(data events.PermissionRequestData)) *AskBuilder {
 	return b.on(events.PermissionRequest, func(d any) {
 		if v, ok := d.(events.PermissionRequestData); ok {
@@ -135,6 +119,22 @@ func (b *AskBuilder) OnPermissionDenied(fn func(reason string)) *AskBuilder {
 func (b *AskBuilder) OnAskUser(fn func(data events.AskUserRequestData)) *AskBuilder {
 	return b.on(events.AskUserRequest, func(d any) {
 		if v, ok := d.(events.AskUserRequestData); ok {
+			fn(v)
+		}
+	})
+}
+
+func (b *AskBuilder) OnAskUserPending(fn func(data events.AskUserPendingData)) *AskBuilder {
+	return b.on(events.AskUserPending, func(d any) {
+		if v, ok := d.(events.AskUserPendingData); ok {
+			fn(v)
+		}
+	})
+}
+
+func (b *AskBuilder) OnPermissionPending(fn func(data events.PermissionPendingData)) *AskBuilder {
+	return b.on(events.PermissionPending, func(d any) {
+		if v, ok := d.(events.PermissionPendingData); ok {
 			fn(v)
 		}
 	})
@@ -201,7 +201,7 @@ func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)
 
 // OnEvent registers a catch-all handler that fires for every ReactEvent
 // emitted by the execution loop, before type-specific handlers.
-// The handler receives the full ReactEvent including AgentID, SessionID, Type, and Data.
+// The handler receives the full ReactEvent including AgentName, SessionID, Type, and Data.
 // This is useful for tracking metadata like which agent produced an event.
 func (b *AskBuilder) OnEvent(fn func(events.ReactEvent)) *AskBuilder {
 	b.onAnyEvent = append(b.onAnyEvent, fn)

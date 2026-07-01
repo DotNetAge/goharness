@@ -66,6 +66,7 @@ import (
 
 	gochat "github.com/DotNetAge/gochat"
 	gochatcore "github.com/DotNetAge/gochat/core"
+	"github.com/google/uuid"
 
 	"github.com/DotNetAge/goharness/config"
 	"github.com/DotNetAge/goharness/events"
@@ -173,6 +174,11 @@ type Runtime struct {
 	asyncTimeout time.Duration
 	syncTimeout  time.Duration
 
+	// subAgentSessionCache caches SubAgent sessions keyed by "agentName:projectDir".
+	// Ensures 1 Agent + 1 ProjectDir = 1 SessionID: same SubAgent on the same
+	// project reuses the same session for conversation continuity.
+	subAgentSessionCache map[string]*session.Session
+
 	// tokenUsageStore persists LLM token usage records with grouping dimensions and cost.
 	// Default: NoopTokenUsageStore (no-op). Inject via WithTokenUsageStore().
 	tokenUsageStore session.TokenUsageStore
@@ -184,6 +190,10 @@ type Runtime struct {
 	// fileModifyHook holds a reference to the registered FileModifyHook,
 	// allowing WithFileModifyTracker to dynamically update its provider after init.
 	fileModifyHook *action.FileModifyHook
+
+	// permissionHook holds a reference to the registered PermissionHook,
+	// allowing WithGrantCache to dynamically set the grant cache after init.
+	permissionHook *action.PermissionHook
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -315,11 +325,12 @@ type RunResult struct {
 //	)
 func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	r := &Runtime{
-		toolReg:      tools.NewDefaultToolRegistry(),
-		skillReg:     skill.NewDefaultSkillRegistry(),
-		logger:       logging.DefaultLogger(),
-		asyncTimeout: 5 * time.Minute,
-		syncTimeout:  5 * time.Minute,
+		toolReg:              tools.NewDefaultToolRegistry(),
+		skillReg:             skill.NewDefaultSkillRegistry(),
+		logger:               logging.DefaultLogger(),
+		asyncTimeout:         5 * time.Minute,
+		syncTimeout:          5 * time.Minute,
+		subAgentSessionCache: make(map[string]*session.Session),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -373,7 +384,6 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TeamDelete", func() tools.FuncTool { return tools.NewTeamDeleteTool() }},
 		{"TeamList", func() tools.FuncTool { return tools.NewTeamListTool() }},
 		{"TeamGetTasks", func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
-		{"AgentTalk", func() tools.FuncTool { return tools.NewAgentTalkTool(rt.agentTalk) }},
 		{"Sleep", func() tools.FuncTool { return tools.NewSleepTool() }},
 		{"Skill", func() tools.FuncTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }},
 	}
@@ -424,44 +434,15 @@ func (rt *Runtime) registerDefaultHooks() {
 		}
 	}
 
-	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
-}
-
-// ── AgentTalk: synchronous inter-agent communication ──────────────────────────
-
-// agentTalk implements AgentTalkFunc for synchronous inter-agent communication.
-// The target agent runs in its own independent session (session isolation principle),
-// avoiding the SubAgent + AgentTalk deadlock where a parent is blocked on CollectResults.
-//
-// Design decisions:
-//   - Creates a fresh session per call using the provided sessionID
-//   - Target agent runs via Runtime.Ask() — same ThinkLoop as any other agent
-//   - Independent ThinkLoop means the target agent can use tools, do its own work
-//   - Session isolation: target agent's messages are completely separate from caller's session
-//
-// The sessionID parameter enables conversation continuity:
-//   - New sessionID = start a fresh conversation with the target agent
-//   - Reused sessionID = continue an existing conversation thread
-//     (Session caching for continuity is a future enhancement — current impl creates fresh sessions)
-func (rt *Runtime) agentTalk(ctx context.Context, to, sessionID, message string) (string, error) {
-	if rt.agentReg != nil {
-		if cfg := rt.agentReg.Get(to); cfg == nil {
-			return "", fmt.Errorf("agent %q not found in registry", to)
+	// Capture PermissionHook reference for late binding via WithGrantCache.
+	for _, h := range defaultHooks {
+		if ph, ok := h.(*action.PermissionHook); ok {
+			rt.permissionHook = ph
+			break
 		}
 	}
 
-	sess := session.NewSession(sessionID, to)
-	rt.logger.Info("agent talk started",
-		"to", to,
-		"session_id", sessionID,
-	)
-
-	result, err := rt.Ask(to, message, sess).Run()
-	if err != nil {
-		return "", fmt.Errorf("agent talk to %q: %w", to, err)
-	}
-
-	return result.Answer, nil
+	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
 }
 
 // parentEmitKey is a context key for passing the parent EventBus emitter
@@ -470,27 +451,40 @@ type parentEmitKeyType struct{}
 
 // ── SubAgent: async task delegation ────────────────────────────────────────────
 
+// getOrCreateSubAgentSession returns an existing cached SubAgent session for the
+// given (agentName, projectDir) pair, or creates a new one. This enforces the
+// 1 Agent + 1 ProjectDir = 1 SessionID invariant so that the same SubAgent on
+// the same project always has conversation continuity.
+func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor string, store session.SessionStore) *session.Session {
+	key := agentName + ":" + projectDir
+	if s, ok := rt.subAgentSessionCache[key]; ok {
+		return s
+	}
+	s := session.New(agentName, sponsor, projectDir, session.WithStore(store))
+	rt.subAgentSessionCache[key] = s
+	return s
+}
+
 // spawnSubAgent implements SpawnFunc for creating and running sub-agents.
 // Sub-agents run in the background via an independent ThinkLoop, and their results
 // are collected later via CollectResultsTool.
 //
-// Design decisions mirror agentTalk but with key differences:
+// Design decisions:
 //   - Creates a unique session per spawn (no session reuse — one-shot task)
 //   - Runs via Runtime.Ask() — same ThinkLoop as the main agent
 //   - Independent session = full isolation from the parent's context
-func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (string, error) {
+func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (answer string, sessionID string, err error) {
 	if rt.agentReg != nil {
 		if cfg := rt.agentReg.Get(agentName); cfg == nil {
-			return "", fmt.Errorf("agent %q not found in registry", agentName)
+			return "", "", fmt.Errorf("agent %q not found in registry", agentName)
 		}
 	}
 
-	sess := session.NewSession(
-		fmt.Sprintf("subagent-%s-%d", agentName, time.Now().UnixNano()),
-		agentName,
-	)
+	tc := tools.GetToolContext(ctx)
+	sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
 	rt.logger.Info("sub-agent spawn started",
 		"agent_name", agentName,
+		"session_id", sess.ID(),
 	)
 
 	builder := rt.Ask(agentName, task, sess)
@@ -500,11 +494,12 @@ func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (s
 		builder.parentEmit = pe
 	}
 	result, err := builder.Run()
+	sessionID = sess.ID()
 	if err != nil {
-		return "", fmt.Errorf("sub-agent %q: %w", agentName, err)
+		return "", sessionID, fmt.Errorf("sub-agent %q: %w", agentName, err)
 	}
 
-	return result.Answer, nil
+	return result.Answer, sessionID, nil
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -673,16 +668,38 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	logger.Info("exec started", "session", sid, "agent", b.agentName, "model", rt.model.Name)
 
+	var start time.Time
+	start = time.Now()
+	defer func() {
+		logger.Info("exec finished",
+			"session", sid,
+			"agent", b.agentName,
+			"reason", b.resultTerminationReason,
+			"iterations", b.resultIterations,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"answer_len", len(b.resultAnswer),
+			"has_error", b.resultErr != nil,
+		)
+	}()
+
 	// Event bus
 	eb := events.NewEventBus()
+	if logger != nil {
+		eb.SetLogger(logger)
+	}
 	_, cancel := eb.SubscribeFiltered(func(ev events.ReactEvent) bool {
 		// Forward to parent EventBus if this is a sub-agent,
 		// enabling client-side visibility across agent boundaries.
 		if b.parentEmit != nil {
+			logger.Debug("[exec] forwarding event to parent EventBus",
+				"type", ev.Type,
+				"agent", ev.AgentName,
+				"session", ev.SessionID,
+			)
 			b.parentEmit(ev)
 		}
 		// Fire catch-all OnEvent handlers before type-specific handlers.
-		// Used by the daemon to track agent_id across forwarded events.
+		// Used by the daemon to track agent_name across forwarded events.
 		for _, h := range b.onAnyEvent {
 			h(ev)
 		}
@@ -698,7 +715,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	emit := func(typ events.ReactEventType, data any) {
 		eb.Emit(events.ReactEvent{
 			SessionID: sid,
-			AgentID:   b.agentName,
+			AgentName: b.agentName,
 			Type:      typ,
 			Data:      data,
 			Timestamp: time.Now().UnixMilli(),
@@ -735,13 +752,13 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// the correct project directory from the persisted session metadata.
 	b.session.Current()
 
-	// Tool executor
+	// Tool executor — Session pointer is passed as the authoritative source
+	// for session-level state (ID, ProjectDir, AgentName, etc.). Tools access
+	// these properties through Session getter methods, not extracted copies.
 	toolExec := tools.NewToolExecutor(rt.toolReg,
 		tools.WithEventEmitter(func(ev events.ReactEvent) { eb.Emit(ev) }),
 		tools.WithLogger(logger),
-		tools.WithExecutorSessionID(b.session.ID()),
-		tools.WithProjectDirExecutor(b.session.ProjectDir()),
-		tools.WithSessionDirExecutor(b.session.SessionDir()),
+		tools.WithSession(b.session),
 		tools.WithPermissionChecker(tools.NewFileBoundaryChecker(
 			b.session.ProjectDir(),
 			b.session.SessionDir(),
@@ -782,7 +799,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// Build system prompt sections once (static per session — none change between rounds)
 	systemSections := rt.buildSystemPrompts(sid, b.session)
 
-	start := time.Now()
+	start = time.Now()
 	var lastIteration int
 	var prevToolResults []hooks.ToolResult
 
@@ -1190,6 +1207,45 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Role: "tool", Content: skippedContent, Timestamp: time.Now().Unix(),
 				ToolCallID: tc.ID,
 			})
+		}
+
+		// ── Non-blocking AskUser detection ──
+		// After tool execution, check if AskUser was invoked. If so, emit
+		// AskUserPending event and exit the loop. The user's answer will
+		// arrive as a regular user message in a new session turn.
+		if askUserInv := findAskUserInvocation(invocs); askUserInv != nil {
+			askUserData := buildAskUserPendingData(askUserInv.Arguments)
+			emit(events.AskUserPending, askUserData)
+			emit(events.TaskSummary, events.TaskSummaryData{
+				Summary:    "向用户提出问题，等待回答中...",
+				TokenUsage: totalUsage,
+			})
+			b.resultTerminationReason = "ask_user_pending"
+			setIterResult(iter)
+			logger.Info("loop paused: AskUser tool invoked, waiting for user response")
+			return
+		}
+
+		// ── Non-blocking Permission detection ──
+		// After tool execution, check if any tool returned "permission_required".
+		// If so, emit PermissionPending event and exit the loop. The user will
+		// Agree/Deny on the UI, and the daemon will re-trigger the loop via
+		// execution.resume RPC + grant cache.
+		if permPending := findPermissionPendingResult(toolResults); permPending != nil {
+			emit(events.PermissionPending, events.PermissionPendingData{
+				TickID:        uuid.New().String(),
+				ToolName:      permPending.ToolName,
+				Reason:        fmt.Sprintf("Tool %q requires your authorization.", permPending.ToolName),
+				SecurityLevel: events.LevelSensitive,
+			})
+			emit(events.TaskSummary, events.TaskSummaryData{
+				Summary:    fmt.Sprintf("请求授权执行工具: %s，等待用户批准...", permPending.ToolName),
+				TokenUsage: totalUsage,
+			})
+			b.resultTerminationReason = "permission_pending"
+			setIterResult(iter)
+			logger.Info("loop paused: tool requires permission, waiting for user approval", "tool", permPending.ToolName)
+			return
 		}
 	}
 
@@ -2002,6 +2058,27 @@ func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	}
 }
 
+// WithGrantCache sets the permission grant cache function for this Runtime.
+// When set, the PermissionHook consults this cache before the permission chain.
+// If the cache returns true for a (sessionID, toolName), the tool is allowed
+// immediately — used by the daemon to implement non-blocking permission resumption.
+//
+// The cache function must be safe for concurrent use.
+//
+// Example:
+//
+//	rt.WithGrantCache(func(sessionID, toolName string) bool {
+//	    v, ok := grantCache.Load(sessionID)
+//	    if !ok { return false }
+//	    granted := v.(map[string]bool)
+//	    return granted[toolName]
+//	})
+func (rt *Runtime) WithGrantCache(cache func(sessionID, toolName string) bool) {
+	if rt.permissionHook != nil {
+		rt.permissionHook.GrantCache = cache
+	}
+}
+
 // RegisterTool adds a new tool to the Runtime's tool registry.
 // The tool will be available for the LLM to invoke in subsequent Ask calls.
 // Tool definitions are sent to the LLM as part of the API request.
@@ -2031,4 +2108,51 @@ func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 //	}
 func (rt *Runtime) RegisterTool(tool tools.FuncTool) error {
 	return rt.toolReg.Register(tool)
+}
+
+// ── AskUser helpers ────────────────────────────────────────────────────────
+
+// findAskUserInvocation finds an AskUser tool invocation in the list.
+// Returns nil if no AskUser invocation is found.
+func findAskUserInvocation(invocs []hooks.ToolCallInvocation) *hooks.ToolCallInvocation {
+	for i := range invocs {
+		if invocs[i].Name == "AskUser" {
+			return &invocs[i]
+		}
+	}
+	return nil
+}
+
+// buildAskUserPendingData extracts question data from AskUser arguments
+// and builds AskUserPendingData for frontend display.
+func buildAskUserPendingData(args map[string]any) events.AskUserPendingData {
+	question, _ := args["question"].(string)
+	multi, _ := args["multiSelect"].(bool)
+
+	q := events.AskUserQuestion{
+		Question:    question,
+		MultiSelect: multi,
+	}
+	if opts, ok := args["options"].([]any); ok {
+		for _, o := range opts {
+			if s, ok := o.(string); ok {
+				q.Options = append(q.Options, s)
+			}
+		}
+	}
+	return events.NewAskUserPendingData([]events.AskUserQuestion{q})
+}
+
+// ── Permission helpers ─────────────────────────────────────────────────────
+
+// findPermissionPendingResult finds a tool result that indicates permission
+// is required (result starts with "[permission_required]").
+// Returns nil if no permission is pending.
+func findPermissionPendingResult(results []hooks.ToolResult) *hooks.ToolResult {
+	for i := range results {
+		if strings.HasPrefix(results[i].Result, "[permission_required]") {
+			return &results[i]
+		}
+	}
+	return nil
 }

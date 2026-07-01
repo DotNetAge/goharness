@@ -88,7 +88,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 
 	// Resolve path with optional session: prefix support
 	tc := GetToolContext(ctx)
-	resolvedPath, scope := ResolveTargetPath(path, tc.ProjectDir, tc.SessionDir)
+	resolvedPath, scope := ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
 	logger.Info("writing file",
 		"input_path", path,

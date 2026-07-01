@@ -38,11 +38,11 @@ func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (
 	}
 
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TeamGetTasks requires ToolContext with SessionID")
 	}
 
-	team, err := GetTeam(ctx, tc.SessionID, teamName)
+	team, err := GetTeam(ctx, tc.Session.ID(), teamName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get team: %w", err)
 	}
@@ -52,7 +52,7 @@ func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (
 
 	var tasks []map[string]any
 	for _, taskID := range team.TaskIDs {
-		task, err := GetTask(ctx, tc.SessionID, taskID)
+		task, err := GetTask(ctx, tc.Session.ID(), taskID)
 		if err != nil || task == nil {
 			continue
 		}

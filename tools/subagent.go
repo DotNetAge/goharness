@@ -24,8 +24,9 @@ var subagentSem = make(chan struct{}, 20)
 //
 // 返回：
 //   - string: 子代理的执行结果
+//   - string: 子代理的会话 ID（用于持久化加载）
 //   - error: 执行过程中的错误
-type SpawnFunc func(ctx context.Context, agentName, task string) (string, error)
+type SpawnFunc func(ctx context.Context, agentName, task string) (result string, sessionID string, err error)
 
 // SubAgentTool 实现了子代理调度工具。
 // 允许 LLM 生成子代理来处理委派的任务。
@@ -120,7 +121,8 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	taskID := fmt.Sprintf("subagent-%d", t.counter.Add(1))
 
 	tc.EmitEvent(events.ReactEvent{
-		Type: events.SubtaskSpawned,
+		AgentName: agentName,
+		Type:      events.SubtaskSpawned,
 		Data: events.SubtaskInfo{
 			TaskID:      taskID,
 			AgentName:   agentName,
@@ -134,19 +136,21 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		startedAt := time.Now()
 		defer func() { <-subagentSem }()
 
-		result, err := t.spawn(ctx, agentName, task)
+		result, sessionID, err := t.spawn(ctx, agentName, task)
 		completedAt := time.Now()
 
 		if err != nil {
 			logger.Error("sub-agent task failed", err,
 				"agent_name", agentName,
 				"task_id", taskID,
+				"session_id", sessionID,
 				"elapsed_ms", completedAt.Sub(startedAt).Milliseconds(),
 			)
 		} else {
 			logger.Info("sub-agent task completed",
 				"agent_name", agentName,
 				"task_id", taskID,
+				"session_id", sessionID,
 				"elapsed_ms", completedAt.Sub(startedAt).Milliseconds(),
 				"result_len", len(result),
 			)
@@ -154,19 +158,33 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 
 		var taskResult *store.TaskResult
 		if err != nil {
-			taskResult = &store.TaskResult{TaskID: taskID, Error: err.Error(), Done: true}
+			taskResult = &store.TaskResult{TaskID: taskID, Error: err.Error(), Done: true, SessionID: sessionID}
 		} else {
-			taskResult = &store.TaskResult{TaskID: taskID, Result: result, Done: true}
+			taskResult = &store.TaskResult{TaskID: taskID, Result: result, Done: true, SessionID: sessionID}
 		}
 		if tc.ResultStore != nil {
 			tc.ResultStore.Store(taskID, taskResult)
 		}
+		var (
+			resultAnswer string
+			resultError  string
+		)
+		if err != nil {
+			resultError = err.Error()
+		} else {
+			resultAnswer = result
+		}
 		tc.EmitEvent(events.ReactEvent{
-			AgentID: agentName,
-			Type:    events.SubtaskCompleted,
+			AgentName: agentName,
+			Type:      events.SubtaskCompleted,
 			Data: events.SubtaskResult{
-				TaskID:  taskID,
-				Success: err == nil,
+				TaskID:      taskID,
+				AgentName:   agentName,
+				Success:     err == nil,
+				Answer:      resultAnswer,
+				Error:       resultError,
+				Description: task,
+				SessionID:   sessionID,
 			},
 		})
 	}()

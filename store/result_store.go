@@ -11,10 +11,11 @@ const defaultWaitTimeout = 30 * time.Minute
 
 // TaskResult holds the result of an async task execution.
 type TaskResult struct {
-	TaskID string
-	Result string
-	Error  string
-	Done   bool
+	TaskID    string
+	Result    string
+	Error     string
+	Done      bool
+	SessionID string
 }
 
 // ResultStore stores and retrieves async task results.

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/store"
 )
 
@@ -21,7 +22,7 @@ func newTestKVStore(t *testing.T) (store.KVStore, func()) {
 func withKVStoreContext(ctx context.Context, kv store.KVStore, sessionID string) context.Context {
 	toolCtx := &ToolContext{
 		KVStore:   kv,
-		SessionID: sessionID,
+		Session:   session.NewSession(sessionID, ""),
 		EmitEvent: func(e events.ReactEvent) {},
 	}
 	return WithToolContext(ctx, toolCtx)

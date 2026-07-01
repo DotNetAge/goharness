@@ -4,7 +4,7 @@ import "time"
 
 type ReactEvent struct {
 	SessionID string         `json:"session_id"`
-	AgentID   string         `json:"agent_id,omitempty"`
+	AgentName string         `json:"agent_name,omitempty"`
 	TaskID    string         `json:"task_id"`
 	ParentID  string         `json:"parent_id,omitempty"`
 	Type      ReactEventType `json:"type"`

@@ -46,11 +46,11 @@ func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, 
 	}
 
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TaskGet requires ToolContext with SessionID")
 	}
 
-	task, err := GetTask(ctx, tc.SessionID, taskID)
+	task, err := GetTask(ctx, tc.Session.ID(), taskID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get task: %w", err)
 	}

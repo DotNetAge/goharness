@@ -45,7 +45,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TaskCreate requires ToolContext with SessionID")
 	}
 
@@ -66,7 +66,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		task.Metadata = meta
 	}
 
-	if err := CreateTask(ctx, tc.SessionID, task); err != nil {
+	if err := CreateTask(ctx, tc.Session.ID(), task); err != nil {
 		return nil, fmt.Errorf("failed to create task: %w", err)
 	}
 

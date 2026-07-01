@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +20,7 @@ func TestEdit(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       filePath,
 		"old_string": "line 2",
@@ -50,9 +49,10 @@ func TestEdit(t *testing.T) {
 	}
 	want := "line 1\nline 2 replaced\nline 3\n"
 	if string(newContent) != want {
-		t.Errorf("unexpected content: got %q, want %q", string(newContent), expected)
+		t.Errorf("unexpected content: got %q, want %q", string(newContent), want)
 	}
 
+	// second replace on same file (no error expected)
 	params2 := map[string]any{
 		"path":       filePath,
 		"old_string": "line 1",
@@ -72,7 +72,7 @@ func TestEdit(t *testing.T) {
 
 func TestEditFileNotFound(t *testing.T) {
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       "./nonexistent/file.txt",
 		"old_string": "something",
@@ -99,7 +99,7 @@ func TestEditWithSpecialCharacters(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       filePath,
 		"old_string": "<world> & {foo}",
@@ -132,7 +132,7 @@ func TestEditUnicodeContent(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       filePath,
 		"old_string": "世界",
@@ -164,7 +164,7 @@ func TestEditEmptyFile(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       filePath,
 		"old_string": "nonexistent",
@@ -191,7 +191,7 @@ func TestEditReplaceAll(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":        filePath,
 		"old_string":  "foo",
@@ -225,7 +225,7 @@ func TestEditLimit(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       filePath,
 		"old_string": "x",
@@ -259,7 +259,7 @@ func TestEditStringNotFound(t *testing.T) {
 	}
 
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"path":       filePath,
 		"old_string": "nonexistent",
@@ -274,7 +274,7 @@ func TestEditStringNotFound(t *testing.T) {
 
 func TestEditMissingPath(t *testing.T) {
 	edit := &EditTool{}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	params := map[string]any{
 		"old_string": "foo",
 		"new_string": "bar",

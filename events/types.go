@@ -30,12 +30,6 @@ const (
 	// SubtaskCompleted signals a subagent task has finished (success or failure).
 	SubtaskCompleted ReactEventType = "subtask_completed"
 
-	// AgentTalkStart signals an AgentTalk conversation is about to begin.
-	AgentTalkStart ReactEventType = "agent_talk_start"
-
-	// AgentTalkEnd signals an AgentTalk conversation has completed.
-	AgentTalkEnd ReactEventType = "agent_talk_end"
-
 	// FinalAnswer signals the Reactor has produced its final answer.
 	FinalAnswer ReactEventType = "final_answer"
 
@@ -107,6 +101,22 @@ const (
 	//
 	// Data: session.TokenUsageRecord
 	TokenUsageRecorded ReactEventType = "token_usage_recorded"
+
+	// AskUserPending signals that the LLM has invoked the AskUser tool and the
+	// question is now pending user response. Unlike AskUserRequest (blocking),
+	// this is a non-blocking notification — the thinking loop has been paused
+	// and the user's answer will arrive as a regular user message.
+	//
+	// Data: AskUserPendingData
+	AskUserPending ReactEventType = "ask_user_pending"
+
+	// PermissionPending signals that a tool requires user authorization before
+	// execution. Unlike PermissionRequest (blocking with channel+channel),
+	// this is a non-blocking notification — the thinking loop has been paused.
+	// User responds via Agree/Deny on the UI, and the daemon re-triggers the loop.
+	//
+	// Data: PermissionPendingData
+	PermissionPending ReactEventType = "permission_pending"
 )
 
 // MaxTurnsReachedData contains details about a max-turns event.

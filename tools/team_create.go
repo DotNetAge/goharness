@@ -82,7 +82,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TeamCreate requires ToolContext with SessionID")
 	}
 
@@ -93,7 +93,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		Members:     members,
 	}
 
-	if err := CreateTeam(ctx, tc.SessionID, team); err != nil {
+	if err := CreateTeam(ctx, tc.Session.ID(), team); err != nil {
 		return nil, fmt.Errorf("failed to create team: %w", err)
 	}
 
@@ -118,7 +118,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 				CreatedAt:   time.Now(),
 			}
 
-			if err := CreateTask(ctx, tc.SessionID, task); err != nil {
+			if err := CreateTask(ctx, tc.Session.ID(), task); err != nil {
 				continue
 			}
 			taskIDs = append(taskIDs, taskID)

@@ -10,7 +10,9 @@ import (
 
 const (
 	// StreamChannelBufferSize defines the buffer size for subscriber channels.
-	StreamChannelBufferSize = 256
+	// Increased from 256 to 8192 to prevent event drops under burst traffic
+	// from sub-agents (thinking/content deltas, tool events, etc.).
+	StreamChannelBufferSize = 8192
 )
 
 // EventBus defines the interface for an event publishing and subscription system.
@@ -55,8 +57,23 @@ func NewEventBus() *InProcessEventBus {
 }
 
 // isCriticalEvent checks if an event type requires guaranteed delivery.
+// Critical events are sent with blocking (synchronous) channel writes.
+// Non-critical events use non-blocking writes that silently drop when
+// the subscriber channel is full (backpressure safety valve).
+//
+// Any event type that carries streaming content or execution results
+// that the UI depends on MUST be marked as critical.
 func isCriticalEvent(eventType ReactEventType) bool {
-	return eventType == PermissionRequest || eventType == PermissionDenied
+	switch eventType {
+	case PermissionRequest, PermissionDenied,
+		ThinkingDelta, ContentDelta, ThinkingDone,
+		ToolExecStart, ToolExecEnd, ToolUseDelta,
+		FinalAnswer, TaskSummary,
+		Error, MaxTurnsReached, LLMTimeout,
+		SubtaskSpawned, SubtaskCompleted:
+		return true
+	}
+	return false
 }
 
 // Emit publishes an event to all matching subscribers.
@@ -85,6 +102,13 @@ func (b *InProcessEventBus) Emit(event ReactEvent) {
 			select {
 			case sub.ch <- event:
 			default:
+				if b.logger != nil {
+					b.logger.Warn("[eventbus] non-critical event dropped — subscriber channel full",
+						"event_type", event.Type,
+						"agent", event.AgentName,
+						"session", event.SessionID,
+					)
+				}
 			}
 		}
 	}

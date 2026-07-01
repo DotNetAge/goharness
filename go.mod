@@ -12,5 +12,6 @@ require (
 require (
 	github.com/PuerkitoBio/goquery v1.12.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
+	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	golang.org/x/net v0.55.0 // indirect
 )

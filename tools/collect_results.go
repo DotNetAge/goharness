@@ -49,9 +49,17 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		}
 		r := tc.ResultStore.WaitForResult(ctx, id)
 		if r.Error != "" {
-			results = append(results, fmt.Sprintf("[%s] failed: %s", id, r.Error))
+			if r.SessionID != "" {
+				results = append(results, fmt.Sprintf("[%s] failed (session:%s): %s", id, r.SessionID, r.Error))
+			} else {
+				results = append(results, fmt.Sprintf("[%s] failed: %s", id, r.Error))
+			}
 		} else {
-			results = append(results, fmt.Sprintf("[%s] completed:\n%s", id, r.Result))
+			if r.SessionID != "" {
+				results = append(results, fmt.Sprintf("[%s] completed (session:%s):\n%s", id, r.SessionID, r.Result))
+			} else {
+				results = append(results, fmt.Sprintf("[%s] completed:\n%s", id, r.Result))
+			}
 		}
 	}
 

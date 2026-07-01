@@ -43,14 +43,14 @@ Returns a list with:
 
 func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.SessionID == "" {
+	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
 		return nil, fmt.Errorf("TaskList requires ToolContext with SessionID")
 	}
 
 	statusFilter, _ := params["status_filter"].(string)
 	ownerFilter, _ := params["owner_filter"].(string)
 
-	taskIDs, err := ListTasks(ctx, tc.SessionID)
+	taskIDs, err := ListTasks(ctx, tc.Session.ID())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tasks: %w", err)
 	}
@@ -64,7 +64,7 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	var tasks []map[string]any
 	for _, id := range taskIDs {
-		task, err := GetTask(ctx, tc.SessionID, id)
+		task, err := GetTask(ctx, tc.Session.ID(), id)
 		if err != nil || task == nil {
 			continue
 		}

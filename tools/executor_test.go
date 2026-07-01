@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/session"
 )
 
-// mockExecutorTool 是用于测试执行器的模拟工具
+// mockExecutorTool is a mock tool for testing the executor.
 type mockExecutorTool struct {
 	name          string
 	result        any
@@ -51,7 +52,7 @@ func (m *mockExecutorTool) Execute(ctx context.Context, params map[string]any) (
 	return m.result, nil
 }
 
-// mockPermissionChecker 是模拟的权限检查器
+// mockPermissionChecker is a mock permission checker.
 type mockPermissionChecker struct {
 	behavior PermissionBehavior
 	message  string
@@ -64,7 +65,12 @@ func (m *mockPermissionChecker) CheckPermissions(ctx *ToolUseContext) Permission
 	}
 }
 
-// TestNewToolExecutor 测试执行器创建
+// mockSession creates a simple session for testing.
+func mockSession() *session.Session {
+	return session.NewSession("test-session", "test-agent")
+}
+
+// TestNewToolExecutor tests executor creation.
 func TestNewToolExecutor(t *testing.T) {
 	t.Run("基本创建", func(t *testing.T) {
 		registry := NewDefaultToolRegistry()
@@ -79,8 +85,7 @@ func TestNewToolExecutor(t *testing.T) {
 		registry := NewDefaultToolRegistry()
 		executor := NewToolExecutor(
 			registry,
-			WithProjectDirExecutor("/tmp/test"),
-			WithSessionDirExecutor("/tmp/sessions"),
+			WithSession(mockSession()),
 		)
 
 		if executor == nil {
@@ -89,7 +94,7 @@ func TestNewToolExecutor(t *testing.T) {
 	})
 }
 
-// TestToolExecutor_Execute_Basic 基本执行测试
+// TestToolExecutor_Execute_Basic tests basic execution.
 func TestToolExecutor_Execute_Basic(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 	testTool := &mockExecutorTool{
@@ -137,7 +142,7 @@ func TestToolExecutor_Execute_Basic(t *testing.T) {
 	})
 }
 
-// TestToolExecutor_Execute_Timeout 超时处理测试
+// TestToolExecutor_Execute_Timeout tests timeout handling.
 func TestToolExecutor_Execute_Timeout(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 
@@ -167,7 +172,7 @@ func TestToolExecutor_Execute_Timeout(t *testing.T) {
 	})
 }
 
-// TestToolExecutor_Execute_ErrorPropagation 错误传播测试
+// TestToolExecutor_Execute_ErrorPropagation tests error propagation.
 func TestToolExecutor_Execute_ErrorPropagation(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 
@@ -208,7 +213,7 @@ func TestToolExecutor_Execute_ErrorPropagation(t *testing.T) {
 	})
 }
 
-// TestToolExecutor_Permission 权限检查测试
+// TestToolExecutor_Permission tests permission checking.
 func TestToolExecutor_Permission(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 	testTool := &mockExecutorTool{name: "PermTool", result: "ok"}
@@ -241,7 +246,7 @@ func TestToolExecutor_Permission(t *testing.T) {
 	})
 }
 
-// TestToolExecutor_ResetCycle 重置周期测试
+// TestToolExecutor_ResetCycle tests ResetCycle doesn't panic.
 func TestToolExecutor_ResetCycle(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 	executor := NewToolExecutor(registry)
@@ -256,7 +261,7 @@ func TestToolExecutor_ResetCycle(t *testing.T) {
 	})
 }
 
-// TestToolExecutionResult 结构体验证
+// TestToolExecutionResult validates the ToolExecutionResult struct.
 func TestToolExecutionResult(t *testing.T) {
 	t.Run("成功结果", func(t *testing.T) {
 		result := &ToolExecutionResult{
@@ -294,7 +299,7 @@ func TestToolExecutionResult(t *testing.T) {
 	})
 }
 
-// TestToolExecutor_ConcurrentExecution 并发执行测试
+// TestToolExecutor_ConcurrentExecution tests concurrent execution.
 func TestToolExecutor_ConcurrentExecution(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 
@@ -334,7 +339,7 @@ func TestToolExecutor_ConcurrentExecution(t *testing.T) {
 	}
 }
 
-// TestToolExecutor_ContextCancellation 上下文取消测试
+// TestToolExecutor_ContextCancellation tests context cancellation.
 func TestToolExecutor_ContextCancellation(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 
@@ -372,7 +377,7 @@ func TestToolExecutor_ContextCancellation(t *testing.T) {
 	}
 }
 
-// TestToolExecutor_LargeResult 大结果截断测试
+// TestToolExecutor_LargeResult tests large result truncation.
 func TestToolExecutor_LargeResult(t *testing.T) {
 	registry := NewDefaultToolRegistry()
 
@@ -399,48 +404,34 @@ func TestToolExecutor_LargeResult(t *testing.T) {
 	}
 }
 
-// TestExecutorOptionFunctions 选项函数测试
+// TestExecutorOptionFunctions tests executor option functions.
 func TestExecutorOptionFunctions(t *testing.T) {
-	t.Run("WithProjectDirExecutor", func(t *testing.T) {
-		opt := WithProjectDirExecutor("/my/project")
+	t.Run("WithSession", func(t *testing.T) {
+		sess := session.NewSession("test-session", "test-agent")
+		opt := WithSession(sess)
 		cfg := &executorConfig{}
 		opt(cfg)
-		if cfg.projectDir != "/my/project" {
-			t.Errorf("projectDir 设置失败: 期望 '/my/project'，得到 '%s'", cfg.projectDir)
-		}
-	})
-
-	t.Run("WithSessionDirExecutor", func(t *testing.T) {
-		opt := WithSessionDirExecutor("/sessions/123")
-		cfg := &executorConfig{}
-		opt(cfg)
-		if cfg.sessionDir != "/sessions/123" {
-			t.Errorf("sessionDir 设置失败")
-		}
-	})
-
-	t.Run("WithExecutorSessionID", func(t *testing.T) {
-		opt := WithExecutorSessionID("session-abc-123")
-		cfg := &executorConfig{}
-		opt(cfg)
-		if cfg.sessionID != "session-abc-123" {
-			t.Errorf("sessionID 设置失败")
+		if cfg.session != sess {
+			t.Errorf("session 设置失败: 期望 %v，得到 %v", sess, cfg.session)
 		}
 	})
 
 	t.Run("组合多个选项", func(t *testing.T) {
 		cfg := &executorConfig{}
+		sess := session.NewSession("test-session", "test-agent")
 		opts := []ExecutorOption{
-			WithProjectDirExecutor("/project"),
-			WithSessionDirExecutor("/session"),
-			WithExecutorSessionID("sess-1"),
+			WithSession(sess),
+			WithEventEmitter(func(events.ReactEvent) {}),
 		}
 		for _, opt := range opts {
 			opt(cfg)
 		}
 
-		if cfg.projectDir != "/project" || cfg.sessionDir != "/session" || cfg.sessionID != "sess-1" {
-			t.Error("组合选项设置失败")
+		if cfg.session != sess {
+			t.Error("组合选项中的 session 设置失败")
+		}
+		if cfg.eventEmitter == nil {
+			t.Error("组合选项中的 eventEmitter 设置失败")
 		}
 	})
 }

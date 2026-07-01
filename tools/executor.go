@@ -103,21 +103,25 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 
 		case PermissionAsk:
 			if e.cfg.logger != nil {
-				e.cfg.logger.Info("[executor] awaiting user response", "tool", name)
+				e.cfg.logger.Info("[executor] permission pending", "tool", name)
 			}
-			result := e.awaitUserResponse(name, params, toolInfo.SecurityLevel, useCtx)
-			switch result.Behavior {
-			case PermissionDeny:
-				if e.cfg.eventEmitter != nil {
-					e.cfg.eventEmitter(events.NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", events.PermissionDenied, result.Message))
-				}
-				return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied by user: %s", name, result.Message)}, nil
-			case PermissionAllow:
-				if result.UpdatedInput != nil {
-					params = result.UpdatedInput
-					useCtx.Params = params
-				}
+			// Non-blocking: emit PermissionPending event and return immediately.
+			// The loop will pause and wait for the user to Agree/Deny.
+			if e.cfg.eventEmitter != nil {
+				e.cfg.eventEmitter(events.NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", events.PermissionPending,
+					events.NewPermissionPendingData(
+						uuid.New().String(),
+						name,
+						params,
+						"This tool requires your approval before execution.",
+						toolInfo.SecurityLevel,
+					),
+				))
 			}
+			return &ToolExecutionResult{
+				ToolName: name,
+				Result:   fmt.Sprintf("[permission_required] Tool %q awaits your approval.", name),
+			}, nil
 		case PermissionAllow:
 			if permResult.UpdatedInput != nil {
 				params = permResult.UpdatedInput
@@ -135,10 +139,8 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 		ResultStore: e.cfg.resultStore,
 		KVStore:     e.cfg.kvStore,
 		FileStore:   e.cfg.fileStore,
-		SessionID:   e.cfg.sessionID,
 		Logger:      e.cfg.logger,
-		ProjectDir:  e.cfg.projectDir,
-		SessionDir:  e.cfg.sessionDir,
+		Session:     e.cfg.session,
 	}
 	execCtx := WithToolContext(ctx, toolCtx)
 
@@ -176,86 +178,6 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 		Duration: duration,
 		ToolName: name,
 	}, nil
-}
-
-// awaitUserResponse 等待用户对工具执行的授权响应。
-//
-// 对于 AskUser 工具，会发送 AskUserRequest 事件并等待用户回答问题。
-// 对于其他工具，会发送 PermissionRequest 事件并等待用户批准或拒绝。
-//
-// 参数：
-//   - name: 工具名称
-//   - params: 工具参数（用于提取 AskUser 的问题）
-//   - secLevel: 工具的安全级别
-//   - useCtx: 工具使用上下文（包含会话 ID、任务 ID 等）
-//
-// 返回：
-//   - PermissionResult: 用户授权结果（允许/拒绝，可能包含修改后的输入）
-func (e *implToolExecutor) awaitUserResponse(name string, params map[string]any, secLevel events.SecurityLevel, useCtx *ToolUseContext) PermissionResult {
-	ch := make(chan PermissionResult, 1)
-
-	if name == "AskUser" {
-		questions := extractAskUserQuestions(params)
-		if e.cfg.eventEmitter != nil {
-			e.cfg.eventEmitter(events.NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", events.AskUserRequest,
-				events.NewAskUserRequestData(uuid.New().String(), questions, func(answers map[string]string) {
-					ch <- PermissionResult{Behavior: PermissionAllow, UpdatedInput: map[string]any{"answers": answers}}
-				}),
-			))
-		}
-		select {
-		case result := <-ch:
-			return result
-		case <-useCtx.Ctx.Done():
-			return PermissionResult{Behavior: PermissionDeny, Message: "context cancelled"}
-		}
-	}
-
-	if e.cfg.eventEmitter != nil {
-		e.cfg.eventEmitter(events.NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", events.PermissionRequest,
-			events.NewPermissionRequestData(
-				uuid.New().String(),
-				name,
-				params,
-				"This tool requires your approval before execution.",
-				secLevel,
-				func(updatedInput map[string]any) {
-					ch <- PermissionResult{Behavior: PermissionAllow, UpdatedInput: updatedInput}
-				},
-				func(reason string) {
-					ch <- PermissionResult{Behavior: PermissionDeny, Message: reason}
-				},
-			),
-		))
-	}
-	select {
-	case result := <-ch:
-		return result
-	case <-useCtx.Ctx.Done():
-		return PermissionResult{Behavior: PermissionDeny, Message: "context cancelled"}
-	}
-}
-
-// extractAskUserQuestions 从 AskUser 工具参数中提取问题信息。
-// 将 params 映射转换为 events.AskUserQuestion 结构体列表。
-func extractAskUserQuestions(params map[string]any) []events.AskUserQuestion {
-	question, _ := params["question"].(string)
-	if question == "" {
-		return nil
-	}
-	multi, _ := params["multiSelect"].(bool)
-	q := events.AskUserQuestion{
-		Question:    question,
-		MultiSelect: multi,
-	}
-	if opts, ok := params["options"].([]any); ok {
-		for _, o := range opts {
-			if s, ok := o.(string); ok {
-				q.Options = append(q.Options, s)
-			}
-		}
-	}
-	return []events.AskUserQuestion{q}
 }
 
 // enhanceFileError 增强文件相关错误信息。
