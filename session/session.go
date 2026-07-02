@@ -733,6 +733,9 @@ func (s *Session) getMessagesToSlide(plan compactionPlan) []Message {
 }
 
 // generateSummary calls the summarizer outside of any locks to prevent deadlocks.
+// 把所有待摘要消息完整交给 LLM，由 LLM 借助 prompt 的 Quality rules
+// 自主判断哪些值得记忆（识别 trivial/重复/纠正/冲突）。代码层不做源头过滤，
+// 因为砍掉消息会让 LLM 失去完整上下文，反而降低摘要质量。
 func (s *Session) generateSummary(ctx context.Context, messages []Message) []memory.MemoryChunk {
 	if s.summarizer == nil || len(messages) == 0 {
 		return nil
@@ -743,12 +746,15 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) []mem
 		return nil
 	}
 
-	// Enrich chunks with agent name, session ID, and timestamp
-	now := time.Now()
+	// Enrich chunks with agent name, session ID, and timestamp fallback.
+	// Timestamp 优先使用 LLM 在 JSON 中提供的事件时间；LLM 未填或解析失败时
+	// 才 fallback 到 summarize 触发时间。
 	for i := range chunks {
 		chunks[i].AgentName = s.agentName
 		chunks[i].SessionID = s.id
-		chunks[i].Timestamp = now
+		if chunks[i].Timestamp.IsZero() {
+			chunks[i].Timestamp = time.Now()
+		}
 		if chunks[i].ID == "" && chunks[i].Content != "" {
 			h := sha256.Sum256([]byte(chunks[i].Content))
 			chunks[i].ID = hex.EncodeToString(h[:])
