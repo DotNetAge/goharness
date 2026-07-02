@@ -410,7 +410,7 @@ func getDefaultWhitelist() []string {
 		"make", "cmake", "gcc", "g++", "clang", "clang++",
 		"docker", "kubectl", "helm",
 		"curl", "wget", "ssh", "scp", "rsync",
-		"ps", "top", "htop", "kill", "killall", "pgrep", "pkill",
+		"ps", "top", "htop", "kill", "killall", "pgrep", "pkill", "mindx",
 		"df", "du", "free", "uname", "date", "whoami", "id",
 		"env", "export", "source", "alias", "which", "type", "file",
 		"sort", "uniq", "cut", "tr", "tee", "xargs",
