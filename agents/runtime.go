@@ -190,10 +190,6 @@ type Runtime struct {
 	// fileModifyHook holds a reference to the registered FileModifyHook,
 	// allowing WithFileModifyTracker to dynamically update its provider after init.
 	fileModifyHook *action.FileModifyHook
-
-	// permissionHook holds a reference to the registered PermissionHook,
-	// allowing WithGrantCache to dynamically set the grant cache after init.
-	permissionHook *action.PermissionHook
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -417,27 +413,13 @@ func (rt *Runtime) registerDefaultHooks() {
 		rt.loopHooks = append([]hooks.LoopHook{loop.NewMemoryThoughtHook(rt.mem)}, rt.loopHooks...)
 	}
 
-	var permStore rule.PermissionRuleStore
-	if rt.ruleReg != nil {
-		if ps, ok := rt.ruleReg.(rule.PermissionRuleStore); ok {
-			permStore = ps
-		}
-	}
-	defaultHooks := action.Defaults(permStore, rt.skillReg, rt.logger, rt.fileModifyTracker)
+	defaultHooks := action.Defaults(nil, rt.skillReg, rt.logger, rt.fileModifyTracker)
 
 	// Capture FileModifyHook reference for late binding via WithFileModifyTracker.
 	rt.fileModifyHook = nil
 	for _, h := range defaultHooks {
 		if fmh, ok := h.(*action.FileModifyHook); ok {
 			rt.fileModifyHook = fmh
-			break
-		}
-	}
-
-	// Capture PermissionHook reference for late binding via WithGrantCache.
-	for _, h := range defaultHooks {
-		if ph, ok := h.(*action.PermissionHook); ok {
-			rt.permissionHook = ph
 			break
 		}
 	}
@@ -755,14 +737,16 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// Tool executor — Session pointer is passed as the authoritative source
 	// for session-level state (ID, ProjectDir, AgentName, etc.). Tools access
 	// these properties through Session getter methods, not extracted copies.
+	//
+	// Permission flow: the executor no longer carries a ToolPermissionChecker.
+	// Permission enforcement is now an in-tool concern (see
+	// tools.PermissionRequired / Grant). The runtime pre-checks Grant() before
+	// calling the tool here; denied tools are stopped at the runtime level,
+	// not inside the executor.
 	toolExec := tools.NewToolExecutor(rt.toolReg,
 		tools.WithEventEmitter(func(ev events.ReactEvent) { eb.Emit(ev) }),
 		tools.WithLogger(logger),
 		tools.WithSession(b.session),
-		tools.WithPermissionChecker(tools.NewFileBoundaryChecker(
-			b.session.ProjectDir(),
-			b.session.SessionDir(),
-		)),
 		tools.WithResultStore(rt.resultStore),
 		tools.WithKVStore(rt.kvStore),
 	)
@@ -772,10 +756,26 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		maxIter = 20
 	}
 
-	// Append user message to session
-	b.session.Append(ctx, session.Message{
-		Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
-	})
+	// ── Permission magic-word resolution ──
+	// If the user message is "PermissionAllow" / "PermissionDeny" and the
+	// session has a pending permission from a previous loop iteration,
+	// resolve it here: run the tool (Allow) or synthesize a denied result
+	// (Deny). The user's magic word is NOT appended to the session — the
+	// LLM only ever sees the tool result.
+	//
+	// This happens BEFORE the user message is appended so that:
+	//  - On Allow, the tool result message (with the original tool_call_id)
+	//    is in the session when the LLM is next called.
+	//  - The session's "assistant with tool_call" is now paired with a
+	//    "tool" message, so OpenAI's strict validation is satisfied.
+	magicHandled := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, logger)
+
+	// Append user message to session (only if it's not a consumed magic word).
+	if !magicHandled {
+		b.session.Append(ctx, session.Message{
+			Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
+		})
+	}
 	// Build tool definitions once (stable across iterations)
 	toolDefs := rt.buildToolDefinitions()
 
@@ -1161,6 +1161,37 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// ── Execute tools with hooks ──
 		invocs := parseToolInvocations(streamToolCalls)
+
+		// ── Pre-execution Grant check (PermissionRequired) ──
+		// Tools that opt into permission flow implement PermissionRequired.Grant().
+		// For every invocation in this turn, we ask the tool "can you run
+		// as-is?" — if any tool says no, we:
+		//   1. Save the invocation to session.PendingPermission (so a later
+		//      magic word can resolve it),
+		//   2. Emit PermissionPending so the UI renders an allow/deny dialog,
+		//   3. Stop the loop. The tool is NOT executed; the assistant's
+		//      tool_call is persisted to the session (already done above)
+		//      but the corresponding tool message is NOT yet added. The
+		//      next Ask() call — once the user responds with PermissionAllow
+		//      or PermissionDeny — will append the result so OpenAI's strict
+		//      tool_call/tool-message pairing is satisfied.
+		//
+		// Because we never call toolExec.Execute for the denied tool, the
+		// LLM never sees a "permission_required" placeholder in its context.
+		// It only ever sees the eventual tool result (success on Allow,
+		// "Permission Denied" on Deny), so the permission flow is invisible
+		// to the LLM.
+		if pending := rt.checkPermissionGrants(ctx, b, invocs, emit, logger); pending != nil {
+			emit(events.TaskSummary, events.TaskSummaryData{
+				Summary:    fmt.Sprintf("请求授权执行工具: %s，等待用户批准...", pending.ToolName),
+				TokenUsage: totalUsage,
+			})
+			b.resultTerminationReason = "permission_pending"
+			setIterResult(iter)
+			logger.Info("loop paused: tool requires permission, waiting for user approval", "tool", pending.ToolName)
+			return
+		}
+
 		executed := make(map[string]struct{}, len(invocs))
 		for _, inv := range invocs {
 			executed[inv.ID] = struct{}{}
@@ -1223,28 +1254,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			b.resultTerminationReason = "ask_user_pending"
 			setIterResult(iter)
 			logger.Info("loop paused: AskUser tool invoked, waiting for user response")
-			return
-		}
-
-		// ── Non-blocking Permission detection ──
-		// After tool execution, check if any tool returned "permission_required".
-		// If so, emit PermissionPending event and exit the loop. The user will
-		// Agree/Deny on the UI, and the daemon will re-trigger the loop via
-		// execution.resume RPC + grant cache.
-		if permPending := findPermissionPendingResult(toolResults); permPending != nil {
-			emit(events.PermissionPending, events.PermissionPendingData{
-				TickID:        uuid.New().String(),
-				ToolName:      permPending.ToolName,
-				Reason:        fmt.Sprintf("Tool %q requires your authorization.", permPending.ToolName),
-				SecurityLevel: events.LevelSensitive,
-			})
-			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:    fmt.Sprintf("请求授权执行工具: %s，等待用户批准...", permPending.ToolName),
-				TokenUsage: totalUsage,
-			})
-			b.resultTerminationReason = "permission_pending"
-			setIterResult(iter)
-			logger.Info("loop paused: tool requires permission, waiting for user approval", "tool", permPending.ToolName)
 			return
 		}
 	}
@@ -1441,7 +1450,7 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildSystemReminders()))
 
 	// 6. Dynamic boundary (KV cache split point)
-	msgs = append(msgs, gochatcore.NewSystemMessage("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"))
+	// msgs = append(msgs, gochatcore.NewSystemMessage("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"))
 
 	// 7. Output efficiency (dynamic section)
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildOutputEfficiency()))
@@ -2058,27 +2067,6 @@ func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	}
 }
 
-// WithGrantCache sets the permission grant cache function for this Runtime.
-// When set, the PermissionHook consults this cache before the permission chain.
-// If the cache returns true for a (sessionID, toolName), the tool is allowed
-// immediately — used by the daemon to implement non-blocking permission resumption.
-//
-// The cache function must be safe for concurrent use.
-//
-// Example:
-//
-//	rt.WithGrantCache(func(sessionID, toolName string) bool {
-//	    v, ok := grantCache.Load(sessionID)
-//	    if !ok { return false }
-//	    granted := v.(map[string]bool)
-//	    return granted[toolName]
-//	})
-func (rt *Runtime) WithGrantCache(cache func(sessionID, toolName string) bool) {
-	if rt.permissionHook != nil {
-		rt.permissionHook.GrantCache = cache
-	}
-}
-
 // RegisterTool adds a new tool to the Runtime's tool registry.
 // The tool will be available for the LLM to invoke in subsequent Ask calls.
 // Tool definitions are sent to the LLM as part of the API request.
@@ -2145,14 +2133,234 @@ func buildAskUserPendingData(args map[string]any) events.AskUserPendingData {
 
 // ── Permission helpers ─────────────────────────────────────────────────────
 
-// findPermissionPendingResult finds a tool result that indicates permission
-// is required (result starts with "[permission_required]").
-// Returns nil if no permission is pending.
-func findPermissionPendingResult(results []hooks.ToolResult) *hooks.ToolResult {
-	for i := range results {
-		if strings.HasPrefix(results[i].Result, "[permission_required]") {
-			return &results[i]
+// securityLevelString converts an events.SecurityLevel to a stable,
+// human-readable string ("safe" / "sensitive" / "high_risk") for storage
+// on session.PendingPermission. The string form is what the audit log
+// expects; using the raw int would be opaque to humans reading it back.
+func securityLevelString(level events.SecurityLevel) string {
+	switch level {
+	case events.LevelSafe:
+		return "safe"
+	case events.LevelSensitive:
+		return "sensitive"
+	case events.LevelHighRisk:
+		return "high_risk"
+	default:
+		return "unknown"
+	}
+}
+
+// buildGrantToolContext constructs a ToolContext suitable for calling
+// tools.PermissionRequired.Grant from the runtime layer.
+//
+// Grant only needs to read session-level state (project dir, session dir,
+// logger) to do its pre-check. We deliberately keep this minimal — the
+// executor's full ToolContext is created later in the actual Execute call.
+func (rt *Runtime) buildGrantToolContext(ctx context.Context, sess *session.Session) context.Context {
+	tc := &tools.ToolContext{
+		EmitEvent: nil, // Grant does not emit events.
+		Logger:    rt.logger,
+		Session:   sess,
+	}
+	return tools.WithToolContext(ctx, tc)
+}
+
+// checkPermissionGrants runs PermissionRequired.Grant on every invocation
+// in the current turn. If any tool's Grant returns granted=false:
+//
+//   - The invocation is saved to session.PendingPermission (so a later
+//     magic word from the user can resolve it).
+//   - A PermissionPending event is emitted so the UI can render the
+//     allow/deny dialog.
+//   - The function returns the pending struct so the caller can stop the
+//     loop and propagate termination metadata.
+//
+// The tool is NOT executed. That is the key difference from the old
+// executor-level "permission_required" placeholder: the LLM never sees
+// any "needs permission" text in its context, only the eventual tool
+// result (success on Allow, "Permission Denied" on Deny).
+//
+// Returns nil when every tool either does not implement PermissionRequired
+// or returns granted=true.
+func (rt *Runtime) checkPermissionGrants(
+	ctx context.Context,
+	b *AskBuilder,
+	invocs []hooks.ToolCallInvocation,
+	emit func(events.ReactEventType, any),
+	logger logging.Logger,
+) *session.PendingPermission {
+	if len(invocs) == 0 {
+		return nil
+	}
+	grantCtx := rt.buildGrantToolContext(ctx, b.session)
+
+	for _, inv := range invocs {
+		tool, ok := rt.toolReg.Get(inv.Name)
+		if !ok {
+			continue
 		}
+		pr, ok := tool.(tools.PermissionRequired)
+		if !ok {
+			// Tool opted out of permission flow — let Execute handle any
+			// input validation.
+			continue
+		}
+
+		granted, reason := pr.Grant(grantCtx, inv.Arguments)
+		if granted {
+			continue
+		}
+
+		info := tool.Info()
+		pending := &session.PendingPermission{
+			ToolName:      inv.Name,
+			ToolCallID:    inv.ID,
+			Arguments:     inv.Arguments,
+			Reason:        reason,
+			SecurityLevel: securityLevelString(info.SecurityLevel),
+		}
+		b.session.SetPendingPermission(*pending)
+		emit(events.PermissionPending, events.PermissionPendingData{
+			TickID:        uuid.New().String(),
+			ToolName:      inv.Name,
+			Params:        inv.Arguments,
+			Reason:        reason,
+			SecurityLevel: info.SecurityLevel,
+		})
+		logger.Info("permission required",
+			"tool", inv.Name,
+			"reason", reason,
+			"session", b.session.ID(),
+		)
+		return pending
 	}
 	return nil
+}
+
+// resolvePermissionMagicWord inspects the new user message. If it matches
+// the "PermissionAllow" / "PermissionDeny" magic word AND the session has
+// a pending permission, the pending permission is resolved and the
+// matching tool result is appended to the session. The user message itself
+// is NOT appended — the LLM only ever sees the tool result.
+//
+// Returns true when the magic word was consumed (so the caller should
+// skip its own user-message append). Returns false when:
+//
+//   - the user message is not a magic word (treat as a normal user turn), or
+//   - the message IS a magic word but no pending permission exists
+//     (also treat as a normal user turn — probably a stale retry from
+//     the UI, no reason to swallow the message).
+func (rt *Runtime) resolvePermissionMagicWord(
+	ctx context.Context,
+	b *AskBuilder,
+	toolExec tools.ToolExecutor,
+	emit func(events.ReactEventType, any),
+	logger logging.Logger,
+) bool {
+	action := tools.ClassifyMagicWord(b.question)
+	if action == "" {
+		return false
+	}
+	pending := b.session.TakePendingPermission()
+	if pending == nil {
+		// Magic word but nothing pending — fall through and let the
+		// message be processed as a regular user turn.
+		return false
+	}
+
+	logger.Info("permission magic word received",
+		"action", action,
+		"tool", pending.ToolName,
+		"tool_call_id", pending.ToolCallID,
+		"session", b.session.ID(),
+	)
+
+	switch action {
+	case tools.PermissionAllow:
+		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
+	case tools.PermissionDeny:
+		rt.appendDeniedResult(ctx, b, pending)
+	}
+	return true
+}
+
+// executePendingAndAppend actually runs the tool that was held in the
+// pending permission, then appends a tool result message to the session
+// using the ORIGINAL tool_call_id. The LLM only ever sees the tool
+// result — never the "waiting for human approval" intermediate state.
+func (rt *Runtime) executePendingAndAppend(
+	ctx context.Context,
+	b *AskBuilder,
+	pending *session.PendingPermission,
+	toolExec tools.ToolExecutor,
+	emit func(events.ReactEventType, any),
+	logger logging.Logger,
+) {
+	// Build a ToolContext so the tool can access session info during
+	// execution (e.g. for file tools to resolve project-relative paths).
+	execCtx := rt.buildGrantToolContext(ctx, b.session)
+	execCtx, cancel := context.WithTimeout(execCtx, rt.syncTimeout)
+	defer cancel()
+
+	start := time.Now()
+	emit(events.ToolExecStart, events.ToolExecStartData{
+		ToolName: pending.ToolName,
+		Params:   pending.Arguments,
+	})
+	execResult, execErr := toolExec.Execute(execCtx, pending.ToolName, pending.Arguments)
+	duration := time.Since(start)
+
+	var content string
+	if execErr != nil {
+		content = fmt.Sprintf("[%s] error: %s", pending.ToolName, execErr.Error())
+	} else if execResult != nil {
+		if execResult.Error != nil {
+			content = fmt.Sprintf("[%s] error: %s", pending.ToolName, execResult.Error.Error())
+		} else if execResult.Result != "" {
+			content = execResult.Result
+		} else {
+			content = fmt.Sprintf("[%s] returned: (empty result)", pending.ToolName)
+		}
+	} else {
+		content = fmt.Sprintf("[%s] returned: (no result)", pending.ToolName)
+	}
+	logger.Info("pending tool executed (Allow)",
+		"tool", pending.ToolName,
+		"tool_call_id", pending.ToolCallID,
+		"duration_ms", duration.Milliseconds(),
+		"session", b.session.ID(),
+	)
+	emit(events.ToolExecEnd, events.ToolExecEndData{
+		ToolName:   pending.ToolName,
+		ToolCallID: pending.ToolCallID,
+		Duration:   duration,
+		Success:    execErr == nil,
+		Result:     content,
+	})
+
+	b.session.Append(ctx, session.Message{
+		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
+		ToolCallID: pending.ToolCallID,
+	})
+}
+
+// appendDeniedResult synthesizes a "Permission Denied" tool result for the
+// pending invocation and appends it to the session with the original
+// tool_call_id. The LLM only ever sees this — never a "user denied"
+// message — so it can adapt its plan (pick a different path, ask the
+// user, etc.) without knowing the human saw a deny button.
+func (rt *Runtime) appendDeniedResult(
+	ctx context.Context,
+	b *AskBuilder,
+	pending *session.PendingPermission,
+) {
+	reason := pending.Reason
+	if reason == "" {
+		reason = "user denied"
+	}
+	content := fmt.Sprintf("Permission Denied: %s", reason)
+	b.session.Append(ctx, session.Message{
+		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
+		ToolCallID: pending.ToolCallID,
+	})
 }

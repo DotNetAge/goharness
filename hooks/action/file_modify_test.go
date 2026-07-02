@@ -154,23 +154,20 @@ func TestDefaults_WithTrackerProvider(t *testing.T) {
 
 	hooks := Defaults(nil, nil, nil, provider)
 
-	// 应包含 PermissionHook + FileModifyHook + ToolLoggerHook = 3 个
-	if len(hooks) != 3 {
-		t.Fatalf("期望 3 个 hooks，得到 %d", len(hooks))
+	// 权限检查已移出 hooks 链路 — 现在应只返回 FileModifyHook + ToolLoggerHook = 2 个
+	if len(hooks) != 2 {
+		t.Fatalf("期望 2 个 hooks，得到 %d", len(hooks))
 	}
 
-	// 验证优先级顺序：Permission(41) < FileModify(42) < Logger(46)
-	if hooks[0].Priority() != 41 {
-		t.Errorf("hooks[0].Priority() = %d, want 41", hooks[0].Priority())
+	// 验证优先级顺序：FileModify(42) < Logger(46)
+	if _, ok := hooks[0].(*FileModifyHook); !ok {
+		t.Error("hooks[0] 应为 FileModifyHook")
 	}
-	if _, ok := hooks[1].(*FileModifyHook); !ok {
-		t.Error("hooks[1] 应为 FileModifyHook")
+	if hooks[0].Priority() != 42 {
+		t.Errorf("hooks[0].Priority() = %d, want 42", hooks[0].Priority())
 	}
-	if hooks[1].Priority() != 42 {
-		t.Errorf("hooks[1].Priority() = %d, want 42", hooks[1].Priority())
-	}
-	if hooks[2].Priority() != 46 {
-		t.Errorf("hooks[2].Priority() = %d, want 46", hooks[2].Priority())
+	if hooks[1].Priority() != 46 {
+		t.Errorf("hooks[1].Priority() = %d, want 46", hooks[1].Priority())
 	}
 }
 
@@ -178,8 +175,8 @@ func TestDefaults_WithoutTrackerProvider(t *testing.T) {
 	hooks := Defaults(nil, nil, nil)
 
 	// FileModifyHook 始终被注册（即使 provider 为 nil）
-	if len(hooks) != 3 {
-		t.Fatalf("期望 3 个 hooks（PermissionHook + FileModifyHook + ToolLoggerHook），得到 %d", len(hooks))
+	if len(hooks) != 2 {
+		t.Fatalf("期望 2 个 hooks（FileModifyHook + ToolLoggerHook），得到 %d", len(hooks))
 	}
 
 	// 确认 FileModifyHook 存在，但 provider 为 nil
@@ -201,8 +198,8 @@ func TestDefaults_NilTrackerProvider(t *testing.T) {
 	hooks := Defaults(nil, nil, nil, nil)
 
 	// 显式传 nil 也应注册 FileModifyHook（provider 为 nil）
-	if len(hooks) != 3 {
-		t.Fatalf("期望 3 个 hooks，得到 %d", len(hooks))
+	if len(hooks) != 2 {
+		t.Fatalf("期望 2 个 hooks，得到 %d", len(hooks))
 	}
 
 	// 确认 FileModifyHook 存在

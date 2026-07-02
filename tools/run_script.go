@@ -543,6 +543,65 @@ Notes:
 	}
 }
 
+// Grant implements tools.PermissionRequired. RunScript is special: it
+// already enforces a path-traversal block in executePlatformExecutor
+// ("script path is outside of skill root directory"), but that block
+// fires AFTER we've already been called. For the permission flow, we
+// only want to ask the user when the script lives OUTSIDE the working
+// directory (i.e. the user is being asked to bless a script that is
+// not in the active project/skill root). Scripts inside the working
+// directory are just like any other code execution inside the project —
+// they go through normally.
+//
+// Hard-blocks (e.g. malformed command) are Execute-level errors, not
+// Grant concerns.
+func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	command, _ := params["command"].(string)
+	if strings.TrimSpace(command) == "" {
+		return true, ""
+	}
+
+	workingDir, _ := params["working_dir"].(string)
+	if workingDir == "" {
+		workingDir = "."
+	}
+	workingDir = filepath.Clean(workingDir)
+
+	_, scriptPath := parseCommand(command, workingDir)
+	if scriptPath == "" {
+		return true, ""
+	}
+
+	// Resolve the script path. If it can't be made absolute (e.g. the
+	// working directory is not yet realized), fall through — Execute will
+	// produce a clean error.
+	absScript, err := filepath.Abs(scriptPath)
+	if err != nil {
+		return true, ""
+	}
+	cleanScript := filepath.Clean(absScript)
+
+	absWork, err := filepath.Abs(workingDir)
+	if err != nil {
+		return true, ""
+	}
+	absWork = filepath.Clean(absWork)
+
+	// Inside the working dir? Fine.
+	if cleanScript == absWork ||
+		strings.HasPrefix(cleanScript, absWork+string(filepath.Separator)) {
+		return true, ""
+	}
+
+	// Outside the working dir → ask the user. The actual executor will
+	// still double-check, so even if Grant is bypassed we never run an
+	// out-of-tree script.
+	return false, fmt.Sprintf(
+		"RunScript wants to execute %q, which is outside the working directory %q. Confirm this is intended.",
+		cleanScript, absWork,
+	)
+}
+
 func (t *RunScript) Info() *ToolInfo {
 	return t.info
 }

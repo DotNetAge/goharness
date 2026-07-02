@@ -99,7 +99,6 @@ func buildSkillsCatalog(skills []*skill.Skill) string {
 // ── Environment Info ────────────────────────────────────────────────────────
 
 const directorySemanticsPrompt = "## File Operation Guidelines\n\n" +
-	"You have two workspaces:\n\n" +
 	"### Project Directory (%s)\n" +
 	"**Default workspace — files persist permanently.**\n" +
 	"Use for: source code, configs, docs, and all outputs the user may want to keep or review later.\n" +

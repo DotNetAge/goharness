@@ -8,24 +8,25 @@ import (
 )
 
 // executorConfig is the configuration struct for the tool executor.
+//
+// Permission enforcement is intentionally NOT an executor concern — the
+// runtime pre-checks PermissionRequired.Grant() before calling the
+// executor, and tools that opt out of the permission interface are
+// trusted to handle their own input validation. Keeping the executor
+// focused on "how to run a tool" avoids duplicating the chain-of-checkers
+// pattern at two layers.
 type executorConfig struct {
-	registry          ToolRegistry
-	permissionChecker ToolPermissionChecker
-	eventEmitter      func(events.ReactEvent)
-	resultStore       *store.ResultStore
-	kvStore           store.KVStore
-	fileStore         store.FileStore
-	session           *session.Session // authoritative source for session-level state
-	logger            logging.Logger
+	registry     ToolRegistry
+	eventEmitter func(events.ReactEvent)
+	resultStore  *store.ResultStore
+	kvStore      store.KVStore
+	fileStore    store.FileStore
+	session      *session.Session // authoritative source for session-level state
+	logger       logging.Logger
 }
 
 // ExecutorOption is a functional option for configuring ToolExecutor.
 type ExecutorOption func(*executorConfig)
-
-// WithPermissionChecker sets the permission checker for tool execution.
-func WithPermissionChecker(checker ToolPermissionChecker) ExecutorOption {
-	return func(c *executorConfig) { c.permissionChecker = checker }
-}
 
 // WithLogger sets the logger for tool execution.
 func WithLogger(logger logging.Logger) ExecutorOption {

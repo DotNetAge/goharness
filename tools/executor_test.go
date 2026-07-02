@@ -52,19 +52,6 @@ func (m *mockExecutorTool) Execute(ctx context.Context, params map[string]any) (
 	return m.result, nil
 }
 
-// mockPermissionChecker is a mock permission checker.
-type mockPermissionChecker struct {
-	behavior PermissionBehavior
-	message  string
-}
-
-func (m *mockPermissionChecker) CheckPermissions(ctx *ToolUseContext) PermissionResult {
-	return PermissionResult{
-		Behavior: m.behavior,
-		Message:  m.message,
-	}
-}
-
 // mockSession creates a simple session for testing.
 func mockSession() *session.Session {
 	return session.NewSession("test-session", "test-agent")
@@ -209,39 +196,6 @@ func TestToolExecutor_Execute_ErrorPropagation(t *testing.T) {
 		}
 		if result.Result == "" {
 			t.Error("map 结果应被序列化为 JSON 字符串")
-		}
-	})
-}
-
-// TestToolExecutor_Permission tests permission checking.
-func TestToolExecutor_Permission(t *testing.T) {
-	registry := NewDefaultToolRegistry()
-	testTool := &mockExecutorTool{name: "PermTool", result: "ok"}
-	registry.Register(testTool)
-
-	t.Run("权限允许", func(t *testing.T) {
-		checker := &mockPermissionChecker{behavior: PermissionAllow, message: "allowed"}
-		executor := NewToolExecutor(registry, WithPermissionChecker(checker))
-
-		result, err := executor.Execute(context.Background(), "PermTool", nil)
-		if err != nil {
-			t.Fatalf("权限允许时执行失败: %v", err)
-		}
-		if result.Error != nil {
-			t.Errorf("权限允许时不应有错误: %v", result.Error)
-		}
-	})
-
-	t.Run("权限拒绝", func(t *testing.T) {
-		checker := &mockPermissionChecker{behavior: PermissionDeny, message: "not allowed"}
-		executor := NewToolExecutor(registry, WithPermissionChecker(checker))
-
-		result, err := executor.Execute(context.Background(), "PermTool", nil)
-		if err != nil {
-			t.Fatalf("权限拒绝时不应返回 error: %v", err)
-		}
-		if result.Error == nil {
-			t.Error("权限拒绝时应有错误信息")
 		}
 	})
 }

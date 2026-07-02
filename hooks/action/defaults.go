@@ -3,10 +3,7 @@ package action
 import (
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/permission"
-	"github.com/DotNetAge/goharness/rule"
 	"github.com/DotNetAge/goharness/skill"
-	"github.com/DotNetAge/goharness/tools"
 )
 
 // TrackerProvider 根据 sessionID 返回对应的文件修改追踪函数。
@@ -20,22 +17,16 @@ type TrackerProvider func(sessionID string) (TrackFunc, bool)
 // Runtime.executeSingleTool(). No event-emission hook is included here.
 //
 // Registered hooks:
-//   - PermissionHook (41): Evaluates tool execution permissions via a 3-level chain:
-//     SkillBasedChecker → RuleBasedChecker → FallbackChecker.
-//     Denies execution and aborts loop on permission failure.
 //   - FileModifyHook (42): Tracks file modifications (Write/FileEdit) by backing up
 //     files before they are modified. Only active when tracker
 //     provider is non-nil.
 //   - ToolLoggerHook (46): Logs tool execution start/end when Logger is configured.
-func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegistry, logger logging.Logger, trackerProvider ...TrackerProvider) []hooks.ToolHook {
-	checkers := []tools.ToolPermissionChecker{
-		permission.NewSkillBasedChecker(skillRegistry),
-	}
-	if ruleStore != nil {
-		checkers = append(checkers, permission.NewRuleBasedChecker(ruleStore))
-	}
-	checkers = append(checkers, tools.NewFallbackPermissionChecker())
-
+//
+// Permission enforcement is no longer a tool hook — it is now an in-tool
+// concern (see tools.PermissionRequired). The runtime calls Grant() before
+// each tool call; denied tools are stopped at the runtime level and the
+// permission flow is invisible to the LLM.
+func Defaults(_ /* ruleStore */ interface{}, _ /* skillRegistry */ skill.SkillRegistry, logger logging.Logger, trackerProvider ...TrackerProvider) []hooks.ToolHook {
 	// FileModifyHook 始终被注册（provider 可为 nil），
 	// 以便后期通过 FileModifyHook.SetProvider() 动态注入 tracker。
 	// 见 Runtime.WithFileModifyTracker()。
@@ -50,7 +41,6 @@ func Defaults(ruleStore rule.PermissionRuleStore, skillRegistry skill.SkillRegis
 	}
 
 	result := []hooks.ToolHook{
-		&PermissionHook{Chain: permission.NewPermissionChain(checkers...), Logger: logger},
 		fmHook,
 		&ToolLoggerHook{Logger: logger},
 	}

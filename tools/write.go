@@ -50,6 +50,43 @@ Usage:
 	}
 }
 
+// Grant implements tools.PermissionRequired. It pre-resolves the target path
+// and asks "is this write going to land inside the workspace?". Anything
+// outside the project/session boundary is escalated to the user — these
+// writes may be legitimate (build output dir, mounted volume) but we don't
+// guess.
+//
+// Hard "no" (sensitive files like .env, .ssh) is enforced in Execute and
+// is NOT a Grant concern: there's no user override for it, so asking is
+// misleading.
+func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	path, _ := params["path"].(string)
+	if path == "" {
+		// Let Execute report the missing parameter cleanly.
+		return true, ""
+	}
+
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil {
+		// No session info available (e.g. a unit-test invocation). Fall
+		// through to Execute; boundary checks there will use os.Getwd().
+		return true, ""
+	}
+
+	resolved, _ := ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
+	if resolved == "" {
+		return true, ""
+	}
+
+	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+		return false, fmt.Sprintf(
+			"Write to %q resolves to %q which is outside the workspace.\n%s",
+			path, resolved, err.Error(),
+		)
+	}
+	return true, ""
+}
+
 // Info 返回 Write 工具的元信息。
 func (w *Write) Info() *ToolInfo {
 	return w.info

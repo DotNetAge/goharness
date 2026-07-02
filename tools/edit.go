@@ -86,6 +86,35 @@ Usage:
 	}
 }
 
+// Grant implements tools.PermissionRequired. Symmetric with Write's Grant:
+// the only ask-the-user signal is "the resolved target file is outside the
+// workspace boundary". Everything else (file not found, old_string missing,
+// stale modification time, etc.) is a normal Execute-level error.
+func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	filePath, _ := params["path"].(string)
+	if filePath == "" {
+		return true, ""
+	}
+
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil {
+		return true, ""
+	}
+
+	resolved, _ := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
+	if resolved == "" {
+		return true, ""
+	}
+
+	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+		return false, fmt.Sprintf(
+			"Edit on %q resolves to %q which is outside the workspace.\n%s",
+			filePath, resolved, err.Error(),
+		)
+	}
+	return true, ""
+}
+
 // Execute 执行文件编辑操作。
 //
 // 处理流程：

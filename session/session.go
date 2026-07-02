@@ -300,6 +300,18 @@ type Session struct {
 
 	// fileModifyHandler is called when files are tracked, confirmed, or rolled back.
 	fileModifyHandler FileModifyHandler
+
+	// pendingPermission stores the tool invocation that is currently
+	// waiting for user authorization. It is set by the runtime when a
+	// tool implementing PermissionRequired.Grant returns granted=false,
+	// and cleared when the user responds with the PermissionAllow /
+	// PermissionDeny magic word in a subsequent Ask call.
+	//
+	// Storing on the session (rather than on the runtime) makes the
+	// permission flow survive across Ask() invocations and across
+	// sub-agent boundaries, since the session is the shared state.
+	pendingPermission *PendingPermission
+	pendingMu         sync.Mutex
 }
 
 // ID returns the unique identifier of this session.
@@ -857,4 +869,65 @@ func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 	}
 
 	return nil
+}
+
+// SetPendingPermission records a tool invocation that needs user
+// authorization. The runtime calls this when a tool implementing
+// PermissionRequired.Grant returns granted=false, and clears it (via
+// TakePendingPermission) when the user responds with the magic word.
+//
+// Storing on the session means the pending state survives across Ask()
+// boundaries — exactly what the magic-word flow requires: the loop
+// stops, the user types "PermissionAllow", the runtime looks up the
+// pending invocation in the same session, and resumes by actually
+// running the tool.
+func (s *Session) SetPendingPermission(p PendingPermission) {
+	s.pendingMu.Lock()
+	s.pendingPermission = &p
+	s.pendingMu.Unlock()
+}
+
+// TakePendingPermission atomically reads and clears the pending
+// invocation. The runtime calls this when it detects a permission
+// magic word in the user message. Returns nil if there is no pending
+// invocation (in which case the magic word is treated as a regular
+// user message).
+func (s *Session) TakePendingPermission() *PendingPermission {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	p := s.pendingPermission
+	s.pendingPermission = nil
+	return p
+}
+
+// PendingPermission captures the tool call that is waiting for the
+// user's decision. It holds everything the runtime needs to either
+// actually execute the tool (Allow) or synthesize a "Permission
+// Denied" tool result (Deny) without the LLM ever seeing the
+// "ask" intermediate state.
+type PendingPermission struct {
+	// ToolName is the registered tool's name (e.g. "Bash", "Write").
+	ToolName string
+
+	// ToolCallID matches the ToolCall.ID on the assistant message that
+	// produced this invocation. The synthesized "Permission Denied"
+	// result (or the executed tool's result) is appended to the
+	// session with this ID, satisfying the strict OpenAI contract that
+	// every tool_call must have a matching tool message.
+	ToolCallID string
+
+	// Arguments is the parameter map originally passed to the tool. The
+	// runtime re-invokes the tool with these exact arguments when the
+	// user allows — no re-derivation is done.
+	Arguments map[string]any
+
+	// Reason is the human-readable explanation already shown in the UI
+	// (e.g. "command contains 'rm -rf /'"). It is re-used for the
+	// "Permission Denied" tool result so the LLM can see why the call
+	// was rejected.
+	Reason string
+
+	// SecurityLevel is preserved from the tool's ToolInfo so the UI
+	// (and any future audit log) can render the right severity badge.
+	SecurityLevel string
 }

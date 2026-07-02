@@ -296,6 +296,45 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	return result, nil
 }
 
+// Grant implements tools.PermissionRequired. It pre-checks the shell command
+// for any "ask the user" signals BEFORE Execute runs:
+//
+//  1. Hard-coded dangerous patterns (rm -rf /, fork bombs, curl|sh, etc.)
+//     → refuse; user override is NOT possible via Grant, but the dangerous
+//     list is just a safety net. Execute() also blocks these independently
+//     (so they cannot be reached even if Grant is bypassed).
+//  2. Whitelist: if whitelistEnabled, the base command must be in the
+//     (default or custom) whitelist. Anything outside the whitelist is
+//     "ask the user" — the user is the source of truth, not a regex list.
+//
+// Anything that passes both checks is "obviously safe enough to just run"
+// and Grant returns granted=true. The runtime will then proceed to Execute.
+func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	command, _ := params["command"].(string)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		// No command? Let Execute produce a clean error — no point asking
+		// the user about an empty invocation.
+		return true, ""
+	}
+
+	if blocked := detectDangerousCommand(command); blocked != "" {
+		return false, fmt.Sprintf("Bash command blocked by safety filter: %s", blocked)
+	}
+
+	if t.whitelistEnabled {
+		if !t.isCommandWhitelisted(command) {
+			base := extractBaseCommand(command)
+			return false, fmt.Sprintf(
+				"Bash command %q is not in the whitelist. Allowed: %s",
+				base, strings.Join(getDefaultWhitelist(), ", "),
+			)
+		}
+	}
+
+	return true, ""
+}
+
 // truncateOutput 截断字符串到指定字符数（按 rune 计算）。
 // 如果字符串超过限制，会在末尾附加截断提示信息。
 //

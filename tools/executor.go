@@ -9,26 +9,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/DotNetAge/goharness/events"
-	"github.com/google/uuid"
 )
 
 // NewToolExecutor 创建一个新的工具执行器实例。
 //
 // 参数：
 //   - registry: 工具注册表，用于查找和执行工具
-//   - opts: 可选的执行器配置选项（如权限检查器、日志、事件发射器等）
+//   - opts: 可选的执行器配置选项（如日志、事件发射器等）
 //
 // 返回：
 //   - ToolExecutor: 配置好的执行器实例
 //
 // 示例：
 //
-//	executor := NewToolExecutor(registry,
-//	    WithPermissionChecker(checker),
-//	    WithLogger(logger),
-//	)
+//	executor := NewToolExecutor(registry, WithLogger(logger))
 //	result, err := executor.Execute(ctx, "Bash", params)
 func NewToolExecutor(registry ToolRegistry, opts ...ExecutorOption) ToolExecutor {
 	cfg := &executorConfig{registry: registry}
@@ -41,7 +35,6 @@ func NewToolExecutor(registry ToolRegistry, opts ...ExecutorOption) ToolExecutor
 // implToolExecutor 是 ToolExecutor 接口的默认实现。
 // 它提供了完整的工具执行流程，包括：
 //   - 工具查找和验证
-//   - 权限检查（支持自动允许/拒绝/询问用户）
 //   - 上下文注入（ToolContext）
 //   - 执行结果处理（序列化、截断、错误增强）
 type implToolExecutor struct {
@@ -56,13 +49,15 @@ func (e *implToolExecutor) ResetCycle() {}
 //
 // 执行流程：
 //  1. 从注册表中查找工具
-//  2. 构建工具使用上下文 (ToolUseContext)
-//  3. 权限检查（如果配置了权限检查器）
-//  4. 如果需要用户授权，等待用户响应
-//  5. 构建并注入 ToolContext
-//  6. 调用工具的 Execute 方法
-//  7. 处理执行结果（序列化、截断）
-//  8. 返回 ToolExecutionResult
+//  2. 构建并注入 ToolContext（带 session、logger、event emitter 等）
+//  3. 调用工具的 Execute 方法
+//  4. 处理执行结果（序列化、截断）
+//  5. 返回 ToolExecutionResult
+//
+// 权限检查在调用此方法之前由 Runtime 完成（见 tools.PermissionRequired）。
+// Executor 不再承担权限决策 — 这是单一职责分工：Runtime 负责"是否允许"，
+// 工具的 Grant() 负责"为什么需要批准"，Executor 只关心拿到 args 后如何
+// 把工具跑起来。
 //
 // 参数：
 //   - ctx: 上下文，支持取消和超时
@@ -79,56 +74,6 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	}
 
 	toolInfo := tool.Info()
-	useCtx := &ToolUseContext{
-		ToolName: name,
-		ToolInfo: toolInfo,
-		Params:   params,
-		Ctx:      ctx,
-	}
-
-	if e.cfg.permissionChecker != nil {
-		permResult := e.cfg.permissionChecker.CheckPermissions(useCtx)
-		if e.cfg.logger != nil {
-			e.cfg.logger.Debug("[executor] permission check", "tool", name, "behavior", permResult.Behavior, "msg", permResult.Message)
-		}
-		switch permResult.Behavior {
-		case PermissionDeny:
-			if e.cfg.eventEmitter != nil {
-				e.cfg.eventEmitter(events.NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", events.PermissionDenied, permResult.Message))
-			}
-			if e.cfg.logger != nil {
-				e.cfg.logger.Info("[executor] tool denied", "tool", name, "reason", permResult.Message)
-			}
-			return &ToolExecutionResult{ToolName: name, Error: fmt.Errorf("tool %q denied: %s", name, permResult.Message)}, nil
-
-		case PermissionAsk:
-			if e.cfg.logger != nil {
-				e.cfg.logger.Info("[executor] permission pending", "tool", name)
-			}
-			// Non-blocking: emit PermissionPending event and return immediately.
-			// The loop will pause and wait for the user to Agree/Deny.
-			if e.cfg.eventEmitter != nil {
-				e.cfg.eventEmitter(events.NewReactEvent(useCtx.SessionID, useCtx.TaskID, "", events.PermissionPending,
-					events.NewPermissionPendingData(
-						uuid.New().String(),
-						name,
-						params,
-						"This tool requires your approval before execution.",
-						toolInfo.SecurityLevel,
-					),
-				))
-			}
-			return &ToolExecutionResult{
-				ToolName: name,
-				Result:   fmt.Sprintf("[permission_required] Tool %q awaits your approval.", name),
-			}, nil
-		case PermissionAllow:
-			if permResult.UpdatedInput != nil {
-				params = permResult.UpdatedInput
-				useCtx.Params = params
-			}
-		}
-	}
 
 	if e.cfg.logger != nil {
 		e.cfg.logger.Debug("[executor] executing tool", "tool", name, "params", params)
