@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DotNetAge/goharness/events"
 )
@@ -79,6 +80,14 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 	}
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+		// Check session whitelist before asking the user.
+		if tc.SessionWhitelist != nil {
+			for _, allowed := range tc.SessionWhitelist.Write {
+				if strings.HasPrefix(resolved, allowed) {
+					return true, ""
+				}
+			}
+		}
 		return false, fmt.Sprintf(
 			"Write to %q resolves to %q which is outside the workspace.\n%s",
 			path, resolved, err.Error(),

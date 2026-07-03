@@ -596,6 +596,15 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 	// Outside the working dir → ask the user. The actual executor will
 	// still double-check, so even if Grant is bypassed we never run an
 	// out-of-tree script.
+	//
+	// Before prompting, check the session whitelist.
+	if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
+		for _, allowed := range tc.SessionWhitelist.RunScript {
+			if strings.HasPrefix(cleanScript, allowed) {
+				return true, ""
+			}
+		}
+	}
 	return false, fmt.Sprintf(
 		"RunScript wants to execute %q, which is outside the working directory %q. Confirm this is intended.",
 		cleanScript, absWork,

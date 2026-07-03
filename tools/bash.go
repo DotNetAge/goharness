@@ -325,10 +325,15 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	if t.whitelistEnabled {
 		if !t.isCommandWhitelisted(command) {
 			base := extractBaseCommand(command)
-			return false, fmt.Sprintf(
-				"Bash command %q is not in the whitelist. Allowed: %s",
-				base, strings.Join(getDefaultWhitelist(), ", "),
-			)
+			// Check session whitelist before asking the user.
+			if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
+				for _, allowed := range tc.SessionWhitelist.Bash {
+					if base == allowed {
+						return true, ""
+					}
+				}
+			}
+			return false, fmt.Sprintf("Bash command %q is not in the whitelist. ", base)
 		}
 	}
 
@@ -441,6 +446,7 @@ func detectDangerousCommand(command string) string {
 //   - 系统工具：ps, top, df, du 等
 func getDefaultWhitelist() []string {
 	baseCmds := []string{
+		"cat", "echo", "head", "tail", "less", "more",
 		"ls", "wc", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
 		"chmod", "chown", "ln", "tar", "gzip", "gunzip", "zip", "unzip",
 		"git", "svn", "hg",
@@ -453,12 +459,20 @@ func getDefaultWhitelist() []string {
 		"df", "du", "free", "uname", "date", "whoami", "id",
 		"env", "export", "source", "alias", "which", "type", "file",
 		"sort", "uniq", "cut", "tr", "tee", "xargs",
+		"grep", "rg", "find", "diff", "comm",
+		"awk", "sed", "printf",
 		"jq", "yq",
 		"test", "[[", "true", "false", "exit", "return",
 		"sleep", "wait", "bg", "fg", "jobs", "nohup", "disown",
 		"basename", "dirname", "realpath", "readlink",
 		"sha256sum", "md5sum", "sha1sum", "shasum",
 		"openssl", "gpg", "ssh-keygen",
+		"time", "timeout", "watch",
+		"hostname", "uptime", "lscpu", "lsblk",
+		"ping", "ss", "dig", "host", "nslookup", "traceroute", "ip",
+		"lsof",
+		"strings", "xxd", "od", "column", "seq", "shuf", "fmt", "nl", "fold",
+		"ldd", "nm", "objdump", "readelf", "size", "strip",
 	}
 
 	if runtime.GOOS == "windows" {

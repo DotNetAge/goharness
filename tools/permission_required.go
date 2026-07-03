@@ -100,6 +100,14 @@ const (
 	// and run the tool with its original arguments.
 	PermissionAllow = "PermissionAllow"
 
+	// PermissionAllowSession is sent by the UI when the user checks
+	// "Remember my choice for this session". It works like PermissionAllow
+	// — the tool is executed — but also adds the tool + its approved
+	// parameters to the session-level whitelist ({sessionDir}/session-wl.json).
+	// Subsequent invocations of the same tool with matching parameters
+	// will auto-grant without user confirmation.
+	PermissionAllowSession = "PermissionAllowSession"
+
 	// PermissionDeny is sent by the UI to reject the pending permission.
 	// The LLM sees a "Permission Denied" tool result and can adapt its
 	// plan (e.g. ask the user, choose a different path, etc.).
@@ -118,6 +126,8 @@ func ClassifyMagicWord(msg string) string {
 	switch {
 	case strings.EqualFold(trimmed, PermissionAllow):
 		return PermissionAllow
+	case strings.EqualFold(trimmed, PermissionAllowSession):
+		return PermissionAllowSession
 	case strings.EqualFold(trimmed, PermissionDeny):
 		return PermissionDeny
 	default:

@@ -31,6 +31,11 @@ type ToolContext struct {
 	// Tools access session properties through its getter methods (ID, ProjectDir, etc.),
 	// ensuring thread-safe reads from the single source of truth.
 	Session *session.Session
+
+	// SessionWhitelist is a cached (lazy-loaded) reference to the session-level
+	// tool whitelist. Grant() methods of PermissionRequired tools check this
+	// before prompting the user. Nil means no whitelist is available.
+	SessionWhitelist *session.SessionWhitelist
 }
 
 // WithToolContext stores a ToolContext in the given context.

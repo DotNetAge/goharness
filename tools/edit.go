@@ -107,6 +107,14 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	}
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+		// Check session whitelist before asking the user.
+		if tc.SessionWhitelist != nil {
+			for _, allowed := range tc.SessionWhitelist.Edit {
+				if strings.HasPrefix(resolved, allowed) {
+					return true, ""
+				}
+			}
+		}
 		return false, fmt.Sprintf(
 			"Edit on %q resolves to %q which is outside the workspace.\n%s",
 			filePath, resolved, err.Error(),

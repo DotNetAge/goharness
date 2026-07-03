@@ -60,6 +60,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -2158,9 +2159,10 @@ func securityLevelString(level events.SecurityLevel) string {
 // executor's full ToolContext is created later in the actual Execute call.
 func (rt *Runtime) buildGrantToolContext(ctx context.Context, sess *session.Session) context.Context {
 	tc := &tools.ToolContext{
-		EmitEvent: nil, // Grant does not emit events.
-		Logger:    rt.logger,
-		Session:   sess,
+		EmitEvent:        nil, // Grant does not emit events.
+		Logger:           rt.logger,
+		Session:          sess,
+		SessionWhitelist: sess.Whitelist(),
 	}
 	return tools.WithToolContext(ctx, tc)
 }
@@ -2278,10 +2280,72 @@ func (rt *Runtime) resolvePermissionMagicWord(
 	switch action {
 	case tools.PermissionAllow:
 		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
+	case tools.PermissionAllowSession:
+		// Add to session whitelist before executing.
+		if entry := rt.buildWhitelistEntry(pending, b.session); entry != "" {
+			if err := b.session.AddToWhitelist(pending.ToolName, entry); err != nil {
+				logger.Error("failed to add to session whitelist", err)
+			}
+		}
+		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
 	case tools.PermissionDeny:
 		rt.appendDeniedResult(ctx, b, pending)
 	}
 	return true
+}
+
+// buildWhitelistEntry constructs the whitelist entry value for a tool
+// invocation based on the tool name and its arguments.
+//
+// Returns the entry to store (e.g. base command name for bash, resolved
+// file path for write/edit, script path for run_script), or "" if no
+// meaningful entry can be derived (in which case no whitelisting happens).
+func (rt *Runtime) buildWhitelistEntry(pending *session.PendingPermission, sess *session.Session) string {
+	switch pending.ToolName {
+	case "bash":
+		cmd, _ := pending.Arguments["command"].(string)
+		if cmd == "" {
+			return ""
+		}
+		parts := strings.Fields(cmd)
+		if len(parts) == 0 {
+			return ""
+		}
+		return parts[0]
+	case "write", "edit":
+		path, _ := pending.Arguments["path"].(string)
+		if path == "" {
+			return ""
+		}
+		resolved, _ := tools.ResolveTargetPath(path, sess.ProjectDir(), sess.SessionDir())
+		return resolved
+	case "run_script":
+		cmd, _ := pending.Arguments["command"].(string)
+		if cmd == "" {
+			return ""
+		}
+		workingDir, _ := pending.Arguments["working_dir"].(string)
+		if workingDir == "" {
+			workingDir = "."
+		}
+		parts := strings.Fields(cmd)
+		if len(parts) == 0 {
+			return ""
+		}
+		// Determine the script path. If the first token looks like an
+		// interpreter name (no path separators), use the second token.
+		scriptCandidate := parts[0]
+		if len(parts) > 1 && !strings.ContainsAny(parts[0], "./\\") {
+			scriptCandidate = parts[1]
+		}
+		// Resolve to absolute path, matching RunScript.Grant() behavior.
+		if !filepath.IsAbs(scriptCandidate) {
+			scriptCandidate = filepath.Join(workingDir, scriptCandidate)
+		}
+		return filepath.Clean(scriptCandidate)
+	default:
+		return ""
+	}
 }
 
 // executePendingAndAppend actually runs the tool that was held in the
