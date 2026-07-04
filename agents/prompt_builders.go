@@ -119,13 +119,13 @@ func buildDirectoryUsageGuidance(projectDir, sessionDir string) string {
 	return fmt.Sprintf(directorySemanticsPrompt, projectDir, sessionDir)
 }
 
-type environmentInfoParams struct {
+type EnvsParams struct {
 	ProjectDir string
 	SessionDir string
 	SessionID  string
 }
 
-func buildEnvironmentInfo(params environmentInfoParams) string {
+func buildEnvironmentInfo(params EnvsParams) string {
 	projectDir := params.ProjectDir
 	if projectDir == "" {
 		projectDir, _ = os.Getwd()

@@ -65,6 +65,19 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 	return registry, nil
 }
 
+// agentFrontmatter 定义了 Agent Markdown 文件 YAML frontmatter 的结构。
+// 所有字段通过 yaml.Unmarshal 直接反序列化，无需手动类型断言。
+type agentFrontmatter struct {
+	Name         string      `yaml:"name"`
+	Role         string      `yaml:"role"`
+	Title        string      `yaml:"title"`
+	Description  string      `yaml:"description"`
+	Model        string      `yaml:"model"`
+	Skills       []string    `yaml:"skills"`
+	ExcludeTools []string    `yaml:"exclude_tools"`
+	Meta         interface{} `yaml:"meta"` // map 或数组格式均由 yaml 解析，后续统一转换
+}
+
 // parseAgentFile 解析单个 Agent 配置文件，返回解析后的 AgentConfig 对象。
 //
 // 文件格式要求：
@@ -73,15 +86,6 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 //   - frontmatter 部分必须是有效的 YAML 格式
 //   - 两个分隔符之间的内容为 YAML 元数据
 //   - 第二个分隔符之后的内容为正文（Introduction/Body）
-//
-// 支持的字段：
-//   - name (必需): Agent 名称
-//   - role 或 title: Agent 角色（优先使用 role，回退到 title）
-//   - description: 描述信息
-//   - model: 默认模型名称
-//   - skills: 技能列表（数组）
-//   - exclude_tools: 要排除的工具列表（数组）
-//   - meta: 扩展元数据（支持 map 或数组格式）
 //
 // 该函数会处理 Windows 换行符（\r\n）并自动转换为 Unix 格式（\n）。
 func parseAgentFile(filePath string) (*AgentConfig, error) {
@@ -126,60 +130,70 @@ func parseAgentFile(filePath string) (*AgentConfig, error) {
 	body := strings.Join(bodyLines, "\n")
 	body = strings.TrimSpace(body)
 
-	var meta map[string]any
-	if err := yaml.Unmarshal([]byte(frontmatterYAML), &meta); err != nil {
+	var fm agentFrontmatter
+	if err := yaml.Unmarshal([]byte(frontmatterYAML), &fm); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
 	}
 
-	agent := &AgentConfig{}
-	if nameVal, ok := meta["name"].(string); ok {
-		agent.Name = nameVal
-	}
-	if roleVal, ok := meta["role"].(string); ok {
-		agent.Role = roleVal
-	} else if titleVal, ok := meta["title"].(string); ok {
-		agent.Role = titleVal
-	}
-	if descVal, ok := meta["description"].(string); ok {
-		agent.Description = descVal
-	}
-	if modelVal, ok := meta["model"].(string); ok {
-		agent.Model = modelVal
-	}
-	if skillsList, ok := meta["skills"].([]any); ok {
-		for _, s := range skillsList {
-			if str, ok := s.(string); ok {
-				agent.Skills = append(agent.Skills, str)
-			}
-		}
-	}
-	if excludeList, ok := meta["exclude_tools"].([]any); ok {
-		for _, e := range excludeList {
-			if str, ok := e.(string); ok {
-				agent.ExcludeTools = append(agent.ExcludeTools, str)
-			}
-		}
-	}
-	if metaVal, ok := meta["meta"]; ok {
-		if metaMap, ok := metaVal.(map[string]any); ok {
-			agent.Meta = deepCopyMeta(metaMap)
-		} else if metaSlice, ok := metaVal.([]any); ok {
-			agent.Meta = make(map[string]any)
-			for _, item := range metaSlice {
-				if itemMap, ok := item.(map[string]any); ok {
-					for k, v := range itemMap {
-						agent.Meta[k] = v
-					}
-				}
-			}
-			if len(agent.Meta) == 0 {
-				agent.Meta = nil
-			}
-		}
+	if fm.Name == "" {
+		return nil, fmt.Errorf("agent file %q is missing required 'name' field", filePath)
 	}
 
-	agent.Introduction = body
+	agent := &AgentConfig{
+		Name:         fm.Name,
+		Role:         fm.Role,
+		Description:  fm.Description,
+		Model:        fm.Model,
+		Skills:       fm.Skills,
+		ExcludeTools: fm.ExcludeTools,
+		Introduction: body,
+	}
+
+	// role 回退到 title（兼容旧格式）
+	if agent.Role == "" {
+		agent.Role = fm.Title
+	}
+
+	// meta 支持 map 和数组格式
+	agent.Meta = normalizeMeta(fm.Meta)
+
+	if len(agent.Skills) == 0 {
+		agent.Skills = nil
+	}
+	if len(agent.ExcludeTools) == 0 {
+		agent.ExcludeTools = nil
+	}
+
 	return agent, nil
+}
+
+// normalizeMeta 将 yaml 解析后的 meta 值统一转换为 map[string]any。
+// 支持：
+//   - map[string]any（标准 YAML map）
+//   - []any（数组格式，合并所有元素到同一个 map）
+func normalizeMeta(v any) map[string]any {
+	if v == nil {
+		return nil
+	}
+	switch m := v.(type) {
+	case map[string]any:
+		return m
+	case []any:
+		result := make(map[string]any)
+		for _, item := range m {
+			if itemMap, ok := item.(map[string]any); ok {
+				for k, v := range itemMap {
+					result[k] = v
+				}
+			}
+		}
+		if len(result) == 0 {
+			return nil
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 // deepCopyMeta 递归地深拷贝元数据映射，确保修改副本不会影响原始数据。

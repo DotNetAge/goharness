@@ -96,8 +96,8 @@ func defaultBehavioralRules() string { return extractSection("Behavioral Rules")
 // buildOutputEfficiency returns the Communication Style section.
 func buildOutputEfficiency() string { return extractSection("Communication Style") }
 
-// buildSearchPriority returns the Search Priority section.
-func buildSearchPriority() string { return extractSection("Search Priority") }
+// buildSearchPriority returns the Search Strategy section.
+func buildSearchPriority() string { return extractSection("Search Strategy") }
 
 // buildSystemReminders returns the System Notes section.
 func buildSystemReminders() string { return extractSection("System Notes") }

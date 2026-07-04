@@ -18,6 +18,13 @@ var (
 //  3. Resources (as needed): files in scripts/, references/, assets/ loaded on demand
 )
 
+// Requires declares runtime dependencies for a skill.
+// If declared dependencies are not met, the skill is skipped at load time.
+type Requires struct {
+	Bins []string `json:"bins,omitempty" yaml:"bins,omitempty"` // Required executables on PATH, e.g. ["python3", "git"]
+	Env  []string `json:"env,omitempty" yaml:"env,omitempty"`   // Required environment variables, e.g. ["MY_API_KEY"]
+}
+
 type Skill struct {
 	// --- Spec-required fields (from SKILL.md frontmatter) ---
 
@@ -30,6 +37,10 @@ type Skill struct {
 	Compatibility string            `json:"compatibility,omitempty" yaml:"compatibility,omitempty"` // Environment requirements (max 500 chars).
 	Metadata      map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`           // Arbitrary key-value metadata.
 	AllowedTools  string            `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"` // Space-separated pre-approved tools (experimental).
+
+	// --- MindX extensions ---
+
+	Requires *Requires `json:"requires,omitempty" yaml:"requires,omitempty"` // Runtime dependency declarations. If unmet, the skill is skipped at load time.
 
 	// --- Instructions (Markdown body after frontmatter) ---
 

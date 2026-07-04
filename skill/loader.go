@@ -3,8 +3,11 @@ package skill
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const frontmatterDelimiter = "---"
@@ -41,6 +44,7 @@ type skillFrontmatter struct {
 	Compatibility string            `yaml:"compatibility,omitempty"`
 	Metadata      map[string]string `yaml:"metadata,omitempty"`
 	AllowedTools  string            `yaml:"allowed-tools,omitempty"`
+	Requires      *Requires         `yaml:"requires,omitempty"`
 }
 
 func parseYamlFrontmatter(content string) (skillFrontmatter, string, error) {
@@ -60,135 +64,11 @@ func parseYamlFrontmatter(content string) (skillFrontmatter, string, error) {
 	yamlBlock := rest[:closeIdx]
 	body := rest[closeIdx+len(frontmatterDelimiter)+1:]
 
-	if err := parseSimpleYaml(yamlBlock, &fm); err != nil {
+	if err := yaml.Unmarshal([]byte(yamlBlock), &fm); err != nil {
 		return fm, body, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
 	}
 
 	return fm, body, nil
-}
-
-func parseSimpleYaml(yaml string, fm *skillFrontmatter) error {
-	lines := strings.Split(yaml, "\n")
-	var currentMapKey string
-	var multilineKey string
-	var multilineValue strings.Builder
-
-	for _, line := range lines {
-		rawLine := line
-		line = strings.TrimSpace(line)
-
-		if multilineKey != "" {
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if isNewTopLevelKey(line) {
-				flushMultiline(multilineKey, strings.TrimSpace(multilineValue.String()), fm)
-				multilineKey = ""
-				multilineValue.Reset()
-			} else {
-				if multilineValue.Len() > 0 {
-					multilineValue.WriteByte(' ')
-				}
-				multilineValue.WriteString(line)
-				continue
-			}
-		}
-
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		if idx := strings.Index(line, ":"); idx > 0 {
-			key := strings.TrimSpace(line[:idx])
-			value := strings.TrimSpace(line[idx+1:])
-			value = strings.Trim(value, `"'`)
-
-			if value == "|" || value == ">" {
-				multilineKey = key
-				multilineValue.Reset()
-				continue
-			}
-
-			switch key {
-			case "name":
-				fm.Name = value
-			case "description":
-				if value != "" {
-					fm.Description = value
-				}
-			case "license":
-				fm.License = value
-			case "compatibility":
-				fm.Compatibility = value
-			case "allowed-tools":
-				fm.AllowedTools = value
-			case "metadata":
-				if fm.Metadata == nil {
-					fm.Metadata = make(map[string]string)
-				}
-				currentMapKey = "metadata"
-				if value != "" && value != "{" {
-					parseInlineMap(value, fm.Metadata)
-				}
-			default:
-			if currentMapKey == "metadata" && fm.Metadata != nil {
-				fm.Metadata[key] = value
-			}
-		}
-	} else if currentMapKey != "" && (strings.HasPrefix(rawLine, "  ") || strings.Contains(line, ":")) {
-			if subIdx := strings.Index(line, ":"); subIdx > 0 {
-				subKey := strings.TrimSpace(line[:subIdx])
-				subVal := strings.TrimSpace(line[subIdx+1:])
-				subVal = strings.Trim(subVal, `"'`)
-				if currentMapKey == "metadata" && fm.Metadata != nil {
-					fm.Metadata[subKey] = subVal
-				}
-			}
-		}
-	}
-
-	if multilineKey != "" {
-		flushMultiline(multilineKey, strings.TrimSpace(multilineValue.String()), fm)
-	}
-
-	return nil
-}
-
-func isNewTopLevelKey(line string) bool {
-	if idx := strings.Index(line, ":"); idx > 1 {
-		key := line[:idx]
-		for _, r := range key {
-			if r != ' ' && !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-func flushMultiline(key, value string, fm *skillFrontmatter) {
-	switch key {
-	case "description":
-		if value != "" {
-			fm.Description = value
-		}
-	case "allowed-tools":
-		fm.AllowedTools = value
-	default:
-	}
-}
-
-func parseInlineMap(s string, m map[string]string) {
-	for pair := range strings.SplitSeq(s, ",") {
-		pair = strings.TrimSpace(pair)
-		if idx := strings.Index(pair, ":"); idx > 0 {
-			k := strings.TrimSpace(pair[:idx])
-			v := strings.TrimSpace(pair[idx+1:])
-			v = strings.Trim(v, `"'`)
-			m[k] = v
-		}
-	}
 }
 
 type FileSystemSkillLoader struct {
@@ -214,7 +94,7 @@ func (l *FileSystemSkillLoader) Load() ([]*Skill, error) {
 			continue
 		}
 		skillDir := filepath.Join(l.RootDir, entry.Name())
-		skill, err := loadSkillFromDir(skillDir, "filesystem")
+		skill, err := LoadSkillFromDir(skillDir, "filesystem")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[skill loader] warning: skipping %q: %v\n", skillDir, err)
 			continue
@@ -226,7 +106,12 @@ func (l *FileSystemSkillLoader) Load() ([]*Skill, error) {
 	return skills, nil
 }
 
-func loadSkillFromDir(dir string, source string) (*Skill, error) {
+// LoadSkillFromDir loads a single skill from the given directory.
+// It reads SKILL.md, parses the YAML frontmatter, verifies dependencies,
+// and returns the Skill. If the directory does not contain a SKILL.md,
+// it returns nil, nil. If dependencies are not met, it returns an error
+// so the caller can skip the skill.
+func LoadSkillFromDir(dir string, source string) (*Skill, error) {
 	skillMdPath := filepath.Join(dir, "SKILL.md")
 	data, err := os.ReadFile(skillMdPath)
 	if err != nil {
@@ -238,6 +123,10 @@ func loadSkillFromDir(dir string, source string) (*Skill, error) {
 	skill, err := parseSkillMd(data, dir, source)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := verifyDependencies(skill); err != nil {
+		return nil, fmt.Errorf("dependency check failed for skill %q: %w", skill.Name, err)
 	}
 
 	// If a LICENSE.txt file exists in the skill directory, read its full content
@@ -295,8 +184,40 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 		Compatibility: fm.Compatibility,
 		Metadata:      fm.Metadata,
 		AllowedTools:  fm.AllowedTools,
+		Requires:      fm.Requires,
 		Instructions:  resolved,
 		RootDir:       rootDir,
 		Source:        source,
 	}, nil
+}
+
+// verifyDependencies checks declared runtime dependencies.
+// Returns nil if all dependencies are met or no dependencies are declared.
+// Returns an error if any required binary is missing or required env var is empty.
+func verifyDependencies(s *Skill) error {
+	if s.Requires == nil {
+		return nil
+	}
+
+	for _, bin := range s.Requires.Bins {
+		bin = strings.TrimSpace(bin)
+		if bin == "" {
+			continue
+		}
+		if _, err := exec.LookPath(bin); err != nil {
+			return fmt.Errorf("required binary %q not found on PATH", bin)
+		}
+	}
+
+	for _, key := range s.Requires.Env {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if val := os.Getenv(key); val == "" {
+			return fmt.Errorf("required environment variable %q is not set or empty", key)
+		}
+	}
+
+	return nil
 }

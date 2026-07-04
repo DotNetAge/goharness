@@ -79,3 +79,19 @@ func WithKVStore(kv store.KVStore) RuntimeConfig {
 func WithResultStore(rs *store.ResultStore) RuntimeConfig {
 	return func(r *Runtime) { r.resultStore = rs }
 }
+
+// WithSkillsPrompt overrides the default skills catalog prompt section.
+// The provided function receives the filtered list of skills for the current agent
+// and should return the complete catalog string (or empty to omit the section).
+// When nil (default), the built-in buildSkillsCatalog is used.
+func WithSkillsPrompt(builder func(skills []*skill.Skill) string) RuntimeConfig {
+	return func(r *Runtime) { r.skillsCatalogBuilder = builder }
+}
+
+// WithEnvs overrides the default Environment section in system prompts.
+// The provided function receives EnvsParams (SessionID, ProjectDir, SessionDir)
+// and should return the complete environment section string (or empty to omit).
+// When nil (default), the built-in buildEnvironmentInfo is used.
+func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
+	return func(r *Runtime) { r.envsBuilder = builder }
+}

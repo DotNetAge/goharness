@@ -191,6 +191,17 @@ type Runtime struct {
 	// fileModifyHook holds a reference to the registered FileModifyHook,
 	// allowing WithFileModifyTracker to dynamically update its provider after init.
 	fileModifyHook *action.FileModifyHook
+
+	// skillsCatalogBuilder overrides the default buildSkillsCatalog output.
+	// If set, it receives the filtered agent skills and returns the catalog string.
+	// When nil, the default buildSkillsCatalog is used.
+	// Set via WithSkillsCatalogBuilder().
+	skillsCatalogBuilder func(skills []*skill.Skill) string
+
+	// envsBuilder overrides the default Environment section in system prompts.
+	// If set, it receives EnvsParams and returns the complete env section string.
+	// When nil, the default buildEnvironmentInfo is used.
+	envsBuilder func(EnvsParams) string
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -1422,7 +1433,7 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 					agentSkills = append(agentSkills, sk)
 				}
 			}
-			if catalog := buildSkillsCatalog(agentSkills); catalog != "" {
+			if catalog := rt.skillsCatalog(agentSkills); catalog != "" {
 				msgs = append(msgs, gochatcore.NewSystemMessage(catalog))
 			}
 		}
@@ -1441,7 +1452,7 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildSearchPriority()))
 
 	// 4. Environment info
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildEnvironmentInfo(environmentInfoParams{
+	msgs = append(msgs, gochatcore.NewSystemMessage(rt.buildEnvs(EnvsParams{
 		SessionID:  sessionID,
 		SessionDir: s.SessionDir(),
 		ProjectDir: s.ProjectDir(),
@@ -1457,6 +1468,24 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildOutputEfficiency()))
 
 	return msgs
+}
+
+// skillsCatalog builds the skills catalog section using the override builder
+// if set, otherwise falling back to the default buildSkillsCatalog.
+func (rt *Runtime) skillsCatalog(agentSkills []*skill.Skill) string {
+	if rt.skillsCatalogBuilder != nil {
+		return rt.skillsCatalogBuilder(agentSkills)
+	}
+	return buildSkillsCatalog(agentSkills)
+}
+
+// buildEnvs builds the Environment section using the override builder
+// if set, otherwise falling back to the default buildEnvironmentInfo.
+func (rt *Runtime) buildEnvs(params EnvsParams) string {
+	if rt.envsBuilder != nil {
+		return rt.envsBuilder(params)
+	}
+	return buildEnvironmentInfo(params)
 }
 
 // ── Message Assembly ────────────────────────────────────────────────────────
