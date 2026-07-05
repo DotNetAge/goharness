@@ -35,7 +35,7 @@ type Skill struct {
 	Paths         []string          `json:"paths,omitempty" yaml:"paths,omitempty"`                 // Optional. List of relative paths to files or directories to load.
 	License       string            `json:"license,omitempty" yaml:"license,omitempty"`             // License name or reference to bundled license file.
 	Compatibility string            `json:"compatibility,omitempty" yaml:"compatibility,omitempty"` // Environment requirements (max 500 chars).
-	Metadata      map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`           // Arbitrary key-value metadata.
+	Metadata      map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`               // Arbitrary key-value metadata.
 	AllowedTools  string            `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"` // Space-separated pre-approved tools (experimental).
 
 	// --- MindX extensions ---

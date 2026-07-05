@@ -42,9 +42,8 @@ type skillFrontmatter struct {
 	Description   string            `yaml:"description"`
 	License       string            `yaml:"license,omitempty"`
 	Compatibility string            `yaml:"compatibility,omitempty"`
-	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	Metadata      map[string]any    `yaml:"metadata,omitempty"`
 	AllowedTools  string            `yaml:"allowed-tools,omitempty"`
-	Requires      *Requires         `yaml:"requires,omitempty"`
 }
 
 func parseYamlFrontmatter(content string) (skillFrontmatter, string, error) {
@@ -169,6 +168,35 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 
 	instructions := strings.TrimSpace(body)
 
+	// Extract requires from metadata (as per spec, all extensions go in metadata)
+	var requires *Requires
+	if reqVal, ok := fm.Metadata["requires"]; ok {
+		if reqMap, ok := reqVal.(map[string]any); ok {
+			r := &Requires{}
+			if binsVal, ok := reqMap["bins"]; ok {
+				if binsList, ok := binsVal.([]any); ok {
+					for _, b := range binsList {
+						if binStr, ok := b.(string); ok {
+							r.Bins = append(r.Bins, binStr)
+						}
+					}
+				}
+			}
+			if envVal, ok := reqMap["env"]; ok {
+				if envList, ok := envVal.([]any); ok {
+					for _, e := range envList {
+						if envStr, ok := e.(string); ok {
+							r.Env = append(r.Env, envStr)
+						}
+					}
+				}
+			}
+			if len(r.Bins) > 0 || len(r.Env) > 0 {
+				requires = r
+			}
+		}
+	}
+
 	resolved := instructions
 	if strings.Contains(resolved, "{base_dir}") {
 		resolved = strings.ReplaceAll(resolved, "{base_dir}", rootDir)
@@ -184,7 +212,7 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 		Compatibility: fm.Compatibility,
 		Metadata:      fm.Metadata,
 		AllowedTools:  fm.AllowedTools,
-		Requires:      fm.Requires,
+		Requires:      requires,
 		Instructions:  resolved,
 		RootDir:       rootDir,
 		Source:        source,
