@@ -202,6 +202,12 @@ type Runtime struct {
 	// If set, it receives EnvsParams and returns the complete env section string.
 	// When nil, the default buildEnvironmentInfo is used.
 	envsBuilder func(EnvsParams) string
+
+	// searchStrategyBuilder overrides the default Search Strategy section in
+	// system prompts. If set, it returns the complete section string.
+	// When nil (default), the built-in buildSearchPriority is used.
+	// Set via WithSearchStrategy().
+	searchStrategyBuilder func() string
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -1449,7 +1455,7 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	msgs = append(msgs, gochatcore.NewSystemMessage("## Behavioral Rules\n"+rules))
 
 	// 3b. Search priority — how to prioritize local vs web search
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildSearchPriority()))
+	msgs = append(msgs, gochatcore.NewSystemMessage(rt.buildSearchStrategy()))
 
 	// 4. Environment info
 	msgs = append(msgs, gochatcore.NewSystemMessage(rt.buildEnvs(EnvsParams{
@@ -1486,6 +1492,15 @@ func (rt *Runtime) buildEnvs(params EnvsParams) string {
 		return rt.envsBuilder(params)
 	}
 	return buildEnvironmentInfo(params)
+}
+
+// buildSearchStrategy builds the Search Strategy section using the override
+// builder if set, otherwise falling back to the default buildSearchPriority.
+func (rt *Runtime) buildSearchStrategy() string {
+	if rt.searchStrategyBuilder != nil {
+		return rt.searchStrategyBuilder()
+	}
+	return buildSearchPriority()
 }
 
 // ── Message Assembly ────────────────────────────────────────────────────────

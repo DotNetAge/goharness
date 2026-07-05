@@ -95,3 +95,11 @@ func WithSkillsPrompt(builder func(skills []*skill.Skill) string) RuntimeConfig 
 func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
 	return func(r *Runtime) { r.envsBuilder = builder }
 }
+
+// WithSearchStrategy overrides the default Search Strategy section in system prompts.
+// The provided function receives no parameters and should return the complete section
+// string (or empty to omit the section entirely).
+// When nil (default), the built-in buildSearchPriority is used.
+func WithSearchStrategy(builder func() string) RuntimeConfig {
+	return func(r *Runtime) { r.searchStrategyBuilder = builder }
+}
