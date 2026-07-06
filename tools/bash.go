@@ -86,6 +86,15 @@ func NewBashToolUnrestricted() FuncTool {
 // 匹配命令行开头的字母数字命令名（如 ls, git, npm 等）。
 var baseCommandPattern = regexp.MustCompile(`^\s*([a-zA-Z][a-zA-Z0-9._\-]*)(\s|$)`)
 
+// shellKeywords are shell built-in control words that are not external commands.
+// Used to skip keyword-only segments when extracting real commands from compound statements.
+var shellKeywords = map[string]bool{
+	"for": true, "while": true, "until": true, "if": true, "then": true,
+	"else": true, "elif": true, "fi": true, "do": true, "done": true,
+	"case": true, "esac": true, "select": true, "function": true,
+	"in": true, "!": true, "{": true, "}": true,
+}
+
 // Info 返回 Bash 工具的元信息。
 // 包含工具名称、描述、参数定义、安全级别等。
 func (t *BashTool) Info() *ToolInfo {
@@ -195,14 +204,18 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	if t.whitelistEnabled {
 		if allowed := t.isCommandWhitelisted(command); !allowed {
-			baseCmd := extractBaseCommand(command)
+			cmds := extractCommands(command)
+			blockedCmd := "unknown"
+			if len(cmds) > 0 {
+				blockedCmd = cmds[0]
+			}
 			return map[string]any{
 				"stdout":      "",
-				"stderr":      fmt.Sprintf("BLOCKED: command %q is not in the whitelist. Allowed commands: %s", baseCmd, strings.Join(getDefaultWhitelist(), ", ")),
+				"stderr":      fmt.Sprintf("BLOCKED: command %q is not in the whitelist. Allowed commands: %s", blockedCmd, strings.Join(getDefaultWhitelist(), ", ")),
 				"exit_code":   126,
 				"interrupted": false,
 				"success":     false,
-				"error":       fmt.Sprintf("command not whitelisted: %s", baseCmd),
+				"error":       fmt.Sprintf("command not whitelisted: %s", blockedCmd),
 			}, nil
 		}
 	}
@@ -324,16 +337,28 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 
 	if t.whitelistEnabled {
 		if !t.isCommandWhitelisted(command) {
-			base := extractBaseCommand(command)
+			cmds := extractCommands(command)
 			// Check session whitelist before asking the user.
 			if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
-				for _, allowed := range tc.SessionWhitelist.Bash {
-					if base == allowed {
-						return true, ""
+				allInSession := true
+				for _, cmd := range cmds {
+					found := false
+					for _, allowed := range tc.SessionWhitelist.Bash {
+						if cmd == allowed {
+							found = true
+							break
+						}
+					}
+					if !found {
+						allInSession = false
+						break
 					}
 				}
+				if allInSession {
+					return true, ""
+				}
 			}
-			return false, fmt.Sprintf("Bash command %q is not in the whitelist. ", base)
+			return false, fmt.Sprintf("Bash command %q is not in the whitelist. ", cmds[0])
 		}
 	}
 
@@ -463,6 +488,9 @@ func getDefaultWhitelist() []string {
 		"awk", "sed", "printf",
 		"jq", "yq",
 		"test", "[[", "true", "false", "exit", "return",
+		// Shell 语法关键字（非外部命令，不会产生进程）
+		"for", "while", "until", "if", "then", "else", "elif", "fi",
+		"case", "esac", "do", "done", "select", "function",
 		"sleep", "wait", "bg", "fg", "jobs", "nohup", "disown",
 		"basename", "dirname", "realpath", "readlink",
 		"sha256sum", "md5sum", "sha1sum", "shasum",
@@ -505,29 +533,73 @@ func extractBaseCommand(command string) string {
 	return ""
 }
 
-// isCommandWhitelisted 检查命令是否在白名单中。
+// extractCommands 从 Shell 命令字符串中提取所有真实的命令名。
+// 处理复合命令（for/while/if/case），提取 do / then / ; / && / || 后面的真正命令。
+// 例如："for i in 1 2 3; do rm -rf /tmp; done" → ["rm"]
+//
+//	"if [ -f file ]; then cat file; fi" → ["[", "cat"]
+//	"git status && cargo build" → ["git", "cargo"]
+func extractCommands(command string) []string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return nil
+	}
+
+	// 用 ; && || | 分割
+	separator := regexp.MustCompile(`[;&|]+`)
+	segments := separator.Split(trimmed, -1)
+
+	var cmds []string
+	seen := make(map[string]bool)
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		m := baseCommandPattern.FindStringSubmatch(seg)
+		if len(m) < 2 {
+			continue
+		}
+		cmd := m[1]
+		if shellKeywords[cmd] || seen[cmd] {
+			continue
+		}
+		seen[cmd] = true
+		cmds = append(cmds, cmd)
+	}
+	return cmds
+}
+
+// isCommandWhitelisted 检查命令（及其所有子命令）是否在白名单中。
 // 优先检查自定义白名单，如果为空则使用默认白名单。
 //
 // 参数：
 //   - command: 要检查的 Shell 命令
 //
 // 返回：
-//   - bool: 如果命令在白名单中返回 true，否则返回 false
+//   - bool: 如果所有子命令都在白名单中返回 true，否则返回 false
 func (t *BashTool) isCommandWhitelisted(command string) bool {
-	baseCmd := extractBaseCommand(command)
-	if baseCmd == "" {
+	cmds := extractCommands(command)
+	if len(cmds) == 0 {
 		return false
 	}
 
+	// 构建白名单 map
+	var wl map[string]bool
 	if len(t.customWhitelist) > 0 {
-		return t.customWhitelist[baseCmd]
-	}
-
-	defaultWL := getDefaultWhitelist()
-	for _, allowed := range defaultWL {
-		if baseCmd == allowed {
-			return true
+		wl = t.customWhitelist
+	} else {
+		defaultWL := getDefaultWhitelist()
+		wl = make(map[string]bool, len(defaultWL))
+		for _, c := range defaultWL {
+			wl[c] = true
 		}
 	}
-	return false
+
+	for _, cmd := range cmds {
+		if !wl[cmd] {
+			return false
+		}
+	}
+	return true
 }
