@@ -62,22 +62,20 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 	// Build a comprehensive skill description for the tool result.
 	// Resources section (RootDir) comes BEFORE Instructions so it's visible
 	// in persisted-result previews (first 2000 bytes of <persisted-output>).
-	result := fmt.Sprintf("=== Skill: %s ===\n\nDescription: %s\n", skill.Name, skill.Description)
+	// result := fmt.Sprintf("=== Skill: %s ===\n\nDescription: %s\n", skill.Name, skill.Description)
 
-	if skill.RootDir != "" {
-		result += fmt.Sprintf("\n=== Resources ===\nBase directory: %s\nUse the Read tool to access files in this directory for detailed reference material, examples, or configuration templates.\n", skill.RootDir)
-	}
-	if skill.AllowedTools != "" {
-		result += fmt.Sprintf("\nAllowed tools: %s\n", skill.AllowedTools)
-	}
-	result += fmt.Sprintf("\nInstructions:\n%s", skill.Instructions)
+	// if skill.RootDir != "" {
+	// 	result += fmt.Sprintf("\n=== Resources ===\nBase directory: %s\nUse the Read tool to access files in this directory for detailed reference material, examples, or configuration templates.\n", skill.RootDir)
+	// }
+	// if skill.AllowedTools != "" {
+	// 	result += fmt.Sprintf("\nAllowed tools: %s\n", skill.AllowedTools)
+	// }
+	// result += fmt.Sprintf("\nInstructions:\n%s", skill.Instructions)
 
 	return map[string]any{
-		"skill_name":    skill.Name,
-		"description":   skill.Description,
-		"instructions":  skill.Instructions,
-		"allowed_tools": skill.AllowedTools,
-		"content":       result,
-		"loaded":        true,
+		"skill_name": skill.Name,
+		"root_dir":   skill.RootDir,
+		"content":    skill.Instructions,
+		"loaded":     true,
 	}, nil
 }
