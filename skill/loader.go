@@ -37,13 +37,33 @@ func ValidateSkillDescription(desc string) error {
 	return nil
 }
 
+// AllowedToolsList can be either a string or a list of strings in YAML.
+// When unmarshaled from a list, items are joined with spaces.
+type AllowedToolsList string
+
+func (a *AllowedToolsList) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try as string first
+	var s string
+	if err := unmarshal(&s); err == nil {
+		*a = AllowedToolsList(s)
+		return nil
+	}
+	// Try as list
+	var list []string
+	if err := unmarshal(&list); err == nil {
+		*a = AllowedToolsList(strings.Join(list, " "))
+		return nil
+	}
+	return fmt.Errorf("allowed-tools must be a string or list of strings")
+}
+
 type skillFrontmatter struct {
-	Name          string            `yaml:"name"`
-	Description   string            `yaml:"description"`
-	License       string            `yaml:"license,omitempty"`
-	Compatibility string            `yaml:"compatibility,omitempty"`
-	Metadata      map[string]any    `yaml:"metadata,omitempty"`
-	AllowedTools  string            `yaml:"allowed-tools,omitempty"`
+	Name          string           `yaml:"name"`
+	Description   string           `yaml:"description"`
+	License       string           `yaml:"license,omitempty"`
+	Compatibility string           `yaml:"compatibility,omitempty"`
+	Metadata      map[string]any   `yaml:"metadata,omitempty"`
+	AllowedTools  AllowedToolsList `yaml:"allowed-tools,omitempty"`
 }
 
 func parseYamlFrontmatter(content string) (skillFrontmatter, string, error) {
@@ -211,7 +231,7 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 		License:       fm.License,
 		Compatibility: fm.Compatibility,
 		Metadata:      fm.Metadata,
-		AllowedTools:  fm.AllowedTools,
+		AllowedTools:  string(fm.AllowedTools),
 		Requires:      requires,
 		Instructions:  resolved,
 		RootDir:       rootDir,

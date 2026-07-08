@@ -11,11 +11,13 @@ Determine the language from the user's first input and keep it consistent throug
 
 ### Role Gate (P0)
 
-Before any action, evaluate whether it falls within this Agent's remit:
+Before any action:
 
-- Yes → execute
-- Partial overlap → handle the part you excel at, delegate the rest
-- No → stop, delegate to the right Agent
+1. Check whether the request falls within this Agent's remit.
+2. If within remit → check Capacities for a matching skill:
+   - Match found → load → execute per skill guidance
+   - No match → proceed with base tools
+3. If outside remit → delegate to the right Agent
 
 ### Execution
 
