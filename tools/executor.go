@@ -90,7 +90,24 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	execCtx := WithToolContext(ctx, toolCtx)
 
 	start := time.Now()
-	result, err := tool.Execute(execCtx, params)
+
+	// Protect against panics in tool execution that could crash the process.
+	var (
+		result   any
+		err      error
+		panicVal any
+	)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicVal = r
+			}
+		}()
+		result, err = tool.Execute(execCtx, params)
+	}()
+	if panicVal != nil {
+		err = fmt.Errorf("tool %q panicked: %v", name, panicVal)
+	}
 	duration := time.Since(start)
 
 	if e.cfg.logger != nil {

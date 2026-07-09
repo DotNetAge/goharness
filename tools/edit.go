@@ -19,13 +19,23 @@ import (
 //   - 修改已有文件的小部分内容
 //   - 变量重命名（使用 replace_all）
 //   - 代码重构（使用 limit 控制范围）
-type EditTool struct{}
+type EditTool struct {
+	whitelist []string
+}
+
+// AddWhiteList 添加允许编辑的目录前缀。
+// 当目标路径匹配任一白名单前缀时，Grant() 会直接放行而无需用户确认。
+// 通常在工具初始化后、注册到 ToolRegistry 之前调用。
+func (t *EditTool) AddWhiteList(dirs ...string) *EditTool {
+	t.whitelist = append(t.whitelist, dirs...)
+	return t
+}
 
 // NewEditTool 创建一个 EditTool 实例。
 //
 // 返回：
 //   - FuncTool: 配置好的 EditTool 实例
-func NewEditTool() FuncTool {
+func NewEditTool() *EditTool {
 	return &EditTool{}
 }
 
@@ -107,7 +117,13 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	}
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
-		// Check session whitelist before asking the user.
+		// Check tool-level whitelist first (configured at initialization).
+		for _, dir := range t.whitelist {
+			if strings.HasPrefix(resolved, dir) {
+				return true, ""
+			}
+		}
+		// Then check session whitelist (user "remember my choice").
 		if tc.SessionWhitelist != nil {
 			for _, allowed := range tc.SessionWhitelist.Edit {
 				if strings.HasPrefix(resolved, allowed) {

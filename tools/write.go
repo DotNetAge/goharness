@@ -18,7 +18,16 @@ import (
 //
 // 安全级别：LevelSensitive（敏感），因为会修改文件系统
 type Write struct {
-	info *ToolInfo // 工具元信息
+	info      *ToolInfo
+	whitelist []string
+}
+
+// AddWhiteList 添加允许写入的目录前缀。
+// 当目标路径匹配任一白名单前缀时，Grant() 会直接放行而无需用户确认。
+// 通常在工具初始化后、注册到 ToolRegistry 之前调用。
+func (w *Write) AddWhiteList(dirs ...string) *Write {
+	w.whitelist = append(w.whitelist, dirs...)
+	return w
 }
 
 // writeDescription 是 Write 工具的简短描述。
@@ -28,7 +37,7 @@ const writeDescription = `Write content to a file. Creates parent directories au
 //
 // 返回：
 //   - FuncTool: 配置好的 Write 工具实例
-func NewWriteTool() FuncTool {
+func NewWriteTool() *Write {
 	return &Write{
 		info: &ToolInfo{
 			Name:        "Write",
@@ -80,7 +89,13 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 	}
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
-		// Check session whitelist before asking the user.
+		// Check tool-level whitelist first (configured at initialization).
+		for _, dir := range w.whitelist {
+			if strings.HasPrefix(resolved, dir) {
+				return true, ""
+			}
+		}
+		// Then check session whitelist (user "remember my choice").
 		if tc.SessionWhitelist != nil {
 			for _, allowed := range tc.SessionWhitelist.Write {
 				if strings.HasPrefix(resolved, allowed) {

@@ -517,22 +517,6 @@ func getDefaultWhitelist() []string {
 	return baseCmds
 }
 
-// extractBaseCommand 从 Shell 命令字符串中提取基础命令名。
-// 例如："git status" → "git", "npm install" → "npm"
-//
-// 参数：
-//   - command: 完整的 Shell 命令字符串
-//
-// 返回：
-//   - string: 提取的基础命令名，如果无法识别则返回空字符串
-func extractBaseCommand(command string) string {
-	matches := baseCommandPattern.FindStringSubmatch(strings.TrimSpace(command))
-	if len(matches) > 1 {
-		return matches[1]
-	}
-	return ""
-}
-
 // extractCommands 从 Shell 命令字符串中提取所有真实的命令名。
 // 处理复合命令（for/while/if/case），提取 do / then / ; / && / || 后面的真正命令。
 // 例如："for i in 1 2 3; do rm -rf /tmp; done" → ["rm"]

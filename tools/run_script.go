@@ -129,9 +129,10 @@ type scriptExecutor interface {
 // ---------------------------------------------------------------------------
 
 type platformScriptExecutor struct {
-	platform     Platform
-	mu           sync.Mutex
-	venvManagers map[string]*venvManager
+	platform      Platform
+	mu            sync.Mutex
+	venvManagers  map[string]*venvManager
+	pythonVenvDir string // external venv override (set via RunScript.SetPythonVenv)
 }
 
 func newPlatformScriptExecutor() *platformScriptExecutor {
@@ -190,6 +191,21 @@ func (e *platformScriptExecutor) Execute(ctx context.Context, skillRoot, scriptP
 }
 
 func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
+	// If an external venv is configured (via SetPythonVenv), use it directly
+	// instead of auto-managing a per-skill venv. This allows consumers like
+	// mindx to reuse their own Python environment.
+	if e.pythonVenvDir != "" {
+		pythonBin := filepath.Join(e.pythonVenvDir, "bin", "python")
+		if _, err := os.Stat(pythonBin); os.IsNotExist(err) {
+			pythonBin = filepath.Join(e.pythonVenvDir, "Scripts", "python.exe")
+		}
+		absScript, _ := filepath.Abs(scriptPath)
+		fullArgs := append([]string{absScript}, args...)
+		cmd := exec.CommandContext(ctx, pythonBin, fullArgs...)
+		cmd.Dir = skillRoot
+		return runScriptCommand(cmd)
+	}
+
 	key := venvKey(skillRoot)
 
 	e.mu.Lock()
@@ -376,7 +392,7 @@ type venvManager struct {
 	skillRoot string
 	venvPath  string
 	reqHash   string
-	once      sync.Once
+	mu        sync.Mutex
 }
 
 func newVenvManager(skillRoot string) *venvManager {
@@ -386,28 +402,29 @@ func newVenvManager(skillRoot string) *venvManager {
 	}
 }
 
+// ensureVenv ensures the Python virtual environment exists and is up-to-date.
+// Unlike the previous sync.Once-based approach, this checks the actual venv
+// state on every invocation, so it correctly handles cases where the venv
+// was deleted or corrupted externally after initial creation.
 func (m *venvManager) ensureVenv(ctx context.Context) error {
-	var initErr error
-	m.once.Do(func() {
-		initErr = m.initOnce(ctx)
-	})
-	return initErr
-}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-func (m *venvManager) initOnce(ctx context.Context) error {
-	if _, err := os.Stat(m.venvPath); os.IsNotExist(err) {
+	// Recreate venv if it was deleted or never created.
+	if !dirExists(m.venvPath) {
 		if err := m.createVenv(); err != nil {
 			return fmt.Errorf("create venv: %w", err)
 		}
 	}
 
+	// Check if requirements need (re)installation.
 	reqFile := filepath.Join(m.skillRoot, "scripts", "requirements.txt")
 	if _, err := os.Stat(reqFile); os.IsNotExist(err) {
 		return nil
 	}
 
 	currentHash, _ := hashFile(reqFile)
-	if currentHash == m.reqHash && dirExists(m.venvPath) {
+	if currentHash == m.reqHash {
 		return nil
 	}
 
@@ -475,9 +492,22 @@ func dirExists(path string) bool {
 type RunScript struct {
 	info           *ToolInfo
 	scriptExecutor scriptExecutor
+	pythonVenvDir  string // external venv override (see SetPythonVenv)
 }
 
-func NewRunScriptTool() FuncTool {
+// SetPythonVenv 设置外部 Python 虚拟环境目录。
+// 设置后，executePython() 会绕过自动管理的 per-skill venv，直接使用
+// 指定的 venv 中的 Python 解释器执行脚本。通常在工具初始化后、
+// 注册到 ToolRegistry 之前调用。
+func (t *RunScript) SetPythonVenv(venvDir string) *RunScript {
+	t.pythonVenvDir = venvDir
+	if exe, ok := t.scriptExecutor.(*platformScriptExecutor); ok {
+		exe.pythonVenvDir = venvDir
+	}
+	return t
+}
+
+func NewRunScriptTool() *RunScript {
 	platform := CurrentPlatform()
 	executor := newPlatformScriptExecutor()
 	return &RunScript{

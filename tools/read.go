@@ -21,15 +21,24 @@ import (
 //
 // 安全级别：LevelSafe（安全），只读操作不会修改文件系统
 type Read struct {
-	info   *ToolInfo         // 工具元信息
-	limits FileReadingLimits // 文件读取限制配置
+	info      *ToolInfo         // 工具元信息
+	limits    FileReadingLimits // 文件读取限制配置
+	whitelist []string          // 允许读取的目录前缀（绕过项目边界检查）
+}
+
+// AddWhiteList 添加允许读取的目录前缀。
+// 当目标路径匹配任一白名单前缀时，Execute() 会跳过 ValidateFileSafety 检查，
+// 允许读取项目目录之外的文件。通常在工具初始化后、注册到 ToolRegistry 之前调用。
+func (r *Read) AddWhiteList(dirs ...string) *Read {
+	r.whitelist = append(r.whitelist, dirs...)
+	return r
 }
 
 // NewReadTool 创建一个使用默认限制的文件读取工具。
 //
 // 返回：
 //   - FuncTool: 配置好的 Read 工具实例
-func NewReadTool() FuncTool {
+func NewReadTool() *Read {
 	return NewReadToolWithLimits(DefaultFileReadingLimits())
 }
 
@@ -39,8 +48,8 @@ func NewReadTool() FuncTool {
 //   - limits: 文件读取限制配置（大小、行数、token 等）
 //
 // 返回：
-//   - FuncTool: 配置好的 Read 工具实例
-func NewReadToolWithLimits(limits FileReadingLimits) FuncTool {
+//   - *Read: 配置好的 Read 工具实例
+func NewReadToolWithLimits(limits FileReadingLimits) *Read {
 	return &Read{
 		limits: limits,
 		info: &ToolInfo{
@@ -119,8 +128,25 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		"scope", scope,
 	)
 
-	if err := ValidateFileSafety(resolvedPath, tc.Session.ProjectDir()); err != nil {
-		return nil, err
+	// Check tool-level whitelist: if the path matches a whitelisted prefix,
+	// skip the workspace boundary check. This allows reading files in
+	// directories like ~/.mindx that are outside the project dir.
+	// Sensitive file check still applies regardless of whitelist.
+	whitelisted := false
+	for _, dir := range r.whitelist {
+		if strings.HasPrefix(resolvedPath, dir) {
+			whitelisted = true
+			break
+		}
+	}
+	if whitelisted {
+		if err := checkSensitiveFiles(resolvedPath); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := ValidateFileSafety(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return nil, err
+		}
 	}
 
 	// Pre-read: check file exists, size, and type via fs.FS

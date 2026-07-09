@@ -21,6 +21,10 @@ var toolGroupMaps = map[string][]string{
 	"TeamDelete":    {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 	"TeamList":      {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 	"TeamGetTasks":  {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
+
+	// Skill group: Skill loads instructions + RootDir, RunScript executes scripts within that dir
+	"Skill":     {"Skill", "RunScript"},
+	"RunScript": {"Skill", "RunScript"},
 }
 
 // ExpandGroup returns the full group for a tool name.
