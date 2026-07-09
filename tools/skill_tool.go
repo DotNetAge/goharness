@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/DotNetAge/goharness/skill"
 )
@@ -72,10 +73,17 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 	// }
 	// result += fmt.Sprintf("\nInstructions:\n%s", skill.Instructions)
 
-	return map[string]any{
+	result := map[string]any{
 		"skill_name": skill.Name,
 		"root_dir":   skill.RootDir,
 		"content":    skill.Instructions,
 		"loaded":     true,
-	}, nil
+	}
+
+	// Include allowed_tools so ToolActivationHook can auto-activate them.
+	if skill.AllowedTools != "" {
+		result["allowed_tools"] = strings.Fields(skill.AllowedTools)
+	}
+
+	return result, nil
 }

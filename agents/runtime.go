@@ -208,6 +208,14 @@ type Runtime struct {
 	// When nil (default), the built-in buildSearchPriority is used.
 	// Set via WithSearchStrategy().
 	searchStrategyBuilder func() string
+
+	// activeToolSet is the per-Ask ActiveToolSet. Set by exec() before the
+	// thinking loop and cleared after. Used by ToolActivationHook getter.
+	activeToolSet *ActiveToolSet
+
+	// toolActivationHook holds a reference to the registered ToolActivationHook,
+	// allowing the hook's getter to access the current Ask's ActiveToolSet.
+	toolActivationHook *ToolActivationHook
 }
 
 // RunResult holds execution results from a single Ask call.
@@ -400,6 +408,7 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TeamGetTasks", func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
 		{"Sleep", func() tools.FuncTool { return tools.NewSleepTool() }},
 		{"Skill", func() tools.FuncTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }},
+		{"ToolSelector", func() tools.FuncTool { return tools.NewToolSelectorTool(rt.toolReg) }},
 	}
 	for _, b := range bundled {
 		if t := b.factory(); t != nil {
@@ -430,6 +439,14 @@ func (rt *Runtime) registerDefaultHooks() {
 	if rt.mem != nil {
 		rt.loopHooks = append([]hooks.LoopHook{loop.NewMemoryThoughtHook(rt.mem)}, rt.loopHooks...)
 	}
+
+	// Register ToolActivationHook (runs early, priority 20) to update
+	// ActiveToolSet when ToolSelector or Skill return results.
+	rt.toolActivationHook = NewToolActivationHook(
+		func() *ActiveToolSet { return rt.activeToolSet },
+		rt.logger,
+	)
+	rt.toolHooks = append(rt.toolHooks, rt.toolActivationHook)
 
 	defaultHooks := action.Defaults(nil, rt.skillReg, rt.logger, rt.fileModifyTracker)
 
@@ -794,25 +811,27 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
 		})
 	}
-	// Build tool definitions once (stable across iterations)
-	toolDefs := rt.buildToolDefinitions()
-
-	// If the agent config specifies ExcludeTools, filter them out
+	// Determine if this agent has SubAgent for conditional core tools.
+	hasSubAgent := false
 	if rt.agentReg != nil {
-		if cfg := rt.agentReg.Get(b.agentName); cfg != nil && len(cfg.ExcludeTools) > 0 {
-			exclude := make(map[string]struct{}, len(cfg.ExcludeTools))
+		if cfg := rt.agentReg.Get(b.agentName); cfg != nil {
+			// Check if SubAgent is NOT in ExcludeTools
+			excluded := make(map[string]bool, len(cfg.ExcludeTools))
 			for _, name := range cfg.ExcludeTools {
-				exclude[name] = struct{}{}
+				excluded[name] = true
 			}
-			filtered := make([]gochatcore.Tool, 0, len(toolDefs))
-			for _, td := range toolDefs {
-				if _, ok := exclude[td.Name]; !ok {
-					filtered = append(filtered, td)
-				}
-			}
-			toolDefs = filtered
+			hasSubAgent = !excluded["SubAgent"]
 		}
 	}
+
+	// Create and store ActiveToolSet for this Turn.
+	activeToolSet := NewActiveToolSet(rt.toolReg, hasSubAgent)
+	rt.activeToolSet = activeToolSet
+	defer func() {
+		rt.activeToolSet = nil
+	}()
+	// Reset to core + conditional at the start of each Ask.
+	activeToolSet.Reset()
 
 	// Build system prompt sections once (static per session — none change between rounds)
 	systemSections := rt.buildSystemPrompts(sid, b.session)
@@ -844,6 +863,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			}
 			return total
 		}())
+
+		// Build tool definitions from the current ActiveToolSet.
+		// This may change between iterations when ToolSelector or Skill activate new tools.
+		toolDefs := activeToolSet.BuildDefinitions()
 
 		// ── Loop Hooks BeforeLLM (with panic recovery) ──
 		callInput := &hooks.CallInput{
@@ -1464,13 +1487,16 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 		ProjectDir: s.ProjectDir(),
 	})))
 
-	// 5. System reminders
+	// 5. Tool Catalog — informational only; tools must be activated via ToolSelector
+	msgs = append(msgs, gochatcore.NewSystemMessage(buildToolCatalog(rt.toolReg)))
+
+	// 6. System reminders
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildSystemReminders()))
 
-	// 6. Dynamic boundary (KV cache split point)
+	// 7. Dynamic boundary (KV cache split point)
 	// msgs = append(msgs, gochatcore.NewSystemMessage("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"))
 
-	// 7. Output efficiency (dynamic section)
+	// 8. Output efficiency (dynamic section)
 	msgs = append(msgs, gochatcore.NewSystemMessage(buildOutputEfficiency()))
 
 	return msgs
@@ -1881,8 +1907,9 @@ func parseToolInvocations(calls []gochatcore.ToolCall) []hooks.ToolCallInvocatio
 
 // ── Tool Definition Building ────────────────────────────────────────────────
 
-// buildToolDefinitions converts all registered tools into LLM API tool definition format.
-// Called once at the start of exec() since tool definitions are stable across iterations.
+// buildToolDefinitions converts active tools into LLM API tool definition format.
+// When an ActiveToolSet is available (set by exec()), it builds from the active set.
+// Otherwise, builds from all registered tools (backward compatibility).
 //
 // Each tool's Info() is converted to gochatcore.Tool with:
 //   - Name: Tool identifier
@@ -1892,6 +1919,9 @@ func parseToolInvocations(calls []gochatcore.ToolCall) []hooks.ToolCallInvocatio
 // Returns:
 //   - []gochatcore.Tool: Array of tool definitions for LLM API, or nil if no tools registered
 func (rt *Runtime) buildToolDefinitions() []gochatcore.Tool {
+	if rt.activeToolSet != nil {
+		return rt.activeToolSet.BuildDefinitions()
+	}
 	if rt.toolReg == nil {
 		return nil
 	}
