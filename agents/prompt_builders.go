@@ -41,12 +41,20 @@ func buildSkillsCatalog(skills []*skill.Skill) string {
 	}
 
 	header := "## Capacities (Available Skills)\n" +
-		"When your existing tools cannot fully address the user's request, check whether one of the following specialized skills covers the domain. If a skill matches, use the Skill tool to load its instructions, which will guide you through domain-specific workflows and expose additional tools.\n"
+		"When your existing tools cannot fully address the user's request, check whether one of the following specialized skills covers the domain. If a skill matches, use the Skill tool to load its instructions, which will guide you through domain-specific workflows and expose additional tools.\n\n" +
+		"### Side-Effect Rules\n" +
+		"- The Skill() tool's return value represents the complete knowledge of that skill. For any given skill name, you may call Skill() at most ONCE per session. After that, all references to that skill's content MUST rely on what is already in memory — do NOT use any tool (Bash, Read, Grep, Glob, WebFetch, etc.) to re-read its files.\n\n" +
+		"### Pre-Execution Self-Check\n" +
+		"Before calling Bash, Read, or Grep to access file or directory content, you MUST run this check first:\n" +
+		"1. Role Gate (P0): is this task within my remit? If NO → delegate per Behavioral Rules, do NOT proceed.\n" +
+		"2. If within remit: does the Capacities list above contain a Skill that covers this task?\n" +
+		"3. If yes, have I already loaded it via Skill()?\n" +
+		"4. Output your reasoning and decision:\n" +
+		"   - Reasoning: [remit check result + which Skill was considered]\n" +
+		"   - Decision: delegate (if outside remit) | Skill() (if not yet loaded) | proceed with tools (if loaded or no matching Skill)\n"
 
 	footer := "\n### Loading Strategy\n" +
-		"- Load skills LAZILY: only when you're about to perform a task that requires it\n" +
-		"- Each skill persists once loaded into conversation context \u2014 do NOT reload already-loaded skills\n"
-
+		"- Load skills LAZILY: only when you're about to perform a task that requires it\n"
 	const SKILL_CATALOG_BUDGET = 3000
 	budgetRemaining := SKILL_CATALOG_BUDGET - len(header) - len(footer)
 	if budgetRemaining <= 0 {
@@ -164,10 +172,10 @@ func buildToolCatalog(registry tools.ToolRegistry) string {
 	// Exclude core meta-tools that are always loaded and should not appear
 	// in the catalog (ToolSelector, Skill, AskUser).
 	exclude := map[string]bool{
-		"ToolSelector": true,
-		"Skill":        true,
-		"AskUser":      true,
-		"SubAgent":     true,
+		"ToolSelector":   true,
+		"Skill":          true,
+		"AskUser":        true,
+		"SubAgent":       true,
 		"CollectResults": true,
 	}
 
