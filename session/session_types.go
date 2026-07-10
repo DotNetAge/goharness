@@ -65,6 +65,7 @@ type SlideHandler func(ctx context.Context, event SlideEvent)
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
+	Sponsor        string    `json:"sponsor,omitempty"` // Agent that created this session (empty = user-initiated)
 	Title          string    `json:"title,omitempty"` // First user message content (for session list display)
 	ProjectDir     string    `json:"project_dir,omitempty"` // Working directory at session creation time
 	SessionDir     string    `json:"session_dir,omitempty"` // Session sandbox directory (managed by Store)
@@ -75,7 +76,7 @@ type SessionInfo struct {
 }
 
 type SessionStore interface {
-	Append(ctx context.Context, sessionID string, agentName string, message Message) error
+	Append(ctx context.Context, sessionID string, agentName string, sponsor string, message Message) error
 	Get(ctx context.Context, sessionID string) ([]Message, error)
 	CurrentContext(ctx context.Context, agentName string, maxTokens int64) ([]Message, error)
 	Delete(ctx context.Context, timestamp int64, sessionID string) error
@@ -128,6 +129,15 @@ type SessionOption func(*SessionInfo)
 func WithProjectDirOption(dir string) SessionOption {
 	return func(s *SessionInfo) {
 		s.ProjectDir = dir
+	}
+}
+
+// WithSponsorOption sets the sponsor agent for a new session info.
+// Sponsor identifies the agent that created/sponsored this session.
+// Empty means user-initiated.
+func WithSponsorOption(sponsor string) SessionOption {
+	return func(s *SessionInfo) {
+		s.Sponsor = sponsor
 	}
 }
 

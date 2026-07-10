@@ -41,13 +41,18 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		return nil, fmt.Errorf("task_ids must be an array of strings")
 	}
 
+	// Strip the caller's syncTimeout deadline (default 5min) to allow waiting
+	// for long-running SubAgents. The ResultStore's own 30min default timeout
+	// and explicit context cancellation still apply.
+	waitCtx := context.WithoutCancel(ctx)
+
 	var results []string
 	for _, raw := range rawIDs {
 		id, ok := raw.(string)
 		if !ok {
 			return nil, fmt.Errorf("task_id must be a string, got %T", raw)
 		}
-		r := tc.ResultStore.WaitForResult(ctx, id)
+		r := tc.ResultStore.WaitForResult(waitCtx, id)
 		if r.Error != "" {
 			if r.SessionID != "" {
 				results = append(results, fmt.Sprintf("[%s] failed (session:%s): %s", id, r.SessionID, r.Error))

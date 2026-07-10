@@ -22,7 +22,7 @@ func TestEdit(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "line 2",
 		"new_string": "line 2 replaced",
 	}
@@ -54,7 +54,7 @@ func TestEdit(t *testing.T) {
 
 	// second replace on same file (no error expected)
 	params2 := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "line 1",
 		"new_string": "first line",
 	}
@@ -74,7 +74,7 @@ func TestEditFileNotFound(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       "./nonexistent/file.txt",
+		"filePath":   "./nonexistent/file.txt",
 		"old_string": "something",
 		"new_string": "something else",
 	}
@@ -101,7 +101,7 @@ func TestEditWithSpecialCharacters(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "<world> & {foo}",
 		"new_string": "<planet> | {bar}",
 	}
@@ -134,7 +134,7 @@ func TestEditUnicodeContent(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "世界",
 		"new_string": "宇宙",
 	}
@@ -166,7 +166,7 @@ func TestEditEmptyFile(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "nonexistent",
 		"new_string": "something",
 	}
@@ -193,7 +193,7 @@ func TestEditReplaceAll(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":        filePath,
+		"filePath":    filePath,
 		"old_string":  "foo",
 		"new_string":  "baz",
 		"replace_all": true,
@@ -227,7 +227,7 @@ func TestEditLimit(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "x",
 		"new_string": "z",
 		"limit":      2.0,
@@ -261,7 +261,7 @@ func TestEditStringNotFound(t *testing.T) {
 	edit := &EditTool{}
 	ctx := testCtx(t)
 	params := map[string]any{
-		"path":       filePath,
+		"filePath":   filePath,
 		"old_string": "nonexistent",
 		"new_string": "something",
 	}

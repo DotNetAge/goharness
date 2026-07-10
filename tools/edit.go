@@ -57,7 +57,7 @@ Usage:
 		Tags: []string{"file", "edit", "code", "replace", "modification"},
 		Parameters: []Parameter{
 			{
-				Name:        "path",
+				Name:        "filePath",
 				Type:        "string",
 				Description: "Path to the file to edit.",
 				Required:    true,
@@ -101,7 +101,7 @@ Usage:
 // workspace boundary". Everything else (file not found, old_string missing,
 // stale modification time, etc.) is a normal Execute-level error.
 func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	filePath, _ := params["path"].(string)
+	filePath, _ := params["filePath"].(string)
 	if filePath == "" {
 		return true, ""
 	}
@@ -165,7 +165,7 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 //   - string: 成功消息，包含文件路径和作用域
 //   - error: 参数错误、验证失败或 I/O 错误
 func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	filePath, err := ValidateRequiredString(params, "path")
+	filePath, err := ValidateRequiredString(params, "filePath")
 	if err != nil {
 		return nil, err
 	}

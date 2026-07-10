@@ -233,7 +233,7 @@ func TestRead(t *testing.T) {
 	absPath := mustAbs(t, "builtin_test.go")
 
 	t.Run("read this test file", func(t *testing.T) {
-		result, err := read.Execute(ctx, map[string]any{"path": absPath})
+		result, err := read.Execute(ctx, map[string]any{"filePath": absPath})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -248,7 +248,7 @@ func TestRead(t *testing.T) {
 
 	t.Run("read with line range", func(t *testing.T) {
 		result, err := read.Execute(ctx, map[string]any{
-			"path":       absPath,
+			"filePath":   absPath,
 			"start_line": 1.0,
 			"end_line":   5.0,
 		})
@@ -269,14 +269,14 @@ func TestRead(t *testing.T) {
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		_, err := read.Execute(ctx, map[string]any{"path": "/nonexistent_file_12345.txt"})
+		_, err := read.Execute(ctx, map[string]any{"filePath": "/nonexistent_file_12345.txt"})
 		if err == nil {
 			t.Error("Expected error for non-existent file")
 		}
 	})
 
 	t.Run("path is a directory", func(t *testing.T) {
-		_, err := read.Execute(ctx, map[string]any{"path": "."})
+		_, err := read.Execute(ctx, map[string]any{"filePath": "."})
 		if err == nil {
 			t.Error("Expected error when path is a directory")
 		}
@@ -511,7 +511,7 @@ func TestRead_EdgeCases(t *testing.T) {
 		emptyFile := filepath.Join(tempDir, "empty.txt")
 		os.WriteFile(emptyFile, []byte(""), 0644)
 
-		result, err := read.Execute(ctx, map[string]any{"path": emptyFile})
+		result, err := read.Execute(ctx, map[string]any{"filePath": emptyFile})
 		if err != nil {
 			t.Fatalf("读取空文件失败: %v", err)
 		}
@@ -531,8 +531,8 @@ func TestRead_EdgeCases(t *testing.T) {
 		os.WriteFile(multiLineFile, []byte(strings.Join(lines, "\n")), 0644)
 
 		result, err := read.Execute(ctx, map[string]any{
-			"path":   multiLineFile,
-			"offset": float64(5),
+			"filePath": multiLineFile,
+			"offset":   float64(5),
 			"limit":  float64(3),
 		})
 		if err != nil {
@@ -551,7 +551,7 @@ func TestRead_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("相对路径处理", func(t *testing.T) {
-		result, err := read.Execute(ctx, map[string]any{"path": "./builtin_test.go"})
+		result, err := read.Execute(ctx, map[string]any{"filePath": "./builtin_test.go"})
 		if err != nil {
 			t.Fatalf("相对路径读取失败: %v", err)
 		}
@@ -711,7 +711,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 
 		edit := &EditTool{}
 		_, err = edit.Execute(ctx, map[string]any{
-			"path":        filePath,
+			"filePath":    filePath,
 			"old_string":  "apple",
 			"new_string":  "orange",
 			"replace_all": true,
@@ -733,7 +733,7 @@ func TestEdit_EdgeCases(t *testing.T) {
 
 		edit := &EditTool{}
 		_, err = edit.Execute(ctx, map[string]any{
-			"path":       filePath,
+			"filePath":   filePath,
 			"old_string": "",
 			"new_string": "replacement",
 		})
@@ -750,17 +750,17 @@ func TestEdit_EdgeCases(t *testing.T) {
 		edit := &EditTool{}
 
 		edit.Execute(ctx, map[string]any{
-			"path":       filePath,
+			"filePath":   filePath,
 			"old_string": "hello",
 			"new_string": "hi",
 		})
 		edit.Execute(ctx, map[string]any{
-			"path":       filePath,
+			"filePath":   filePath,
 			"old_string": "world",
 			"new_string": "earth",
 		})
 		edit.Execute(ctx, map[string]any{
-			"path":       filePath,
+			"filePath":   filePath,
 			"old_string": "foo",
 			"new_string": "baz",
 		})

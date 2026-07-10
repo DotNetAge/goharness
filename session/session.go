@@ -151,7 +151,7 @@ func New(agentName, sponsor, projectDir string, opts ...SessionConfig) *Session 
 // this as "session does not exist".
 //
 // ProjectDir is automatically restored from stored session metadata.
-// Sponsor is left empty (user-initiated) for loaded sessions.
+// Sponsor is restored from stored session metadata (if previously persisted).
 func Load(sessionID, agentName string, store SessionStore, opts ...SessionConfig) (*Session, error) {
 	if store == nil {
 		return nil, fmt.Errorf("session store is required for Load")
@@ -165,6 +165,7 @@ func Load(sessionID, agentName string, store SessionStore, opts ...SessionConfig
 	s := &Session{
 		id:         sessionID,
 		agentName:  agentName,
+		sponsor:    info.Sponsor,
 		projectDir: info.ProjectDir,
 		messages:   make([]Message, 0),
 		store:      store,
@@ -586,7 +587,7 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 
 	if s.store != nil {
 		for _, msg := range filtered {
-			s.store.Append(ctx, s.id, s.agentName, msg)
+			s.store.Append(ctx, s.id, s.agentName, s.sponsor, msg)
 		}
 	}
 

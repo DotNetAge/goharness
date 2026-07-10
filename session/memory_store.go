@@ -36,7 +36,7 @@ func NewMemorySessionStore() *MemorySessionStore {
 	}
 }
 
-func (s *MemorySessionStore) Append(_ context.Context, sessionID string, agentName string, message Message) error {
+func (s *MemorySessionStore) Append(_ context.Context, sessionID string, agentName string, _ string, message Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.store[sessionID] = append(s.store[sessionID], message)

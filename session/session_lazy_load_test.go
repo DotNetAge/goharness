@@ -33,7 +33,7 @@ func newMockStore() *mockStore {
 	}
 }
 
-func (m *mockStore) Append(_ context.Context, sessionID, agentName string, msg Message) error {
+func (m *mockStore) Append(_ context.Context, sessionID, agentName, sponsor string, msg Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

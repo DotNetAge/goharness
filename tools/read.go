@@ -64,7 +64,7 @@ Results use cat -n format with line numbers. Use offset/limit to read specific r
 			MaxResultSizeChars: -1,
 			Parameters: []Parameter{
 				{
-					Name:        "path",
+					Name:        "filePath",
 					Type:        "string",
 					Required:    true,
 					Description: "The absolute path to the file to read.",
@@ -106,13 +106,13 @@ func (r *Read) Info() *ToolInfo {
 //
 // 参数：
 //   - ctx: 上下文（包含 ToolContext）
-//   - params: 必须包含 "path"，可选 "offset" 和 "limit"
+//   - params: 必须包含 "filePath"，可选 "offset" 和 "limit"
 //
 // 返回：
 //   - map[string]any: 包含 content, lines_read, total_lines 等字段
 //   - error: 参数错误或文件访问错误
 func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) {
-	path, err := ValidateRequiredString(params, "path")
+	path, err := ValidateRequiredString(params, "filePath")
 	if err != nil {
 		return nil, err
 	}
