@@ -18,7 +18,7 @@ import (
 //	}
 func ValidateRequired(params map[string]any, key string) error {
 	if _, ok := params[key]; !ok {
-		return fmt.Errorf("missing required parameter: %s", key)
+		return fmt.Errorf("缺少必需参数: %s", key)
 	}
 	return nil
 }
@@ -79,17 +79,17 @@ func ValidateFileSafety(path string, projectDir string) error {
 
 	absPath, err := filepath.Abs(cleaned)
 	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
+		return fmt.Errorf("无法获取绝对路径: %w", err)
 	}
 
 	realPath, err := resolvePathSecurely(absPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
+		return fmt.Errorf("无法解析路径: %w", err)
 	}
 
 	realProjectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
-		return fmt.Errorf("failed to resolve project directory: %w", err)
+		return fmt.Errorf("无法解析项目目录: %w", err)
 	}
 
 	if err := enforceWorkspaceBoundary(realPath, realProjectDir, path); err != nil {
@@ -111,7 +111,7 @@ func resolvePathSecurely(absPath string) (string, error) {
 		if os.IsNotExist(err) {
 			return absPath, nil
 		}
-		return "", fmt.Errorf("failed to resolve symlinks: %w", err)
+		return "", fmt.Errorf("无法解析符号链接: %w", err)
 	}
 	return realPath, nil
 }
@@ -122,7 +122,7 @@ func resolveProjectDir(projectDir string) (string, error) {
 		var err error
 		projectDir, err = os.Getwd()
 		if err != nil {
-			return "", fmt.Errorf("failed to get working directory: %w", err)
+			return "", fmt.Errorf("无法获取工作目录: %w", err)
 		}
 	}
 
@@ -147,7 +147,7 @@ func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) err
 	sep := string(filepath.Separator)
 	if !strings.HasPrefix(realPath, realProjectDir+sep) {
 		return fmt.Errorf(
-			"access denied: path %q resolves to %q which is outside the workspace %q",
+			"访问被拒绝: 路径 %q 解析为 %q，位于工作区 %q 之外",
 			originalPath,
 			realPath,
 			realProjectDir,
@@ -205,7 +205,7 @@ func SafeOpenFile(path string, projectDir string, flags int, perm os.FileMode) (
 
 	file, err := os.OpenFile(resolvedPath, safeFlags, perm)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file %s: %w", resolvedPath, err)
+		return nil, fmt.Errorf("无法打开文件 %s: %w", resolvedPath, err)
 	}
 
 	if err := postOpenValidation(file, resolvedPath, projectDir); err != nil {
@@ -242,7 +242,7 @@ func SafeCreateFile(path string, projectDir string, perm os.FileMode) (*os.File,
 
 		file, err = os.OpenFile(resolvedPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create file %s: %w", resolvedPath, err)
+			return nil, fmt.Errorf("无法创建文件 %s: %w", resolvedPath, err)
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to create file %s: %w", resolvedPath, err)
@@ -275,7 +275,7 @@ func resolveAndValidateForCreation(path string, projectDir string) (string, erro
 	cleaned := filepath.Clean(path)
 	absPath, err := filepath.Abs(cleaned)
 	if err != nil {
-		return "", fmt.Errorf("failed to get absolute path: %w", err)
+		return "", fmt.Errorf("无法获取绝对路径: %w", err)
 	}
 
 	realProjectDir, err := resolveProjectDir(projectDir)
@@ -286,14 +286,14 @@ func resolveAndValidateForCreation(path string, projectDir string) (string, erro
 	parentDir := filepath.Dir(absPath)
 	realParent, err := filepath.EvalSymlinks(parentDir)
 	if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("failed to resolve parent directory: %w", err)
+		return "", fmt.Errorf("无法解析父目录: %w", err)
 	}
 
 	if realParent != "" {
 		if !strings.HasPrefix(realParent, realProjectDir+string(filepath.Separator)) &&
 			realParent != realProjectDir {
 			return "", fmt.Errorf(
-				"access denied: parent directory %q is outside workspace %q",
+				"访问被拒绝: 父目录 %q 位于工作区 %q 之外",
 				parentDir,
 				realProjectDir,
 			)
@@ -321,7 +321,7 @@ func postOpenValidation(file *os.File, resolvedPath string, projectDir string) e
 		!strings.HasPrefix(actualPath, realProjectDir+sep) &&
 		actualPath != realProjectDir {
 		return fmt.Errorf(
-			"security violation: file path changed after open (expected %s, got %s)",
+			"安全违规: 文件路径在打开后发生变化 (预期 %s, 实际 %s)",
 			resolvedPath,
 			actualPath,
 		)

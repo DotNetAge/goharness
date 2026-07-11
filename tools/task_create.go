@@ -17,19 +17,19 @@ func NewTaskCreateTool() *TaskCreateTool {
 func (t *TaskCreateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskCreate",
-		Description: "Create a task in the task list for tracking and planning work. Use TaskUpdate to mark progress, TaskGet/TaskList to check status.",
-		Prompt: `Create a planning record in the task list. This is for TRACKING only — use SubAgent or tools for actual execution.
+		Description: "在任务列表中创建任务以跟踪和规划工作。使用 TaskUpdate 标记进度，使用 TaskGet/TaskList 检查状态。",
+		Prompt: `在任务列表中创建规划记录。这仅用于跟踪——请使用 SubAgent 或工具进行实际执行。
 
-Workflow: create tasks first → work through them one by one → mark complete via TaskUpdate immediately when done.
+工作流程：先创建任务 → 逐个处理 → 完成后立即通过 TaskUpdate 标记为完成。
 
-Status lifecycle: pending → in_progress → completed (or cancelled).`,
+状态生命周期：pending → in_progress → completed（或 cancelled）。`,
 		Tags:    []string{"task", "create", "planning", "tracking"},
 		IsAsync: false,
 		Parameters: []Parameter{
-			{Name: "subject", Type: "string", Description: "Short title for the task.", Required: true},
-			{Name: "description", Type: "string", Description: "Detailed description of what needs to be done.", Required: true},
-			{Name: "active_form", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
-			{Name: "metadata", Type: "object", Description: "Arbitrary metadata key-value pairs to attach to the task.", Required: false},
+			{Name: "subject", Type: "string", Description: "任务的简短标题。", Required: true},
+			{Name: "description", Type: "string", Description: "需要完成内容的详细描述。", Required: true},
+			{Name: "active_form", Type: "string", Description: "执行期间显示的现在进行时形式（例如 '正在运行测试'）。", Required: false},
+			{Name: "metadata", Type: "object", Description: "附加到任务的任意元数据键值对。", Required: false},
 		},
 	}
 }
@@ -37,11 +37,11 @@ Status lifecycle: pending → in_progress → completed (or cancelled).`,
 func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	subject, _ := params["subject"].(string)
 	if subject == "" {
-		return nil, fmt.Errorf("subject is required")
+		return nil, fmt.Errorf("subject 不能为空")
 	}
 	description, _ := params["description"].(string)
 	if description == "" {
-		return nil, fmt.Errorf("description is required")
+		return nil, fmt.Errorf("description 不能为空")
 	}
 
 	tc := GetToolContext(ctx)
@@ -67,7 +67,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	if err := CreateTask(ctx, tc.Session.ID(), task); err != nil {
-		return nil, fmt.Errorf("failed to create task: %w", err)
+		return nil, fmt.Errorf("创建任务失败：%w", err)
 	}
 
 	return map[string]any{

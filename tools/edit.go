@@ -43,53 +43,50 @@ func NewEditTool() *EditTool {
 func (t *EditTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "Edit",
-		Description: "Edit files by replacing exact strings.",
-		Prompt: `Performs exact string replacements in files.
-
-Usage:
-- You must use your Read tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- The edit will FAIL if old_string is not found in the file, or if it appears multiple times without replace_all=true or limit set.
-- Use replace_all=true to rename a variable or change a string everywhere in the file.
-- Use limit=N to replace the first N occurrences only (e.g. limit=2 replaces the first 2 matches).
-- Use last_read_time to prevent stale writes — pass the file's modification timestamp from your last Read result.`,
+		Description: "通过精确字符串替换来编辑文件。",
+		Prompt: `在文件中进行精确字符串替换。
+**用法**
+- 编辑 Read 工具输出中的文本时，确保保留行号前缀之后的精确缩进（制表符/空格）。
+- 如果 old_string 在文件中未找到，或出现多次但未设置 replace_all=true 或 limit，编辑将失败。
+- 使用 replace_all=true 在文件所有位置更改字符串。
+- 使用 limit=N 仅替换前 N 次出现。
+- 使用 last_read_time 传入上次 Read 结果中的修改时间戳，防止过时写入。`,
 		Tags: []string{"file", "edit", "code", "replace", "modification"},
 		Parameters: []Parameter{
 			{
 				Name:        "filePath",
 				Type:        "string",
-				Description: "Path to the file to edit.",
+				Description: "要编辑的文件路径。",
 				Required:    true,
 			},
 			{
 				Name:        "old_string",
 				Type:        "string",
-				Description: "The exact string to replace.",
+				Description: "要被替换的精确字符串。",
 				Required:    true,
 			},
 			{
 				Name:        "new_string",
 				Type:        "string",
-				Description: "The new string to insert.",
+				Description: "要插入的新字符串。",
 				Required:    true,
 			},
 			{
 				Name:        "replace_all",
 				Type:        "boolean",
-				Description: "Replace all occurrences. Default: false (replaces first occurrence only).",
+				Description: "替换所有出现。默认值：false（仅替换第一次出现）。",
 				Required:    false,
 			},
 			{
 				Name:        "limit",
 				Type:        "number",
-				Description: "Replace at most N occurrences (overrides replace_all when set). -1 = all.",
+				Description: "最多替换 N 次出现（设置时覆盖 replace_all）。-1 = 全部。",
 				Required:    false,
 			},
 			{
 				Name:        "last_read_time",
 				Type:        "string",
-				Description: "File modification timestamp from Read result. Prevents editing a stale version.",
+				Description: "来自 Read 结果的文件修改时间戳。防止编辑过时的版本。",
 				Required:    false,
 			},
 		},
@@ -132,7 +129,7 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 			}
 		}
 		return false, fmt.Sprintf(
-			"Edit on %q resolves to %q which is outside the workspace.\n%s",
+			"编辑 %q 解析为 %q，这在工作区之外。\n%s",
 			filePath, resolved, err.Error(),
 		)
 	}
@@ -213,7 +210,7 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		if err == nil {
 			lastReadTime, parseErr := time.Parse(time.RFC3339, lastReadTimeStr)
 			if parseErr == nil && info.ModTime().After(lastReadTime) {
-				return nil, fmt.Errorf("file has been modified since it was last read. please read it again before editing")
+				return nil, fmt.Errorf("文件自上次读取后已被修改。请在编辑前重新读取")
 			}
 		}
 	}
@@ -225,20 +222,20 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	fileContent := string(content)
 	if oldStr == "" {
-		return nil, fmt.Errorf("old_string must not be empty")
+		return nil, fmt.Errorf("old_string 不能为空")
 	}
 	if !strings.Contains(fileContent, oldStr) {
-		return nil, fmt.Errorf("old_string not found in file")
+		return nil, fmt.Errorf("old_string 在文件中未找到")
 	}
 	if !replaceAll && limit <= 0 && strings.Count(fileContent, oldStr) > 1 {
-		return nil, fmt.Errorf("old_string appears %d times in file. Use replace_all=true or limit=N to replace multiple occurrences",
+		return nil, fmt.Errorf("old_string 在文件中出现了 %d 次。使用 replace_all=true 或 limit=N 替换多次出现",
 			strings.Count(fileContent, oldStr))
 	}
 
 	var updatedContent string
 	switch {
 	case limit < -1:
-		return nil, fmt.Errorf("limit must be -1 (all), 0 (default 1), or positive")
+		return nil, fmt.Errorf("limit 必须为 -1（全部）、0（默认 1）或正数")
 	case limit == -1:
 		updatedContent = strings.ReplaceAll(fileContent, oldStr, newStr)
 	case limit > 0:
@@ -254,5 +251,5 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil, err
 	}
 
-	return fmt.Sprintf("File %s updated successfully. [scope: %s]", resolvedPath, scope), nil
+	return fmt.Sprintf("文件 %s 更新成功。[scope: %s]", resolvedPath, scope), nil
 }

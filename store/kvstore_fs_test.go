@@ -594,7 +594,7 @@ func TestResultStore_ContextCancellation(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result on cancellation")
 	}
-	if result.Error != "context cancelled" {
+	if result.Error != "上下文已被取消" {
 		t.Errorf("expected cancellation error, got %q", result.Error)
 	}
 	if result.Done {

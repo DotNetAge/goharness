@@ -31,13 +31,13 @@ type MemoryChunk struct {
 }
 
 // ErrMemoryNotFound is returned when a requested memory record doesn't exist.
-var ErrMemoryNotFound = errors.New("memory not found")
+var ErrMemoryNotFound = errors.New("记忆未找到")
 
 // ErrMemoryStorage is returned when a memory storage operation fails.
-var ErrMemoryStorage = errors.New("memory storage failed")
+var ErrMemoryStorage = errors.New("记忆存储失败")
 
 // ErrMemoryRetrieval is returned when a memory retrieval operation fails.
-var ErrMemoryRetrieval = errors.New("memory retrieval failed")
+var ErrMemoryRetrieval = errors.New("记忆检索失败")
 
 // MemoryType defines the type of memory for retrieval filtering.
 type MemoryType int

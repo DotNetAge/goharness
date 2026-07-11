@@ -27,7 +27,7 @@ import (
 func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, error) {
 	absPath, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+		return nil, fmt.Errorf("无法获取绝对路径: %w", err)
 	}
 
 	cfg := &agentRegistryOption{logger: logging.DefaultLogger()}
@@ -43,7 +43,7 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read directory %s: %w", absPath, err)
+		return nil, fmt.Errorf("无法读取目录 %s: %w", absPath, err)
 	}
 
 	for _, entry := range entries {
@@ -54,7 +54,7 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 			filePath := filepath.Join(absPath, entry.Name())
 			agent, err := parseAgentFile(filePath)
 			if err != nil {
-				registry.logger.Warn("failed to parse agent file, skipping",
+				registry.logger.Warn("加载智能体文件失败，跳过。",
 					"path", filePath,
 					"error", err)
 				continue
@@ -68,14 +68,14 @@ func LoadAgentsFrom(dir string, opts ...AgentRegistryOption) (*AgentRegistry, er
 // agentFrontmatter 定义了 Agent Markdown 文件 YAML frontmatter 的结构。
 // 所有字段通过 yaml.Unmarshal 直接反序列化，无需手动类型断言。
 type agentFrontmatter struct {
-	Name         string      `yaml:"name"`
-	Role         string      `yaml:"role"`
-	Title        string      `yaml:"title"`
-	Description  string      `yaml:"description"`
-	Model        string      `yaml:"model"`
-	Skills       []string    `yaml:"skills"`
-	ExcludeTools []string    `yaml:"exclude_tools"`
-	Meta         interface{} `yaml:"meta"` // map 或数组格式均由 yaml 解析，后续统一转换
+	Name         string   `yaml:"name"`
+	Role         string   `yaml:"role"`
+	Title        string   `yaml:"title"`
+	Description  string   `yaml:"description"`
+	Model        string   `yaml:"model"`
+	Skills       []string `yaml:"skills"`
+	ExcludeTools []string `yaml:"exclude_tools"`
+	Meta         any      `yaml:"meta"` // map 或数组格式均由 yaml 解析，后续统一转换
 }
 
 // parseAgentFile 解析单个 Agent 配置文件，返回解析后的 AgentConfig 对象。
@@ -91,14 +91,14 @@ type agentFrontmatter struct {
 func parseAgentFile(filePath string) (*AgentConfig, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
+		return nil, fmt.Errorf("无法读取文件 %s: %w", filePath, err)
 	}
 
 	content := strings.ReplaceAll(string(data), "\r\n", "\n")
 	content = strings.TrimLeft(content, "\n\r\t ")
 
 	if !strings.HasPrefix(content, "---") {
-		return nil, fmt.Errorf("invalid agent file format, missing frontmatter delimiter")
+		return nil, fmt.Errorf("无效的 Agent 文件格式，缺少 frontmatter 分隔符")
 	}
 	lines := strings.Split(content, "\n")
 	var frontmatterLines []string
@@ -124,7 +124,7 @@ func parseAgentFile(filePath string) (*AgentConfig, error) {
 		}
 	}
 	if delimCount < 2 {
-		return nil, fmt.Errorf("invalid agent file format, missing closing frontmatter delimiter")
+		return nil, fmt.Errorf("无效的 Agent 文件格式，缺少 frontmatter 结束分隔符")
 	}
 	frontmatterYAML := strings.Join(frontmatterLines, "\n")
 	body := strings.Join(bodyLines, "\n")
@@ -132,11 +132,11 @@ func parseAgentFile(filePath string) (*AgentConfig, error) {
 
 	var fm agentFrontmatter
 	if err := yaml.Unmarshal([]byte(frontmatterYAML), &fm); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
+		return nil, fmt.Errorf("无法解析 YAML frontmatter: %w", err)
 	}
 
 	if fm.Name == "" {
-		return nil, fmt.Errorf("agent file %q is missing required 'name' field", filePath)
+		return nil, fmt.Errorf("智能体配置 文件 %q 缺少必需的 'name' 字段", filePath)
 	}
 
 	agent := &AgentConfig{

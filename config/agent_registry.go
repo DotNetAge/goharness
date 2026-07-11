@@ -74,12 +74,12 @@ func (r *AgentRegistry) Remove(name string) error {
 	defer r.mu.Unlock()
 	_, exists := r.agents[name]
 	if !exists {
-		return fmt.Errorf("agent %s not found", name)
+		return fmt.Errorf("未找到智能体 %s", name)
 	}
 	fileName := strings.ToLower(name) + ".md"
 	filePath := filepath.Join(r.path, fileName)
 	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to delete file %s: %w", filePath, err)
+		return fmt.Errorf("无法删除文件 %s: %w", filePath, err)
 	}
 	delete(r.agents, name)
 	return nil
@@ -99,7 +99,7 @@ func (r *AgentRegistry) Remove(name string) error {
 // 该方法会获取写锁以保证操作的原子性。
 func (r *AgentRegistry) SaveTo(agent *AgentConfig) error {
 	if agent.Name == "" {
-		return fmt.Errorf("agent name cannot be empty")
+		return fmt.Errorf("智能体名称不能为空")
 	}
 	fileName := strings.ToLower(agent.Name) + ".md"
 	filePath := filepath.Join(r.path, fileName)
@@ -124,12 +124,12 @@ func (r *AgentRegistry) SaveTo(agent *AgentConfig) error {
 
 	yamlData, err := yaml.Marshal(meta)
 	if err != nil {
-		return fmt.Errorf("failed to marshal YAML frontmatter: %w", err)
+		return fmt.Errorf("无法序列化 YAML frontmatter: %w", err)
 	}
 
 	content := fmt.Sprintf("---\n%s---\n%s", string(yamlData), agent.Introduction)
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", filePath, err)
+		return fmt.Errorf("无法写入文件 %s: %w", filePath, err)
 	}
 	r.mu.Lock()
 	r.agents[agent.Name] = agent

@@ -31,7 +31,7 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 	if s == "" {
 		t.Fatal("expected non-empty search result")
 	}
-	if !strings.Contains(s, "Search Results") {
+	if !strings.Contains(s, "搜索结果") {
 		t.Errorf("result should contain header, got: %.200s...", s)
 	}
 	if !strings.Contains(s, "http") {
@@ -41,7 +41,7 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 	resultLines := strings.Split(s, "\n")
 	urlCount := 0
 	for _, line := range resultLines {
-		if strings.Contains(line, "- **URL**:") {
+		if strings.Contains(line, "- **URL**：") {
 			urlCount++
 		}
 	}

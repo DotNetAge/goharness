@@ -38,7 +38,7 @@ func TestEdit(t *testing.T) {
 	}
 	cwd, _ := os.Getwd()
 	absPath := filepath.Join(cwd, filePath)
-	expected := "File " + absPath + " updated successfully. [scope: project]"
+	expected := "文件 " + absPath + " 更新成功。[scope: project]"
 	if str != expected {
 		t.Errorf("unexpected result: %q", str)
 	}

@@ -546,7 +546,7 @@ func (rt *Runtime) resumeSubAgent(ctx context.Context, sessionID string) (string
 		return "", fmt.Errorf("resume sub-agent: failed to load session %q: %w", sessionID, err)
 	}
 
-	builder := rt.Ask(info.AgentName, "Please continue with your previous task and provide the final answer.", sess)
+	builder := rt.Ask(info.AgentName, "请继续你之前的任务并提供最终答案。", sess)
 	result, err := builder.Run()
 	if err != nil {
 		return "", fmt.Errorf("resume sub-agent %q: %w", info.AgentName, err)
@@ -2532,9 +2532,9 @@ func (rt *Runtime) appendDeniedResult(
 ) {
 	reason := pending.Reason
 	if reason == "" {
-		reason = "user denied"
+		reason = "用户拒绝"
 	}
-	content := fmt.Sprintf("Permission Denied: %s", reason)
+	content := fmt.Sprintf("权限被拒绝：%s", reason)
 	b.session.Append(ctx, session.Message{
 		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 		ToolCallID: pending.ToolCallID,

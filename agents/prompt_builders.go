@@ -12,25 +12,16 @@ import (
 // ── Identity ────────────────────────────────────────────────────────────────
 
 func articleFor(word string) string {
-	if len(word) == 0 {
-		return "a"
-	}
-	r := []rune(word)[0]
-	switch r {
-	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
-		return "an"
-	default:
-		return "a"
-	}
+	return ""
 }
 
 func buildIdentity(name, role, description, introduction string) string {
 	if role == "" {
-		return fmt.Sprintf("- Name: %s\n- Responsibility: %s\n\n%s",
+		return fmt.Sprintf("- 名称: %s\n- 职责: %s\n\n%s",
 			name, description, introduction)
 	}
-	return fmt.Sprintf("You are %s %s.\n- Name: %s\n- Responsibility: %s\n\n%s",
-		articleFor(role), role, name, description, introduction)
+	return fmt.Sprintf("你是 %s。\n- 名称: %s\n- 职责: %s\n\n%s",
+		role, name, description, introduction)
 }
 
 // ── Skills Catalog ──────────────────────────────────────────────────────────
@@ -40,21 +31,21 @@ func buildSkillsCatalog(skills []*skill.Skill) string {
 		return ""
 	}
 
-	header := "## Capacities (Available Skills)\n" +
-		"When your existing tools cannot fully address the user's request, check whether one of the following specialized skills covers the domain. If a skill matches, use the Skill tool to load its instructions, which will guide you through domain-specific workflows and expose additional tools.\n\n" +
-		"### Side-Effect Rules\n" +
-		"- The Skill() tool's return value represents the complete knowledge of that skill. For any given skill name, you may call Skill() at most ONCE per session. After that, all references to that skill's content MUST rely on what is already in memory — do NOT use any tool (Bash, Read, Grep, Glob, WebFetch, etc.) to re-read its files.\n\n" +
-		"### Pre-Execution Self-Check\n" +
-		"Before calling Bash, Read, or Grep to access file or directory content, you MUST run this check first:\n" +
-		"1. Role Gate (P0): is this task within my remit? If NO → delegate per Behavioral Rules, do NOT proceed.\n" +
-		"2. If within remit: does the Capacities list above contain a Skill that covers this task?\n" +
-		"3. If yes, have I already loaded it via Skill()?\n" +
-		"4. Output your reasoning and decision:\n" +
-		"   - Reasoning: [remit check result + which Skill was considered]\n" +
-		"   - Decision: delegate (if outside remit) | Skill() (if not yet loaded) | proceed with tools (if loaded or no matching Skill)\n"
+	header := "## 能力（可用技能）\n" +
+		"当你现有的工具无法完全满足用户的请求时，检查以下专业技能是否覆盖该领域。如果技能匹配，使用 Skill 工具加载其指令，这将指导你完成特定领域的工作流程并提供额外的工具。\n\n" +
+		"### 副作用规则\n" +
+		"- Skill() 工具的返回值代表该技能的完整知识。对于任何给定的技能名称，每个会话中最多只能调用 Skill() 一次。之后，对该技能内容的所有引用必须依赖内存中已有的内容 — 不要使用任何工具（Bash、Read、Grep、Glob、WebFetch 等）重新读取其文件。\n\n" +
+		"### 执行前自检\n" +
+		"在调用 Bash、Read 或 Grep 访问文件或目录内容之前，必须先执行此检查：\n" +
+		"1. 角色门控 (P0)：此任务是否在我的职责范围内？如果否 → 按行为准则委托，不要继续。\n" +
+		"2. 如果在职责范围内：上述能力列表是否包含覆盖此任务的技能？\n" +
+		"3. 如果是，我是否已通过 Skill() 加载？\n" +
+		"4. 输出你的推理和决策：\n" +
+		"   - 推理：[职责检查结果 + 考虑了哪个技能]\n" +
+		"   - 决策：委托（如果超出职责）| Skill()（如果尚未加载）| 使用工具继续（如果已加载或无匹配技能）\n"
 
-	footer := "\n### Loading Strategy\n" +
-		"- Load skills LAZILY: only when you're about to perform a task that requires it\n"
+	footer := "\n### 加载策略\n" +
+		"- 延迟加载技能：仅在即将执行需要它的任务时加载\n"
 	const SKILL_CATALOG_BUDGET = 3000
 	budgetRemaining := SKILL_CATALOG_BUDGET - len(header) - len(footer)
 	if budgetRemaining <= 0 {
@@ -107,22 +98,20 @@ func buildSkillsCatalog(skills []*skill.Skill) string {
 
 // ── Environment Info ────────────────────────────────────────────────────────
 
-const directorySemanticsPrompt = "## File Operation Guidelines\n\n" +
-	"### Project Directory (%s)\n" +
-	"**Default workspace — files persist permanently.**\n" +
-	"Use for: source code, configs, docs, and all outputs the user may want to keep or review later.\n" +
-	"Most of your work (reading, writing, creating files) should happen here unless there's a\n" +
-	"strong reason not to.\n\n" +
-	"### Session Directory (%s)\n" +
-	"**Ephemeral temp space — deleted when the conversation ends.**\n" +
-	"Use ONLY for: one-off throwaway outputs, intermediate scratch files, quick experiments\n" +
-	"that have no value beyond this chat.\n\n" +
-	"### Quick Rules\n" +
-	"- Modifying user's existing files? \u2192 Project Dir | Producing something useful? \u2192 Project Dir\n" +
-	"- Truly temporary scratch (drafts, experiments)? \u2192 Session Dir\n" +
-	"- Unsure? \u2192 default to **Project Dir** — it is safer to persist than to lose work\n" +
-	"- Path syntax: relative paths \u2192 Project Dir | `session:<path>` \u2192 Session Dir\n" +
-	"- Never overwrite Project files without reading them first\n"
+const directorySemanticsPrompt = "## 文件操作指南\n\n" +
+	"### 项目目录 (%s)\n" +
+	"**默认工作区 — 文件永久保留。**\n" +
+	"用于：源代码、配置、文档以及用户可能希望保留或稍后查看的所有输出。\n" +
+	"除非有充分理由，否则大部分工作（读取、写入、创建文件）都应在此进行。\n\n" +
+	"### 会话目录 (%s)\n" +
+	"**临时空间 — 对话结束时删除。**\n" +
+	"仅用于：一次性丢弃的输出、中间草稿文件、在此对话之外没有价值的快速实验。\n\n" +
+	"### 快速规则\n" +
+	"- 修改用户现有文件？→ 项目目录 | 生成有用内容？→ 项目目录\n" +
+	"- 真正的临时草稿（草稿、实验）？→ 会话目录\n" +
+	"- 不确定？→ 默认使用**项目目录** — 保留比丢失工作更安全\n" +
+	"- 路径语法：相对路径 → 项目目录 | `session:<path>` → 会话目录\n" +
+	"- 未经读取切勿覆盖项目文件\n"
 
 func buildDirectoryUsageGuidance(projectDir, sessionDir string) string {
 	return fmt.Sprintf(directorySemanticsPrompt, projectDir, sessionDir)
@@ -145,10 +134,10 @@ func buildEnvironmentInfo(params EnvsParams) string {
 		directoryGuidance = buildDirectoryUsageGuidance(params.ProjectDir, params.SessionDir)
 	}
 
-	return fmt.Sprintf("## Environment\n"+
-		"- **Project Dir**: %s (persistent workspace)\n"+
-		"- **Session Dir**: %s (ephemeral temp workspace, cleared after conversation)\n"+
-		"- **Quick Rule**: Modifying user's files \u2192 Project | My outputs \u2192 Session | When unsure \u2192 default to Session\n"+
+	return fmt.Sprintf("## 环境\n"+
+		"- **项目目录**: %s（持久化工作区）\n"+
+		"- **会话目录**: %s（临时工作区，对话结束后清除）\n"+
+		"- **快速规则**: 修改用户文件 → 项目目录 | 我的输出 → 会话目录 | 不确定时 → 默认使用会话目录\n"+
 		"%s",
 		projectDir,
 		params.SessionDir,
@@ -180,10 +169,10 @@ func buildToolCatalog(registry tools.ToolRegistry) string {
 	}
 
 	var buf strings.Builder
-	buf.WriteString("## Available Tool Catalog\n")
-	buf.WriteString("The tools below are available but NOT yet loaded. ")
-	buf.WriteString("To use any of them, call ToolSelector with their exact names. ")
-	buf.WriteString("You can select multiple tools at once to minimize round trips.\n\n")
+	buf.WriteString("## 可用工具目录\n")
+	buf.WriteString("以下工具可用但尚未加载。")
+	buf.WriteString("要使用其中任何工具，请使用其确切名称调用 ToolSelector。")
+	buf.WriteString("你可以一次选择多个工具以减少往返次数。\n\n")
 
 	listed := 0
 	for _, t := range allTools {

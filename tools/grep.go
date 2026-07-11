@@ -31,35 +31,32 @@ func (t *GrepTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Grep",
 		MaxResultSizeChars: 50000,
-		Description:        "A powerful search tool built on ripgrep",
-		Prompt: `A powerful search tool built on ripgrep
-
-Usage:
-- ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Bash command. The Grep tool has been optimized for correct permissions and access.
-- Supports full regex syntax (e.g., "log.*Error", "function\s+\w+")
-- Filter files with include parameter (e.g., "*.js", "**/*.tsx")
-- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
-- Use SubAgent tool for open-ended searches requiring multiple rounds
-- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use interface\{\} to find interface{} in Go code)
-- Multiline matching: By default patterns match within single lines only. For cross-line patterns like struct \{[\s\S]*?field, use multiline: true`,
+		Description:        "本地全文搜索",
+		Prompt: `本地全文搜索。
+- 支持完整的正则表达式语法（例如 "log.*Error"、"function\s+\w+"）。
+- 使用 include 参数过滤文件（例如 "*.js"、"**/*.tsx"）。
+- 输出模式："content" 显示匹配行，"files_with_matches" 仅显示文件路径（默认），"count" 显示匹配计数。
+- 多行匹配：默认仅在单行内匹配。对于跨行模式，使用 multiline: true。
+- 模式语法：ripgrep 字面大括号需要转义（如 interface\{\} 匹配 interface{}）。
+- 不要使用 Bash 调用 grep/rg，使用本工具。`,
 		Tags: []string{"file", "search", "content", "regex", "text"},
 		Parameters: []Parameter{
 			{
 				Name:        "pattern",
 				Type:        "string",
-				Description: "The regex pattern to search for.",
+				Description: "要搜索的正则表达式模式。",
 				Required:    true,
 			},
 			{
 				Name:        "include",
 				Type:        "string",
-				Description: "File glob pattern to include (e.g., '*.go').",
+				Description: "要包含的文件 glob 模式（例如 '*.go'）。",
 				Required:    false,
 			},
 			{
 				Name:        "output_mode",
 				Type:        "string",
-				Description: "Output format: 'content' (matching lines with context), 'files_with_matches' (file paths only), 'count' (match counts per file). Default: 'content'.",
+				Description: "输出格式：'content'（带上下文的匹配行）、'files_with_matches'（仅文件路径）、'count'（每个文件的匹配计数）。默认值：'content'。",
 				Required:    false,
 			},
 		},
@@ -72,7 +69,7 @@ func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, err
 	outputMode, _ := params["output_mode"].(string)
 
 	if pattern == "" {
-		return nil, fmt.Errorf("pattern is required")
+		return nil, fmt.Errorf("pattern 是必需的")
 	}
 
 	if isRgAvailable() {
@@ -107,9 +104,9 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return "No matches found.", nil
+			return "未找到匹配项。", nil
 		}
-		return nil, fmt.Errorf("grep failed: %s", string(output))
+		return nil, fmt.Errorf("grep 失败：%s", string(output))
 	}
 
 	lines := strings.Split(string(output), "\n")
@@ -121,7 +118,7 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 	if t.MaxOutputChars > 0 && len(resultStr) > t.MaxOutputChars {
 		runes := []rune(resultStr)
 		resultStr = string(runes[:t.MaxOutputChars]) +
-			fmt.Sprintf("\n... (output truncated at %d chars, showing first %d of %d matches) ...",
+			fmt.Sprintf("\n... (输出在 %d 个字符处被截断，显示前 %d 个匹配项，共 %d 个) ...",
 				t.MaxOutputChars, t.MaxResults, len(lines))
 	}
 
@@ -133,7 +130,7 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 	if err != nil {
 		re, err = regexp.Compile(pattern)
 		if err != nil {
-			return nil, fmt.Errorf("invalid regex pattern: %w", err)
+			return nil, fmt.Errorf("无效的正则表达式模式：%w", err)
 		}
 	}
 
@@ -206,11 +203,11 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 	}
 
 	if err := filepath.WalkDir(searchDir, walkFn); err != nil {
-		return nil, fmt.Errorf("grep failed: %w", err)
+		return nil, fmt.Errorf("grep 失败：%w", err)
 	}
 
 	if totalMatchCount == 0 {
-		return "No matches found.", nil
+		return "未找到匹配项。", nil
 	}
 
 	if t.MaxResults > 0 && len(results) > t.MaxResults {
@@ -221,7 +218,7 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 	if t.MaxOutputChars > 0 && len(resultStr) > t.MaxOutputChars {
 		runes := []rune(resultStr)
 		resultStr = string(runes[:t.MaxOutputChars]) +
-			fmt.Sprintf("\n... (output truncated at %d chars, showing first %d of %d matches) ...",
+			fmt.Sprintf("\n... (输出在 %d 个字符处被截断，显示前 %d 个匹配项，共 %d 个) ...",
 				t.MaxOutputChars, t.MaxResults, totalMatchCount)
 	}
 

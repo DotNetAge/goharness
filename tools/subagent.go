@@ -74,17 +74,17 @@ func NewSubAgentTool(spawn SpawnFunc) *SubAgentTool {
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
-		Description: "Spawn a sub-agent for a task. Use CollectResults to retrieve the result later.",
-		Prompt: `Spawn a sub-agent for a one-shot delegated task. Returns immediately with {task_id, status: "running"}.
+		Description: "为任务生成一个子代理。之后可使用 CollectResults 获取结果。",
+		Prompt: `为一次性委派任务生成一个子代理。立即返回 {task_id, status: "running"}。
 
-Key constraint: This tool is ASYNC. You will NOT see the result in the same round. Use CollectResults(task_ids) to retrieve results later.
+关键约束：此工具是异步的。你不会在同一轮中看到结果。请使用 CollectResults(task_ids) 稍后获取结果。
 
-Multiple SubAgent calls in the same response run in parallel. Name the agent based on its role (e.g. "code_reviewer"). The task description should be self-contained — the sub-agent does not see your conversation context.`,
+同一响应中的多个 SubAgent 调用会并行执行。请根据角色命名代理（例如 "code_reviewer"）。任务描述应自包含——子代理无法看到你的对话上下文。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
 		Parameters: []Parameter{
-			{Name: "agent_name", Type: "string", Description: "Name of the sub-agent to spawn.", Required: true},
-			{Name: "task", Type: "string", Description: "Task description for the sub-agent.", Required: true},
+			{Name: "agent_name", Type: "string", Description: "要生成的子代理名称。", Required: true},
+			{Name: "task", Type: "string", Description: "子代理的任务描述。", Required: true},
 		},
 	}
 }
@@ -110,21 +110,21 @@ Multiple SubAgent calls in the same response run in parallel. Name the agent bas
 func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	agentName, _ := params["agent_name"].(string)
 	if agentName == "" {
-		return nil, fmt.Errorf("agent_name is required")
+		return nil, fmt.Errorf("agent_name 不能为空")
 	}
 	task, _ := params["task"].(string)
 	if task == "" {
-		return nil, fmt.Errorf("task is required")
+		return nil, fmt.Errorf("task 不能为空")
 	}
 
 	logger := getLogger(ctx)
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.EmitEvent == nil {
-		return nil, fmt.Errorf("subagent tool requires ToolContext with EventBus")
+		return nil, fmt.Errorf("子代理工具需要包含 EventBus 的 ToolContext")
 	}
 	if t.spawn == nil {
-		return nil, fmt.Errorf("subagent tool: SpawnFunc not configured")
+		return nil, fmt.Errorf("子代理工具：SpawnFunc 未配置")
 	}
 
 	logger.Info("spawning sub-agent",

@@ -88,7 +88,7 @@ type AgentRuntimeMeta struct {
 //   - LastActive: time.Now()（创建时间）
 func NewAgentRuntimeMeta(config *AgentConfig) *AgentRuntimeMeta {
 	if config == nil {
-		panic("goharness: NewAgentRuntimeMeta called with nil AgentConfig")
+		panic("goharness: NewAgentRuntimeMeta 被调用时传入了为nil值的AgentConfig")
 	}
 	return &AgentRuntimeMeta{
 		Config:     config,

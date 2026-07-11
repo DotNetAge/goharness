@@ -23,8 +23,8 @@ type RuntimeDirectory struct {
 // NewRuntimeDirectory 创建并返回一个新的 RuntimeDirectory 实例。
 //
 // 参数 maxSize 指定了目录的最大容量限制：
-//  - maxSize > 0: 限制最多注册 maxSize 个 Agent，超出则返回 ErrRuntimeDirFull 错误
-//  - maxSize <= 0: 不限制容量，可以注册任意数量的 Agent
+//   - maxSize > 0: 限制最多注册 maxSize 个 Agent，超出则返回 ErrRuntimeDirFull 错误
+//   - maxSize <= 0: 不限制容量，可以注册任意数量的 Agent
 //
 // 返回的实例已完成初始化，可以直接用于注册和管理 Agent 运行时元数据。
 func NewRuntimeDirectory(maxSize int) *RuntimeDirectory {
@@ -194,15 +194,15 @@ func (d *RuntimeDirectory) IncrementTaskCount(id string) {
 }
 
 var (
-	ErrRuntimeDirDuplicate = newRuntimeErr("agent already registered")
-	ErrRuntimeDirFull      = newRuntimeErr("runtime directory full")
-	ErrRuntimeDirNotFound  = newRuntimeErr("agent not found")
+	ErrRuntimeDirDuplicate = newRuntimeErr("智能体已注册")
+	ErrRuntimeDirFull      = newRuntimeErr("运行时目录已满")
+	ErrRuntimeDirNotFound  = newRuntimeErr("未找到智能体")
 )
 
 type runtimeErr struct{ msg string }
 
 func newRuntimeErr(msg string) error { return &runtimeErr{msg} }
-func (e *runtimeErr) Error() string  { return "runtime directory: " + e.msg }
+func (e *runtimeErr) Error() string  { return "运行时目录: " + e.msg }
 
 // sortByScore 对 Agent 元数据列表按 Score 字段降序排序（使用插入排序）。
 // 排序是原地进行的，Score 相对顺序不确定。

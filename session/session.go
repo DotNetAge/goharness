@@ -132,8 +132,8 @@ func New(agentName, sponsor, projectDir string, opts ...SessionConfig) *Session 
 		opt(s)
 	}
 	if s.projectDir == "" {
-		log.Printf("[SESSION] FATAL: session %s (agent=%s) created without ProjectDir — this is a severe bug", s.id, agentName)
-		fmt.Fprintf(os.Stderr, "[SESSION] FATAL: session %s (agent=%s) created without ProjectDir\n", s.id, agentName)
+		log.Printf("[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir — 这是一个严重缺陷", s.id, agentName)
+		fmt.Fprintf(os.Stderr, "[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir\n", s.id, agentName)
 	}
 	return s
 }
@@ -154,12 +154,12 @@ func New(agentName, sponsor, projectDir string, opts ...SessionConfig) *Session 
 // Sponsor is restored from stored session metadata (if previously persisted).
 func Load(sessionID, agentName string, store SessionStore, opts ...SessionConfig) (*Session, error) {
 	if store == nil {
-		return nil, fmt.Errorf("session store is required for Load")
+		return nil, fmt.Errorf("加载会话时必须提供会话存储")
 	}
 
 	info, err := store.GetMeta(context.Background(), sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("session %q not found: %w", sessionID, err)
+		return nil, fmt.Errorf("会话 %q 未找到: %w", sessionID, err)
 	}
 
 	s := &Session{
@@ -214,9 +214,9 @@ func NewSession(id, agentName string, opts ...SessionConfig) *Session {
 	// This is the authoritative source; store metadata lazy-load is only a
 	// restore mechanism for existing sessions, NOT an alternative to providing it.
 	if s.projectDir == "" {
-		log.Printf("[SESSION] FATAL: session %s (agent=%s) created without ProjectDir — this is a severe bug", id, agentName)
+		log.Printf("[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir — 这是一个严重缺陷", id, agentName)
 		// Also write to stderr for visibility in daemon logs
-		fmt.Fprintf(os.Stderr, "[SESSION] FATAL: session %s (agent=%s) created without ProjectDir\n", id, agentName)
+		fmt.Fprintf(os.Stderr, "[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir\n", id, agentName)
 	}
 	return s
 }
@@ -535,7 +535,7 @@ func (s *Session) Restore(ctx context.Context) error {
 
 	msgs, err := s.store.Get(ctx, s.id)
 	if err != nil {
-		return fmt.Errorf("restore session %q: %w", s.id, err)
+		return fmt.Errorf("恢复会话 %s: %w", s.id, err)
 	}
 
 	s.mu.Lock()
@@ -865,7 +865,7 @@ func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 	defer s.mu.Unlock()
 
 	if keepCount < 0 {
-		return fmt.Errorf("keepCount must be >= 0, got %d", keepCount)
+		return fmt.Errorf("keepCount 必须 >= 0,但得到 %d", keepCount)
 	}
 	if keepCount >= len(s.messages) {
 		return nil // nothing to truncate
@@ -878,7 +878,7 @@ func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 
 	if s.store != nil {
 		if err := s.store.Truncate(ctx, s.id, keepCount); err != nil {
-			return fmt.Errorf("store truncate failed: %w", err)
+			return fmt.Errorf("存储截断失败: %w", err)
 		}
 	}
 
@@ -1040,7 +1040,7 @@ func (s *Session) AddToWhitelist(toolName, entry string) error {
 	case "run_script":
 		target = &s.whitelist.RunScript
 	default:
-		return fmt.Errorf("unknown tool %q for session whitelist", toolName)
+		return fmt.Errorf("会话白名单中存在未知的工具 %q", toolName)
 	}
 
 	// Skip duplicates.
@@ -1061,11 +1061,11 @@ func (s *Session) AddToWhitelist(toolName, entry string) error {
 
 	data, err := json.MarshalIndent(s.whitelist, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal session whitelist: %w", err)
+		return fmt.Errorf("序列化会话白名单失败: %w", err)
 	}
 
 	if err := os.WriteFile(wp, data, 0644); err != nil {
-		return fmt.Errorf("failed to write session whitelist %s: %w", wp, err)
+		return fmt.Errorf("写入会话白名单 %s 失败: %w", wp, err)
 	}
 
 	return nil

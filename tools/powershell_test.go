@@ -72,10 +72,10 @@ func TestApplyPowerShellCommandSemantics(t *testing.T) {
 		stderr   string
 		expected string
 	}{
-		{0, "", "No files were copied. No failure."},
-		{1, "", "Files were copied successfully."},
-		{7, "", "Files were copied, a file mismatch was present, and additional files were present."},
-		{8, "error", "Several files didn't copy."},
+		{0, "", "未复制任何文件。无失败。"},
+		{1, "", "文件已成功复制。"},
+		{7, "", "文件已复制，存在文件不匹配，并且存在额外文件。"},
+		{8, "error", "多个文件未复制。"},
 		{99, "unknown error", "unknown error"},
 	}
 
@@ -94,9 +94,9 @@ func TestApplyPowerShellCommandSemantics_findstrOnly(t *testing.T) {
 		stderr   string
 		expected string
 	}{
-		{0, "no robocopy", "A match was found in at least one file."},
-		{1, "no robocopy", "A match was not found."},
-		{2, "no robocopy", "Invalid command-line syntax."},
+		{0, "no robocopy", "在至少一个文件中找到匹配。"},
+		{1, "no robocopy", "未找到匹配。"},
+		{2, "no robocopy", "命令行语法无效。"},
 	}
 
 	for _, tt := range tests {

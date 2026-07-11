@@ -224,7 +224,7 @@ func TestToolResultSummary_Success(t *testing.T) {
 	}
 
 	summary := ToolResultSummary(tr)
-	expected := "[search] returned: found 10 results for query"
+	expected := "[search] 返回: found 10 results for query"
 	if summary != expected {
 		t.Errorf("expected %q, got %q", expected, summary)
 	}
@@ -238,7 +238,7 @@ func TestToolResultSummary_Error(t *testing.T) {
 	}
 
 	summary := ToolResultSummary(tr)
-	expected := "[write_file] error: permission denied: cannot write to /root"
+	expected := "[write_file] 错误: permission denied: cannot write to /root"
 	if summary != expected {
 		t.Errorf("expected %q, got %q", expected, summary)
 	}
@@ -252,7 +252,7 @@ func TestToolResultSummary_EmptyResult(t *testing.T) {
 	}
 
 	summary := ToolResultSummary(tr)
-	expected := "[delete_file] returned: (empty result)"
+	expected := "[delete_file] 返回: (空结果)"
 	if summary != expected {
 		t.Errorf("expected %q, got %q", expected, summary)
 	}

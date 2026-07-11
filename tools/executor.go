@@ -70,7 +70,7 @@ func (e *implToolExecutor) ResetCycle() {}
 func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[string]any) (*ToolExecutionResult, error) {
 	tool, ok := e.cfg.registry.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("tool %q not found", name)
+		return nil, fmt.Errorf("未找到工具 %q", name)
 	}
 
 	toolInfo := tool.Info()
@@ -80,14 +80,14 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	}
 
 	toolCtx := &ToolContext{
-		EmitEvent:     e.cfg.eventEmitter,
-		ResultStore:   e.cfg.resultStore,
-		SessionStore:  e.cfg.sessionStore,
-		ResumeFunc:    e.cfg.resumeFunc,
-		KVStore:       e.cfg.kvStore,
-		FileStore:     e.cfg.fileStore,
-		Logger:        e.cfg.logger,
-		Session:       e.cfg.session,
+		EmitEvent:    e.cfg.eventEmitter,
+		ResultStore:  e.cfg.resultStore,
+		SessionStore: e.cfg.sessionStore,
+		ResumeFunc:   e.cfg.resumeFunc,
+		KVStore:      e.cfg.kvStore,
+		FileStore:    e.cfg.fileStore,
+		Logger:       e.cfg.logger,
+		Session:      e.cfg.session,
 	}
 	execCtx := WithToolContext(ctx, toolCtx)
 
@@ -108,15 +108,15 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 		result, err = tool.Execute(execCtx, params)
 	}()
 	if panicVal != nil {
-		err = fmt.Errorf("tool %q panicked: %v", name, panicVal)
+		err = fmt.Errorf("工具 %q 发生 panic: %v", name, panicVal)
 	}
 	duration := time.Since(start)
 
 	if e.cfg.logger != nil {
 		if err != nil {
-			e.cfg.logger.Debug("[executor] tool execution error", "tool", name, "duration_ms", duration.Milliseconds(), "error", err.Error())
+			e.cfg.logger.Debug("[executor] 工具执行错误", "tool", name, "duration_ms", duration.Milliseconds(), "error", err.Error())
 		} else {
-			e.cfg.logger.Debug("[executor] tool execution completed", "tool", name, "duration_ms", duration.Milliseconds())
+			e.cfg.logger.Debug("[executor] 工具执行完成", "tool", name, "duration_ms", duration.Milliseconds())
 		}
 	}
 
@@ -161,9 +161,9 @@ func enhanceFileError(err error, path string) error {
 	dir := filepath.Dir(path)
 	suggestions := findSimilarPaths(dir, filepath.Base(path))
 	if len(suggestions) == 0 {
-		return fmt.Errorf("%w\nFile not found: %s", err, path)
+		return fmt.Errorf("%w\n未找到文件: %s", err, path)
 	}
-	return fmt.Errorf("%w\nFile not found: %s\n\nDid you mean one of these?\n%s",
+	return fmt.Errorf("%w\n未找到文件: %s\n\n您是不是要找以下其中一个?\n%s",
 		err, path, strings.Join(suggestions, "\n"))
 }
 
@@ -248,5 +248,5 @@ func (e *implToolExecutor) processResult(toolName, str string, toolInfo *ToolInf
 	if len(runes) <= threshold {
 		return str
 	}
-	return string(runes[:threshold]) + "\n... [truncated: result exceeds size limit] ..."
+	return string(runes[:threshold]) + "\n... [已截断: 结果超出大小限制] ..."
 }

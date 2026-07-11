@@ -71,11 +71,11 @@ func NewWebFetchTool() FuncTool {
 					}
 					ips, err := net.LookupIP(host)
 					if err != nil {
-						return nil, fmt.Errorf("failed to resolve host %q: %w", host, err)
+						return nil, fmt.Errorf("解析主机 %q 失败：%w", host, err)
 					}
 					for _, ip := range ips {
 						if isPrivateIP(ip) {
-							return nil, fmt.Errorf("access denied: URL resolves to private/internal address %s", ip)
+							return nil, fmt.Errorf("访问被拒绝：URL 解析为私有/内部地址 %s", ip)
 						}
 					}
 					return dialer.DialContext(ctx, network, addr)
@@ -83,7 +83,7 @@ func NewWebFetchTool() FuncTool {
 			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
-					return fmt.Errorf("too many redirects")
+					return fmt.Errorf("重定向次数过多")
 				}
 				return validateURL(req.URL.String())
 			},
@@ -96,33 +96,33 @@ func (t *WebFetchTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "WebFetch",
 		MaxResultSizeChars: 25000,
-		Description:        "Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.",
-		Prompt: `Fetch and extract content from a web page. Use after WebSearch to read the actual content of a discovered URL.
+		Description:        "获取并提取网页内容。在 WebSearch 之后使用，以读取已发现 URL 的实际内容。",
+		Prompt: `获取并提取网页内容。在 WebSearch 之后使用，以读取已发现 URL 的实际内容。
 
-Architecture:
-1. Validates URL and checks for SSRF risks (blocks private IPs).
-2. Fetches the page content locally via HTTP.
-3. Strips HTML tags (scripts, styles, nav, etc.) for clean Markdown.
-4. Returns the extracted content.
+工作流程：
+1. 验证 URL 并检查 SSRF 风险（阻止私有 IP）。
+2. 通过 HTTP 在本地获取页面内容。
+3. 去除 HTML 标签（脚本、样式、导航等）以生成干净的 Markdown。
+4. 返回提取的内容。
 
-Content Budget:
-- Maximum returned content: 50,000 characters (~16K tokens)
-- If a page exceeds this, the output will note how many chars were omitted
-- Use the prompt parameter to narrow the fetch to relevant sections (e.g., prompt="extract pricing information")
-- If you need more of a truncated page, re-fetch with a more specific prompt`,
+内容预算：
+- 最大返回内容：50,000 字符（约 16K tokens）
+- 如果页面超出此限制，输出将注明省略了多少字符
+- 使用 prompt 参数将获取范围缩小到相关部分（例如，prompt="提取定价信息"）
+- 如果您需要被截断页面的更多内容，请使用更具体的 prompt 重新获取`,
 		Tags:       []string{"web", "fetch", "url", "content", "http"},
 		IsReadOnly: true,
 		Parameters: []Parameter{
 			{
 				Name:        "url",
 				Type:        "string",
-				Description: "The URL to fetch content from.",
+				Description: "要获取内容的 URL。",
 				Required:    true,
 			},
 			{
 				Name:        "prompt",
 				Type:        "string",
-				Description: "What information to extract or what question to answer about the page content. Helps focus the output on relevant details.",
+				Description: "要提取的信息或关于页面内容要回答的问题。有助于将输出集中在相关细节上。",
 				Required:    false,
 			},
 		},
@@ -189,7 +189,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("创建请求失败：%w", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8")
@@ -197,14 +197,14 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch failed: %w", err)
+		return nil, fmt.Errorf("获取失败：%w", err)
 	}
 	defer resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("HTTP %d fetching %s: %s", resp.StatusCode, rawURL, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("HTTP %d 获取 %s 失败：%s", resp.StatusCode, rawURL, strings.TrimSpace(string(body)))
 	}
 	if !isHTMLContentType(ct) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -213,7 +213,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("读取响应失败：%w", err)
 	}
 
 	rawContent := htmlToMarkdown(string(body))
@@ -243,15 +243,15 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 func formatWebFetchOutput(rawURL, prompt, content string, originalLen int, rawContent string, truncated bool) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "--- Web Fetch: %s ---\n", rawURL)
-	fmt.Fprintf(&sb, "Status: 200 | Original size: %d chars | Returned: %d chars\n",
+	fmt.Fprintf(&sb, "--- 网页获取：%s ---\n", rawURL)
+	fmt.Fprintf(&sb, "状态：200 | 原始大小：%d 字符 | 返回：%d 字符\n",
 		originalLen, len(content))
 	if prompt != "" {
-		fmt.Fprintf(&sb, "Prompt: %s\n", prompt)
+		fmt.Fprintf(&sb, "提示词：%s\n", prompt)
 	}
 	if truncated {
-		fmt.Fprintf(&sb, "Note: Content was truncated (%d chars omitted).\n", originalLen-webFetchMaxContentChars)
-		fmt.Fprintf(&sb, "To focus on specific sections, re-fetch with a descriptive `prompt` parameter (e.g., prompt=\"extract the section about pricing\").\n")
+		fmt.Fprintf(&sb, "注意：内容已被截断（省略了 %d 字符）。\n", originalLen-webFetchMaxContentChars)
+		fmt.Fprintf(&sb, "要聚焦于特定部分，请使用描述性的 `prompt` 参数重新获取（例如，prompt=\"提取关于定价的部分\"）。\n")
 	}
 	fmt.Fprintf(&sb, "\n%s\n", content)
 	return sb.String()
@@ -267,12 +267,12 @@ func isHTMLContentType(ct string) bool {
 
 func formatNonHTML(rawURL, prompt string, statusCode int, contentType, preview string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "--- Web Fetch: %s ---\n", rawURL)
-	fmt.Fprintf(&sb, "Status: %d | Content-Type: %s\n", statusCode, contentType)
+	fmt.Fprintf(&sb, "--- 网页获取：%s ---\n", rawURL)
+	fmt.Fprintf(&sb, "状态：%d | Content-Type：%s\n", statusCode, contentType)
 	if prompt != "" {
-		fmt.Fprintf(&sb, "Prompt: %s\n", prompt)
+		fmt.Fprintf(&sb, "提示词：%s\n", prompt)
 	}
-	fmt.Fprintf(&sb, "\nNon-HTML content. Body preview (%d bytes):\n", len(preview))
+	fmt.Fprintf(&sb, "\n非 HTML 内容。正文预览（%d 字节）：\n", len(preview))
 	if len(preview) > 0 {
 		fmt.Fprintf(&sb, "%s...\n", preview)
 	}
@@ -393,20 +393,20 @@ func parseCIDR(s string) *net.IPNet {
 func validateURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return fmt.Errorf("无效的 URL：%w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsed.Scheme)
+		return fmt.Errorf("不支持的 URL 协议：%s（仅允许 http/https）", parsed.Scheme)
 	}
 
 	host := parsed.Hostname()
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		return fmt.Errorf("failed to resolve host %q: %w", host, err)
+		return fmt.Errorf("解析主机 %q 失败：%w", host, err)
 	}
 	for _, ip := range ips {
 		if isPrivateIP(ip) {
-			return fmt.Errorf("access denied: URL resolves to private/internal address %s", ip)
+			return fmt.Errorf("访问被拒绝：URL 解析为私有/内部地址 %s", ip)
 		}
 	}
 	return nil

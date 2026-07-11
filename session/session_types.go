@@ -144,4 +144,4 @@ func WithSponsorOption(sponsor string) SessionOption {
 // NoopSlideHandler is a no-op SlideHandler for implementations that don't need it.
 func NoopSlideHandler(_ context.Context, _ SlideEvent) {}
 
-var ErrSessionNotFound = errors.New("session not found for role")
+var ErrSessionNotFound = errors.New("未找到对应角色的会话")

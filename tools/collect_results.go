@@ -18,18 +18,18 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "CollectResults",
 		MaxResultSizeChars: 50000,
-		Description:        "Wait for one or more async tasks to complete and return their results.",
-		Prompt: `Collect results from SubAgent tasks. Supports both first-time collection and recovery on retry.
+		Description:        "收集子代理任务的结果",
+		Prompt: `收集子代理任务的结果。支持重试与恢复。
 
-Call this tool first whenever SubAgent task_ids exist:
-- First call: waits for running tasks and returns results
-- Retry: recovers results from previously completed tasks
+当存在子代理 task_id 时，请优先调用此工具：
+- 首次调用：等待正在运行的任务并返回结果
+- 重试：从之前已完成的任务中恢复结果
 
-Do NOT re-spawn a SubAgent for an existing task_id — retry CollectResults instead.`,
+请勿对已存在的 task_id 重新生成子代理——请重试 CollectResults。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
-			{Name: "task_ids", Type: "array", Description: "Array of task IDs to collect results from.", Required: true},
+			{Name: "task_ids", Type: "array", Description: "要收集结果的任务 ID 数组。", Required: true},
 		},
 	}
 }
@@ -37,12 +37,12 @@ Do NOT re-spawn a SubAgent for an existing task_id — retry CollectResults inst
 func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.ResultStore == nil {
-		return nil, fmt.Errorf("collect_results tool requires ToolContext with ResultStore")
+		return nil, fmt.Errorf("collect_results 工具需要包含 ResultStore 的 ToolContext")
 	}
 
 	rawIDs, ok := params["task_ids"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("task_ids must be an array of strings")
+		return nil, fmt.Errorf("task_ids 必须是字符串数组")
 	}
 
 	// Strip the caller's syncTimeout deadline (default 5min) to allow waiting
@@ -54,7 +54,7 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	for _, raw := range rawIDs {
 		id, ok := raw.(string)
 		if !ok {
-			return nil, fmt.Errorf("task_id must be a string, got %T", raw)
+			return nil, fmt.Errorf("task_id 必须是字符串，实际类型为 %T", raw)
 		}
 
 		// Phase 1: Non-blocking Get (fast path — SubAgent already completed)
@@ -100,7 +100,7 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 
 	out, err := json.Marshal(jsonResults)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal collect results: %w", err)
+		return nil, fmt.Errorf("序列化收集结果失败：%w", err)
 	}
 	return string(out), nil
 }
@@ -176,7 +176,7 @@ func fallbackCollect(tc *ToolContext, taskID string) map[string]string {
 			"session_id": chainSessionID,
 			"agent":      chainAgent,
 			"status":     "failed",
-			"error":      "sub-agent failed and no result available",
+			"error":      "子代理失败且无可用结果",
 		}
 	}
 
@@ -198,7 +198,7 @@ func fallbackCollect(tc *ToolContext, taskID string) map[string]string {
 			"session_id": chainSessionID,
 			"agent":      chainAgent,
 			"status":     "failed",
-			"error":      fmt.Sprintf("resume sub-agent failed: %v", resumeErr),
+			"error":      fmt.Sprintf("恢复子代理失败：%v", resumeErr),
 		}
 	}
 
@@ -207,6 +207,6 @@ func fallbackCollect(tc *ToolContext, taskID string) map[string]string {
 		"session_id": chainSessionID,
 		"agent":      chainAgent,
 		"status":     "failed",
-		"error":      "sub-agent interrupted and no ResumeFunc available",
+		"error":      "子代理中断且无可用恢复函数",
 	}
 }

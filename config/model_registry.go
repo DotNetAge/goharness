@@ -10,6 +10,6 @@ type ModelStore interface {
 }
 
 var (
-	ErrModelNotFound  = fmt.Errorf("model registry: model not found")
-	ErrDuplicateModel = fmt.Errorf("model registry: duplicate model name")
+	ErrModelNotFound  = fmt.Errorf("模型注册表: 未找到模型")
+	ErrDuplicateModel = fmt.Errorf("模型注册表: 模型名称重复")
 )

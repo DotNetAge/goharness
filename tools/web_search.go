@@ -169,7 +169,7 @@ var mdConverter = md.NewConverter("", true, nil)
 func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, extraHeaders map[string]string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("创建请求失败：%w", err)
 	}
 	req.Header.Set("User-Agent", randomUA())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -180,18 +180,18 @@ func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, ex
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("search request failed: %w", err)
+		return "", fmt.Errorf("搜索请求失败：%w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+		return "", fmt.Errorf("读取响应失败：%w", err)
 	}
 
 	md, err := mdConverter.ConvertString(string(body))
 	if err != nil || len(md) == 0 {
-		return "", fmt.Errorf("failed to convert HTML to Markdown: %w", err)
+		return "", fmt.Errorf("HTML 转换为 Markdown 失败：%w", err)
 	}
 	return md, nil
 }
@@ -295,45 +295,44 @@ func (t *WebSearchTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "WebSearch",
 		MaxResultSizeChars: 30000,
-		Description: `Search the web for real-time information. Returns a list of {title, url} results.
-Use this tool when you need up-to-date information beyond your training data.`,
-		Prompt: `Search the web for real-time information. Returns search result information formatted as search result blocks, including links as markdown hyperlinks.
-Provides up-to-date information for current events and recent data.
-Use this tool for accessing information beyond the model's knowledge cutoff.
-Searches are performed automatically within a single API call.
+		Description:        `搜索网络以获取实时信息。返回 {title, url} 结果列表。`,
+		Prompt: `搜索网络以获取实时信息。返回搜索结果信息，格式化为搜索结果块，包含作为 markdown 超链接的链接。
+为当前事件和最近的数据提供最新信息。
+使用此工具访问模型知识截止日期之外的信息。
+搜索在单次 API 调用中自动执行。
 
-CRITICAL REQUIREMENT - You MUST follow this:
-- After answering the user's question, you MUST include a "Sources:" section at the end of your response
-- In the Sources section, list all relevant URLs from the search results as markdown hyperlinks: [Title](URL)
-- This is MANDATORY - never skip including sources in your response
+关键要求 - 您必须遵循以下规则：
+- 在回答用户问题后，您必须在回复末尾包含"来源："部分
+- 在来源部分，将所有相关的搜索结果 URL 列为 markdown 超链接：[标题](URL)
+- 这是强制性的 - 永远不要在回复中跳过包含来源
 
-Usage notes:
-- Domain filtering is supported to include or block specific websites
-- IMPORTANT: Use the correct year in search queries`,
+使用说明：
+- 支持域名过滤以包含或阻止特定网站
+- 重要：在搜索查询中使用正确的年份`,
 		IsReadOnly: true,
 		Parameters: []Parameter{
 			{
 				Name:        "query",
 				Type:        "string",
-				Description: "The search query string. Be specific and include relevant keywords.",
+				Description: "搜索查询字符串。请具体并包含相关关键词。",
 				Required:    true,
 			},
 			{
 				Name:        "max_results",
 				Type:        "integer",
-				Description: "Maximum number of results to return (default: 5, max: 20). Early exit threshold — once enough results are collected, faster engines' results are returned immediately without waiting for slower ones.",
+				Description: "要返回的最大结果数（默认：5，最大：20）。提前退出阈值 - 一旦收集到足够的结果，将立即返回较快引擎的结果，而无需等待较慢的引擎。",
 				Required:    false,
 			},
 			{
 				Name:        "allowed_domains",
 				Type:        "array",
-				Description: "Restrict results to these domains (e.g., [\"github.com\", \"docs.python.org\"]).",
+				Description: "将结果限制在这些域名（例如，[\"github.com\", \"docs.python.org\"]）。",
 				Required:    false,
 			},
 			{
 				Name:        "blocked_domains",
 				Type:        "array",
-				Description: "Exclude results from these domains.",
+				Description: "排除这些域名的结果。",
 				Required:    false,
 			},
 		},
@@ -346,7 +345,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		return nil, err
 	}
 	if len(query) < 2 {
-		return nil, fmt.Errorf("query must be at least 2 characters")
+		return nil, fmt.Errorf("查询必须至少为 2 个字符")
 	}
 
 	maxResults := 5
@@ -420,7 +419,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 			defer wg.Done()
 
 			if ctx.Err() != nil {
-				resultCh <- adapterResult{err: fmt.Errorf("context cancelled"), adapter: a.Name()}
+				resultCh <- adapterResult{err: fmt.Errorf("上下文已取消"), adapter: a.Name()}
 				return
 			}
 
@@ -508,19 +507,19 @@ collectLoop:
 
 	if len(results) == 0 {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("search timed out after %v (query: %q). Failed adapters: [%s]. The search engine may be rate-limiting or experiencing issues. Try again later.",
+			return nil, fmt.Errorf("搜索在 %v 后超时（查询：%q）。失败的适配器：[%s]。搜索引擎可能正在限流或遇到问题。请稍后重试。",
 				15*time.Second, query, strings.Join(failedAdapters, ", "))
 		}
-		return nil, fmt.Errorf("no results found for query: %q. All search engines failed: [%s]. Possible reasons: GFW blocking, rate-limiting, or network issues. Try simplifying your query.",
+		return nil, fmt.Errorf("未找到查询的结果：%q。所有搜索引擎均失败：[%s]。可能的原因：GFW 阻止、限流或网络问题。请尝试简化您的查询。",
 			query, strings.Join(failedAdapters, ", "))
 	}
 
 	var adapterNote string
 	if len(failedAdapters) > 0 {
-		adapterNote = fmt.Sprintf("\n\n[Search Status] %d/%d engines succeeded. Failed: %s",
+		adapterNote = fmt.Sprintf("\n\n[搜索状态] %d/%d 个引擎成功。失败：%s",
 			successCount, len(adapters), strings.Join(failedAdapters, ", "))
 	} else {
-		adapterNote = fmt.Sprintf("\n\n[Search Status] All %d engines succeeded.", len(adapters))
+		adapterNote = fmt.Sprintf("\n\n[搜索状态] 所有 %d 个引擎均成功。", len(adapters))
 	}
 
 	// Cache results in KVStore (2-day TTL)
@@ -678,11 +677,11 @@ func (t *WebSearchTool) EvictExpiredCache(ctx context.Context) {
 
 func formatSearchResults(query string, results []SearchResult) string {
 	var sb strings.Builder
-	sb.WriteString("## Search Results\n\n")
-	sb.WriteString(fmt.Sprintf("**Query**: %s\n\n", query))
+	sb.WriteString("## 搜索结果\n\n")
+	sb.WriteString(fmt.Sprintf("**查询**：%s\n\n", query))
 
 	if len(results) == 0 {
-		sb.WriteString("*No results found*\n")
+		sb.WriteString("*未找到结果*\n")
 		return sb.String()
 	}
 
@@ -695,23 +694,23 @@ func formatSearchResults(query string, results []SearchResult) string {
 			}
 			sb.WriteString(fmt.Sprintf("> %s\n\n", snippet))
 		}
-		sb.WriteString(fmt.Sprintf("- **URL**: <%s>\n", r.URL))
+		sb.WriteString(fmt.Sprintf("- **URL**：<%s>\n", r.URL))
 		if r.Source != "" {
 			sourceLabel := r.Source
 			switch r.Source {
 			case "sogou":
-				sourceLabel = "Sogou"
+				sourceLabel = "搜狗"
 			case "weixin":
-				sourceLabel = "WeChat"
+				sourceLabel = "微信"
 			}
-			sb.WriteString(fmt.Sprintf("- **Source**: %s\n", sourceLabel))
+			sb.WriteString(fmt.Sprintf("- **来源**：%s\n", sourceLabel))
 		}
 		sb.WriteString("\n")
 	}
 
 	sb.WriteString("---\n")
-	sb.WriteString("Use WebFetch to retrieve full content from any URL above.\n")
-	sb.WriteString("Note: WebFetch has a 50,000 character content budget. For large pages, use the prompt parameter to target specific sections.\n")
+	sb.WriteString("使用 WebFetch 从上述任何 URL 获取完整内容。\n")
+	sb.WriteString("注意：WebFetch 有 50,000 字符的内容预算。对于大型页面，请使用 prompt 参数定位特定部分。\n")
 	return sb.String()
 }
 

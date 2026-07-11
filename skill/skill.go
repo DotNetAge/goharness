@@ -4,9 +4,9 @@ import "errors"
 
 // Skill errors
 var (
-	ErrSkillNotFound    = errors.New("skill not found")
-	ErrSkillExecution   = errors.New("skill execution failed")
-	ErrSkillCompilation = errors.New("skill compilation failed")
+	ErrSkillNotFound    = errors.New("技能未找到")
+	ErrSkillExecution   = errors.New("技能执行失败")
+	ErrSkillCompilation = errors.New("技能编译失败")
 
 // Skill represents a specialized capability that extends the agent's behavior.
 // It follows the Agent Skills specification (agentskills.io) for discovery and loading.

@@ -43,10 +43,10 @@ func TestWebFetchTool_Real_ExampleCom(t *testing.T) {
 	if !strings.Contains(s, "Example Domain") {
 		t.Errorf("should contain 'Example Domain', got: %.200s...", s)
 	}
-	if !strings.Contains(s, "--- Web Fetch:") {
+	if !strings.Contains(s, "--- 网页获取:") {
 		t.Error("result should contain header")
 	}
-	if !strings.Contains(s, "Status:") {
+	if !strings.Contains(s, "状态:") {
 		t.Error("result should contain status code")
 	}
 }
@@ -74,7 +74,7 @@ func TestWebFetchTool_Real_HttpbinHTML(t *testing.T) {
 	if !strings.Contains(s, "Moby-Dick") && !strings.Contains(s, "Herman Melville") {
 		t.Errorf("should contain Moby Dick content, got: %.200s...", s)
 	}
-	if !strings.Contains(s, "Prompt:") {
+	if !strings.Contains(s, "提示词：") {
 		t.Error("result should contain prompt when provided")
 	}
 }

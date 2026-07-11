@@ -34,7 +34,7 @@ func NewFileSystemKVStore(baseDir string) (*FileSystemKVStore, error) {
 		baseDir = filepath.Join(os.TempDir(), "goharness", "kvstore")
 	}
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create KVStore base directory: %w", err)
+		return nil, fmt.Errorf("无法创建 KVStore 基础目录: %w", err)
 	}
 	return &FileSystemKVStore{baseDir: baseDir}, nil
 }
@@ -58,7 +58,7 @@ func (s *FileSystemKVStore) Set(_ context.Context, sessionID, key string, value 
 
 	dir := s.sessionDir(sessionID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create session directory: %w", err)
+		return fmt.Errorf("无法创建会话目录: %w", err)
 	}
 
 	entry := kvEntry{Value: value}
@@ -70,7 +70,7 @@ func (s *FileSystemKVStore) Set(_ context.Context, sessionID, key string, value 
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return fmt.Errorf("failed to marshal KV entry: %w", err)
+		return fmt.Errorf("无法序列化 KV 条目: %w", err)
 	}
 
 	return os.WriteFile(s.keyPath(sessionID, key), data, 0644)
@@ -88,12 +88,12 @@ func (s *FileSystemKVStore) Get(_ context.Context, sessionID, key string) ([]byt
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read KV entry: %w", err)
+		return nil, fmt.Errorf("无法读取 KV 条目: %w", err)
 	}
 
 	var entry kvEntry
 	if err := json.Unmarshal(data, &entry); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal KV entry: %w", err)
+		return nil, fmt.Errorf("无法解析 KV 条目: %w", err)
 	}
 
 	if !entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt) {
@@ -128,7 +128,7 @@ func (s *FileSystemKVStore) ListKeys(_ context.Context, sessionID string) ([]str
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read session directory: %w", err)
+		return nil, fmt.Errorf("无法读取会话目录: %w", err)
 	}
 
 	var keys []string
@@ -170,7 +170,7 @@ func NewFileSystemFileStore(baseDir string) (*FileSystemFileStore, error) {
 		baseDir = filepath.Join(os.TempDir(), "goharness", "filestore")
 	}
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create FileStore base directory: %w", err)
+		return nil, fmt.Errorf("无法创建 FileStore 基础目录: %w", err)
 	}
 	return &FileSystemFileStore{baseDir: baseDir}, nil
 }
@@ -185,7 +185,7 @@ func (s *FileSystemFileStore) sessionDir(sessionID string) string {
 func (s *FileSystemFileStore) filePath(sessionID, path string) (string, error) {
 	cleanPath := filepath.Clean(path)
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
-		return "", fmt.Errorf("invalid file path: %s", path)
+		return "", fmt.Errorf("无效的文件路径: %s", path)
 	}
 	return filepath.Join(s.sessionDir(sessionID), cleanPath), nil
 }
@@ -198,7 +198,7 @@ func (s *FileSystemFileStore) WriteFile(_ context.Context, sessionID, path strin
 
 	dir := s.sessionDir(sessionID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create session directory: %w", err)
+		return fmt.Errorf("无法创建会话目录: %w", err)
 	}
 
 	fullPath, err := s.filePath(sessionID, path)
@@ -208,12 +208,12 @@ func (s *FileSystemFileStore) WriteFile(_ context.Context, sessionID, path strin
 
 	dirPath := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return fmt.Errorf("failed to create subdirectory: %w", err)
+		return fmt.Errorf("无法创建子目录: %w", err)
 	}
 
 	f, err := os.Create(fullPath)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return fmt.Errorf("无法创建文件: %w", err)
 	}
 	defer f.Close()
 
@@ -237,7 +237,7 @@ func (s *FileSystemFileStore) ReadFile(_ context.Context, sessionID, path string
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		return nil, fmt.Errorf("无法打开文件: %w", err)
 	}
 	return f, nil
 }
@@ -265,7 +265,7 @@ func (s *FileSystemFileStore) ListFiles(_ context.Context, sessionID, prefix str
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read session directory: %w", err)
+		return nil, fmt.Errorf("无法读取会话目录: %w", err)
 	}
 
 	var files []string

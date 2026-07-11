@@ -101,50 +101,40 @@ func (t *BashTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Bash",
 		MaxResultSizeChars: 60000,
-		Description:        "Execute a POSIX shell command in the workspace environment. On Linux/proot, the environment is extensible — packages can be installed. On macOS, commands run natively via /bin/bash.",
-		Prompt: `Executes a given bash command and returns its output. The project directory persists between commands, but shell state does not.
+		Description:        "在工作区环境中执行 POSIX shell 命令。在 Linux/proot 环境下，环境可扩展——可以安装软件包。在 macOS 上，命令通过 /bin/bash 原生运行。",
+		Prompt: `执行给定的 bash 命令并返回其输出。
 
-IMPORTANT: The following commands are blocked by the Bash tool whitelist — use dedicated tools instead:
-- File search: Use Glob (NOT find)
-- Content search: Use Grep
-- Read files: Use Read (NOT cat/head/tail)
-- Edit files: Use FileEdit (NOT sed/awk)
-- Write files: Use Write
+**重要**：以下命令会被 Bash 工具白名单阻止——请使用专用工具：
+- 文件搜索：使用 Glob（不要用 find）
+- 内容搜索：使用 Grep
+- 读取文件：使用 Read（不要用 cat/head/tail）
+- 编辑文件：使用 FileEdit（不要用 sed/awk）
+- 写入文件：使用 Write
 
-Dedicated tools provide a better user experience and make it easier to review tool calls.
+专用工具提供更好的体验，也更容易审查工具调用。
 
-# Instructions
-- If your command will create new directories or files, first use Ls to verify the parent directory exists.
-- Always quote file paths that contain spaces with double quotes.
-- Try to maintain your current project directory by using absolute paths.
-- When issuing multiple commands:
-  - If independent and can run in parallel, make multiple tool calls in one message.
-  - If dependent, use && to chain them.
-  - Use ; only when you don't care if earlier commands fail.
-   - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
-- For git commands:
-   - Prefer new commits over amending existing ones.
-   - Before destructive operations (git reset --hard, git push --force), consider safer alternatives.
-- Use working_dir to run commands in a specific directory.`,
+- 如果命令将创建新目录或文件，先用 Ls 验证父目录存在。
+- 始终用双引号引用包含空格的文件路径。
+- 使用 working_dir 在特定目录中运行命令。`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: events.LevelHighRisk,
 		Parameters: []Parameter{
 			{
 				Name:        "command",
 				Type:        "string",
-				Description: "The command to execute.",
+				Description: "要执行的命令。",
 				Required:    true,
 			},
 			{
 				Name:        "timeout",
 				Type:        "number",
-				Description: "Optional timeout in milliseconds. Default is 30000ms.",
+				Description: "可选的超时时间（毫秒）。默认为 30000 毫秒。",
 				Required:    false,
 			},
 			{
 				Name:        "working_dir",
 				Type:        "string",
-				Description: "Working directory for command execution. Defaults to the process current directory.",
+				Description: "命令执行的工作目录。默认为进程当前目录。",
 				Required:    false,
 			},
 		},
@@ -172,7 +162,7 @@ Dedicated tools provide a better user experience and make it easier to review to
 func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	command, ok := params["command"].(string)
 	if !ok {
-		return nil, fmt.Errorf("missing command parameter")
+		return nil, fmt.Errorf("缺少 command 参数")
 	}
 
 	command = strings.TrimSpace(command)
@@ -211,11 +201,11 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 			}
 			return map[string]any{
 				"stdout":      "",
-				"stderr":      fmt.Sprintf("BLOCKED: command %q is not in the whitelist. Allowed commands: %s", blockedCmd, strings.Join(getDefaultWhitelist(), ", ")),
+				"stderr":      fmt.Sprintf("已阻止：命令 %q 不在白名单中。允许的命令：%s", blockedCmd, strings.Join(getDefaultWhitelist(), ", ")),
 				"exit_code":   126,
 				"interrupted": false,
 				"success":     false,
-				"error":       fmt.Sprintf("command not whitelisted: %s", blockedCmd),
+				"error":       fmt.Sprintf("命令不在白名单中：%s", blockedCmd),
 			}, nil
 		}
 	}
@@ -276,7 +266,7 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 			result["exit_code"] = exitError.ExitCode()
 		} else if timeoutCtx.Err() == context.DeadlineExceeded {
 			result["interrupted"] = true
-			stderrStr += "\nCommand timed out."
+			stderrStr += "\n命令执行超时。"
 			result["stderr"] = stderrStr
 		} else {
 			result["stderr"] = stderrStr + "\n" + err.Error()
@@ -290,7 +280,7 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	result["success"] = result["exit_code"] == 0
 	if !result["success"].(bool) {
-		result["error"] = fmt.Sprintf("Command failed with exit code %v", result["exit_code"])
+		result["error"] = fmt.Sprintf("命令执行失败，退出码 %v", result["exit_code"])
 		logger.Warn("bash command failed",
 			"exit_code", result["exit_code"],
 			"elapsed_ms", elapsed.Milliseconds(),
@@ -332,7 +322,7 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	}
 
 	if blocked := detectDangerousCommand(command); blocked != "" {
-		return false, fmt.Sprintf("Bash command blocked by safety filter: %s", blocked)
+		return false, fmt.Sprintf("Bash 命令被安全过滤器阻止：%s", blocked)
 	}
 
 	if t.whitelistEnabled {
@@ -379,7 +369,7 @@ func truncateOutput(s string, maxRunes int) string {
 	if len(runes) <= maxRunes {
 		return s
 	}
-	return string(runes[:maxRunes]) + "\n... [output truncated due to size] ..."
+	return string(runes[:maxRunes]) + "\n... [输出因大小限制被截断] ..."
 }
 
 // truncateForLog 截断字符串用于安全日志记录。
@@ -411,33 +401,33 @@ var dangerousPatterns = []struct {
 	pattern *regexp.Regexp
 	reason  string
 }{
-	{regexp.MustCompile(`^rm\s+-rf\s+/\s*$`), "destructive: rm -rf / would erase the entire filesystem"},
-	{regexp.MustCompile(`^rm\s+-rf\s+/\*\s*$`), "destructive: rm -rf /* would erase the entire filesystem"},
-	{regexp.MustCompile(`>\s*/dev/sd[a-z]\b`), "dangerous: writing to raw disk device"},
-	{regexp.MustCompile(`dd\s+if=.*of=/dev/sd`), "dangerous: raw disk overwrite via dd"},
-	{regexp.MustCompile(`mkfs\.`), "dangerous: disk formatting command"},
-	{regexp.MustCompile(`:\(\)\{\s*\|.*:\s*&\s*;:\s*\}$`), "dangerous: fork bomb detected"},
-	{regexp.MustCompile(`(curl|wget)\s+.*\|\s*(sh|bash)\b`), "dangerous: remote code execution pipe (curl|sh)"},
-	{regexp.MustCompile(`\$\(`), "dangerous: command substitution via $()"},
-	{regexp.MustCompile("`[^`]*`"), "dangerous: command substitution via backticks"},
-	{regexp.MustCompile(`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`), "dangerous: remote binary download to system path"},
-	{regexp.MustCompile(`chmod\s+-R\s+777\s+/`), "dangerous: world-writable root filesystem"},
-	{regexp.MustCompile(`chown\s+-R.*\s+/`), "dangerous: recursive root ownership change"},
-	{regexp.MustCompile(`shutdown\s+(now|-h|-r)\b`), "dangerous: system shutdown command"},
-	{regexp.MustCompile(`^reboot\s*$`), "dangerous: system reboot command"},
-	{regexp.MustCompile(`(?i)format\s+[a-z]:\s*/q`), "dangerous: disk formatting on Windows"},
-	{regexp.MustCompile(`(?i)del\s+/[fs]\s+.*\\\*\.\*`), "dangerous: forced recursive deletion on Windows"},
-	{regexp.MustCompile(`(?i)rd\s+/[fs]\s+\\`), "dangerous: forced directory deletion on Windows"},
-	{regexp.MustCompile(`(?i)reg\s+delete\s+HK`), "dangerous: registry key deletion"},
-	{regexp.MustCompile(`(?i)diskpart`), "dangerous: disk partition manipulation"},
-	{regexp.MustCompile(`(?i)icacls\s+.*\s+/grant\s+.*:F`), "dangerous: granting full permissions"},
-	{regexp.MustCompile(`(?i)takeown\s+/f`), "dangerous: taking ownership of files"},
-	{regexp.MustCompile(`(?i)cipher\s+/w:`), "dangerous: disk wiping operation"},
-	{regexp.MustCompile(`(?i)bcdedit\s+/set`), "dangerous: boot configuration modification"},
-	{regexp.MustCompile(`(?i)powercfg\s+/h\s+off`), "dangerous: system configuration modification"},
-	{regexp.MustCompile(`(?i)net\s+user\s+.*\s+/add`), "dangerous: user account creation"},
-	{regexp.MustCompile(`(?i)net\s+localgroup\s+.*\s+/add`), "dangerous: user group modification"},
-	{regexp.MustCompile(`(?i)sc\s+delete`), "dangerous: service deletion"},
+	{regexp.MustCompile(`^rm\s+-rf\s+/\s*$`), "破坏性：rm -rf / 会删除整个文件系统"},
+	{regexp.MustCompile(`^rm\s+-rf\s+/\*\s*$`), "破坏性：rm -rf /* 会删除整个文件系统"},
+	{regexp.MustCompile(`>\s*/dev/sd[a-z]\b`), "危险：写入原始磁盘设备"},
+	{regexp.MustCompile(`dd\s+if=.*of=/dev/sd`), "危险：通过 dd 覆盖原始磁盘"},
+	{regexp.MustCompile(`mkfs\.`), "危险：磁盘格式化命令"},
+	{regexp.MustCompile(`:\(\)\{\s*\|.*:\s*&\s*;:\s*\}$`), "危险：检测到 fork bomb"},
+	{regexp.MustCompile(`(curl|wget)\s+.*\|\s*(sh|bash)\b`), "危险：远程代码执行管道 (curl|sh)"},
+	{regexp.MustCompile(`\$\(`), "危险：通过 $() 进行命令替换"},
+	{regexp.MustCompile("`[^`]*`"), "危险：通过反引号进行命令替换"},
+	{regexp.MustCompile(`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`), "危险：远程下载二进制文件到系统路径"},
+	{regexp.MustCompile(`chmod\s+-R\s+777\s+/`), "危险：根文件系统设置为全局可写"},
+	{regexp.MustCompile(`chown\s+-R.*\s+/`), "危险：递归更改根目录所有权"},
+	{regexp.MustCompile(`shutdown\s+(now|-h|-r)\b`), "危险：系统关机命令"},
+	{regexp.MustCompile(`^reboot\s*$`), "危险：系统重启命令"},
+	{regexp.MustCompile(`(?i)format\s+[a-z]:\s*/q`), "危险：Windows 磁盘格式化"},
+	{regexp.MustCompile(`(?i)del\s+/[fs]\s+.*\\\*\.\*`), "危险：Windows 强制递归删除"},
+	{regexp.MustCompile(`(?i)rd\s+/[fs]\s+\\`), "危险：Windows 强制删除目录"},
+	{regexp.MustCompile(`(?i)reg\s+delete\s+HK`), "危险：注册表项删除"},
+	{regexp.MustCompile(`(?i)diskpart`), "危险：磁盘分区操作"},
+	{regexp.MustCompile(`(?i)icacls\s+.*\s+/grant\s+.*:F`), "危险：授予完全权限"},
+	{regexp.MustCompile(`(?i)takeown\s+/f`), "危险：获取文件所有权"},
+	{regexp.MustCompile(`(?i)cipher\s+/w:`), "危险：磁盘擦除操作"},
+	{regexp.MustCompile(`(?i)bcdedit\s+/set`), "危险：启动配置修改"},
+	{regexp.MustCompile(`(?i)powercfg\s+/h\s+off`), "危险：系统配置修改"},
+	{regexp.MustCompile(`(?i)net\s+user\s+.*\s+/add`), "危险：创建用户账户"},
+	{regexp.MustCompile(`(?i)net\s+localgroup\s+.*\s+/add`), "危险：修改用户组"},
+	{regexp.MustCompile(`(?i)sc\s+delete`), "危险：删除服务"},
 }
 
 // detectDangerousCommand 检测命令是否包含危险操作。

@@ -25,7 +25,7 @@ type YAMLRuleRegistry struct {
 func NewYAMLRuleRegistry(yamlPath string) (*YAMLRuleRegistry, error) {
 	absPath, err := filepath.Abs(yamlPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve path: %w", err)
+		return nil, fmt.Errorf("解析路径: %w", err)
 	}
 	reg := &YAMLRuleRegistry{}
 	if err := reg.load(absPath); err != nil {
@@ -39,7 +39,7 @@ func NewYAMLRuleRegistry(yamlPath string) (*YAMLRuleRegistry, error) {
 func MustYAMLRuleRegistry(yamlPath string) *YAMLRuleRegistry {
 	reg, err := NewYAMLRuleRegistry(yamlPath)
 	if err != nil {
-		panic(fmt.Sprintf("failed to load rules from %s: %v", yamlPath, err))
+		panic(fmt.Sprintf("从 %s: %v 加载规则失败", yamlPath, err))
 	}
 	return reg
 }
@@ -49,20 +49,20 @@ func MustYAMLRuleRegistry(yamlPath string) *YAMLRuleRegistry {
 func (r *YAMLRuleRegistry) load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read file: %w", err)
+		return fmt.Errorf("读取文件: %w", err)
 	}
 
 	var ry ruleYAML
 	if err := yaml.Unmarshal(data, &ry); err != nil {
-		return fmt.Errorf("unmarshal yaml: %w", err)
+		return fmt.Errorf("解析规则配置文件: %w", err)
 	}
 
 	for i := range ry.Rules {
 		if ry.Rules[i].ID == "" {
-			return fmt.Errorf("rule at index %d has empty ID", i)
+			return fmt.Errorf("规则 %d 为空ID", i)
 		}
 		if ry.Rules[i].Intro == "" {
-			return fmt.Errorf("rule %q has empty intro", ry.Rules[i].ID)
+			return fmt.Errorf("规则 %s 的简介为空", ry.Rules[i].ID)
 		}
 	}
 

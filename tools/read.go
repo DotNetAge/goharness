@@ -54,10 +54,10 @@ func NewReadToolWithLimits(limits FileReadingLimits) *Read {
 		limits: limits,
 		info: &ToolInfo{
 			Name:        "Read",
-			Description: "Reads a file from the local filesystem.",
-			Prompt: `Read a file from the local filesystem. Supports text, images (PNG/JPG), PDFs (use pages param for large PDFs), and Jupyter notebooks.
-
-Results use cat -n format with line numbers. Use offset/limit to read specific ranges — the default reads up to 2000 lines from the start.`,
+			Description: "从本地文件系统读取文件。",
+			Prompt: `从本地文件系统读取文件。
+- 结果使用 cat -n 格式显示行号。
+- 使用 offset/limit 读取特定范围，默认从开头读取最多 500 行。`,
 			Tags:               []string{"file", "filesystem", "read", "content"},
 			SecurityLevel:      events.LevelSafe,
 			IsReadOnly:         true,
@@ -67,19 +67,19 @@ Results use cat -n format with line numbers. Use offset/limit to read specific r
 					Name:        "filePath",
 					Type:        "string",
 					Required:    true,
-					Description: "The absolute path to the file to read.",
+					Description: "要读取的文件的绝对路径。",
 				},
 				{
 					Name:        "offset",
 					Type:        "integer",
 					Required:    false,
-					Description: "The line number to start reading from (1-based).",
+					Description: "开始读取的行号（从 1 开始）。",
 				},
 				{
 					Name:        "limit",
 					Type:        "integer",
 					Required:    false,
-					Description: "The maximum number of lines to read. Defaults to 500.",
+					Description: "要读取的最大行数。默认为 500。",
 				},
 			},
 		},
@@ -154,12 +154,12 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	info, err := fs.Stat(store.OS, cleanPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("file does not exist: %s", resolvedPath)
+			return nil, fmt.Errorf("文件不存在：%s", resolvedPath)
 		}
-		return nil, fmt.Errorf("failed to stat file: %w", err)
+		return nil, fmt.Errorf("标记文件状态错误: %w", err)
 	}
 	if info.IsDir() {
-		return nil, fmt.Errorf("path is a directory, not a file: %s", resolvedPath)
+		return nil, fmt.Errorf("路径是一个目录，不是文件：%s", resolvedPath)
 	}
 	if r.limits.MaxSizeBytes > 0 && info.Size() > r.limits.MaxSizeBytes {
 		return map[string]any{
@@ -168,9 +168,9 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 			"scope":      scope,
 			"size_bytes": info.Size(),
 			"error": fmt.Sprintf(
-				"file too large (%.2f KB), maximum allowed is %d KB. "+
-					"Use offset and limit parameters to read specific sections, "+
-					"or use grep/glob to locate the relevant parts first.",
+				"文件太大（%.2f KB），最大允许 %d KB。"+
+					"使用 offset 和 limit 参数读取特定部分，"+
+					"或先使用 grep/glob 定位相关部分。",
 				float64(info.Size())/1024, r.limits.MaxSizeBytes/1024),
 		}, nil
 	}
@@ -224,9 +224,9 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		runes := []rune(content.String())
 		if len(runes) > targetChars {
 			truncationNote := fmt.Sprintf(
-				"\n[... content truncated: token budget of %d tokens exceeded."+
-					" Remaining lines: %d-%d of %d."+
-					" Use offset and limit to narrow the range. ...]\n",
+				"\n[... 内容被截断：超过 %d 个 token 的预算。"+
+					" 剩余行：%d-%d，共 %d 行。"+
+					" 使用 offset 和 limit 缩小范围。...]\n",
 				r.limits.MaxTokens, endLine+1, totalLines, totalLines)
 			content.Reset()
 			content.WriteString(truncationNote)
@@ -242,10 +242,10 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	hasRemainingLines := linesRead >= maxLines && lineNum < totalLines
 	noteParts := ""
 	if tokenTruncated {
-		noteParts = fmt.Sprintf("Truncated at %d tokens. Lines %d-%d remain. Use narrower offset/limit.",
+		noteParts = fmt.Sprintf("在 %d 个 token 处截断。剩余行 %d-%d。使用更小的 offset/limit。",
 			r.limits.MaxTokens, endLine+1, totalLines)
 	} else if hasRemainingLines {
-		noteParts = fmt.Sprintf("More content available at offset %d (lines %d-%d of %d).",
+		noteParts = fmt.Sprintf("在偏移量 %d 处有更多可用内容（行 %d-%d，共 %d 行）。",
 			endLine+1, endLine+1, totalLines, totalLines)
 	}
 

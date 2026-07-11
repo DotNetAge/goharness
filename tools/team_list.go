@@ -14,21 +14,21 @@ func NewTeamListTool() *TeamListTool {
 func (t *TeamListTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TeamList",
-		Description: "List all teams in the current session with their members and status.",
-		Prompt: `List all teams in the current session.
+		Description: "列出当前会话中的所有团队及其成员和状态。",
+		Prompt: `列出当前会话中的所有团队。
 
-Use this to:
-- See all active teams
-- Find team names to use with other team operations
-- Monitor team composition and task assignments
+用途：
+- 查看所有活跃团队
+- 查找用于其他团队操作的团队名称
+- 监控团队组成和任务分配
 
-Returns:
-- team_name: unique identifier for the team
-- leader: the team leader agent
-- members: list of team member agents
-- task_ids: tasks dispatched to the team
-- status: active or completed
-- created_at: when the team was created`,
+返回：
+- team_name：团队的唯一标识符
+- leader：团队负责人代理
+- members：团队成员代理列表
+- task_ids：分派给团队的任务
+- status：active 或 completed
+- created_at：团队创建时间`,
 		Tags:       []string{"team", "list", "status", "orchestration"},
 		Parameters: []Parameter{},
 	}
@@ -37,18 +37,18 @@ Returns:
 func (t *TeamListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TeamList requires ToolContext with SessionID")
+		return nil, fmt.Errorf("TeamList 需要包含 SessionID 的 ToolContext")
 	}
 
 	teamNames, err := ListTeams(ctx, tc.Session.ID())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list teams: %w", err)
+		return nil, fmt.Errorf("列出团队失败：%w", err)
 	}
 
 	if len(teamNames) == 0 {
 		return map[string]any{
 			"teams":   []any{},
-			"message": "No teams found in this session",
+			"message": "此会话中未找到团队",
 		}, nil
 	}
 

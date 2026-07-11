@@ -34,10 +34,10 @@ func NewAskUserTool() FuncTool {
 	return &AskUser{
 		info: &ToolInfo{
 			Name:        "AskUser",
-			Description: "Ask the user a question to gather information, clarify ambiguity, or make decisions.",
-			Prompt: `Ask the user a question during execution. Use this to gather info, clarify ambiguity, or get decisions.
+			Description: "向用户提问以收集信息、澄清歧义或做出决策。",
+			Prompt: `在执行过程中向用户提问。用于收集信息、澄清歧义或获取决策。
 
-Users can always type a custom answer via "Other". Use multiSelect: true for non-exclusive choices.`,
+用户始终可以通过"其他"输入自定义答案。对于非互斥选项，请使用 multiSelect: true。`,
 			Tags:          []string{"interaction", "question", "clarify", "human"},
 			IsReadOnly:    false,
 			SecurityLevel: events.LevelSafe,
@@ -45,19 +45,19 @@ Users can always type a custom answer via "Other". Use multiSelect: true for non
 				{
 					Name:        "question",
 					Type:        "string",
-					Description: "The clarifying question to ask the user. Be specific and concise.",
+					Description: "要向用户提出的澄清性问题。请具体且简洁。",
 					Required:    true,
 				},
 				{
 					Name:        "options",
 					Type:        "array",
-					Description: "Optional list of answer choices (2-4 items). If you recommend a specific option, add \"(Recommended)\" at the end of its label. Omit for open-ended questions.",
+					Description: "可选的答案选项列表（2-4 项）。如果您推荐特定选项，请在其标签末尾添加\"（推荐）\"。开放式问题可省略。",
 					Required:    false,
 				},
 				{
 					Name:        "multiSelect",
 					Type:        "boolean",
-					Description: "Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive.",
+					Description: "设置为 true 以允许用户选择多个选项而不是仅选择一个。当选项不是互斥时使用。",
 					Required:    false,
 				},
 			},
@@ -84,8 +84,8 @@ func (t *AskUser) Info() *ToolInfo {
 func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, error) {
 	question, ok := params["question"].(string)
 	if !ok || question == "" {
-		return nil, fmt.Errorf("missing required parameter: question")
+		return nil, fmt.Errorf("缺少必需参数：question")
 	}
 
-	return fmt.Sprintf(`Asked user: "%s". Waiting for their response...`, question), nil
+	return fmt.Sprintf(`已向用户提问："%s"。等待他们的回复...`, question), nil
 }

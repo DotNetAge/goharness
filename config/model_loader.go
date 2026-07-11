@@ -34,12 +34,12 @@ type ModelRegistry struct {
 func LoadModels(path string) (*ModelRegistry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read models file: %w", err)
+		return nil, fmt.Errorf("无法读取模型配置文件: %w", err)
 	}
 
 	var configs ModelsConfig
 	if err := yaml.Unmarshal(data, &configs); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal models YAML: %w", err)
+		return nil, fmt.Errorf("无法解析模型 YAML: %w", err)
 	}
 
 	reg := &ModelRegistry{
@@ -51,7 +51,7 @@ func LoadModels(path string) (*ModelRegistry, error) {
 	for i := range configs.Providers {
 		p := &configs.Providers[i]
 		if p.Name == "" {
-			return nil, fmt.Errorf("provider config missing name")
+			return nil, fmt.Errorf("提供商配置缺少名称")
 		}
 		reg.providers[p.Name] = p
 	}
@@ -59,7 +59,7 @@ func LoadModels(path string) (*ModelRegistry, error) {
 	for i := range configs.Models {
 		cfg := &configs.Models[i]
 		if cfg.Name == "" {
-			return nil, fmt.Errorf("model config missing name")
+			return nil, fmt.Errorf("模型配置缺少名称")
 		}
 		reg.models[cfg.Name] = cfg
 	}
@@ -219,11 +219,11 @@ func (m *ModelRegistry) saveAll() error {
 
 	data, err := yaml.Marshal(wrapper)
 	if err != nil {
-		return fmt.Errorf("failed to marshal models: %w", err)
+		return fmt.Errorf("无法序列化模型配置: %w", err)
 	}
 
 	if err := os.WriteFile(m.settingFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to write models file: %w", err)
+		return fmt.Errorf("无法写入模型配置文件: %w", err)
 	}
 	return nil
 }

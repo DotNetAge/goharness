@@ -134,7 +134,7 @@ func TestMemorySearch_Execute_Success(t *testing.T) {
 	if !contains(resultStr, "TypeScript") {
 		t.Error("result should contain information about TypeScript preference")
 	}
-	if !contains(resultStr, "2 relevant memory record") {
+	if !contains(resultStr, "2 条相关记忆记录") {
 		t.Error("result should indicate 2 records found")
 	}
 	if !contains(resultStr, "User Prefers TypeScript") {
@@ -159,7 +159,7 @@ func TestMemorySearch_Execute_EmptyResult(t *testing.T) {
 	}
 
 	resultStr := result.(string)
-	if !contains(resultStr, "No memories found") {
+	if !contains(resultStr, "未找到关于查询的记忆") {
 		t.Errorf("empty result should indicate no memories found, got: %s", resultStr)
 	}
 }
@@ -178,7 +178,7 @@ func TestMemorySearch_Execute_Error(t *testing.T) {
 		t.Fatal("Execute() should return error when memory fails")
 	}
 
-	if !contains(err.Error(), "memory search failed") {
+	if !contains(err.Error(), "记忆搜索失败") {
 		t.Errorf("error should mention memory search failure, got: %v", err)
 	}
 }
@@ -285,7 +285,7 @@ func TestMemorySearch_FormatResults(t *testing.T) {
 	if !contains(result, "test query") {
 		t.Error("formatted result should contain the query")
 	}
-	if !contains(result, "1 relevant memory record") {
+	if !contains(result, "1 条相关记忆记录") {
 		t.Error("formatted result should show correct count")
 	}
 	if !contains(result, "test-123") {

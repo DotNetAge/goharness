@@ -147,22 +147,22 @@ func (e *platformScriptExecutor) Execute(ctx context.Context, skillRoot, scriptP
 
 	absSkillRoot, err := filepath.Abs(skillRoot)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve skill root path: %w", err)
+		return nil, fmt.Errorf("解析技能根路径失败: %w", err)
 	}
 
 	absScript, err := filepath.Abs(scriptPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve script path: %w", err)
+		return nil, fmt.Errorf("解析脚本路径失败: %w", err)
 	}
 
 	cleanScript := filepath.Clean(absScript)
 	if !strings.HasPrefix(cleanScript, absSkillRoot+string(filepath.Separator)) &&
 		cleanScript != absSkillRoot {
-		return nil, fmt.Errorf("script path %q is outside of skill root directory %q (path traversal blocked)", scriptPath, skillRoot)
+		return nil, fmt.Errorf("脚本路径 %q 不在技能根目录下（路径遍历被阻止）", scriptPath)
 	}
 
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("script not found: %s", scriptPath)
+		return nil, fmt.Errorf("脚本不存在： %s", scriptPath)
 	}
 
 	ext := strings.ToLower(filepath.Ext(scriptPath))
@@ -217,7 +217,7 @@ func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, s
 	e.mu.Unlock()
 
 	if err := vm.ensureVenv(ctx); err != nil {
-		return nil, fmt.Errorf("failed to setup python environment: %w", err)
+		return nil, fmt.Errorf("设置Python环境失败： %w", err)
 	}
 
 	pythonBin := filepath.Join(vm.venvPath, "bin", "python")
@@ -275,7 +275,7 @@ func (e *platformScriptExecutor) executeShell(ctx context.Context, skillRoot, sc
 func (e *platformScriptExecutor) executeRuby(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	rubyBin := "ruby"
 	if _, err := exec.LookPath("ruby"); err != nil {
-		return nil, fmt.Errorf("ruby interpreter not found in PATH")
+		return nil, fmt.Errorf("Ruby解释器不在系统 PATH 中： %w")
 	}
 
 	absScript, _ := filepath.Abs(scriptPath)
@@ -289,7 +289,7 @@ func (e *platformScriptExecutor) executeRuby(ctx context.Context, skillRoot, scr
 func (e *platformScriptExecutor) executeNode(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	nodeBin := "node"
 	if _, err := exec.LookPath("node"); err != nil {
-		return nil, fmt.Errorf("node interpreter not found in PATH")
+		return nil, fmt.Errorf("Node解释器不在系统 PATH 中： %w")
 	}
 
 	absScript, _ := filepath.Abs(scriptPath)
@@ -413,7 +413,7 @@ func (m *venvManager) ensureVenv(ctx context.Context) error {
 	// Recreate venv if it was deleted or never created.
 	if !dirExists(m.venvPath) {
 		if err := m.createVenv(); err != nil {
-			return fmt.Errorf("create venv: %w", err)
+			return fmt.Errorf("创建Python虚拟环境失败： %w", err)
 		}
 	}
 
@@ -429,7 +429,7 @@ func (m *venvManager) ensureVenv(ctx context.Context) error {
 	}
 
 	if err := m.installRequirements(ctx, reqFile); err != nil {
-		return fmt.Errorf("install requirements: %w", err)
+		return fmt.Errorf("安装Python依赖失败： %w", err)
 	}
 	m.reqHash = currentHash
 	return nil
@@ -444,7 +444,7 @@ func (m *venvManager) createVenv() error {
 	cmd := exec.Command(pythonCmd, "-m", "venv", m.venvPath)
 	cmd.Dir = m.skillRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("venv creation failed (%s): %w", out, err)
+		return fmt.Errorf("创建Python虚拟环境失败： (%s): %w", out, err)
 	}
 	return nil
 }
@@ -458,7 +458,7 @@ func (m *venvManager) installRequirements(ctx context.Context, reqFile string) e
 	cmd := exec.CommandContext(ctx, pipBin, "install", "-r", reqFile)
 	cmd.Dir = m.skillRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("pip install failed (%s): %w", out, err)
+		return fmt.Errorf("安装Python依赖失败： (%s): %w", out, err)
 	}
 	return nil
 }
@@ -517,31 +517,31 @@ func NewRunScriptTool() *RunScript {
 }
 
 func buildRunScriptInfo(platform Platform) *ToolInfo {
-	description := "Execute a script file from a skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate interpreter."
+	description := "从技能的 scripts/ 目录执行脚本文件。"
 
-	prompt := `Execute a script file, typically from an active skill's scripts/ directory. The tool auto-detects the language from the file extension and routes to the appropriate executor.
+	prompt := `执行脚本文件，通常来自活动技能的 scripts/ 目录。工具根据文件扩展名自动检测语言并路由到相应的执行器。
 
-Common supported script types (all platforms):
-- Python (.py) — auto-manages virtual environments and requirements.txt
-- Shell (.sh, .bash, .zsh) — runs via the default platform shell
-- Ruby (.rb) — runs via ruby interpreter
-- Node.js (.js) — runs via node
-- Perl (.pl) — runs via perl
-- PHP (.php) — runs via php
+常见支持的脚本类型（所有平台）：
+- Python (.py) — 自动管理虚拟环境和 requirements.txt
+- Shell (.sh, .bash, .zsh) — 通过默认平台 shell 运行
+- Ruby (.rb) — 通过 ruby 解释器运行
+- Node.js (.js) — 通过 node 运行
+- Perl (.pl) — 通过 perl 运行
+- PHP (.php) — 通过 php 运行
 
-Platform-specific:
-- macOS also: AppleScript (.scpt, .applescript) — runs via osascript
-- Windows also: Batch (.bat, .cmd), PowerShell (.ps1), VBScript (.vbs), Executables (.exe)
+平台特定：
+- macOS 还支持：AppleScript (.scpt, .applescript) — 通过 osascript 运行
+- Windows 还支持：Batch (.bat, .cmd)、PowerShell (.ps1)、VBScript (.vbs)、可执行文件 (.exe)
 
-Usage:
-- Pass the command exactly as specified in the skill's instructions.
-- Include the interpreter if needed (e.g. "python scripts/analyze.py").
-- The working_dir defaults to the project directory.
-- Use the args parameter for additional arguments.
+用法：
+- 按照技能指令中的规定准确传递命令。
+- 如果需要，包含解释器（例如 "python scripts/analyze.py"）。
+- working_dir 默认为项目目录。
+- 使用 args 参数传递额外参数。
 
-Notes:
-- Python virtual environments are managed automatically when available.
-- Output is truncated at 2KB to save context.`
+注意：
+- Python 虚拟环境在可用时会自动管理。
+- 输出在 2KB 处被截断以节省上下文。`
 
 	return &ToolInfo{
 		Name:               "RunScript",
@@ -554,19 +554,19 @@ Notes:
 			{
 				Name:        "command",
 				Type:        "string",
-				Description: "The script invocation command exactly as specified in Skill instructions. Include interpreter name if needed (e.g., 'python scripts/foo.py' or 'osascript scripts/myscript.scpt').",
+				Description: "按照技能指令中规定的脚本调用命令。如果需要，包含解释器名称（例如 'python scripts/foo.py' 或 'osascript scripts/myscript.scpt'）。",
 				Required:    true,
 			},
 			{
 				Name:        "working_dir",
 				Type:        "string",
-				Description: "Execution directory for script execution. Defaults to the project directory. Can be set to the skill's base_dir or session directory depending on context.",
+				Description: "脚本执行的执行目录。默认为项目目录。根据上下文可以设置为技能的 base_dir 或会话目录。",
 				Required:    false,
 			},
 			{
 				Name:        "args",
 				Type:        "array",
-				Description: "Additional arguments to pass to the script.",
+				Description: "传递给脚本的额外参数。",
 				Required:    false,
 			},
 		},
@@ -636,7 +636,7 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 		}
 	}
 	return false, fmt.Sprintf(
-		"RunScript wants to execute %q, which is outside the working directory %q. Confirm this is intended.",
+		"RunScript 想要执行 %q，这在工作目录 %q 之外。请确认这是有意的。",
 		cleanScript, absWork,
 	)
 }
@@ -648,7 +648,7 @@ func (t *RunScript) Info() *ToolInfo {
 func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, error) {
 	command, ok := params["command"].(string)
 	if !ok || strings.TrimSpace(command) == "" {
-		return nil, fmt.Errorf("missing required parameter: command")
+		return nil, fmt.Errorf("缺少必需参数：command")
 	}
 
 	logger := getLogger(ctx)
@@ -661,7 +661,7 @@ func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, er
 
 	language, scriptPath := parseCommand(command, workingDir)
 	if scriptPath == "" {
-		return nil, fmt.Errorf("could not extract script path from command: %q", command)
+		return nil, fmt.Errorf("无法从命令中提取脚本路径：%q", command)
 	}
 
 	logger.Info("executing script",
@@ -747,7 +747,7 @@ func formatScriptResult(language, scriptPath string, result *scriptResult) map[s
 		output = result.Stderr
 	}
 	if output == "" {
-		output = "(no output)"
+		output = "（无输出）"
 	}
 
 	return map[string]any{

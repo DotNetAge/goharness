@@ -15,25 +15,25 @@ func NewTaskUpdateTool() *TaskUpdateTool {
 func (t *TaskUpdateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskUpdate",
-		Description: "Advance a task through its lifecycle or update its metadata. Enforces valid status transitions and auto-detects circular dependencies.",
-		Prompt: `Update a task's status or metadata. At least one field must change.
+		Description: "推进任务的生命周期或更新其元数据。强制执行有效的状态转换并自动检测循环依赖。",
+		Prompt: `更新任务的状态或元数据。至少必须更改一个字段。
 
-Valid status transitions:
+有效的状态转换：
 - pending → in_progress | completed | cancelled
 - in_progress → completed | cancelled
 
-Dependencies: use addBlocks/addBlockedBy to express task ordering. Circular dependencies are auto-rejected (e.g., A blocks B and B blocks A).`,
+依赖关系：使用 addBlocks/addBlockedBy 表示任务顺序。循环依赖会被自动拒绝（例如，A 阻塞 B 且 B 阻塞 A）。`,
 		Tags: []string{"task", "update", "status", "planning"},
 		Parameters: []Parameter{
-			{Name: "task_id", Type: "string", Description: "The ID of the task to update.", Required: true},
-			{Name: "subject", Type: "string", Description: "New subject (short title) for the task.", Required: false},
-			{Name: "description", Type: "string", Description: "New detailed description of what needs to be done.", Required: false},
-			{Name: "status", Type: "string", Description: "New status: pending, in_progress, completed, or cancelled.", Required: false},
-			{Name: "owner", Type: "string", Description: "Assign the task to an agent (by name).", Required: false},
-			{Name: "addBlocks", Type: "array", Description: "Task IDs that this task now blocks (depend on this one).", Required: false},
-			{Name: "addBlockedBy", Type: "array", Description: "Task IDs that this task is now blocked by (depends on them).", Required: false},
-			{Name: "active_form", Type: "string", Description: "Present continuous form shown during execution (e.g. 'Running tests').", Required: false},
-			{Name: "metadata", Type: "object", Description: "Arbitrary metadata to merge into the task. Set a key to null to delete it.", Required: false},
+			{Name: "task_id", Type: "string", Description: "要更新的任务的 ID。", Required: true},
+			{Name: "subject", Type: "string", Description: "任务的新主题（简短标题）。", Required: false},
+			{Name: "description", Type: "string", Description: "需要完成内容的新详细描述。", Required: false},
+			{Name: "status", Type: "string", Description: "新状态：pending、in_progress、completed 或 cancelled。", Required: false},
+			{Name: "owner", Type: "string", Description: "将任务分配给代理（按名称）。", Required: false},
+			{Name: "addBlocks", Type: "array", Description: "此任务现在阻塞的任务 ID（依赖于本任务）。", Required: false},
+			{Name: "addBlockedBy", Type: "array", Description: "此任务现在被其阻塞的任务 ID（本任务依赖于它们）。", Required: false},
+			{Name: "active_form", Type: "string", Description: "执行期间显示的现在进行时形式（例如 '正在运行测试'）。", Required: false},
+			{Name: "metadata", Type: "object", Description: "合并到任务中的任意元数据。将键设置为 null 以删除它。", Required: false},
 		},
 	}
 }
@@ -46,15 +46,15 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskUpdate requires ToolContext with SessionID")
+		return nil, fmt.Errorf("TaskUpdate 需要包含 SessionID 的 ToolContext")
 	}
 
 	task, err := GetTask(ctx, tc.Session.ID(), taskID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get task: %w", err)
+		return nil, fmt.Errorf("获取任务失败：%w", err)
 	}
 	if task == nil {
-		return nil, fmt.Errorf("task %q not found", taskID)
+		return nil, fmt.Errorf("任务 %q 未找到", taskID)
 	}
 
 	updated := false
@@ -111,7 +111,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		for _, raw := range rawBlocks {
 			if blockID, ok := raw.(string); ok && blockID != "" {
 				if canReach(ctx, tc.Session.ID(), blockID, taskID) {
-					return nil, fmt.Errorf("adding block %q would create a circular dependency", blockID)
+					return nil, fmt.Errorf("添加阻塞 %q 将创建循环依赖", blockID)
 				}
 				if !slices.Contains(task.Blocks, blockID) {
 					task.Blocks = append(task.Blocks, blockID)
@@ -136,7 +136,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		for _, raw := range rawBlockedBy {
 			if depID, ok := raw.(string); ok && depID != "" {
 				if canReach(ctx, tc.Session.ID(), taskID, depID) {
-					return nil, fmt.Errorf("adding blockedBy %q would create a circular dependency", depID)
+					return nil, fmt.Errorf("添加被阻塞 %q 将创建循环依赖", depID)
 				}
 				if !slices.Contains(task.BlockedBy, depID) {
 					task.BlockedBy = append(task.BlockedBy, depID)
@@ -159,17 +159,17 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	if !updated {
 		return map[string]any{
 			"success": false,
-			"message": "No changes provided. Provide at least one of: subject, description, status, owner, active_form, metadata, addBlocks, addBlockedBy.",
+			"message": "未提供任何更改。请至少提供以下之一：subject、description、status、owner、active_form、metadata、addBlocks、addBlockedBy。",
 		}, nil
 	}
 
 	if err := UpdateTask(ctx, tc.Session.ID(), task); err != nil {
-		return nil, fmt.Errorf("failed to update task: %w", err)
+		return nil, fmt.Errorf("更新任务失败：%w", err)
 	}
 
 	result := map[string]any{
 		"success": true,
-		"message": fmt.Sprintf("Task %q updated", taskID),
+		"message": fmt.Sprintf("任务 %q 已更新", taskID),
 		"task_id": taskID,
 		"status":  string(task.Status),
 	}

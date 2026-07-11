@@ -41,7 +41,7 @@ func (r *DefaultToolRegistry) Register(tool FuncTool) error {
 	defer r.mu.Unlock()
 	name := tool.Info().Name
 	if _, ok := r.tools[name]; ok {
-		return fmt.Errorf("tool %q already registered", name)
+		return fmt.Errorf("工具 %q 已注册", name)
 	}
 	r.tools[name] = tool
 	return nil
@@ -53,7 +53,7 @@ func (r *DefaultToolRegistry) Remove(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.tools[name]; !ok {
-		return fmt.Errorf("tool %q not found", name)
+		return fmt.Errorf("未找到工具 %q", name)
 	}
 	delete(r.tools, name)
 	return nil

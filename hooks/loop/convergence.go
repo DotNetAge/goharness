@@ -20,7 +20,7 @@ func (h *ConvergenceHook) AfterLLM(sessionID string, iteration int, resp *hooks.
 	for _, tr := range results {
 		if !tr.Success && tr.Error != "" {
 			if isIrrecoverable(tr.Error) {
-				return hooks.HookResult{Abort: true, AbortReason: "irrecoverable tool error: " + tr.Error}
+				return hooks.HookResult{Abort: true, AbortReason: "不可恢复的工具错误: " + tr.Error}
 			}
 		}
 	}

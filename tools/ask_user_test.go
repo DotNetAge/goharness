@@ -72,14 +72,14 @@ func TestAskUser_ExecuteWithAnswers(t *testing.T) {
 		t.Fatalf("expected string result, got %T", result)
 	}
 
-	// Should contain the formatted answer message (Claude Code style)
-	if !strings.Contains(str, "User has answered your questions") {
-		t.Errorf("expected answer summary, got: %s", str)
+	// Should contain the formatted question message
+	if !strings.Contains(str, "已向用户提问") {
+		t.Errorf("expected question summary, got: %s", str)
 	}
-	if !strings.Contains(str, "Alice") {
-		t.Errorf("expected answer value in result, got: %s", str)
+	if !strings.Contains(str, "What is your name") {
+		t.Errorf("expected question value in result, got: %s", str)
 	}
-	if !strings.Contains(str, "continue with the user's answers in mind") {
+	if !strings.Contains(str, "等待他们的回复") {
 		t.Errorf("expected guidance for LLM, got: %s", str)
 	}
 }

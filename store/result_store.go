@@ -79,8 +79,8 @@ func (s *ResultStore) WaitForResult(ctx context.Context, taskID string) *TaskRes
 	case r := <-ch:
 		return r
 	case <-ctx.Done():
-		return &TaskResult{TaskID: taskID, Error: "context cancelled", Done: false}
+		return &TaskResult{TaskID: taskID, Error: "上下文已被取消", Done: false}
 	case <-time.After(defaultWaitTimeout):
-		return &TaskResult{TaskID: taskID, Error: "timeout waiting for result", Done: false}
+		return &TaskResult{TaskID: taskID, Error: "等待执行结果过程中超时", Done: false}
 	}
 }

@@ -14,17 +14,17 @@ const frontmatterDelimiter = "---"
 
 func ValidateSkillName(name string) error {
 	if len(name) < 1 || len(name) > 64 {
-		return fmt.Errorf("skill name must be 1-64 characters, got %d", len(name))
+		return fmt.Errorf("技能名称长度必须为 1-64 个字符，实际为 %d", len(name))
 	}
 	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
-		return fmt.Errorf("skill name must not start or end with a hyphen: %q", name)
+		return fmt.Errorf("技能名称不能以连字符开头或结尾：%q", name)
 	}
 	if strings.Contains(name, "--") {
-		return fmt.Errorf("skill name must not contain consecutive hyphens: %q", name)
+		return fmt.Errorf("技能名称不能包含连续的连字符：%q", name)
 	}
 	for _, r := range name {
 		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
-			return fmt.Errorf("skill name must only contain lowercase letters, numbers, and hyphens: %q", name)
+			return fmt.Errorf("技能名称只能包含小写字母、数字和连字符：%q", name)
 		}
 	}
 	return nil
@@ -32,7 +32,7 @@ func ValidateSkillName(name string) error {
 
 func ValidateSkillDescription(desc string) error {
 	if len(desc) < 1 || len(desc) > 1024 {
-		return fmt.Errorf("skill description must be 1-1024 characters, got %d", len(desc))
+		return fmt.Errorf("技能描述长度必须为 1-1024 个字符，实际为 %d", len(desc))
 	}
 	return nil
 }
@@ -41,7 +41,7 @@ func ValidateSkillDescription(desc string) error {
 // When unmarshaled from a list, items are joined with spaces.
 type AllowedToolsList string
 
-func (a *AllowedToolsList) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (a *AllowedToolsList) UnmarshalYAML(unmarshal func(any) error) error {
 	// Try as string first
 	var s string
 	if err := unmarshal(&s); err == nil {
@@ -54,7 +54,7 @@ func (a *AllowedToolsList) UnmarshalYAML(unmarshal func(interface{}) error) erro
 		*a = AllowedToolsList(strings.Join(list, " "))
 		return nil
 	}
-	return fmt.Errorf("allowed-tools must be a string or list of strings")
+	return fmt.Errorf("allowed-tools 必须是字符串或字符串列表")
 }
 
 type skillFrontmatter struct {
@@ -71,20 +71,20 @@ func parseYamlFrontmatter(content string) (skillFrontmatter, string, error) {
 
 	content = strings.TrimLeft(content, "\n\r")
 	if !strings.HasPrefix(content, frontmatterDelimiter) {
-		return fm, content, fmt.Errorf("SKILL.md must start with YAML frontmatter (---)")
+		return fm, content, fmt.Errorf("SKILL.md 必须以 YAML 前置元数据（---）开头")
 	}
 
 	rest := content[len(frontmatterDelimiter):]
 	closeIdx := strings.Index(rest, "\n"+frontmatterDelimiter)
 	if closeIdx < 0 {
-		return fm, content, fmt.Errorf("SKILL.md has unclosed YAML frontmatter (missing closing ---)")
+		return fm, content, fmt.Errorf("SKILL.md 的 YAML 前置元数据未闭合（缺少结尾的 ---）")
 	}
 
 	yamlBlock := rest[:closeIdx]
 	body := rest[closeIdx+len(frontmatterDelimiter)+1:]
 
 	if err := yaml.Unmarshal([]byte(yamlBlock), &fm); err != nil {
-		return fm, body, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
+		return fm, body, fmt.Errorf("解析 YAML 前置元数据失败：%w", err)
 	}
 
 	return fm, body, nil
@@ -104,7 +104,7 @@ func (l *FileSystemSkillLoader) Load() ([]*Skill, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read skill directory %q: %w", l.RootDir, err)
+		return nil, fmt.Errorf("读取技能目录 %q 失败：%w", l.RootDir, err)
 	}
 
 	var skills []*Skill
@@ -115,7 +115,7 @@ func (l *FileSystemSkillLoader) Load() ([]*Skill, error) {
 		skillDir := filepath.Join(l.RootDir, entry.Name())
 		skill, err := LoadSkillFromDir(skillDir, "filesystem")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[skill loader] warning: skipping %q: %v\n", skillDir, err)
+			fmt.Fprintf(os.Stderr, "[技能加载器] 警告：跳过 %s: %v\n", skillDir, err)
 			continue
 		}
 		if skill != nil {
@@ -137,7 +137,7 @@ func LoadSkillFromDir(dir string, source string) (*Skill, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read SKILL.md: %w", err)
+		return nil, fmt.Errorf("读取 SKILL.md 失败：%w", err)
 	}
 	skill, err := parseSkillMd(data, dir, source)
 	if err != nil {
@@ -145,7 +145,7 @@ func LoadSkillFromDir(dir string, source string) (*Skill, error) {
 	}
 
 	if err := verifyDependencies(skill); err != nil {
-		return nil, fmt.Errorf("dependency check failed for skill %q: %w", skill.Name, err)
+		return nil, fmt.Errorf("技能 %q 的依赖检查失败：%w", skill.Name, err)
 	}
 
 	// If a LICENSE.txt file exists in the skill directory, read its full content
@@ -165,14 +165,14 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 	content := string(data)
 	fm, body, err := parseYamlFrontmatter(content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse SKILL.md frontmatter: %w", err)
+		return nil, fmt.Errorf("解析 SKILL.md 前置元数据失败：%w", err)
 	}
 
 	if fm.Name == "" {
-		return nil, fmt.Errorf("SKILL.md is missing required 'name' field in frontmatter")
+		return nil, fmt.Errorf("SKILL.md 缺少前置元数据中必需的 'name' 字段")
 	}
 	if fm.Description == "" {
-		return nil, fmt.Errorf("SKILL.md is missing required 'description' field in frontmatter")
+		return nil, fmt.Errorf("SKILL.md 缺少前置元数据中必需的 'description' 字段")
 	}
 
 	if err := ValidateSkillName(fm.Name); err != nil {
@@ -253,7 +253,7 @@ func verifyDependencies(s *Skill) error {
 			continue
 		}
 		if _, err := exec.LookPath(bin); err != nil {
-			return fmt.Errorf("required binary %q not found on PATH", bin)
+			return fmt.Errorf("在 PATH 中未找到必需的二进制文件 %q", bin)
 		}
 	}
 
@@ -263,7 +263,7 @@ func verifyDependencies(s *Skill) error {
 			continue
 		}
 		if val := os.Getenv(key); val == "" {
-			return fmt.Errorf("required environment variable %q is not set or empty", key)
+			return fmt.Errorf("必需的环境变量 %q 未设置或为空", key)
 		}
 	}
 

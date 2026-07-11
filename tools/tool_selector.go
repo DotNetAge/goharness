@@ -28,22 +28,22 @@ func (t *ToolSelectorTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "ToolSelector",
 		MaxResultSizeChars: 1000,
-		Description:        "Select tools to load into the conversation. Provide exact tool names from the Tool Catalog to make them available for use.",
-		Prompt: `Select tools to load into the conversation. Only tools listed in the Tool Catalog can be selected.
+		Description:        "选择要加载到对话中的工具。提供工具目录中的确切工具名称以使其可用。",
+		Prompt: `选择要加载到对话中的工具。只能选择工具目录中列出的工具。
 
-When you need tools that are not yet available:
-1. Review the Tool Catalog section to find the tool names you need
-2. Call ToolSelector with the exact names of the tools you want to load
-3. After a successful selection, use the loaded tools in subsequent calls
+当你需要尚未可用的工具时：
+1. 查看工具目录部分以找到你需要的工具名称
+2. 使用你想要加载的工具的确切名称调用 ToolSelector
+3. 成功选择后，在后续调用中使用已加载的工具
 
-Select multiple tools at once when you know you will need them to minimize round trips.`,
+当你知道需要多个工具时，一次性选择多个工具以减少往返次数。`,
 		Tags:       []string{"tool", "selector", "meta"},
 		IsReadOnly: true,
 		Parameters: []Parameter{
 			{
 				Name:        "names",
 				Type:        "array",
-				Description: "Exact tool names to load, as listed in the Tool Catalog. Example: [\"Read\", \"Grep\", \"Glob\"].",
+				Description: "要加载的确切工具名称，如工具目录中列出的。示例：[\"Read\", \"Grep\", \"Glob\"]。",
 				Required:    true,
 			},
 		},
@@ -71,7 +71,7 @@ func (t *ToolSelectorTool) Execute(ctx context.Context, params map[string]any) (
 		requested = append(requested, name)
 	}
 	if len(requested) == 0 {
-		return nil, fmt.Errorf("no valid tool names provided")
+		return nil, fmt.Errorf("未提供有效的工具名称")
 	}
 
 	// Expand groups and validate against registry
@@ -94,7 +94,7 @@ func (t *ToolSelectorTool) Execute(ctx context.Context, params map[string]any) (
 	}
 
 	if len(loaded) == 0 {
-		return nil, fmt.Errorf("none of the requested tools are available: %s", strings.Join(requested, ", "))
+		return nil, fmt.Errorf("请求的工具均不可用：%s", strings.Join(requested, ", "))
 	}
 
 	// Build human-readable message (for LLM context)

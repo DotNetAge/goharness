@@ -32,16 +32,16 @@ func (t *SkillTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Skill",
 		MaxResultSizeChars: 50000,
-		Description:        "Load a specialized skill by name. Call this tool when a skill can help with the current task.",
-		Prompt: `Load a specialized skill's full instructions by name. Call this when a skill from the capabilities list matches the current task.
+		Description:        "按名称加载专业技能。当某个技能有助于完成当前任务时，请调用此工具。",
+		Prompt: `按名称加载技能的完整指令。当能力列表中的某个技能与当前任务匹配时，请调用此工具。
 
-The result includes instructions and may include a base directory — use Read to access reference files in that directory.`,
+返回结果包含指令内容，可能包含基础目录——可使用 Read 工具访问该目录下的参考文件。`,
 		Tags: []string{"skill", "capability"},
 		Parameters: []Parameter{
 			{
 				Name:        "name",
 				Type:        "string",
-				Description: "Name of the skill to load (from the available capabilities list).",
+				Description: "要加载的技能名称（来自可用能力列表）。",
 				Required:    true,
 			},
 		},
@@ -52,12 +52,12 @@ The result includes instructions and may include a base directory — use Read t
 func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	name, _ := params["name"].(string)
 	if name == "" {
-		return nil, fmt.Errorf("skill name is required")
+		return nil, fmt.Errorf("技能名称不能为空")
 	}
 
 	skill, err := t.lookup(name)
 	if err != nil {
-		return nil, fmt.Errorf("skill %q not found: %w", name, err)
+		return nil, fmt.Errorf("技能 %q 未找到：%w", name, err)
 	}
 
 	// Build a comprehensive skill description for the tool result.

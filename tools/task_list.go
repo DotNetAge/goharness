@@ -14,29 +14,29 @@ func NewTaskListTool() *TaskListTool {
 func (t *TaskListTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskList",
-		Description: "List all tasks in the current session with their status, owner, and dependency information.",
-		Prompt: `List all tasks in the current session.
+		Description: "列出当前会话中的所有任务及其状态、所有者和依赖信息。",
+		Prompt: `列出当前会话中的所有任务。
 
-Use this to:
-- See the full task list and current progress
-- Find task IDs to use with TaskGet or TaskUpdate
-- Identify blocked tasks and who they depend on
-- See which tasks are assigned to whom
+用途：
+- 查看完整的任务列表和当前进度
+- 查找用于 TaskGet 或 TaskUpdate 的任务 ID
+- 识别被阻塞的任务及其依赖关系
+- 查看哪些任务分配给了谁
 
-Optional filters:
-- status_filter: only show tasks with this status (pending, in_progress, completed, cancelled)
-- owner_filter: only show tasks assigned to this agent
+可选过滤器：
+- status_filter：仅显示此状态的任务（pending、in_progress、completed、cancelled）
+- owner_filter：仅显示分配给此代理的任务
 
-Returns a list with:
-- task_id: unique identifier for each task
-- subject: short title
-- status: pending, in_progress, completed, or cancelled
-- owner: who is responsible (if assigned)
-- blocked_by: tasks blocking this one (if any)`,
+返回列表包含：
+- task_id：每个任务的唯一标识符
+- subject：简短标题
+- status：pending、in_progress、completed 或 cancelled
+- owner：负责人（如果已分配）
+- blocked_by：阻塞此任务的任务（如果有）`,
 		Tags: []string{"task", "list", "status", "planning"},
 		Parameters: []Parameter{
-			{Name: "status_filter", Type: "string", Description: "Optional: filter by status (pending, in_progress, completed, cancelled).", Required: false},
-			{Name: "owner_filter", Type: "string", Description: "Optional: filter by assigned owner.", Required: false},
+			{Name: "status_filter", Type: "string", Description: "可选：按状态过滤（pending、in_progress、completed、cancelled）。", Required: false},
+			{Name: "owner_filter", Type: "string", Description: "可选：按分配的所有者过滤。", Required: false},
 		},
 	}
 }
@@ -44,7 +44,7 @@ Returns a list with:
 func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskList requires ToolContext with SessionID")
+		return nil, fmt.Errorf("TaskList 需要包含 SessionID 的 ToolContext")
 	}
 
 	statusFilter, _ := params["status_filter"].(string)
@@ -52,13 +52,13 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	taskIDs, err := ListTasks(ctx, tc.Session.ID())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tasks: %w", err)
+		return nil, fmt.Errorf("列出任务失败：%w", err)
 	}
 
 	if len(taskIDs) == 0 {
 		return map[string]any{
 			"tasks":   []any{},
-			"message": "No tasks found in this session",
+			"message": "此会话中未找到任务",
 		}, nil
 	}
 

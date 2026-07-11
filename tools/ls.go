@@ -33,31 +33,31 @@ func NewLsTool() FuncTool {
 		info: &ToolInfo{
 			Name:               "Ls",
 			MaxResultSizeChars: 30000,
-			Description:        "List directory contents with file metadata. Use this to explore project layout before reading files. Prefer Glob for pattern-based file search.",
-			Prompt: `List the contents of a directory to browse the filesystem structure. Use this when you need to see what files exist in a directory, check file sizes, or explore the project layout before reading or editing files.
+			Description:        "列出目录内容及文件元数据。在读取文件之前使用此工具了解项目结构。对于基于模式的文件搜索，优先使用 Glob。",
+			Prompt: `列出目录内容以浏览文件系统结构。当你需要查看目录中存在哪些文件、检查文件大小，或在读取或编辑文件之前了解项目结构时，使用此工具。
 
-## Operations
+## 用法
 
-### Basic listing — See files in a directory
-Call with no parameters to list the current directory. Each entry includes: name, type (file/directory), size in bytes, modification time, and Unix permissions.
+### 基本列表 — 查看目录中的文件
+不带参数调用以列出当前目录。每个条目包括：名称、类型（文件/目录）、字节大小、修改时间和 Unix 权限。
 
-### Recursive tree view
-Set recursive=true to show the full directory tree two levels deep. Sub-directories expand with their own children listed under them.
+### 递归树形视图
+设置 recursive=true 以显示两级深度的完整目录树。子目录会展开并列出其自身的子项。
 
-### Show hidden files
-Set show_hidden=true to include dot-files (.gitignore, .env, .config, etc.). Hidden files are excluded by default.
+### 显示隐藏文件
+设置 show_hidden=true 以包含点文件（.gitignore、.env、.config 等）。默认情况下隐藏文件被排除。
 
-## When to use this vs other tools
-- Use Ls to explore what's in a directory before reading files.
-- Use Glob to search for files matching a pattern across the whole project.
-- Use Read to read a specific file's content.
-- When exploring an unfamiliar codebase, start with Ls on the root directory to understand the project structure.`,
+## 何时使用此工具而非其他工具
+- 使用 Ls 在读取文件之前探索目录内容。
+- 使用 Glob 在整个项目中搜索匹配模式的文件。
+- 使用 Read 读取特定文件的内容。
+- 探索不熟悉的代码库时，从根目录开始使用 Ls 了解项目结构。`,
 			Tags:          []string{"file", "filesystem", "list", "directory"},
 			SecurityLevel: events.LevelSafe,
 			Parameters: []Parameter{
-				{Name: "path", Type: "string", Description: "Directory path to list. Defaults to current directory ('.').", Required: false},
-				{Name: "recursive", Type: "boolean", Description: "If true, recursively list sub-directories (2 levels deep). Default: false.", Required: false},
-				{Name: "show_hidden", Type: "boolean", Description: "If true, include dot-files and hidden directories. Default: false.", Required: false},
+				{Name: "path", Type: "string", Description: "要列出的目录路径。默认为当前目录（'.'）。", Required: false},
+				{Name: "recursive", Type: "boolean", Description: "如果为 true，递归列出子目录（2 级深度）。默认值：false。", Required: false},
+				{Name: "show_hidden", Type: "boolean", Description: "如果为 true，包含点文件和隐藏目录。默认值：false。", Required: false},
 			},
 		},
 	}
@@ -108,13 +108,13 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	info, err := os.Stat(dirPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("directory does not exist: %s", dirPath)
+			return nil, fmt.Errorf("目录不存在：%s", dirPath)
 		}
-		return nil, fmt.Errorf("failed to stat directory: %w", err)
+		return nil, fmt.Errorf("获取目录状态失败：%w", err)
 	}
 
 	if !info.IsDir() {
-		return nil, fmt.Errorf("path is not a directory: %s", dirPath)
+		return nil, fmt.Errorf("路径不是一个目录：%s", dirPath)
 	}
 
 	// Get parameters
@@ -131,7 +131,7 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	// Read directory contents
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read directory: %w", err)
+		return nil, fmt.Errorf("读取目录失败：%w", err)
 	}
 
 	// Build result
@@ -199,6 +199,6 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 		"path":        dirPath,
 		"total_items": len(items),
 		"items":       items,
-		"message":     fmt.Sprintf("Listed %d item(s) in '%s'", len(items), dirPath),
+		"message":     fmt.Sprintf("在 '%s' 中列出了 %d 个项目", dirPath, len(items)),
 	}, nil
 }

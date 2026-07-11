@@ -13,7 +13,7 @@ import (
 	"github.com/DotNetAge/goharness/events"
 )
 
-const globDefaultTimeout = 30 * time.Second
+// const globDefaultTimeout = 30 * time.Second
 
 type fileEntry struct {
 	path    string
@@ -34,25 +34,25 @@ func (t *GlobTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "Glob",
 		MaxResultSizeChars: 30000,
-		Description:        "Find files",
-		Prompt: `- Fast file pattern matching tool that works with any codebase size
-- Supports glob patterns like "**/*.js" or "src/**/*.ts"
-- Returns matching file paths sorted by modification time
-- Use this tool when you need to find files by name patterns
-- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the SubAgent tool instead`,
+		Description:        "查找文件。当你需要通过文件名模式查找文件时使用此工具。",
+		Prompt: `快速文件模式匹配工具，适用于任何规模的代码库
+**用法**
+- 支持 glob 模式，如 "**/*.js" 或 "src/**/*.ts"
+- 返回匹配的文件路径，按修改时间排序
+- 当你进行可能需要多轮 glob 和 grep 的开放式搜索时，使用 SubAgent 工具代替`,
 		Tags:          []string{"file", "search", "pattern", "filesystem", "discovery"},
 		SecurityLevel: events.LevelSafe,
 		Parameters: []Parameter{
 			{
 				Name:        "pattern",
 				Type:        "string",
-				Description: "The file pattern to match (e.g., '**/*.go').",
+				Description: "要匹配的文件模式（例如 '**/*.go'）。",
 				Required:    true,
 			},
 			{
 				Name:        "path",
 				Type:        "string",
-				Description: "The directory to search in. Defaults to '.'.",
+				Description: "要搜索的目录。默认为 '.'。",
 				Required:    false,
 			},
 		},
@@ -72,10 +72,10 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	info, err := os.Stat(searchPath)
 	if err != nil {
-		return nil, fmt.Errorf("search path error: %w", err)
+		return nil, fmt.Errorf("搜索路径错误：%w", err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("search path is not a directory: %s", searchPath)
+		return nil, fmt.Errorf("搜索路径不是一个目录：%s", searchPath)
 	}
 
 	matchPattern := normalizeGlobPattern(pattern)
@@ -113,7 +113,7 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil
 	})
 	if walkErr != nil {
-		return nil, fmt.Errorf("glob failed: %w", walkErr)
+		return nil, fmt.Errorf("glob 失败：%w", walkErr)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {

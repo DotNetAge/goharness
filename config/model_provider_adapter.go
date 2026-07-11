@@ -15,7 +15,7 @@ func (r *modelRegistryProviders) Get(name string) (*ProviderConfig, error) {
 }
 
 func (r *modelRegistryProviders) Register(name string, provider *ProviderConfig) error {
-	return fmt.Errorf("provider registry: read-only adapter from ModelRegistry")
+	return fmt.Errorf("无法注册提供商")
 }
 
 func (r *modelRegistryProviders) List() []string {

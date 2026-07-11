@@ -27,11 +27,11 @@ func NewSkillRegistryFromDirectory(rootDir string) (SkillRegistry, error) {
 	loader := NewFileSystemSkillLoader(rootDir)
 	skills, err := loader.Load()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load skills from %q: %w", rootDir, err)
+		return nil, fmt.Errorf("从 %q 加载技能失败: %w", rootDir, err)
 	}
 	for _, s := range skills {
 		if err := reg.RegisterSkill(s); err != nil {
-			return nil, fmt.Errorf("failed to register skill %q: %w", s.Name, err)
+			return nil, fmt.Errorf("注册技能 %q 失败: %w", s.Name, err)
 		}
 	}
 	return reg, nil
@@ -45,7 +45,7 @@ func (r *DefaultSkillRegistry) RegisterSkill(sk *Skill) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sk == nil || sk.Name == "" {
-		return fmt.Errorf("skill name cannot be empty")
+		return fmt.Errorf("技能名称不能为空")
 	}
 	r.skills[sk.Name] = sk
 	return nil

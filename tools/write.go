@@ -31,7 +31,7 @@ func (w *Write) AddWhiteList(dirs ...string) *Write {
 }
 
 // writeDescription 是 Write 工具的简短描述。
-const writeDescription = `Write content to a file. Creates parent directories automatically. Use append=true to append instead of overwrite.`
+const writeDescription = `将内容写入文件。自动创建父目录。使用 append=true 进行追加而不是覆盖。`
 
 // NewWriteTool 创建一个文件写入工具实例。
 //
@@ -42,25 +42,24 @@ func NewWriteTool() *Write {
 		info: &ToolInfo{
 			Name:        "Write",
 			Description: writeDescription,
-			Prompt: `Writes a file to the local filesystem.
+			Prompt: `将文件写入本地文件系统。
 
-Usage:
-- This tool will overwrite the existing file if there is one at the provided path. If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.
-- Prefer the file_edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
-- NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
-- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`,
+用法：
+- 如果提供的路径存在文件，此工具将覆盖现有文件。如果是现有文件，你必须先使用 Read 工具读取文件内容。如果你没有先读取文件，此工具将失败。
+- 修改现有文件时优先使用 Edit 工具——它只发送差异。仅使用此工具创建新文件或完全重写。
+- 仅在用户明确要求时使用表情符号。避免在文件中写入表情符号，除非被要求。`,
 			Tags:          []string{"file", "filesystem", "write", "create"},
 			SecurityLevel: events.LevelSensitive,
 			Parameters: []Parameter{
-				{Name: "path", Type: "string", Description: "Absolute file path to write to.", Required: true},
-				{Name: "content", Type: "string", Description: "File content to write.", Required: true},
-				{Name: "append", Type: "boolean", Description: "If true, append to existing file instead of overwriting.", Required: false},
+				{Name: "filePath", Type: "string", Description: "要写入的绝对文件路径。", Required: true},
+				{Name: "content", Type: "string", Description: "要写入的文件内容。", Required: true},
+				{Name: "append", Type: "boolean", Description: "如果为 true，则追加到现有文件而不是覆盖。", Required: false},
 			},
 		},
 	}
 }
 
-// Grant implements tools.PermissionRequired. It pre-resolves the target path
+// Grant implements tools.PermissionRequired. It pre-resolves the target filePath
 // and asks "is this write going to land inside the workspace?". Anything
 // outside the project/session boundary is escalated to the user — these
 // writes may be legitimate (build output dir, mounted volume) but we don't
@@ -70,8 +69,8 @@ Usage:
 // is NOT a Grant concern: there's no user override for it, so asking is
 // misleading.
 func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	path, _ := params["path"].(string)
-	if path == "" {
+	filePath, _ := params["filePath"].(string)
+	if filePath == "" {
 		// Let Execute report the missing parameter cleanly.
 		return true, ""
 	}
@@ -83,7 +82,7 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 		return true, ""
 	}
 
-	resolved, _ := ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
+	resolved, _ := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 	if resolved == "" {
 		return true, ""
 	}
@@ -104,8 +103,8 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 			}
 		}
 		return false, fmt.Sprintf(
-			"Write to %q resolves to %q which is outside the workspace.\n%s",
-			path, resolved, err.Error(),
+			"写入 %q 解析为 %q，这在工作区之外。\n%s",
+			filePath, resolved, err.Error(),
 		)
 	}
 	return true, ""
@@ -119,7 +118,7 @@ func (w *Write) Info() *ToolInfo {
 // Execute 执行文件写入操作。
 //
 // 处理流程：
-//  1. 验证 path 和 content 参数（必须为非空字符串）
+//  1. 验证 filePath 和 content 参数（必须为非空字符串）
 //  2. 解析并验证目标路径
 //  3. 安全性检查（路径不能超出项目目录）
 //  4. 自动创建父目录（如果不存在）
@@ -129,13 +128,13 @@ func (w *Write) Info() *ToolInfo {
 //
 // 参数：
 //   - ctx: 上下文（包含 ToolContext）
-//   - params: 必须包含 "path" 和 "content"，可选 "append"
+//   - params: 必须包含 "filePath" 和 "content"，可选 "append"
 //
 // 返回：
-//   - map[string]any: 包含 success, path, mode, bytes_written 等字段
+//   - map[string]any: 包含 success, filePath, mode, bytes_written 等字段
 //   - error: 参数错误、路径验证失败或 I/O 错误
 func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error) {
-	path, err := ValidateRequiredString(params, "path")
+	filePath, err := ValidateRequiredString(params, "filePath")
 	if err != nil {
 		return nil, err
 	}
@@ -147,13 +146,13 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 
 	logger := getLogger(ctx)
 
-	// Resolve path with optional session: prefix support
+	// Resolve filePath with optional session: prefix support
 	tc := GetToolContext(ctx)
-	resolvedPath, scope := ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
+	resolvedPath, scope := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
 	logger.Info("writing file",
-		"input_path", path,
-		"resolved_path", resolvedPath,
+		"input_filePath", filePath,
+		"resolved_filePath", resolvedPath,
 		"scope", scope,
 		"content_len", len(content),
 	)
@@ -168,7 +167,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	// Ensure the parent directory exists
 	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create directory: %w", err)
+		return nil, fmt.Errorf("创建目录失败：%w", err)
 	}
 
 	// Check if append mode is enabled
@@ -186,13 +185,13 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		// Append mode
 		file, err = os.OpenFile(resolvedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open file for appending: %w", err)
+			return nil, fmt.Errorf("打开文件以追加失败：%w", err)
 		}
 	} else {
 		// Overwrite mode
 		file, err = os.Create(resolvedPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create file: %w", err)
+			return nil, fmt.Errorf("创建文件失败：%w", err)
 		}
 	}
 	defer file.Close()
@@ -200,19 +199,19 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	// Write content
 	bytesWritten, err := file.WriteString(content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to write content: %w", err)
+		return nil, fmt.Errorf("写入内容失败：%w", err)
 	}
 
 	// Get file info
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
+		return nil, fmt.Errorf("获取文件状态失败：%w", err)
 	}
 
 	return map[string]any{
-		"success": true,
-		"path":    resolvedPath,
-		"scope":   scope,
+		"success":  true,
+		"filePath": resolvedPath,
+		"scope":    scope,
 		"mode": func() string {
 			if appendMode {
 				return "append"
@@ -224,9 +223,9 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		"total_size":    info.Size(),
 		"message": func() string {
 			if appendMode {
-				return "Content appended successfully"
+				return "内容追加成功"
 			} else {
-				return "File written successfully"
+				return "文件写入成功"
 			}
 		}(),
 	}, nil

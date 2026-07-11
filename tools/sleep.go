@@ -29,18 +29,18 @@ func NewSleepTool() FuncTool {
 func (t *SleepTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "Sleep",
-		Description: "Wait for a specified duration. The user can interrupt the sleep at any time.",
-		Prompt: `Wait for a specified duration. The user can interrupt the sleep at any time.
+		Description: "等待指定的持续时间。用户可以随时中断睡眠。",
+		Prompt: `等待指定的持续时间。用户可以随时中断睡眠。
 
-Use this when the user tells you to sleep or rest, when you have nothing to do, or when you're waiting for something.
+当用户要求你睡眠或休息时，当你无事可做时，或者当你等待某事时，请使用此工具。
 
-You may receive <tick> prompts — these are periodic check-ins. Look for useful work to do before sleeping.
+你可能会收到 <tick> 提示——这些是定期检查。在睡眠前寻找有用的工作要做。
 
-You can call this concurrently with other tools — it won't interfere with them.
+你可以与其他工具并发调用此工具——它不会干扰它们。
 
-Prefer this over Bash(sleep ...) — it doesn't hold a shell process.
+优先使用此工具而不是 Bash(sleep ...)——它不会持有 shell 进程。
 
-Each wake-up costs an API call, but the prompt cache expires after 5 minutes of inactivity — balance accordingly.`,
+每次唤醒都会消耗一次 API 调用，但提示缓存在 5 分钟不活动后过期——相应地平衡。`,
 		Tags:          []string{"sleep", "wait", "delay", "rest"},
 		SecurityLevel: events.LevelSafe,
 		IsIdempotent:  true,
@@ -49,7 +49,7 @@ Each wake-up costs an API call, but the prompt cache expires after 5 minutes of 
 			{
 				Name:        "duration_ms",
 				Type:        "integer",
-				Description: "How long to wait in milliseconds. Default is 5000 (5 seconds). Minimum is 1000 (1 second). Maximum is 300000 (5 minutes).",
+				Description: "等待多长时间（毫秒）。默认为 5000（5 秒）。最小值为 1000（1 秒）。最大值为 300000（5 分钟）。",
 				Required:    false,
 			},
 		},

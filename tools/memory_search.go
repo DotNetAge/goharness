@@ -27,29 +27,29 @@ func (t *MemorySearch) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "MemorySearch",
 		MaxResultSizeChars: 30000,
-		Description:        "Search long-term memory for relevant past knowledge, experiences, or data.",
-		Prompt: `Search long-term memory for relevant past knowledge, experiences, or data.
-Use this when you need information from previous interactions, user preferences, historical context, or domain-specific knowledge.
-This should be your FIRST source of external information before searching the internet.`,
+		Description:        "搜索长期记忆以获取相关的过往知识、经验或数据。",
+		Prompt: `搜索长期记忆以获取相关的过往知识、经验或数据。
+当您需要来自先前交互、用户偏好、历史上下文或特定领域知识的信息时，请使用此工具。
+这应该是您在搜索互联网之前的第一个外部信息来源。`,
 		Tags:       []string{"memory", "knowledge", "search", "retrieval"},
 		IsReadOnly: true,
 		Parameters: []Parameter{
 			{
 				Name:        "query",
 				Type:        "string",
-				Description: "Semantic search query to find relevant memories. Be specific and use natural language.",
+				Description: "用于查找相关记忆的语义搜索查询。请具体并使用自然语言。",
 				Required:    true,
 			},
 			{
 				Name:        "limit",
 				Type:        "integer",
-				Description: "Maximum number of memory records to return (default: 5, max: 20).",
+				Description: "要返回的最大记忆记录数（默认：5，最大：20）。",
 				Required:    false,
 			},
 			{
 				Name:        "types",
 				Type:        "array",
-				Description: "Filter by memory type: [\"longterm\"] for persistent knowledge, [\"session\"] for current session only. Default searches both.",
+				Description: "按记忆类型过滤：[\"longterm\"] 表示持久知识，[\"session\"] 仅表示当前会话。默认搜索两者。",
 				Required:    false,
 			},
 		},
@@ -64,7 +64,7 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 
 	query = strings.TrimSpace(query)
 	if len(query) < 2 {
-		return nil, fmt.Errorf("query must be at least 2 characters")
+		return nil, fmt.Errorf("查询必须至少为 2 个字符")
 	}
 
 	limit := 5
@@ -105,11 +105,11 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 
 	chunks, err := t.memory.Retrieve(ctx, query, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("memory search failed: %w", err)
+		return nil, fmt.Errorf("记忆搜索失败：%w", err)
 	}
 
 	if len(chunks) == 0 {
-		return fmt.Sprintf("No memories found for query: %q\n\nThe memory is empty or no relevant information was found. Try rephrasing your query or search the internet instead.", query), nil
+		return fmt.Sprintf("未找到关于查询的记忆：%q\n\n记忆为空或未找到相关信息。请尝试换一种方式表述您的查询，或搜索互联网。", query), nil
 	}
 
 	if len(chunks) > limit {
@@ -127,26 +127,26 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 
 func formatMemorySearchResults(query string, chunks []memory.MemoryChunk) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Memory search results for query: %q\n\n", query)
-	fmt.Fprintf(&sb, "Found %d relevant memory record(s):\n\n", len(chunks))
+	fmt.Fprintf(&sb, "查询的记忆搜索结果：%q\n\n", query)
+	fmt.Fprintf(&sb, "找到 %d 条相关记忆记录：\n\n", len(chunks))
 
 	for i, c := range chunks {
-		fmt.Fprintf(&sb, "--- Record %d ---\n", i+1)
+		fmt.Fprintf(&sb, "--- 记录 %d ---\n", i+1)
 
 		if c.ID != "" {
-			fmt.Fprintf(&sb, "ID: %s\n", c.ID)
+			fmt.Fprintf(&sb, "ID：%s\n", c.ID)
 		}
 		if c.Summary != "" {
-			fmt.Fprintf(&sb, "Summary: %s\n", c.Summary)
+			fmt.Fprintf(&sb, "摘要：%s\n", c.Summary)
 		}
 		if c.AgentName != "" {
-			fmt.Fprintf(&sb, "Agent: %s\n", c.AgentName)
+			fmt.Fprintf(&sb, "代理：%s\n", c.AgentName)
 		}
 		if len(c.Tags) > 0 {
-			fmt.Fprintf(&sb, "Tags: [%s]\n", strings.Join(c.Tags, ", "))
+			fmt.Fprintf(&sb, "标签：[%s]\n", strings.Join(c.Tags, ", "))
 		}
 		if !c.Timestamp.IsZero() {
-			fmt.Fprintf(&sb, "Time: %s\n", c.Timestamp.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(&sb, "时间：%s\n", c.Timestamp.Format("2006-01-02 15:04:05"))
 		}
 
 		fmt.Fprintf(&sb, "\n%s\n", c.Content)

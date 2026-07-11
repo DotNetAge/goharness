@@ -104,13 +104,13 @@ type CallInput struct {
 func ToolResultSummary(tr ToolResult) string {
 	prefix := "[" + tr.ToolName + "]"
 	if tr.Error != "" {
-		return prefix + " error: " + tr.Error
+		return prefix + " 错误: " + tr.Error
 	}
 	if tr.Result != "" {
 		truncated := Truncate(tr.Result, 200)
-		return prefix + " returned: " + truncated
+		return prefix + " 返回: " + truncated
 	}
-	return prefix + " returned: (empty result)"
+	return prefix + " 返回: (空结果)"
 }
 
 // Truncate truncates a string to the specified maximum length in runes,

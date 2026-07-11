@@ -45,9 +45,8 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 			input.SystemPromptSections = append(
 				input.SystemPromptSections,
 				gochatcore.NewSystemMessage(
-					"## Current Session Context\n"+
-						"The following are memories from the current conversation session. "+
-						"Use them as recent context for your response:\n\n"+
+					"## 相关记忆\n"+
+						"以下是当前对话的相关记忆，可能对你的推理有参考作用。\n"+
 						content,
 				),
 			)
@@ -78,9 +77,9 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 					input.SystemPromptSections = append(
 						input.SystemPromptSections,
 						gochatcore.NewSystemMessage(
-							"## Similar Content from Other Sessions\n"+
-								"The following are related memories from other sessions. "+
-								"They may contain relevant context — use your judgment on applicability:\n\n"+
+							"## 其他会话的相关内容\n"+
+								"以下是我在其他会话中与当前对话相关的记忆。"+
+								"它们可能包含一些有帮助性的内容——请根据你的判断决定其适用性:\n\n"+
 								content,
 						),
 					)
@@ -96,8 +95,8 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 			input.SystemPromptSections = append(
 				input.SystemPromptSections,
 				gochatcore.NewSystemMessage(
-					"## Relevant Context\n"+
-						"The following are relevant historical memories:\n\n"+
+					"## 相关上下文\n"+
+						"以下是相关的历史记忆:\n\n"+
 						content,
 				),
 			)

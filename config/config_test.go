@@ -291,8 +291,8 @@ func TestAgentRegistry_CRUDOperations(t *testing.T) {
 		if err == nil {
 			t.Error("expected error when removing non-existent agent")
 		}
-		if !strings.Contains(err.Error(), "not found") {
-			t.Errorf("error should mention 'not found', got: %v", err)
+		if !strings.Contains(err.Error(), "未找到") {
+			t.Errorf("error should mention '未找到', got: %v", err)
 		}
 	})
 

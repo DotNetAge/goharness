@@ -17,40 +17,40 @@ func NewTeamCreateTool(spawn SpawnFunc) *TeamCreateTool {
 func (t *TeamCreateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TeamCreate",
-		Description: "Create a team of agents that work together on a complex task. The team leader coordinates work and delegates to team members.",
-		Prompt: `Create a team of agents to collaboratively solve a complex task.
+		Description: "创建一个代理团队来协作完成复杂任务。团队负责人协调工作并委派给团队成员。",
+		Prompt: `创建一个代理团队来协作解决复杂任务。
 
-A team consists of:
-- A team leader (you, or a designated agent) who coordinates the work
-- Team members (other agents) who execute specific parts of the task
+团队包括：
+- 团队负责人（你或指定的代理）负责协调工作
+- 团队成员（其他代理）执行任务的特定部分
 
-Use this when:
-- The task is too complex for a single agent
-- Multiple specialized agents need to collaborate
-- You want to organize parallel work streams with coordination
+使用场景：
+- 任务对单个代理来说太复杂
+- 需要多个专业代理协作
+- 你想组织有协调的并行工作流
 
-The team creation is immediate. After creating the team, use TaskCreate to
-create planning entries and SubAgent/Agent tools to dispatch work to members.
+团队创建是立即的。创建团队后，使用 TaskCreate 创建规划条目，
+使用 SubAgent/Agent 工具将工作分派给成员。
 
-Required parameters:
-- team_name: short, unique name for the team (kebab-case, e.g. "data-analysis-team")
-- description: what the team is working on
-- leader: the name of the team leader agent (usually yourself)
-- members: array of agent names who will be team members
+必需参数：
+- team_name：团队的简短唯一名称（kebab-case，例如 "data-analysis-team"）
+- description：团队正在做什么
+- leader：团队负责人代理的名称（通常是你自己）
+- members：将成为团队成员的代理名称数组
 
-Optional parameters:
-- tasks: array of task descriptions to create planning entries for each member
+可选参数：
+- tasks：为每个成员创建规划条目的任务描述数组
 
-Returns:
-- team_name, leader, members list
-- task_ids if tasks were created`,
+返回：
+- team_name、leader、members 列表
+- 如果创建了任务则返回 task_ids`,
 		Tags: []string{"team", "create", "swarm", "orchestration", "collaboration"},
 		Parameters: []Parameter{
-			{Name: "team_name", Type: "string", Description: "Short, unique name for the team (kebab-case).", Required: true},
-			{Name: "description", Type: "string", Description: "What the team is working on.", Required: true},
-			{Name: "leader", Type: "string", Description: "Name of the team leader agent.", Required: true},
-			{Name: "members", Type: "array", Description: "Array of agent names who will be team members.", Required: true},
-			{Name: "tasks", Type: "array", Description: "Array of task descriptions to create planning entries for team members.", Required: false},
+			{Name: "team_name", Type: "string", Description: "团队的简短唯一名称（kebab-case）。", Required: true},
+			{Name: "description", Type: "string", Description: "团队正在做什么。", Required: true},
+			{Name: "leader", Type: "string", Description: "团队负责人代理的名称。", Required: true},
+			{Name: "members", Type: "array", Description: "将成为团队成员的代理名称数组。", Required: true},
+			{Name: "tasks", Type: "array", Description: "为团队成员创建规划条目的任务描述数组。", Required: false},
 		},
 	}
 }
@@ -58,15 +58,15 @@ Returns:
 func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	teamName, _ := params["team_name"].(string)
 	if teamName == "" {
-		return nil, fmt.Errorf("team_name is required")
+		return nil, fmt.Errorf("team_name 不能为空")
 	}
 	description, _ := params["description"].(string)
 	if description == "" {
-		return nil, fmt.Errorf("description is required")
+		return nil, fmt.Errorf("description 不能为空")
 	}
 	leader, _ := params["leader"].(string)
 	if leader == "" {
-		return nil, fmt.Errorf("leader is required")
+		return nil, fmt.Errorf("leader 不能为空")
 	}
 
 	var members []string
@@ -78,12 +78,12 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		}
 	}
 	if len(members) == 0 {
-		return nil, fmt.Errorf("members is required and must contain at least one agent")
+		return nil, fmt.Errorf("members 不能为空且必须至少包含一个代理")
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TeamCreate requires ToolContext with SessionID")
+		return nil, fmt.Errorf("TeamCreate 需要包含 SessionID 的 ToolContext")
 	}
 
 	team := &Team{
@@ -94,7 +94,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	if err := CreateTeam(ctx, tc.Session.ID(), team); err != nil {
-		return nil, fmt.Errorf("failed to create team: %w", err)
+		return nil, fmt.Errorf("创建团队失败：%w", err)
 	}
 
 	var taskIDs []string
@@ -129,12 +129,12 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		"team_name": teamName,
 		"leader":    leader,
 		"members":   members,
-		"message":   fmt.Sprintf("Team %q created with %d members", teamName, len(members)),
+		"message":   fmt.Sprintf("团队 %q 已创建，包含 %d 个成员", teamName, len(members)),
 	}
 
 	if len(taskIDs) > 0 {
 		result["task_ids"] = taskIDs
-		result["message"] = fmt.Sprintf("Team %q created with %d members and %d tasks created", teamName, len(members), len(taskIDs))
+		result["message"] = fmt.Sprintf("团队 %q 已创建，包含 %d 个成员，并创建了 %d 个任务", teamName, len(members), len(taskIDs))
 	}
 
 	return result, nil

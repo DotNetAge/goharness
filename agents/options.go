@@ -65,7 +65,7 @@ func WithTokenUsageStore(store session.TokenUsageStore) RuntimeConfig {
 // The store is injected into the ToolContext so task management tools
 // (TaskCreate/TaskGet/TaskUpdate/TaskList) and other KV-aware tools
 // can persist per-session state. If not set, those tools will return
-// "KVStore not available" at execution time.
+// "KVStore 不可用" at execution time.
 func WithKVStore(kv store.KVStore) RuntimeConfig {
 	return func(r *Runtime) { r.kvStore = kv }
 }
@@ -74,7 +74,7 @@ func WithKVStore(kv store.KVStore) RuntimeConfig {
 // The store is injected into the ToolContext so SubAgentTool can persist
 // results of spawned sub-agents and CollectResultsTool can block-wait for
 // them. If not set, CollectResults will return
-// "collect_results tool requires ToolContext with ResultStore" and
+// "collect_results 工具需要带有 ResultStore 的 ToolContext" and
 // SubAgent results will not be retrievable.
 func WithResultStore(rs *store.ResultStore) RuntimeConfig {
 	return func(r *Runtime) { r.resultStore = rs }

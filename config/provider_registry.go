@@ -10,6 +10,6 @@ type ProviderRegistry interface {
 }
 
 var (
-	ErrProviderNotFound  = fmt.Errorf("provider registry: provider not found")
-	ErrDuplicateProvider = fmt.Errorf("provider registry: duplicate provider name")
+	ErrProviderNotFound  = fmt.Errorf("提供商注册表: 未找到提供商")
+	ErrDuplicateProvider = fmt.Errorf("提供商注册表: 提供商名称重复")
 )

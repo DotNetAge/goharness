@@ -14,27 +14,27 @@ func NewTaskGetTool() *TaskGetTool {
 func (t *TaskGetTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TaskGet",
-		Description: "Get detailed information about a specific task.",
-		Prompt: `Get detailed information about a specific task by task_id.
+		Description: "获取特定任务的详细信息。",
+		Prompt: `通过 task_id 获取特定任务的详细信息。
 
-Use this to:
-- Check the current status of a task (pending, in_progress, completed)
-- See who owns a task
-- Check what tasks block this one (blockedBy) or are blocked by it (blocks)
-- Get the full description of what needs to be done
+用途：
+- 检查任务的当前状态（pending、in_progress、completed）
+- 查看谁拥有任务
+- 检查哪些任务阻塞此任务（blockedBy）或被此任务阻塞（blocks）
+- 获取需要完成内容的完整描述
 
-Required parameter:
-- task_id: the unique identifier of the task (from TaskCreate or TaskList)
+必需参数：
+- task_id：任务的唯一标识符（来自 TaskCreate 或 TaskList）
 
-Returns:
-- task_id, subject, description, status
-- owner: who is responsible
-- blocks: tasks that depend on this one (this must complete first)
-- blocked_by: tasks that this one depends on (they must complete first)
-- created_at: when the task was created`,
+返回：
+- task_id、subject、description、status
+- owner：负责人
+- blocks：依赖此任务的任务（此任务必须先完成）
+- blocked_by：此任务依赖的任务（它们必须先完成）
+- created_at：任务创建时间`,
 		Tags: []string{"task", "get", "status", "planning"},
 		Parameters: []Parameter{
-			{Name: "task_id", Type: "string", Description: "The unique identifier of the task to retrieve.", Required: true},
+			{Name: "task_id", Type: "string", Description: "要检索的任务的唯一标识符。", Required: true},
 		},
 	}
 }
@@ -47,15 +47,15 @@ func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, 
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskGet requires ToolContext with SessionID")
+		return nil, fmt.Errorf("TaskGet 需要包含 SessionID 的 ToolContext")
 	}
 
 	task, err := GetTask(ctx, tc.Session.ID(), taskID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get task: %w", err)
+		return nil, fmt.Errorf("获取任务失败：%w", err)
 	}
 	if task == nil {
-		return nil, fmt.Errorf("task %q not found", taskID)
+		return nil, fmt.Errorf("任务 %q 未找到", taskID)
 	}
 
 	result := map[string]any{

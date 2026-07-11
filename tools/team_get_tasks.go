@@ -14,19 +14,16 @@ func NewTeamGetTasksTool() *TeamGetTasksTool {
 func (t *TeamGetTasksTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TeamGetTasks",
-		Description: "Get all tasks assigned to a team, with their status, owner, and dependencies.",
-		Prompt: `Retrieve all tasks belonging to a specific team.
+		Description: "获取分配给团队的所有任务，包括其状态、所有者和依赖关系。",
+		Prompt: `检索属于特定团队的所有任务。
 
-Use this to:
-- See what each team member is working on
-- Check progress of team deliverables
-- Identify blocked tasks within the team
-
-Required parameter:
-- team_name: the name of the team (from TeamCreate)`,
+用途：
+- 查看每个团队成员正在做什么
+- 检查团队交付物的进度
+- 识别团队内被阻塞的任务`,
 		Tags: []string{"team", "tasks", "list", "status"},
 		Parameters: []Parameter{
-			{Name: "team_name", Type: "string", Description: "Name of the team to get tasks for.", Required: true},
+			{Name: "team_name", Type: "string", Description: "要获取任务的团队名称（来自 TeamCreate）。", Required: true},
 		},
 	}
 }
@@ -34,20 +31,20 @@ Required parameter:
 func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	teamName, _ := params["team_name"].(string)
 	if teamName == "" {
-		return nil, fmt.Errorf("team_name is required")
+		return nil, fmt.Errorf("team_name 不能为空")
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TeamGetTasks requires ToolContext with SessionID")
+		return nil, fmt.Errorf("TeamGetTasks 需要包含 SessionID 的 ToolContext")
 	}
 
 	team, err := GetTeam(ctx, tc.Session.ID(), teamName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get team: %w", err)
+		return nil, fmt.Errorf("获取团队失败：%w", err)
 	}
 	if team == nil {
-		return nil, fmt.Errorf("team %q not found", teamName)
+		return nil, fmt.Errorf("团队 %q 未找到", teamName)
 	}
 
 	var tasks []map[string]any
@@ -79,7 +76,7 @@ func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (
 	}
 
 	if len(tasks) == 0 {
-		result["message"] = "No tasks assigned to this team"
+		result["message"] = "此团队未分配任何任务"
 	}
 
 	return result, nil
