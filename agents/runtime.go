@@ -1471,17 +1471,14 @@ func (rt *Runtime) notifyLoopAbort(sessionID string, reason string) {
 // Returns:
 //   - []gochatcore.Message: Array of system messages forming the complete prompt
 func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
-	var msgs []gochatcore.Message
-
-	// 0. Language Lock — MUST be the first message so LLM sees it before any thinking
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildLanguageLock()))
+	var sections []string
 
 	// 1. Identity — from AgentRegistry by agent name
 	if rt.agentReg != nil {
 		cfg := rt.agentReg.Get(s.AgentName())
 		if cfg != nil {
-			msgs = append(msgs, gochatcore.NewSystemMessage(
-				buildIdentity(cfg.Name, cfg.Role, cfg.Description, cfg.Introduction)))
+			sections = append(sections,
+				buildIdentity(cfg.Name, cfg.Role, cfg.Description, cfg.Introduction))
 		}
 	}
 
@@ -1501,7 +1498,7 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 				}
 			}
 			if catalog := rt.skillsCatalog(agentSkills); catalog != "" {
-				msgs = append(msgs, gochatcore.NewSystemMessage(catalog))
+				sections = append(sections, catalog)
 			}
 		}
 	}
@@ -1513,31 +1510,30 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 			rules += "\n" + custom
 		}
 	}
-	msgs = append(msgs, gochatcore.NewSystemMessage("## Behavioral Rules\n"+rules))
+	sections = append(sections, "## Behavioral Rules\n"+rules)
 
 	// 3b. Search priority — how to prioritize local vs web search
-	msgs = append(msgs, gochatcore.NewSystemMessage(rt.buildSearchStrategy()))
+	sections = append(sections, rt.buildSearchStrategy())
 
 	// 4. Environment info
-	msgs = append(msgs, gochatcore.NewSystemMessage(rt.buildEnvs(EnvsParams{
+	sections = append(sections, rt.buildEnvs(EnvsParams{
 		SessionID:  sessionID,
 		SessionDir: s.SessionDir(),
 		ProjectDir: s.ProjectDir(),
-	})))
+	}))
 
 	// 5. Tool Catalog — informational only; tools must be activated via ToolSelector
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildToolCatalog(rt.toolReg)))
+	sections = append(sections, buildToolCatalog(rt.toolReg))
 
 	// 6. System reminders
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildSystemReminders()))
+	sections = append(sections, buildSystemReminders())
 
-	// 7. Dynamic boundary (KV cache split point)
-	// msgs = append(msgs, gochatcore.NewSystemMessage("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"))
+	// 7. Output efficiency (dynamic section)
+	sections = append(sections, buildOutputEfficiency())
 
-	// 8. Output efficiency (dynamic section)
-	msgs = append(msgs, gochatcore.NewSystemMessage(buildOutputEfficiency()))
-
-	return msgs
+	// Merge all sections into a single system message to maximize LLM attention
+	// on system rules. Multiple system messages dilute attention across messages.
+	return []gochatcore.Message{gochatcore.NewSystemMessage(strings.Join(sections, "\n\n"))}
 }
 
 // skillsCatalog builds the skills catalog section using the override builder

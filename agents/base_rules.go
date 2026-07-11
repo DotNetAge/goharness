@@ -84,9 +84,6 @@ func extractSection(heading string) string {
 
 // ── Section accessors — called by prompt_builders.go ────────────────────────
 
-// buildLanguageLock returns the Language Lock section — must be injected FIRST.
-func buildLanguageLock() string { return extractSection("语言锁定") }
-
 // defaultBehavioralRules returns the Behavioral Rules section.
 func defaultBehavioralRules() string { return extractSection("行为准则") }
 
