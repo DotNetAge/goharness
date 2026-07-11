@@ -23,6 +23,8 @@ var toolCtxKey = toolCtxKeyType{}
 type ToolContext struct {
 	EmitEvent   func(events.ReactEvent)
 	ResultStore *store.ResultStore
+	SessionStore session.SessionStore
+	ResumeFunc  ResumeFunc
 	KVStore     store.KVStore
 	FileStore   store.FileStore
 	Logger      logging.Logger

@@ -51,6 +51,16 @@ func (s *ResultStore) Store(taskID string, result *TaskResult) {
 	}
 }
 
+// Get returns the result for a task ID without blocking.
+// Returns nil if the task hasn't completed yet.
+// This is used by CollectResults fallback to avoid the 30-minute
+// WaitForResult timeout when the daemon has restarted.
+func (s *ResultStore) Get(taskID string) *TaskResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.results[taskID]
+}
+
 // WaitForResult blocks until the task completes, then returns the result.
 // If the task already completed, returns immediately.
 // It respects context cancellation and a default timeout.

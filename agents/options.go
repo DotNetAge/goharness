@@ -80,6 +80,12 @@ func WithResultStore(rs *store.ResultStore) RuntimeConfig {
 	return func(r *Runtime) { r.resultStore = rs }
 }
 
+// WithSessionStore sets the session store for sub-session message loading.
+// Used by CollectResults fallback to recover SubAgent results from disk.
+func WithSessionStore(ss session.SessionStore) RuntimeConfig {
+	return func(r *Runtime) { r.sessionStore = ss }
+}
+
 // WithSkillsPrompt overrides the default skills catalog prompt section.
 // The provided function receives the filtered list of skills for the current agent
 // and should return the complete catalog string (or empty to omit the section).

@@ -168,6 +168,10 @@ type Runtime struct {
 	// SubAgent results are dropped. Configured via WithResultStore().
 	resultStore *store.ResultStore
 
+	// sessionStore provides access to load sub-session messages for
+	// CollectResults fallback recovery. Configured via WithSessionStore().
+	sessionStore session.SessionStore
+
 	logger    logging.Logger
 	loopHooks []hooks.LoopHook
 	toolHooks []hooks.ToolHook
@@ -365,6 +369,7 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	}
 	r.toolExec = tools.NewToolExecutor(r.toolReg,
 		tools.WithResultStore(r.resultStore),
+		tools.WithSessionStore(r.sessionStore),
 		tools.WithKVStore(r.kvStore),
 	)
 	r.registerDefaultTools()
@@ -517,6 +522,37 @@ func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (a
 	}
 
 	return result.Answer, sessionID, nil
+}
+
+// resumeSubAgent implements ResumeFunc for restarting an interrupted SubAgent
+// from its persisted session. It loads the existing session by ID and runs the
+// agent to completion, returning the FinalAnswer.
+//
+// This is used by CollectResults fallback when a SubAgent completed but its
+// result is no longer in ResultStore (daemon restart) and no FinalAnswer
+// message is found in the sub-session.
+func (rt *Runtime) resumeSubAgent(ctx context.Context, sessionID string) (string, error) {
+	info, err := rt.sessionStore.GetMeta(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("resume sub-agent: session %q not found: %w", sessionID, err)
+	}
+	rt.logger.Info("resuming sub-agent session",
+		"session_id", sessionID,
+		"agent_name", info.AgentName,
+	)
+
+	sess, err := session.Load(sessionID, info.AgentName, rt.sessionStore)
+	if err != nil {
+		return "", fmt.Errorf("resume sub-agent: failed to load session %q: %w", sessionID, err)
+	}
+
+	builder := rt.Ask(info.AgentName, "Please continue with your previous task and provide the final answer.", sess)
+	result, err := builder.Run()
+	if err != nil {
+		return "", fmt.Errorf("resume sub-agent %q: %w", info.AgentName, err)
+	}
+
+	return result.Answer, nil
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -783,6 +819,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		tools.WithLogger(logger),
 		tools.WithSession(b.session),
 		tools.WithResultStore(rt.resultStore),
+		tools.WithSessionStore(rt.sessionStore),
+		tools.WithResumeFunc(rt.resumeSubAgent),
 		tools.WithKVStore(rt.kvStore),
 	)
 

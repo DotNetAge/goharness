@@ -2,11 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/store"
 )
 
@@ -27,6 +29,18 @@ var subagentSem = make(chan struct{}, 20)
 //   - string: 子代理的会话 ID（用于持久化加载）
 //   - error: 执行过程中的错误
 type SpawnFunc func(ctx context.Context, agentName, task string) (result string, sessionID string, err error)
+
+// ResumeFunc 恢复运行已有 session 的子 Agent。
+// 与 SpawnFunc 的区别：SpawnFunc 创建新 session，ResumeFunc 加载已有 session 并继续。
+//
+// 参数：
+//   - ctx: 上下文
+//   - sessionID: 要恢复的子 session ID
+//
+// 返回：
+//   - string: 子代理的执行结果（FinalAnswer）
+//   - error: 执行过程中的错误
+type ResumeFunc func(ctx context.Context, sessionID string) (string, error)
 
 // SubAgentTool 实现了子代理调度工具。
 // 允许 LLM 生成子代理来处理委派的任务。
@@ -165,6 +179,27 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		if tc.ResultStore != nil {
 			tc.ResultStore.Store(taskID, taskResult)
 		}
+
+		// Write chain info to parent session for persistence & recovery
+		if tc.Session != nil {
+			status := "completed"
+			if err != nil {
+				status = "failed"
+			}
+			chainInfo, _ := json.Marshal(map[string]string{
+				"type":       "chain",
+				"task_id":    taskID,
+				"session_id": sessionID,
+				"agent":      agentName,
+				"status":     status,
+			})
+			tc.Session.Append(context.Background(), session.Message{
+				Role:      "tool",
+				Content:   string(chainInfo),
+				Timestamp: time.Now().UnixMilli(),
+			})
+		}
+
 		var (
 			resultAnswer string
 			resultError  string

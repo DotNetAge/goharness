@@ -80,12 +80,14 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	}
 
 	toolCtx := &ToolContext{
-		EmitEvent:   e.cfg.eventEmitter,
-		ResultStore: e.cfg.resultStore,
-		KVStore:     e.cfg.kvStore,
-		FileStore:   e.cfg.fileStore,
-		Logger:      e.cfg.logger,
-		Session:     e.cfg.session,
+		EmitEvent:     e.cfg.eventEmitter,
+		ResultStore:   e.cfg.resultStore,
+		SessionStore:  e.cfg.sessionStore,
+		ResumeFunc:    e.cfg.resumeFunc,
+		KVStore:       e.cfg.kvStore,
+		FileStore:     e.cfg.fileStore,
+		Logger:        e.cfg.logger,
+		Session:       e.cfg.session,
 	}
 	execCtx := WithToolContext(ctx, toolCtx)
 
