@@ -1536,7 +1536,7 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 			rules += "\n" + custom
 		}
 	}
-	sections = append(sections, "## Behavioral Rules\n"+rules)
+	sections = append(sections, "## 行为准则\n"+rules)
 
 	// 3b. Search priority — how to prioritize local vs web search
 	sections = append(sections, rt.buildSearchStrategy())
@@ -1551,8 +1551,8 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	// 5. Tool Catalog — informational only; tools must be activated via ToolSelector
 	sections = append(sections, buildToolCatalog(rt.toolReg))
 
-	// 6. System reminders
-	sections = append(sections, buildSystemReminders())
+	// 6. Compressed content
+	sections = append(sections, buildCompressedContent())
 
 	// 7. Output efficiency (dynamic section)
 	sections = append(sections, buildOutputEfficiency())

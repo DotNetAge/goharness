@@ -68,6 +68,18 @@ const baseRulesText = `
 ## 搜索策略
 
 优先搜索本地知识库；必要时才搜索互联网。
+
+## 压缩内容
+
+'[已压缩]' 表示工具结果已缓存，格式：
+
+  [已压缩] 工具: {name} | {n} tokens | 参数: {args} | 路径: {path}
+
+规则：
+- 不要预读所有缓存。先用 name / n / args 判断是否相关
+- 不要重新调用工具获取已有缓存。优先用现有内容
+- 只在确信需要时才 Read 路径。读回内容追加为新消息
+- 每轮开始时，扫一遍窗口末尾——所有 [已压缩] 索引集中在此
 `
 
 // extractSection pulls a single ##-headed section from baseRulesText.
@@ -96,5 +108,5 @@ func buildOutputEfficiency() string { return extractSection("沟通风格") }
 // buildSearchPriority returns the Search Strategy section.
 func buildSearchPriority() string { return extractSection("搜索策略") }
 
-// buildSystemReminders returns the System Notes section.
-func buildSystemReminders() string { return extractSection("系统备注") }
+// buildCompressedContent returns the Compressed Content section.
+func buildCompressedContent() string { return extractSection("压缩内容") }
