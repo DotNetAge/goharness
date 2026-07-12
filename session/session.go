@@ -550,6 +550,25 @@ func (s *Session) Restore(ctx context.Context) error {
 	return nil
 }
 
+// MarkAsContentRef finds a tool message by its ToolCallID within the active
+// window and sets its Compacted field to refTag, then persists the change.
+// Returns true if the message was found and updated.
+func (s *Session) MarkAsContentRef(toolCallID, refTag string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := s.cursor; i < len(s.messages); i++ {
+		if s.messages[i].Role == "tool" && s.messages[i].ToolCallID == toolCallID {
+			s.messages[i].Compacted = refTag
+			if s.store != nil {
+				_ = s.store.UpdateMessages(context.Background(), s.id, s.cursor, s.messages)
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // Append adds new messages to the session and triggers automatic compaction
 // if the context window exceeds configured thresholds.
 //

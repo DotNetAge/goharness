@@ -33,6 +33,10 @@ type HookResult struct {
 	AbortReason string
 	// Error contains any error that occurred during hook execution.
 	Error error
+	// SkipWithResult, when set, causes the tool execution to be skipped
+	// and the provided result to be used directly. Used by dedup hooks
+	// to return cached results without re-executing the tool.
+	SkipWithResult *ToolResult
 }
 
 // IsTerminal returns true if the hook result indicates that

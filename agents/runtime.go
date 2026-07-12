@@ -73,6 +73,7 @@ import (
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/hooks/action"
+	"github.com/DotNetAge/goharness/hooks/dedup"
 	"github.com/DotNetAge/goharness/hooks/loop"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
@@ -465,6 +466,11 @@ func (rt *Runtime) registerDefaultHooks() {
 	}
 
 	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
+
+	// Register Phase-1 built-in dedup policies.
+	for _, p := range dedup.DefaultPolicies() {
+		rt.toolHooks = append(rt.toolHooks, action.NewDedupToolHook(p))
+	}
 }
 
 // parentEmitKey is a context key for passing the parent EventBus emitter
@@ -689,6 +695,13 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	logger := rt.logger
 
 	logger.Info("exec started", "session", sid, "agent", b.agentName, "model", rt.model.Name)
+
+	// Inject current Session into all DedupToolHooks.
+	for _, h := range rt.toolHooks {
+		if dth, ok := h.(*action.DedupToolHook); ok {
+			dth.SetSession(b.session)
+		}
+	}
 
 	var start time.Time
 	start = time.Now()
@@ -1811,6 +1824,23 @@ func (rt *Runtime) executeSingleTool(
 	// ToolHook.Before
 	for _, h := range rt.toolHooks {
 		hr := h.Before(sessionID, inv.Name, inv.Arguments)
+		if hr.SkipWithResult != nil {
+			// Skip actual tool execution, use cached result.
+			emit(events.ToolExecStart, events.ToolExecStartData{
+				ToolName: inv.Name,
+				Params:   inv.Arguments,
+			})
+			result := *hr.SkipWithResult
+			result.ToolCallID = inv.ID
+			emit(events.ToolExecEnd, events.ToolExecEndData{
+				ToolName:   result.ToolName,
+				ToolCallID: result.ToolCallID,
+				Duration:   result.Duration,
+				Success:    result.Success,
+				Result:     result.Result,
+			})
+			return result
+		}
 		if hr.Abort {
 			emit(events.PermissionDenied, hr.AbortReason)
 			return failedToolResult(inv.Name, inv.ID, "aborted: "+hr.AbortReason, start)
@@ -2183,6 +2213,14 @@ func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	if rt.fileModifyHook != nil {
 		rt.fileModifyHook.SetProvider(provider)
 	}
+}
+
+// RegisterDedupPolicy registers a custom deduplication policy for an
+// idempotent tool.  The policy is wrapped in a DedupToolHook and runs
+// before every tool execution.  On a cache hit the tool is skipped
+// entirely — the cached result is returned directly.
+func (rt *Runtime) RegisterDedupPolicy(policy dedup.DedupPolicy) {
+	rt.toolHooks = append(rt.toolHooks, action.NewDedupToolHook(policy))
 }
 
 // RegisterTool adds a new tool to the Runtime's tool registry.

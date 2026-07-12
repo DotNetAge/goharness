@@ -80,6 +80,14 @@ const baseRulesText = `
 - 不要重新调用工具获取已有缓存。优先用现有内容
 - 只在确信需要时才 Read 路径。读回内容追加为新消息
 - 每轮开始时，扫一遍窗口末尾——所有 [已压缩] 索引集中在此
+
+### 工具结果去重
+
+当只读工具（Read、Glob、Grep、WebSearch、WebFetch、Ls、Skill）的相同参数在
+上下文中出现多次时，系统会自动去重，无需手动干预：
+
+- '[复用: {hash}]' — 当前结果是复用的，未重新执行工具，内容是最新的。
+- '[内容编号: {hash}]' — 旧结果的引用标记，完整内容已移至最新的 '[复用: {hash}]' 处。
 `
 
 // extractSection pulls a single ##-headed section from baseRulesText.
