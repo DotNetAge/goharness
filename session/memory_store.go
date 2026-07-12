@@ -269,6 +269,17 @@ func (s *MemorySessionStore) Close() error {
 	return nil
 }
 
+func (s *MemorySessionStore) UpdateMessages(_ context.Context, sessionID string, cursor int, messages []Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	copied := make([]Message, len(messages))
+	copy(copied, messages)
+	s.store[sessionID] = copied
+	s.cursors[sessionID] = cursor
+	return nil
+}
+
 func (s *MemorySessionStore) GetCursor(_ context.Context, sessionID string) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

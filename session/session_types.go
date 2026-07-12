@@ -96,6 +96,11 @@ type SessionStore interface {
 	SaveModifyFiles(sessionID string, files []string) error
 	GetModifyFiles(sessionID string) ([]string, error)
 
+	// UpdateMessages persists modifications to existing messages (e.g. MicroCompact
+	// changes to the Compacted field). Takes the current cursor and full message list.
+	// The store replaces the existing messages for the session atomically.
+	UpdateMessages(ctx context.Context, sessionID string, cursor int, messages []Message) error
+
 		// Truncate removes messages after keepCount, keeping only the first keepCount messages.
 		Truncate(ctx context.Context, sessionID string, keepCount int) error
 }

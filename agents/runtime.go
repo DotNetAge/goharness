@@ -941,6 +941,32 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		if !windowHasQuestion {
 			question = b.question
 		}
+
+		// MicroCompact: compress tool messages in the middle of the context window
+		// when token usage exceeds 45% of maxWindowSize. This is a no-LLM compression
+		// that archives tool result contents to disk and replaces them with short
+		// placeholders. The session is modified in-place so subsequent iterations
+		// don't re-compress the same messages.
+		//
+		// Wrapped in panic recovery: MicroCompact must never crash the main loop.
+		// Any unexpected error is logged and the iteration continues normally.
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					logger.Error("[MicroCompact] panic recovered — skipping compression",
+						fmt.Errorf("%v", p),
+						"session", sid,
+						"iter", iter,
+					)
+				}
+			}()
+			b.session.TryMicroCompact(b.session.SessionDir())
+		}()
+
+		// Re-read window after MicroCompact — it may have modified messages'
+		// Compacted fields, and Current() returns a fresh copy with those changes.
+		window = b.session.Current()
+
 		msgs := rt.assembleMessages(callInput.SystemPromptSections, window, question)
 
 		// ── Stream LLM ──
@@ -1594,13 +1620,20 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 	var msgs []gochatcore.Message
 	msgs = append(msgs, systemSections...)
 
-	// Compact and convert session messages to gochat messages
-	window := session.MicroCompact(history, 2)
 	// Strip orphaned tool_calls that don't have corresponding tool responses.
 	// This prevents DeepSeek's strict validation from rejecting requests after
 	// a cancelled thinking loop where assistant+ToolCalls was persisted but
 	// the tool results were not (race between old exec cleanup and new message).
+	//
+	// NOTE: The old session.MicroCompact() call has been replaced by
+	// Session.TryMicroCompact(), which is called before assembleMessages
+	// and directly modifies the session. Compressed messages have their
+	// Compacted field set, which we render as a placeholder below.
+	window := history
 	window = stripOrphanedToolCalls(window)
+
+	// Build tool name lookup for compacted message rendering
+	toolNameByID := session.BuildToolNameByID(history)
 	for _, m := range window {
 		switch m.Role {
 		case "system":
@@ -1617,7 +1650,12 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 			}
 			msgs = append(msgs, msg)
 		case "tool":
-			toolMsg := gochatcore.NewTextMessage("tool", m.Content)
+			// Render compacted placeholder when content is archived
+			content := m.Content
+			if m.Compacted != "" {
+				content = session.RenderCompactedPlaceholder(m, toolNameByID)
+			}
+			toolMsg := gochatcore.NewTextMessage("tool", content)
 			toolMsg.ToolCallID = m.ToolCallID
 			msgs = append(msgs, toolMsg)
 		default:

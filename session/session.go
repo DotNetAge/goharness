@@ -664,10 +664,7 @@ func (s *Session) captureState() sessionState {
 	defer s.mu.RUnlock()
 
 	windowMsgs := s.messages[s.cursor:]
-	var tokens int64
-	for _, m := range windowMsgs {
-		tokens += int64(len(m.Content)/4 + 1)
-	}
+	tokens := estimateWindowTokensV2(windowMsgs)
 
 	return sessionState{
 		cursor:        s.cursor,

@@ -124,6 +124,16 @@ func (m *mockStore) Truncate(_ context.Context, _ string, _ int) error {
 	return nil // mock: no-op for lazy load tests
 }
 
+func (m *mockStore) UpdateMessages(_ context.Context, sessionID string, cursor int, messages []Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	copied := make([]Message, len(messages))
+	copy(copied, messages)
+	m.msgs[sessionID] = copied
+	m.cursors[sessionID] = cursor
+	return nil
+}
+
 func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
 	store := NewInMemoryTokenUsageStore()
 	ctx := context.Background()
