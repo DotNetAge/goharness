@@ -161,15 +161,8 @@ type Runtime struct {
 	// WithKVStore().
 	kvStore store.KVStore
 
-	// resultStore holds the results of asynchronously executed tools
-	// (currently SubAgent). SubAgentTool stores results here and
-	// CollectResultsTool blocks on it. If nil, CollectResults returns
-	// "collect_results tool requires ToolContext with ResultStore" and
-	// SubAgent results are dropped. Configured via WithResultStore().
-	resultStore *store.ResultStore
-
 	// sessionStore provides access to load sub-session messages for
-	// CollectResults fallback recovery. Configured via WithSessionStore().
+	// CollectResults recovery. Configured via WithSessionStore().
 	sessionStore session.SessionStore
 
 	logger    logging.Logger
@@ -364,11 +357,7 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	if r.tokenUsageStore == nil {
 		r.tokenUsageStore = session.NewNoopTokenUsageStore()
 	}
-	if r.resultStore == nil {
-		r.resultStore = store.NewResultStore()
-	}
 	r.toolExec = tools.NewToolExecutor(r.toolReg,
-		tools.WithResultStore(r.resultStore),
 		tools.WithSessionStore(r.sessionStore),
 		tools.WithKVStore(r.kvStore),
 	)
@@ -406,7 +395,18 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TaskList", func() tools.FuncTool { return tools.NewTaskListTool() }},
 		{"TaskGet", func() tools.FuncTool { return tools.NewTaskGetTool() }},
 		{"TaskUpdate", func() tools.FuncTool { return tools.NewTaskUpdateTool() }},
-		{"SubAgent", func() tools.FuncTool { return tools.NewSubAgentTool(rt.spawnSubAgent) }},
+		{"SubAgent", func() tools.FuncTool {
+			subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
+			subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
+				tc := tools.GetToolContext(ctx)
+				if tc == nil || tc.Session == nil {
+					return "", fmt.Errorf("no session in context")
+				}
+				sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
+				return sess.ID(), nil
+			})
+			return subAgentTool
+		}},
 		{"TeamCreate", func() tools.FuncTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }},
 		{"TeamDelete", func() tools.FuncTool { return tools.NewTeamDeleteTool() }},
 		{"TeamList", func() tools.FuncTool { return tools.NewTeamListTool() }},
@@ -522,37 +522,6 @@ func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (a
 	}
 
 	return result.Answer, sessionID, nil
-}
-
-// resumeSubAgent implements ResumeFunc for restarting an interrupted SubAgent
-// from its persisted session. It loads the existing session by ID and runs the
-// agent to completion, returning the FinalAnswer.
-//
-// This is used by CollectResults fallback when a SubAgent completed but its
-// result is no longer in ResultStore (daemon restart) and no FinalAnswer
-// message is found in the sub-session.
-func (rt *Runtime) resumeSubAgent(ctx context.Context, sessionID string) (string, error) {
-	info, err := rt.sessionStore.GetMeta(ctx, sessionID)
-	if err != nil {
-		return "", fmt.Errorf("resume sub-agent: session %q not found: %w", sessionID, err)
-	}
-	rt.logger.Info("resuming sub-agent session",
-		"session_id", sessionID,
-		"agent_name", info.AgentName,
-	)
-
-	sess, err := session.Load(sessionID, info.AgentName, rt.sessionStore)
-	if err != nil {
-		return "", fmt.Errorf("resume sub-agent: failed to load session %q: %w", sessionID, err)
-	}
-
-	builder := rt.Ask(info.AgentName, "请继续你之前的任务并提供最终答案。", sess)
-	result, err := builder.Run()
-	if err != nil {
-		return "", fmt.Errorf("resume sub-agent %q: %w", info.AgentName, err)
-	}
-
-	return result.Answer, nil
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -818,9 +787,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		tools.WithEventEmitter(func(ev events.ReactEvent) { eb.Emit(ev) }),
 		tools.WithLogger(logger),
 		tools.WithSession(b.session),
-		tools.WithResultStore(rt.resultStore),
 		tools.WithSessionStore(rt.sessionStore),
-		tools.WithResumeFunc(rt.resumeSubAgent),
 		tools.WithKVStore(rt.kvStore),
 	)
 
@@ -1316,7 +1283,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			} else {
 				content = fmt.Sprintf("[%s] returned: (empty result)", tr.ToolName)
 			}
-			logger.Info("tool result persisted", "session", sid, "tool", tr.ToolName, "content_len", len(content))
+			preview := content
+			if len(preview) > 120 {
+				preview = preview[:120]
+			}
+			logger.Info("tool result persisted", "session", sid, "tool", tr.ToolName, "content_len", len(content), "content_preview", preview)
 			b.session.Append(ctx, session.Message{
 				Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 				ToolCallID: tr.ToolCallID,

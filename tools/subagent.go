@@ -2,14 +2,10 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
-	"github.com/DotNetAge/goharness/session"
-	"github.com/DotNetAge/goharness/store"
 )
 
 // subagentSem 是子代理的并发信号量。
@@ -30,24 +26,16 @@ var subagentSem = make(chan struct{}, 20)
 //   - error: 执行过程中的错误
 type SpawnFunc func(ctx context.Context, agentName, task string) (result string, sessionID string, err error)
 
-// ResumeFunc 恢复运行已有 session 的子 Agent。
-// 与 SpawnFunc 的区别：SpawnFunc 创建新 session，ResumeFunc 加载已有 session 并继续。
-//
-// 参数：
-//   - ctx: 上下文
-//   - sessionID: 要恢复的子 session ID
-//
-// 返回：
-//   - string: 子代理的执行结果（FinalAnswer）
-//   - error: 执行过程中的错误
-type ResumeFunc func(ctx context.Context, sessionID string) (string, error)
+// EnsureSubAgentSessionFunc 用于同步获取或创建子代理 session 的 ID。
+// 在 SubAgent.Execute() 的 goroutine 之前调用，确保 session_id 可同步返回。
+type EnsureSubAgentSessionFunc func(ctx context.Context, agentName string) (string, error)
 
 // SubAgentTool 实现了子代理调度工具。
 // 允许 LLM 生成子代理来处理委派的任务。
 //
 // 特性：
-//   - 异步执行：立即返回 {task_id, status: "running"}
-//   - 结果收集：通过 CollectResultsTool 获取结果（从 ResultStore 读取）
+//   - 异步执行：立即返回 {status: "running", agent_name, session_id}
+//   - 结果收集：通过 CollectResultsTool 获取结果（轮询子 session）
 //   - 并发控制：最多 20 个并发子代理
 //   - 事件通知：发送 SubtaskSpawned 和 SubtaskCompleted 事件
 //
@@ -55,8 +43,8 @@ type ResumeFunc func(ctx context.Context, sessionID string) (string, error)
 //   - 专业任务委托（如代码审查、数据分析）
 //   - 任务并行化（将大任务拆分为独立子任务）
 type SubAgentTool struct {
-	spawn   SpawnFunc    // 子代理创建函数
-	counter atomic.Int64 // 任务 ID 计数器
+	spawn         SpawnFunc
+	ensureSession EnsureSubAgentSessionFunc // 同步获取子 session ID
 }
 
 // NewSubAgentTool 创建一个 SubAgentTool 实例。
@@ -70,14 +58,20 @@ func NewSubAgentTool(spawn SpawnFunc) *SubAgentTool {
 	return &SubAgentTool{spawn: spawn}
 }
 
+// SetEnsureSessionFunc 设置获取/创建子 session ID 的函数。
+// 在 goroutine 前同步调用，返回 session_id 作为存根。
+func (t *SubAgentTool) SetEnsureSessionFunc(fn EnsureSubAgentSessionFunc) {
+	t.ensureSession = fn
+}
+
 // Info 返回 SubAgent 工具的元信息。
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
 		Description: "为任务生成一个子代理。之后可使用 CollectResults 获取结果。",
-		Prompt: `为一次性委派任务生成一个子代理。立即返回 {task_id, status: "running"}。
+		Prompt: `为一次性委派任务生成一个子代理。立即返回 {status: "running", agent_name, session_id}。
 
-关键约束：此工具是异步的。你不会在同一轮中看到结果。请使用 CollectResults(task_ids) 稍后获取结果。
+关键约束：此工具是异步的。你不会在同一轮中看到结果。请使用 CollectResults(session_ids) 稍后获取结果。
 
 同一响应中的多个 SubAgent 调用会并行执行。请根据角色命名代理（例如 "code_reviewer"）。任务描述应自包含——子代理无法看到你的对话上下文。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
@@ -94,10 +88,10 @@ func (t *SubAgentTool) Info() *ToolInfo {
 // 处理流程：
 //  1. 验证必需参数（agent_name, task）
 //  2. 检查 ToolContext 是否包含必要组件
-//  3. 生成唯一任务 ID
+//  3. 同步获取子 session ID（存根）
 //  4. 发送 SubtaskSpawned 事件
 //  5. 在后台 goroutine 中运行子代理
-//  6. 将结果存储到 ResultStore
+//  6. 结果自动写入子 session，CollectResults 轮询获取
 //  7. 发送 SubtaskCompleted 事件
 //
 // 参数：
@@ -105,7 +99,7 @@ func (t *SubAgentTool) Info() *ToolInfo {
 //   - params: 必须包含 "agent_name" 和 "task"
 //
 // 返回：
-//   - map[string]any: 包含 task_id, status, agent_name
+//   - map[string]any: 包含 status, agent_name, session_id
 //   - error: 参数缺失或配置不完整时返回错误
 func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	agentName, _ := params["agent_name"].(string)
@@ -132,15 +126,29 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		"task", truncateForLog(task, 100),
 	)
 
-	taskID := fmt.Sprintf("subagent-%d", t.counter.Add(1))
+	// === 同步阶段：获取子 session ID（存根）===
+	// session 由 (agentName, sponsor, projectDir) 三元组标识
+	// 在 goroutine 前调用，确保 session_id 可同步返回给 spawn 结果
+	var sessionID string
+	if t.ensureSession != nil {
+		sid, err := t.ensureSession(ctx, agentName)
+		if err != nil {
+			return nil, fmt.Errorf("获取子代理 session 失败：%w", err)
+		}
+		sessionID = sid
+		logger.Info("sub-agent session ensured",
+			"agent_name", agentName,
+			"session_id", sessionID,
+		)
+	}
 
 	tc.EmitEvent(events.ReactEvent{
 		AgentName: agentName,
 		Type:      events.SubtaskSpawned,
 		Data: events.SubtaskInfo{
-			TaskID:      taskID,
 			AgentName:   agentName,
 			Description: task,
+			SessionID:   sessionID,
 		},
 	})
 
@@ -150,55 +158,27 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		startedAt := time.Now()
 		defer func() { <-subagentSem }()
 
-		result, sessionID, err := t.spawn(ctx, agentName, task)
+		result, _, err := t.spawn(ctx, agentName, task)
+
 		completedAt := time.Now()
 
 		if err != nil {
 			logger.Error("sub-agent task failed", err,
 				"agent_name", agentName,
-				"task_id", taskID,
 				"session_id", sessionID,
 				"elapsed_ms", completedAt.Sub(startedAt).Milliseconds(),
 			)
 		} else {
 			logger.Info("sub-agent task completed",
 				"agent_name", agentName,
-				"task_id", taskID,
 				"session_id", sessionID,
 				"elapsed_ms", completedAt.Sub(startedAt).Milliseconds(),
 				"result_len", len(result),
 			)
 		}
 
-		var taskResult *store.TaskResult
-		if err != nil {
-			taskResult = &store.TaskResult{TaskID: taskID, Error: err.Error(), Done: true, SessionID: sessionID}
-		} else {
-			taskResult = &store.TaskResult{TaskID: taskID, Result: result, Done: true, SessionID: sessionID}
-		}
-		if tc.ResultStore != nil {
-			tc.ResultStore.Store(taskID, taskResult)
-		}
-
-		// Write chain info to parent session for persistence & recovery
-		if tc.Session != nil {
-			status := "completed"
-			if err != nil {
-				status = "failed"
-			}
-			chainInfo, _ := json.Marshal(map[string]string{
-				"type":       "chain",
-				"task_id":    taskID,
-				"session_id": sessionID,
-				"agent":      agentName,
-				"status":     status,
-			})
-			tc.Session.Append(context.Background(), session.Message{
-				Role:      "tool",
-				Content:   string(chainInfo),
-				Timestamp: time.Now().UnixMilli(),
-			})
-		}
+		// 结果已自动写入子 session（由 runtime 持久化）
+		// CollectResults 通过轮询子 session 获取结果
 
 		var (
 			resultAnswer string
@@ -213,7 +193,6 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 			AgentName: agentName,
 			Type:      events.SubtaskCompleted,
 			Data: events.SubtaskResult{
-				TaskID:      taskID,
 				AgentName:   agentName,
 				Success:     err == nil,
 				Answer:      resultAnswer,
@@ -225,8 +204,8 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	}()
 
 	return map[string]any{
-		"task_id":    taskID,
 		"status":     "running",
 		"agent_name": agentName,
+		"session_id": sessionID,
 	}, nil
 }

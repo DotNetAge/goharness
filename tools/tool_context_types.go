@@ -22,9 +22,7 @@ var toolCtxKey = toolCtxKeyType{}
 // where copies can go stale or get out of sync with the real source of truth.
 type ToolContext struct {
 	EmitEvent   func(events.ReactEvent)
-	ResultStore *store.ResultStore
 	SessionStore session.SessionStore
-	ResumeFunc  ResumeFunc
 	KVStore     store.KVStore
 	FileStore   store.FileStore
 	Logger      logging.Logger

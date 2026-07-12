@@ -70,18 +70,8 @@ func WithKVStore(kv store.KVStore) RuntimeConfig {
 	return func(r *Runtime) { r.kvStore = kv }
 }
 
-// WithResultStore sets the async task result store.
-// The store is injected into the ToolContext so SubAgentTool can persist
-// results of spawned sub-agents and CollectResultsTool can block-wait for
-// them. If not set, CollectResults will return
-// "collect_results 工具需要带有 ResultStore 的 ToolContext" and
-// SubAgent results will not be retrievable.
-func WithResultStore(rs *store.ResultStore) RuntimeConfig {
-	return func(r *Runtime) { r.resultStore = rs }
-}
-
 // WithSessionStore sets the session store for sub-session message loading.
-// Used by CollectResults fallback to recover SubAgent results from disk.
+// Used by CollectResults to recover SubAgent results from disk.
 func WithSessionStore(ss session.SessionStore) RuntimeConfig {
 	return func(r *Runtime) { r.sessionStore = ss }
 }

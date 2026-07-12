@@ -18,9 +18,7 @@ import (
 type executorConfig struct {
 	registry     ToolRegistry
 	eventEmitter func(events.ReactEvent)
-	resultStore  *store.ResultStore
 	sessionStore session.SessionStore
-	resumeFunc   ResumeFunc
 	kvStore      store.KVStore
 	fileStore    store.FileStore
 	session      *session.Session // authoritative source for session-level state
@@ -40,20 +38,9 @@ func WithEventEmitter(emitter func(events.ReactEvent)) ExecutorOption {
 	return func(c *executorConfig) { c.eventEmitter = emitter }
 }
 
-// WithResultStore sets the result store for async tool execution.
-func WithResultStore(store *store.ResultStore) ExecutorOption {
-	return func(c *executorConfig) { c.resultStore = store }
-}
-
 // WithSessionStore sets the session store for loading sub-session messages.
 func WithSessionStore(store session.SessionStore) ExecutorOption {
 	return func(c *executorConfig) { c.sessionStore = store }
-}
-
-// WithResumeFunc sets the function for resuming interrupted SubAgent sessions.
-// Used by CollectResults fallback to restart SubAgents that were interrupted.
-func WithResumeFunc(fn ResumeFunc) ExecutorOption {
-	return func(c *executorConfig) { c.resumeFunc = fn }
 }
 
 // WithKVStore sets the KV store.

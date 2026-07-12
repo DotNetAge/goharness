@@ -4,10 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/DotNetAge/goharness/session"
 )
 
-// CollectResultsTool blocks until the specified tasks complete and returns all results.
-// It is sync (IsAsync=false) — its goroutine is blocked internally via ResultStore.WaitForResult.
+const (
+	// defaultCollectTimeout is the maximum time to wait for all sub-agents to complete.
+	defaultCollectTimeout = 30 * time.Minute
+	// pollInterval is the time between sub-session polls.
+	pollInterval = 2 * time.Second
+)
+
+// CollectResultsTool 收集子代理任务的结果。
+// 通过轮询子 session 获取 SubAgent 的执行结果，不依赖 ResultStore。
 type CollectResultsTool struct{}
 
 func NewCollectResultsTool() *CollectResultsTool {
@@ -21,79 +31,69 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 		Description:        "收集子代理任务的结果",
 		Prompt: `收集子代理任务的结果。支持重试与恢复。
 
-当存在子代理 task_id 时，请优先调用此工具：
-- 首次调用：等待正在运行的任务并返回结果
-- 重试：从之前已完成的任务中恢复结果
+返回 JSON 数组，每项包含 {session_id, agent_name, status, result}。
 
-请勿对已存在的 task_id 重新生成子代理——请重试 CollectResults。`,
+当存在子代理 session_id 时，请优先调用此工具：
+- 首次调用：等待正在运行的任务并返回结果
+- 重试：从已完成的任务中恢复结果（从子 session 直接读取）
+
+如果返回 status=completed，result 字段包含子代理的最终答案。
+如果某个 session_id 未返回结果（missing/failed），请对该 agent 重新发起
+SubAgent 调用（task 设为"继续之前的任务并给出最终结果"），
+再调用 CollectResults 获取新结果。同一 agent 会复用之前的 session。
+
+注意：session_id 来自 SubAgent 返回结果中的 session_id 字段。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
-			{Name: "task_ids", Type: "array", Description: "要收集结果的任务 ID 数组。", Required: true},
+			{Name: "session_ids", Type: "array", Description: "要收集结果的子 session ID 数组。session_id 来自 SubAgent 返回结果。", Required: true},
 		},
 	}
 }
 
 func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
-	if tc == nil || tc.ResultStore == nil {
-		return nil, fmt.Errorf("collect_results 工具需要包含 ResultStore 的 ToolContext")
+	logger := getLogger(ctx)
+	if tc == nil || tc.Session == nil || tc.SessionStore == nil {
+		return nil, fmt.Errorf("collect_results 工具需要包含 Session 和 SessionStore 的 ToolContext")
 	}
 
-	rawIDs, ok := params["task_ids"].([]any)
+	rawIDs, ok := params["session_ids"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("task_ids 必须是字符串数组")
+		return nil, fmt.Errorf("session_ids 必须是字符串数组")
 	}
 
-	// Strip the caller's syncTimeout deadline (default 5min) to allow waiting
-	// for long-running SubAgents. The ResultStore's own 30min default timeout
-	// and explicit context cancellation still apply.
+	sessionIDs := make([]string, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		if id, ok := raw.(string); ok {
+			sessionIDs = append(sessionIDs, id)
+		}
+	}
+	logger.Info("collect_results: collecting results",
+		"session_ids", sessionIDs,
+		"count", len(sessionIDs),
+		"deadline_in", defaultCollectTimeout.String(),
+	)
+
+	// Strip caller's timeout to allow waiting for long-running SubAgents
 	waitCtx := context.WithoutCancel(ctx)
 
+	deadline := time.Now().Add(defaultCollectTimeout)
+
 	var jsonResults []map[string]string
-	for _, raw := range rawIDs {
-		id, ok := raw.(string)
-		if !ok {
-			return nil, fmt.Errorf("task_id 必须是字符串，实际类型为 %T", raw)
-		}
-
-		// Phase 1: Non-blocking Get (fast path — SubAgent already completed)
-		r := tc.ResultStore.Get(id)
-
-		// Phase 2: Chain info fallback (covers daemon restart — ResultStore empty
-		// but SubAgent completed and wrote chain info to parent session before crash)
-		if r == nil || !r.Done {
-			if entry := fallbackCollect(tc, id); entry != nil {
-				jsonResults = append(jsonResults, entry)
-				continue
-			}
-		}
-
-		// Phase 3: Blocking wait (SubAgent still running)
-		if r == nil || !r.Done {
-			r = tc.ResultStore.WaitForResult(waitCtx, id)
-		}
-
-		// Phase 4: Process result
-		if r.Error != "" {
-			// WaitForResult failed — try chain info fallback one more time
-			// (may call ResumeFunc to restart an interrupted SubAgent)
-			if entry := fallbackCollect(tc, id); entry != nil {
-				jsonResults = append(jsonResults, entry)
-				continue
-			}
-			jsonResults = append(jsonResults, map[string]string{
-				"task_id":    id,
-				"session_id": r.SessionID,
-				"status":     "failed",
-				"error":      r.Error,
-			})
+	for _, id := range sessionIDs {
+		result := t.pollForResult(waitCtx, tc, id, deadline)
+		if result != nil {
+			jsonResults = append(jsonResults, result)
 		} else {
+			logger.Warn("collect_results: sub-agent did not complete within deadline",
+				"session_id", id,
+				"deadline_minutes", defaultCollectTimeout.Minutes(),
+			)
 			jsonResults = append(jsonResults, map[string]string{
-				"task_id":    id,
-				"session_id": r.SessionID,
-				"status":     "completed",
-				"result":     r.Result,
+				"session_id": id,
+				"status":     "failed",
+				"error":      "超时：子代理未在指定时间内完成",
 			})
 		}
 	}
@@ -105,108 +105,129 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	return string(out), nil
 }
 
-// fallbackCollect attempts to recover a SubAgent result from the parent session's
-// chain info and the sub-session's persisted messages.
-//
-// This handles the daemon restart / session recovery case where ResultStore is
-// empty but the SubAgent had already completed and its chain info was written
-// to the parent session.
-//
-// Returns nil if no chain info is found (caller should continue with WaitForResult).
-// When chain info exists but no FinalAnswer is found, it attempts ResumeFunc to
-// restart the interrupted SubAgent.
-func fallbackCollect(tc *ToolContext, taskID string) map[string]string {
-	if tc.Session == nil || tc.SessionStore == nil {
-		return nil
-	}
+// pollForResult 轮询等待单个子 session 的结果。
+// 直接通过 session_id 加载子 session → 查找 FinalAnswer。
+// 每 30 次轮询输出一次进度日志，避免高频重复日志。
+func (t *CollectResultsTool) pollForResult(ctx context.Context, tc *ToolContext, sessionID string, deadline time.Time) map[string]string {
+	logger := getLogger(ctx)
+	startedAt := time.Now()
+	pollCount := 0
 
-	// 1. Scan parent session for chain info matching task_id
-	var chainSessionID, chainAgent, chainStatus string
-	for _, msg := range tc.Session.All() {
-		if msg.Role != "tool" {
+	logger.Info("collect_results: start polling sub-session",
+		"session_id", sessionID,
+		"deadline_at", deadline.Format(time.RFC3339),
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Warn("collect_results: poll cancelled",
+				"session_id", sessionID,
+				"poll_count", pollCount,
+				"elapsed_ms", time.Since(startedAt).Milliseconds(),
+				"reason", ctx.Err(),
+			)
+			return nil
+		default:
+		}
+
+		if time.Now().After(deadline) {
+			logger.Warn("collect_results: deadline reached",
+				"session_id", sessionID,
+				"poll_count", pollCount,
+				"elapsed_ms", time.Since(startedAt).Milliseconds(),
+			)
+			return nil
+		}
+
+		// 加载子 session 消息
+		subMsgs, err := tc.SessionStore.Get(ctx, sessionID)
+		if err != nil || len(subMsgs) == 0 {
+			if pollCount%30 == 0 {
+				logger.Info("collect_results: sub-session not ready yet, retrying",
+					"session_id", sessionID,
+					"poll_count", pollCount,
+					"elapsed_s", int(time.Since(startedAt).Seconds()),
+					"error", err,
+				)
+			}
+			pollCount++
+			time.Sleep(pollInterval)
 			continue
 		}
-		var chain map[string]string
-		if err := json.Unmarshal([]byte(msg.Content), &chain); err != nil {
-			continue
-		}
-		if chain["type"] != "chain" || chain["task_id"] != taskID {
-			continue
-		}
-		chainSessionID = chain["session_id"]
-		chainAgent = chain["agent"]
-		chainStatus = chain["status"]
-		break
-	}
-	if chainSessionID == "" {
-		return nil // No chain info — SubAgent may still be running
-	}
 
-	// 2. Load sub-session messages
-	subMsgs, err := tc.SessionStore.Get(context.Background(), chainSessionID)
-	if err != nil || len(subMsgs) == 0 {
-		return nil
-	}
-
-	// 3. Find FinalAnswer (last assistant message without tool_calls)
-	var finalAnswer string
-	for i := len(subMsgs) - 1; i >= 0; i-- {
-		m := subMsgs[i]
-		if m.Role == "assistant" && len(m.ToolCalls) == 0 && m.Content != "" {
-			finalAnswer = m.Content
-			break
-		}
-	}
-
-	if finalAnswer != "" {
-		// Found FinalAnswer → return result
-		return map[string]string{
-			"task_id":    taskID,
-			"session_id": chainSessionID,
-			"agent":      chainAgent,
-			"status":     "completed",
-			"result":     finalAnswer,
-		}
-	}
-
-	// 4. No FinalAnswer — chain info says "failed" or SubAgent was interrupted
-	if chainStatus == "failed" {
-		return map[string]string{
-			"task_id":    taskID,
-			"session_id": chainSessionID,
-			"agent":      chainAgent,
-			"status":     "failed",
-			"error":      "子代理失败且无可用结果",
-		}
-	}
-
-	// 5. SubAgent interrupted (chain shows completed but no FinalAnswer found,
-	//    or chain status is unknown) — try ResumeFunc
-	if tc.ResumeFunc != nil {
-		result, resumeErr := tc.ResumeFunc(context.Background(), chainSessionID)
-		if resumeErr == nil {
+		// 查找 FinalAnswer
+		if answer := findFinalAnswer(subMsgs); answer != "" {
+			agentName := lookupSubAgentName(ctx, tc, sessionID)
+			logger.Info("collect_results: found FinalAnswer in sub-session",
+				"session_id", sessionID,
+				"agent_name", agentName,
+				"poll_count", pollCount,
+				"elapsed_ms", time.Since(startedAt).Milliseconds(),
+				"result_len", len(answer),
+			)
 			return map[string]string{
-				"task_id":    taskID,
-				"session_id": chainSessionID,
-				"agent":      chainAgent,
+				"session_id": sessionID,
+				"agent_name": agentName,
 				"status":     "completed",
-				"result":     result,
+				"result":     answer,
 			}
 		}
-		return map[string]string{
-			"task_id":    taskID,
-			"session_id": chainSessionID,
-			"agent":      chainAgent,
-			"status":     "failed",
-			"error":      fmt.Sprintf("恢复子代理失败：%v", resumeErr),
+
+		// 每 30 次轮询输出一次进度，避免高频重复日志
+		if pollCount%30 == 0 {
+			logger.Info("collect_results: no FinalAnswer yet, retrying",
+				"session_id", sessionID,
+				"poll_count", pollCount,
+				"elapsed_s", int(time.Since(startedAt).Seconds()),
+			)
+		}
+		pollCount++
+		time.Sleep(pollInterval)
+	}
+}
+
+// lookupSubAgentName 从子 session 的 meta 中获取 agent_name。
+// 优先使用 SessionStore.GetMeta（从文件元数据读取），
+// 兜底从子 session 的 system 消息解析。
+func lookupSubAgentName(ctx context.Context, tc *ToolContext, sessionID string) string {
+	if tc.SessionStore != nil {
+		info, err := tc.SessionStore.GetMeta(ctx, sessionID)
+		if err == nil && info != nil && info.AgentName != "" {
+			return info.AgentName
 		}
 	}
+	// 兜底：从 system 消息解析
+	return extractAgentNameFromMessages(tc, sessionID)
+}
 
-	return map[string]string{
-		"task_id":    taskID,
-		"session_id": chainSessionID,
-		"agent":      chainAgent,
-		"status":     "failed",
-		"error":      "子代理中断且无可用恢复函数",
+// extractAgentNameFromMessages 从子 session 的 system 消息中提取 agent_name。
+func extractAgentNameFromMessages(tc *ToolContext, sessionID string) string {
+	msgs, err := tc.SessionStore.Get(context.Background(), sessionID)
+	if err != nil {
+		return ""
 	}
+	for _, m := range msgs {
+		if m.Role == "system" && m.Content != "" {
+			var meta struct {
+				AgentName string `json:"agent_name"`
+			}
+			if err := json.Unmarshal([]byte(m.Content), &meta); err == nil && meta.AgentName != "" {
+				return meta.AgentName
+			}
+		}
+	}
+	return ""
+}
+
+// findFinalAnswer 在子 session 的消息中查找 FinalAnswer。
+// FinalAnswer 是最后一条没有 tool_calls 的 assistant 消息。
+func findFinalAnswer(msgs []session.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role == "assistant" && len(m.ToolCalls) == 0 && m.Content != "" {
+			return m.Content
+		}
+	}
+	return ""
 }
