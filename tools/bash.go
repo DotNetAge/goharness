@@ -108,8 +108,8 @@ func (t *BashTool) Info() *ToolInfo {
 - 文件搜索：使用 Glob（不要用 find）
 - 内容搜索：使用 Grep
 - 读取文件：使用 Read（不要用 cat/head/tail）
-- 编辑文件：使用 FileEdit（不要用 sed/awk）
-- 写入文件：使用 Write
+- 编辑文件：使用 Edit（不要用 sed/awk）
+- 写入文件：使用 Write（不要用 tee/cat）
 
 专用工具提供更好的体验，也更容易审查工具调用。
 

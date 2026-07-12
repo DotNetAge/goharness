@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"strings"
+
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/memory"
@@ -27,13 +29,18 @@ func NewMemoryThoughtHook(mem memory.Memory) *MemoryThoughtHook {
 func (h *MemoryThoughtHook) Priority() int { return 50 }
 
 // BeforeLLM retrieves relevant memory records for the current input
-// and injects them as a system prompt section.
+// and injects them as a single, optional second system message.
+//
+// This preserves KV cache efficiency: the first system message (static base
+// instructions) never changes, so the LLM provider can cache it. The second
+// message is only appended when memory results exist and carries all dynamic
+// content (session memory + cross-session memory) combined.
 func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
 	if input.UserMessage == "" || h.memory == nil {
 		return hooks.HookResult{}
 	}
 
-	added := false
+	var parts []string
 
 	// 1. Session-scoped retrieval (current conversation)
 	sessionRecords, err := h.memory.Retrieve(nil, input.UserMessage,
@@ -42,15 +49,11 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	)
 	if err == nil && len(sessionRecords) > 0 {
 		if content := memory.FormatMemoryRecords(sessionRecords); content != "" {
-			input.SystemPromptSections = append(
-				input.SystemPromptSections,
-				gochatcore.NewSystemMessage(
-					"## 相关记忆\n"+
-						"以下是当前对话的相关记忆，可能对你的推理有参考作用。\n"+
-						content,
-				),
+			parts = append(parts,
+				"## 相关记忆\n"+
+					"以下是当前对话的相关记忆，可能对你的推理有参考作用。\n"+
+					content,
 			)
-			added = true
 		}
 	}
 
@@ -74,33 +77,38 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 			}
 			if len(filtered) > 0 {
 				if content := memory.FormatMemoryRecords(filtered); content != "" {
-					input.SystemPromptSections = append(
-						input.SystemPromptSections,
-						gochatcore.NewSystemMessage(
-							"## 其他会话的相关内容\n"+
-								"以下是我在其他会话中与当前对话相关的记忆。"+
-								"它们可能包含一些有帮助性的内容——请根据你的判断决定其适用性:\n\n"+
-								content,
-						),
+					parts = append(parts,
+						"## 其他会话的相关内容\n"+
+							"以下是我在其他会话中与当前对话相关的记忆。"+
+							"它们可能包含一些有帮助性的内容——请根据你的判断决定其适用性:\n\n"+
+							content,
 					)
-					added = true
 				}
 			}
 		}
 	}
 
-	// Fallback: if only one retrieval succeeded, inject as generic context
-	if !added && len(sessionRecords) > 0 {
+	// Fallback: if only session-scoped retrieval returned results but
+	// FormatMemoryRecords was empty on first attempt, retry as generic context
+	if len(parts) == 0 && len(sessionRecords) > 0 {
 		if content := memory.FormatMemoryRecords(sessionRecords); content != "" {
-			input.SystemPromptSections = append(
-				input.SystemPromptSections,
-				gochatcore.NewSystemMessage(
-					"## 相关上下文\n"+
-						"以下是相关的历史记忆:\n\n"+
-						content,
-				),
+			parts = append(parts,
+				"## 相关上下文\n"+
+					"以下是相关的历史记忆:\n\n"+
+					content,
 			)
 		}
+	}
+
+	// Append a single dynamic system message only when there is memory content.
+	// This gives the LLM exactly 2 system messages at most:
+	//   [0] static base instructions (KV-cache friendly, never rebuilt)
+	//   [1] dynamic memory context (absent when no results)
+	if len(parts) > 0 {
+		input.SystemPromptSections = append(
+			input.SystemPromptSections,
+			gochatcore.NewSystemMessage(strings.Join(parts, "\n\n")),
+		)
 	}
 	return hooks.HookResult{}
 }
