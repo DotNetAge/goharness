@@ -27,11 +27,11 @@ func (t *MemorySearch) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "MemorySearch",
 		MaxResultSizeChars: 30000,
-		Description:        "搜索长期记忆以获取相关的过往知识、经验或数据。",
-		Prompt: `搜索长期记忆以获取相关的过往知识、经验或数据。
-当您需要来自先前交互、用户偏好、历史上下文或特定领域知识的信息时，请使用此工具。
+		Description:        "回忆过往会话中的知识、决策或经历。",
+		Prompt: `回忆过往会话中的知识、决策或经历。
+当用户表达回忆意图（例如"回忆"、"你还记得"、"我上次说的"、"之前我们讨论的"），或需要来自先前交互、用户偏好、历史上下文、特定领域知识的信息时，请使用此工具。
 这应该是您在搜索互联网之前的第一个外部信息来源。`,
-		Tags:       []string{"memory", "knowledge", "search", "retrieval"},
+		Tags:       []string{"memory", "knowledge", "recall", "retrieval"},
 		IsReadOnly: true,
 		Parameters: []Parameter{
 			{
@@ -47,9 +47,9 @@ func (t *MemorySearch) Info() *ToolInfo {
 				Required:    false,
 			},
 			{
-				Name:        "types",
-				Type:        "array",
-				Description: "按记忆类型过滤：[\"longterm\"] 表示持久知识，[\"session\"] 仅表示当前会话。默认搜索两者。",
+				Name:        "project_dir",
+				Type:        "string",
+				Description: "限定只搜索指定项目目录下的记忆。不传则搜索当前 Agent 下所有会话的记忆。",
 				Required:    false,
 			},
 		},
@@ -80,25 +80,22 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 	var opts []memory.RetrieveOption
 	opts = append(opts, memory.WithMemoryLimit(limit))
 
-	if typesRaw, ok := params["types"].([]any); ok && len(typesRaw) > 0 {
-		var memTypes []memory.MemoryType
-		for _, t := range typesRaw {
-			if typeStr, ok := t.(string); ok {
-				switch strings.ToLower(typeStr) {
-				case "longterm", "long-term", "long_term":
-					memTypes = append(memTypes, memory.MemoryTypeLongTerm)
-				case "session":
-					memTypes = append(memTypes, memory.MemoryTypeSession)
-				}
-			}
+	// 始终按当前 Agent 过滤
+	if tc := GetToolContext(ctx); tc != nil {
+		if tc.Session != nil {
+			opts = append(opts, memory.WithAgentName(tc.Session.AgentName()))
 		}
-		if len(memTypes) > 0 {
-			opts = append(opts, memory.WithMemoryTypes(memTypes...))
+	}
+
+	// project_dir 不为空则限定到指定项目目录（即当前会话范围）
+	if raw, ok := params["project_dir"]; ok {
+		if dir, ok := raw.(string); ok && dir != "" {
+			opts = append(opts, memory.WithProjectDir(dir))
 		}
 	}
 
 	logger := getLogger(ctx)
-	logger.Info("searching memory",
+	logger.Info("[MemorySearch]记忆搜索",
 		"query", truncateStr(query, 100),
 		"limit", limit,
 	)

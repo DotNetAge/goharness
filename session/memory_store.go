@@ -160,33 +160,6 @@ func (s *MemorySessionStore) RegisterRole(sessionID, role string) {
 	}
 }
 
-func (s *MemorySessionStore) GetByRole(_ context.Context, agentName string) (*SessionInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var bestID string
-	var bestTime time.Time
-	for sid, meta := range s.metas {
-		if meta.role == agentName && meta.lastActivityAt.After(bestTime) {
-			bestID = sid
-			bestTime = meta.lastActivityAt
-		}
-	}
-	if bestID == "" {
-		return nil, ErrSessionNotFound
-	}
-	meta := s.metas[bestID]
-	msgs := s.store[bestID]
-	out := make([]Message, len(msgs))
-	copy(out, msgs)
-	return &SessionInfo{
-		SessionID:      bestID,
-		AgentName:      meta.role,
-		Messages:       out,
-		LastActivityAt: meta.lastActivityAt,
-		CreatedAt:      meta.createdAt,
-	}, nil
-}
-
 func (s *MemorySessionStore) ListSessions(_ context.Context) ([]SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

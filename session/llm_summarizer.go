@@ -37,54 +37,44 @@ type llmSummarizer struct {
 	maxTokens    int
 }
 
-// defaultSystemPrompt is the default summarizer system prompt.
-const defaultSystemPrompt = `你是一个对话摘要生成器。将以下预处理过的对话中的关键性信息浓缩为独立的记忆片段。
+// defaultSystemPrompt — 最简角色设定。格式指令放在最后一条 user message。
+const defaultSystemPrompt = `你是记录员。将以下对话浓缩为要点式摘要 JSON 数组。不要推测缺失细节。`
 
-注意:输入已经过预处理——工具参数已缩减为关键字段(file_path, command, subject 等),工具结果已截断到 2000 字符以内或存入临时文件。不要尝试恢复、猜测或推测缺失的细节。
+// summarizeInstruction — 放在最后一条 user message，居于注意力峰值位置。
+const summarizeInstruction = `将上面对话浓缩为 JSON 数组格式的要点式摘要。
 
-每个片段是一个自包含的知识单元:它必须在没有原始对话上下文的情况下仍然可理解和使用。系统会自动为每个片段附加 session_id 和 agent_name——不要包含这些。每个输入消息都有一个 ISO 8601 时间戳前缀(例如 "[2026-07-02T14:30:45Z]"),你可以参考它来确定事件发生的时间。
-
-每个片段有四个字段:
-1. summary: 8-15 个词概括要点(仅用于语义检索;简洁以提高嵌入精度)
-2. content: 完整的记忆内容——该单元的所有关键信息,独立可理解。不要重复 summary 中已陈述的事实。
-3. tags: 3-5 个关键词,小写,短横线分隔(例如 "auth-flow", "goharness"),具有区分度以便基于主题的过滤
-4. timestamp: 描述的事件发生的 ISO 8601 日期时间(例如 "2026-07-02T14:30:45Z")。参考输入消息的前缀;如果片段跨越多个时间,使用最重要事件的时间。
-
-拆分规则:
-- 在以下情况下拆分为独立片段:独立的主题、决策或知识单元
-- 在以下情况下合并为一个片段:一个决策及其理由,或一个问题及其解决方案
-- 每次调用目标生成 3-8 个片段;永远不要超过 12 个
-
-内容优先级(按此顺序包含;如果长度受限,丢弃较低优先级的项):
-1. 决策及其结论
-2. 明确的用户偏好和约束
-3. 技术事实:文件路径、函数名、关键代码片段
-4. 程序性闲聊(除非是主题的核心,否则丢弃)
-
-质量规则:
-- 跳过琐碎的交流(问候、单个词的确认如 "ok"/"好的"、纯测试输入)——返回较少的片段,而不是用低价值内容填充
-- 当后面的消息与前面的消息矛盾时(例如 "不,那是错的"、"不对"、"重做"、"再试一次"),只总结最终的解决方案,而不是被拒绝的尝试
-- 如果用户对结果表示不满,不要将被拒绝的版本作为事实记忆
-- 一个高质量的片段胜过几个低质量的片段
-- 如果在过滤琐碎内容后对话没有实质性信息,返回空数组
-
-严格输出:
-- 仅输出原始 JSON 数组——不要 markdown 代码块,不要额外文本
-- 每个片段必须有非空的 summary 和非空的 content
-- 如果对话是琐碎的(例如随意问候),返回空数组
-- Summary 语言必须与对话中使用的语言匹配
-- 不要捏造;不要遗漏关键决策或结论
-- 不要在 summary 和 content 之间重复事实
-
-输出格式(严格的 JSON 数组):
+输出格式：
 [
   {
-    "summary": "8-15 个词的要点",
-    "content": "完整的自包含记忆内容",
-    "tags": ["内容标签1", "内容标签2", "内容标签3"],
-    "timestamp": "2026-07-02T14:30:45Z"
+    "summary": "标题（≤20字，概括主题，用于检索召回）",
+    "content": "要点式摘要（≤500字）",
+    "tags": ["3-5个从内容提取的关键词，小写短横线分隔"],
+    "timestamp": "最重要事件的 ISO 8601 时间（例如 2026-07-02T14:30:45Z）"
   }
-]`
+]
+
+content 按以下分类组织要点（用「」标注类别，每类下用 - 列要点，无内容的类别省略）：
+- 「决策与结论」：已确定的方案、用户拍板的选择
+- 「关键信息」：用户偏好、约束条件、重要事实
+- 「文件与路径」：涉及的关键文件绝对路径、函数/模块名
+- 「问题与路径」：已解决的问题及路径、已否决的方案（标注"已否决"）
+
+示例：
+[{"summary":"Redis 迁移","content":"「决策与结论」\n- 迁移到 Cluster 已确认","tags":["redis-migration"],"timestamp":"2026-07-02T14:30:45Z"},{"summary":"前端构建改造","content":"「决策与结论」\n- 构建工具切 Vite","tags":["vite"],"timestamp":"2026-07-03T09:15:00Z"}]
+
+规则：
+- 只输出原始 JSON 数组，无其他文本
+- 禁止对话体、问句、问候、情绪、表情符号
+- 只记已确认事实，不含未决选项
+- 跳过问候、确认词。矛盾只记最终方案
+- 保留实体名（文件名、函数名、技术术语）
+- tags 从 content 提取
+- 信息超 500 字时优先级：决策与结论 > 问题与路径 > 关键信息 > 文件与路径
+- 无实质信息时返回 []
+- 多主题拆成多条，单主题只输出一条`
+
+// retryInstruction — 重试时使用的精简指令，同样放在最后一条 user message。
+const retryInstruction = `将以上全部的对话输出为 JSON 数组。每条格式：{"summary":"标题","content":"要点","tags":["标签"],"timestamp":"ISO 8601"}。只输出 JSON 数组，无其他文本。无实质信息时返回 []。`
 
 // NewLLMSummarizer 创建一个新的 LLM 摘要器实例。
 func NewLLMSummarizer(model config.ModelConfig, opts ...SummarizerOption) Summarizer {
@@ -100,16 +90,37 @@ func NewLLMSummarizer(model config.ModelConfig, opts ...SummarizerOption) Summar
 }
 
 // Summarize 调用 LLM 生成多个结构化的 MemoryChunk。
-// 直接将原始消息序列（保留原始 role/content）传递给 LLM，避免预格式化带来的 token 膨胀和超限风险。
+// 如果第一次调用返回非 JSON 输出，会自动重试一次，使用精简指令。
 func (s *llmSummarizer) Summarize(ctx context.Context, messages []Message) ([]memory.MemoryChunk, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
 
-	// 拼接消息列表：系统提示词 + 原始对话消息
-	msgs := make([]gochatcore.Message, 0, len(messages)+1)
-	msgs = append(msgs, gochatcore.NewSystemMessage(s.systemPrompt))
-	msgs = append(msgs, s.toLLMMessages(messages)...)
+	// 第一次尝试
+	chunks, err := s.trySummarize(ctx, messages, s.systemPrompt, summarizeInstruction)
+	if err == nil {
+		return chunks, nil
+	}
+
+	// 重试一次：使用更精简的指令
+	chunks, retryErr := s.trySummarize(ctx, messages, s.systemPrompt, retryInstruction)
+	if retryErr != nil {
+		return nil, fmt.Errorf("summarizer: %w (retry also failed: %v)", err, retryErr)
+	}
+	return chunks, nil
+}
+
+// trySummarize 执行一次实际的 LLM 摘要调用。
+// 消息结构：system(角色) → user(对话原文) → user(摘要指令)
+// 摘要指令放在最后一条 user message 以获得最高注意力权重，类似 OpenCode 的做法。
+func (s *llmSummarizer) trySummarize(ctx context.Context, messages []Message, systemPrompt, instruction string) ([]memory.MemoryChunk, error) {
+	condensed := s.formatMessages(messages)
+
+	msgs := []gochatcore.Message{
+		gochatcore.NewSystemMessage(systemPrompt),
+		gochatcore.NewUserMessage(condensed),
+		gochatcore.NewUserMessage(instruction),
+	}
 
 	resp, err := gochat.Client().
 		Config(
@@ -259,13 +270,12 @@ type rawChunk struct {
 	Timestamp string   `json:"timestamp,omitempty"`
 }
 
-// parseResponse 解析 LLM 返回的 JSON 响应为 MemoryChunk 列表。
+// parseResponse 解析 LLM 返回的 JSON 数组响应为 MemoryChunk 列表。
 func (s *llmSummarizer) parseResponse(response string) ([]memory.MemoryChunk, error) {
 	text := strings.TrimSpace(response)
 
-	// 尝试提取 JSON 数组（可能被 markdown 代码块包裹）
+	// 尝试提取 JSON（可能被 markdown 代码块包裹）
 	if strings.HasPrefix(text, "```") {
-		// 移除 ```json 或 ``` 包裹
 		text = strings.TrimPrefix(text, "```json")
 		text = strings.TrimPrefix(text, "```")
 		if idx := strings.LastIndex(text, "```"); idx >= 0 {
@@ -274,17 +284,20 @@ func (s *llmSummarizer) parseResponse(response string) ([]memory.MemoryChunk, er
 	}
 	text = strings.TrimSpace(text)
 
-	// 解析 JSON 数组
+	// 空响应、空对象、空数组 — LLM 判定无实质信息
+	if text == "" || text == "{}" || text == "[]" {
+		return nil, nil
+	}
+
+	// 解析为 JSON 数组
 	var rawChunks []rawChunk
 	if err := json.Unmarshal([]byte(text), &rawChunks); err != nil {
-		// 如果解析失败，将整个响应作为单个记忆片的内容
-		return []memory.MemoryChunk{
-			{
-				Summary: "对话摘要",
-				Content: text,
-				Tags:    []string{},
-			},
-		}, nil
+		// 记录原始输出前 200 字符便于调试
+		preview := text
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("summarizer: LLM output is not a valid JSON array (preview: %q), discarded: %w", preview, err)
 	}
 
 	if len(rawChunks) == 0 {
@@ -296,37 +309,49 @@ func (s *llmSummarizer) parseResponse(response string) ([]memory.MemoryChunk, er
 		if rc.Content == "" {
 			continue
 		}
-		tags := rc.Tags
-		if tags == nil {
-			tags = []string{}
-		}
-		chunk := memory.MemoryChunk{
-			Summary: rc.Summary,
-			Content: rc.Content,
-			Tags:    tags,
-		}
-		// 解析 LLM 提供的 ISO 8601 时间戳；解析失败保持零值，由上层 fallback
-		if rc.Timestamp != "" {
-			if t, err := time.Parse(time.RFC3339, rc.Timestamp); err == nil {
-				chunk.Timestamp = t
-			}
-		}
-		chunks = append(chunks, chunk)
+		chunks = append(chunks, buildChunkFromRaw(rc))
+	}
+	if len(chunks) == 0 {
+		return nil, nil
 	}
 	return chunks, nil
+}
+
+// buildChunkFromRaw 将 LLM 输出的 rawChunk 转为 MemoryChunk。
+// Timestamp 解析 LLM 提供的 ISO 8601 字符串；解析失败保持零值，由上层 fallback。
+func buildChunkFromRaw(rc rawChunk) memory.MemoryChunk {
+	tags := rc.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	chunk := memory.MemoryChunk{
+		Summary: rc.Summary,
+		Content: rc.Content,
+		Tags:    tags,
+	}
+	if rc.Timestamp != "" {
+		if t, err := time.Parse(time.RFC3339, rc.Timestamp); err == nil {
+			chunk.Timestamp = t
+		}
+	}
+	return chunk
 }
 
 // formatMessages 将消息列表格式化为纯文本，供 LLM 摘要使用。
 func (s *llmSummarizer) formatMessages(messages []Message) string {
 	var buf strings.Builder
 	for _, m := range messages {
+		tsPrefix := ""
+		if m.Timestamp > 0 {
+			tsPrefix = "[" + time.Unix(m.Timestamp, 0).UTC().Format(time.RFC3339) + "] "
+		}
 		switch m.Role {
 		case "user":
-			buf.WriteString("[用户]\n")
+			buf.WriteString(tsPrefix + "[用户]\n")
 			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
 		case "assistant":
-			buf.WriteString("[助手]\n")
+			buf.WriteString(tsPrefix + "[助手]\n")
 			buf.WriteString(m.Content)
 			if len(m.ToolCalls) > 0 {
 				buf.WriteString("\n[工具调用]")
@@ -336,7 +361,7 @@ func (s *llmSummarizer) formatMessages(messages []Message) string {
 			}
 			buf.WriteString("\n\n")
 		case "tool":
-			buf.WriteString(fmt.Sprintf("[工具结果: %s]\n", m.ToolCallID))
+			buf.WriteString(fmt.Sprintf(tsPrefix+"[工具结果: %s]\n", m.ToolCallID))
 			// 截断过长的工具结果
 			if len(m.Content) > 2000 {
 				buf.WriteString(m.Content[:2000])
@@ -346,11 +371,11 @@ func (s *llmSummarizer) formatMessages(messages []Message) string {
 			}
 			buf.WriteString("\n\n")
 		case "system":
-			buf.WriteString("[系统]\n")
+			buf.WriteString(tsPrefix + "[系统]\n")
 			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
 		default:
-			buf.WriteString(fmt.Sprintf("[%s]\n", m.Role))
+			buf.WriteString(fmt.Sprintf(tsPrefix+"[%s]\n", m.Role))
 			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
 		}

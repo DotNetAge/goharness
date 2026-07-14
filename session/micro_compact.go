@@ -135,7 +135,7 @@ func (s *Session) TryMicroCompact(sessionDir string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	window := s.messages[s.cursor:]
+	window := s.messages[s.cursor:] // 偏移量模型：当前窗口 = messages[cursor:]
 	if len(window) == 0 {
 		return false
 	}
@@ -147,16 +147,22 @@ func (s *Session) TryMicroCompact(sessionDir string) bool {
 		return false
 	}
 
+	// Fire micro-compact start handler
+	if s.microCompactStartHandler != nil {
+		s.microCompactStartHandler(windowTokens, s.maxWindowSize)
+	}
+
 	// Step 2: Strip duplicate tool messages first (cheap, reduces noise)
 	deduped, orphanedIDs := stripDuplicateToolMessages(window)
-	hadDedup := len(deduped) != len(window)
+	dedupCount := len(window) - len(deduped)
+	hadDedup := dedupCount > 0
 	if hadDedup {
-		// Replace window messages inline
+		// 偏移量模型：保留历史分区 messages[:cursor]，用去重结果替换活跃窗口
 		newMessages := make([]Message, 0, s.cursor+len(deduped))
 		newMessages = append(newMessages, s.messages[:s.cursor]...)
 		newMessages = append(newMessages, deduped...)
-		newMessages = append(newMessages, s.messages[s.cursor+len(window):]...)
 		s.messages = newMessages
+		// cursor 不变 —— 仍指向历史分区边界
 		// Clean up orphaned ToolCalls from removed duplicate tool messages
 		if len(orphanedIDs) > 0 {
 			s.removeOrphanedToolCalls(s.cursor, orphanedIDs)
@@ -209,7 +215,7 @@ func (s *Session) TryMicroCompact(sessionDir string) bool {
 	})
 
 	// Step 6: Compress candidates one by one until below target threshold
-	compressed := false
+	var compressed int
 	for _, c := range candidates {
 		if windowTokens <= targetTokens {
 			break
@@ -233,18 +239,21 @@ func (s *Session) TryMicroCompact(sessionDir string) bool {
 					// Compressed message now contributes ~20 tokens (placeholder)
 					// instead of tokenCount. Subtract the difference.
 					windowTokens -= (tokenCount - 20)
-					compressed = true
+					compressed++
 				}
 			}
 		}
 	}
 
 	// Step 7: Persist compacted changes + cursor to store
-	if compressed || hadDedup {
+	if compressed > 0 || hadDedup {
 		if s.store != nil {
 			if err := s.store.UpdateMessages(context.Background(), s.id, s.cursor, s.messages); err != nil {
 				// Log but don't fail — compacted state is still correct in memory
 			}
+		}
+		if s.microCompactDoneHandler != nil {
+			s.microCompactDoneHandler(compressed, dedupCount, windowTokens)
 		}
 		return true
 	}

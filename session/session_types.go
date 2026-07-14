@@ -60,19 +60,22 @@ type SlideEvent struct {
 // Implementations can store slid messages into RAG or other long-term storage.
 type SlideHandler func(ctx context.Context, event SlideEvent)
 
-// SessionInfo holds metadata about a session, used by ListSessions and GetByRole.
+// SessionInfo holds metadata about a session, used by ListSessions and GetMeta.
 // It includes directory context that is essential for tool execution and prompt generation.
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
 	Sponsor        string    `json:"sponsor,omitempty"` // Agent that created this session (empty = user-initiated)
 	Title          string    `json:"title,omitempty"` // First user message content (for session list display)
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`         // Last meta.json save time
+	LastActivityAt time.Time `json:"last_activity_at"`   // Last message activity timestamp
 	ProjectDir     string    `json:"project_dir,omitempty"` // Working directory at session creation time
 	SessionDir     string    `json:"session_dir,omitempty"` // Session sandbox directory (managed by Store)
+	MessageCount   int       `json:"message_count"`         // Total messages in session
+	Cursor         int       `json:"cursor"`                // Compaction cursor position (0 = no compaction)
 	Messages       []Message `json:"messages,omitempty"`
 	ModifyFiles    []string  `json:"modify_files,omitempty"`  // Tracked modified file paths
-	LastActivityAt time.Time `json:"last_activity_at"`
-	CreatedAt      time.Time `json:"created_at"`
 }
 
 type SessionStore interface {
@@ -83,7 +86,6 @@ type SessionStore interface {
 	Clear(ctx context.Context, sessionID string) error
 	SetSlideHandler(handler SlideHandler)
 	Close() error
-	GetByRole(ctx context.Context, agent string) (*SessionInfo, error)
 	ListSessions(ctx context.Context) ([]SessionInfo, error)
 	Create(ctx context.Context, agentName string, opts ...SessionOption) (*SessionInfo, error)
 	GetMeta(ctx context.Context, sessionID string) (*SessionInfo, error)

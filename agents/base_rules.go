@@ -1,11 +1,10 @@
 package agents
 
-import "strings"
+// ── Section accessors — called by prompt_builders.go ────────────────────────
 
-// baseRulesText contains all static prompt sections that rarely change.
-// To edit prompt content, modify this string — no dynamic logic here.
-const baseRulesText = `
-## 行为准则
+// defaultBehavioralRules returns the Behavioral Rules section.
+func defaultBehavioralRules() string {
+	return `## 行为准则
 
 - **重要**：思考流与推理过程必须全部使用中文
 - 结论先行，简短回答，像人类一样说话
@@ -60,16 +59,26 @@ const baseRulesText = `
 ### 兜底策略
 
 当无法决策或存在多条路径时，向用户提问并附上推荐选项，让用户澄清意图。
+`
+}
 
-## 沟通风格
+// buildOutputEfficiency returns the Communication Style section.
+func buildOutputEfficiency() string {
+	return `## 沟通风格
 
-结论先行，简短回答，像人类一样说话。冷启动时重建上下文。不使用表情符号。
+结论先行，简短回答，像人类一样说话。冷启动时重建上下文。不使用表情符号。`
+}
 
-## 搜索策略
+// buildSearchPriority returns the Search Strategy section.
+func buildSearchPriority() string {
+	return `## 搜索策略
 
-优先搜索本地知识库；必要时才搜索互联网。
+优先搜索本地知识库；必要时才搜索互联网。`
+}
 
-## 压缩内容
+// buildCompressedContent returns the Compressed Content section.
+func buildCompressedContent() string {
+	return `## 压缩内容
 
 '[已压缩]' 表示工具结果已缓存，格式：
 
@@ -79,42 +88,5 @@ const baseRulesText = `
 - 不要预读所有缓存。先用 name / n / args 判断是否相关
 - 不要重新调用工具获取已有缓存。优先用现有内容
 - 只在确信需要时才 Read 路径。读回内容追加为新消息
-- 每轮开始时，扫一遍窗口末尾——所有 [已压缩] 索引集中在此
-
-### 工具结果去重
-
-当只读工具（Read、Glob、Grep、WebSearch、WebFetch、Ls、Skill）的相同参数在
-上下文中出现多次时，系统会自动去重，无需手动干预：
-
-- '[复用: {hash}]' — 当前结果是复用的，未重新执行工具，内容是最新的。
-- '[内容编号: {hash}]' — 旧结果的引用标记，完整内容已移至最新的 '[复用: {hash}]' 处。
-`
-
-// extractSection pulls a single ##-headed section from baseRulesText.
-func extractSection(heading string) string {
-	marker := "## " + heading
-	idx := strings.Index(baseRulesText, marker)
-	if idx < 0 {
-		return ""
-	}
-	start := idx + len(marker)
-	end := len(baseRulesText)
-	if next := strings.Index(baseRulesText[start:], "\n## "); next >= 0 {
-		end = start + next
-	}
-	return strings.TrimSpace(baseRulesText[start:end])
+- 每轮开始时，扫一遍窗口末尾——所有 [已压缩] 索引集中在此`
 }
-
-// ── Section accessors — called by prompt_builders.go ────────────────────────
-
-// defaultBehavioralRules returns the Behavioral Rules section.
-func defaultBehavioralRules() string { return extractSection("行为准则") }
-
-// buildOutputEfficiency returns the Communication Style section.
-func buildOutputEfficiency() string { return extractSection("沟通风格") }
-
-// buildSearchPriority returns the Search Strategy section.
-func buildSearchPriority() string { return extractSection("搜索策略") }
-
-// buildCompressedContent returns the Compressed Content section.
-func buildCompressedContent() string { return extractSection("压缩内容") }

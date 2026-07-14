@@ -98,6 +98,7 @@ type ToolResult struct {
 type CallInput struct {
 	SessionID            string
 	AgentName            string
+	ProjectDir           string // 新增：用于 MemoryThoughtHook 按 ProjectDir 过滤记忆缓冲区
 	SystemPromptSections []gochatcore.Message
 	UserMessage          string
 	History              []session.Message

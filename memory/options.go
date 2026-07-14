@@ -5,6 +5,7 @@ type RetrieveConfig struct {
 	Types     []MemoryType
 	SessionID string
 	AgentName string
+	ProjectDir string
 	Limit     int
 	MinScore  float64
 }
@@ -42,4 +43,11 @@ func WithMemorySessionID(sessionID string) RetrieveOption {
 // Used for both short-term (AgentName + SessionID) and long-term (AgentName only) filtering.
 func WithAgentName(agentName string) RetrieveOption {
 	return func(c *RetrieveConfig) { c.AgentName = agentName }
+}
+
+// WithProjectDir scopes memory retrieval to a specific project directory.
+// Combined with AgentName, this scopes recall to the same agent working on the
+// same project across multiple sessions (the memory buffer's default scope).
+func WithProjectDir(dir string) RetrieveOption {
+	return func(c *RetrieveConfig) { c.ProjectDir = dir }
 }

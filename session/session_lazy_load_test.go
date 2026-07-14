@@ -81,9 +81,6 @@ func (m *mockStore) DeleteSession(_ context.Context, sessionID string) error {
 	delete(m.cursors, sessionID)
 	return nil
 }
-func (m *mockStore) GetByRole(_ context.Context, _ string) (*SessionInfo, error) {
-	return nil, ErrSessionNotFound
-}
 func (m *mockStore) ListSessions(_ context.Context) ([]SessionInfo, error) {
 	return nil, nil
 }

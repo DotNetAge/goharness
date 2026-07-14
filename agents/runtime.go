@@ -73,7 +73,6 @@ import (
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/hooks/action"
-	"github.com/DotNetAge/goharness/hooks/dedup"
 	"github.com/DotNetAge/goharness/hooks/loop"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
@@ -443,7 +442,9 @@ func (rt *Runtime) registerDefaultTools() {
 func (rt *Runtime) registerDefaultHooks() {
 	rt.loopHooks = append(rt.loopHooks, loop.Defaults(rt.logger)...)
 	if rt.mem != nil {
-		rt.loopHooks = append([]hooks.LoopHook{loop.NewMemoryThoughtHook(rt.mem)}, rt.loopHooks...)
+		hook := loop.NewMemoryThoughtHook(rt.mem)
+		hook.Logger = rt.logger
+		rt.loopHooks = append([]hooks.LoopHook{hook}, rt.loopHooks...)
 	}
 
 	// Register ToolActivationHook (runs early, priority 20) to update
@@ -466,11 +467,6 @@ func (rt *Runtime) registerDefaultHooks() {
 	}
 
 	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
-
-	// Register Phase-1 built-in dedup policies.
-	for _, p := range dedup.DefaultPolicies() {
-		rt.toolHooks = append(rt.toolHooks, action.NewDedupToolHook(p))
-	}
 }
 
 // parentEmitKey is a context key for passing the parent EventBus emitter
@@ -488,7 +484,7 @@ func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor str
 	if s, ok := rt.subAgentSessionCache[key]; ok {
 		return s
 	}
-	s := session.New(agentName, sponsor, projectDir, session.WithStore(store))
+	s := session.New(agentName, sponsor, projectDir, session.WithStore(store), session.WithLogger(rt.logger))
 	rt.subAgentSessionCache[key] = s
 	return s
 }
@@ -696,13 +692,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	logger.Info("exec started", "session", sid, "agent", b.agentName, "model", rt.model.Name)
 
-	// Inject current Session into all DedupToolHooks.
-	for _, h := range rt.toolHooks {
-		if dth, ok := h.(*action.DedupToolHook); ok {
-			dth.SetSession(b.session)
-		}
-	}
-
 	var start time.Time
 	start = time.Now()
 	defer func() {
@@ -782,10 +771,71 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		})
 	})
 
+	// Wire compact start handler — emits before Tokens.
+	var compactBeforeTokens int64
+	b.session.SetCompactStartHandler(func(windowTokens, maxWindowSize int64) {
+		compactBeforeTokens = windowTokens
+		emit(events.CompactStart, events.CompactStartData{
+			SessionID:     sid,
+			WindowTokens:  windowTokens,
+			MaxWindowSize: maxWindowSize,
+		})
+	})
+
+	// Wire compact done handler — emits after Tokens + ratio.
+	b.session.SetCompactDoneHandler(func(messagesSlid int, windowTokens int64) {
+		var ratio float64
+		if compactBeforeTokens > 0 {
+			ratio = float64(windowTokens) / float64(compactBeforeTokens)
+		}
+		emit(events.CompactDone, events.CompactDoneData{
+			SessionID:     sid,
+			MessagesSlid:  messagesSlid,
+			WindowTokens:  windowTokens,
+			MaxWindowSize: b.session.MaxWindowSize(),
+			Ratio:         ratio,
+		})
+	})
+
+	// Wire micro-compact start handler.
+	var microCompactBeforeTokens int64
+	b.session.SetMicroCompactStartHandler(func(windowTokens, maxWindowSize int64) {
+		microCompactBeforeTokens = windowTokens
+		emit(events.MicroCompactStart, events.MicroCompactStartData{
+			SessionID:     sid,
+			WindowTokens:  windowTokens,
+			MaxWindowSize: maxWindowSize,
+		})
+	})
+
+	// Wire micro-compact done handler.
+	b.session.SetMicroCompactDoneHandler(func(compressed, deduped int, windowTokens int64) {
+		var ratio float64
+		if microCompactBeforeTokens > 0 {
+			ratio = float64(windowTokens) / float64(microCompactBeforeTokens)
+		}
+		emit(events.MicroCompactDone, events.MicroCompactDoneData{
+			SessionID:     sid,
+			Compressed:    compressed,
+			Deduped:       deduped,
+			WindowTokens:  windowTokens,
+			MaxWindowSize: b.session.MaxWindowSize(),
+			Ratio:         ratio,
+		})
+	})
+
 	// Pre-load session metadata (projectDir, cursor, messages) from store
 	// before creating the tool executor, so that WithProjectDirExecutor receives
 	// the correct project directory from the persisted session metadata.
 	b.session.Current()
+
+	// 偏移量模型（memmache.md）：在新一个轮次开始前检查活跃窗口 Token 是否超限，
+	// 若超限则对 messages[cursor:] 全量摘要并清空（cursor = len(messages)）。
+	// 不在 Append 末尾或 exec 循环中调用，避免工具结果 append 中途触发清空
+	// 破坏 tool_call 配对。
+	// Budget 动态可调：只有 maxWindowSize > 0（即模型 ContextLength <= 128K）时
+	// 才会真正触发；超长上下文模型不设置 maxWindowSize，TryCompact 直接返回。
+	b.session.TryCompact(ctx)
 
 	// Tool executor — Session pointer is passed as the authoritative source
 	// for session-level state (ID, ProjectDir, AgentName, etc.). Tools access
@@ -890,6 +940,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		callInput := &hooks.CallInput{
 			SessionID:            sid,
 			AgentName:            b.agentName,
+			ProjectDir:           b.session.ProjectDir(),
 			SystemPromptSections: systemSections,
 			UserMessage:          b.question,
 			History:              window,
@@ -922,32 +973,33 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			question = b.question
 		}
 
-		// MicroCompact: compress tool messages in the middle of the context window
-		// when token usage exceeds 45% of maxWindowSize. This is a no-LLM compression
-		// that archives tool result contents to disk and replaces them with short
-		// placeholders. The session is modified in-place so subsequent iterations
-		// don't re-compress the same messages.
-		//
-		// Wrapped in panic recovery: MicroCompact must never crash the main loop.
-		// Any unexpected error is logged and the iteration continues normally.
-		func() {
-			defer func() {
-				if p := recover(); p != nil {
-					logger.Error("[MicroCompact] panic recovered — skipping compression",
-						fmt.Errorf("%v", p),
-						"session", sid,
-						"iter", iter,
-					)
-				}
-			}()
-			b.session.TryMicroCompact(b.session.SessionDir())
-		}()
+		// MicroCompact (Dupdu) 已禁用 —— 它修改上下文中间的 tool 消息内容，
+		// 会破坏从首次请求累积下来的 KV 缓存，导致修改点之后的所有 KV 失效
+		// 并重新计算。对于超长上下文模型，重算成本远大于保留"垃圾"的 attention
+		// 成本；对于短上下文模型，TryCompact 会清空当前窗口，已足够控制长度。
 
-		// Re-read window after MicroCompact — it may have modified messages'
-		// Compacted fields, and Current() returns a fresh copy with those changes.
+		// Re-read window — Current() returns a fresh copy of messages[cursor:].
 		window = b.session.Current()
 
 		msgs := rt.assembleMessages(callInput.SystemPromptSections, window, question)
+
+		// ── Debug: dump full system prompt ──
+		if rt.logger != nil {
+			var sysTexts []string
+			for _, m := range msgs {
+				if m.Role == "system" {
+					for _, block := range m.Content {
+						if block.Type == "text" {
+							sysTexts = append(sysTexts, block.Text)
+						}
+					}
+				}
+			}
+			// if len(sysTexts) > 0 {
+			// 	rt.logger.Debug("===== SYSTEM PROMPT =====",
+			// 		"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n---\n"))
+			// }
+		}
 
 		// ── Stream LLM ──
 		client := gochat.Client().Config(
@@ -1517,10 +1569,14 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	rules := defaultBehavioralRules()
 	if rt.ruleReg != nil {
 		if custom := rt.ruleReg.FormatPromptSection(); custom != "" {
-			rules += "\n" + custom
+			sections = append(sections, rules)
+			sections = append(sections, "## 扩展规则\n\n"+custom)
+		} else {
+			sections = append(sections, rules)
 		}
+	} else {
+		sections = append(sections, rules)
 	}
-	sections = append(sections, "## 行为准则\n"+rules)
 
 	// 3b. Search priority — how to prioritize local vs web search
 	sections = append(sections, rt.buildSearchStrategy())
@@ -1535,8 +1591,12 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	// 5. Tool Catalog — informational only; tools must be activated via ToolSelector
 	sections = append(sections, buildToolCatalog(rt.toolReg))
 
-	// 6. Compressed content
-	sections = append(sections, buildCompressedContent())
+	// 6. Compressed content — 只在 MicroCompact 启用时插入（maxWindowSize > 0，
+	//    即模型 ContextLength <= 128K）。MicroCompact 禁用时不会产生 [已压缩]
+	//    占位符，插入此规则只会浪费 system prompt tokens。
+	if s.MaxWindowSize() <= 128*1024 {
+		sections = append(sections, buildCompressedContent())
+	}
 
 	// 7. Output efficiency (dynamic section)
 	sections = append(sections, buildOutputEfficiency())
@@ -2213,14 +2273,6 @@ func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	if rt.fileModifyHook != nil {
 		rt.fileModifyHook.SetProvider(provider)
 	}
-}
-
-// RegisterDedupPolicy registers a custom deduplication policy for an
-// idempotent tool.  The policy is wrapped in a DedupToolHook and runs
-// before every tool execution.  On a cache hit the tool is skipped
-// entirely — the cached result is returned directly.
-func (rt *Runtime) RegisterDedupPolicy(policy dedup.DedupPolicy) {
-	rt.toolHooks = append(rt.toolHooks, action.NewDedupToolHook(policy))
 }
 
 // RegisterTool adds a new tool to the Runtime's tool registry.

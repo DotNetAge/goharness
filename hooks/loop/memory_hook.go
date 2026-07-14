@@ -1,23 +1,23 @@
 package loop
 
 import (
-	"strings"
-
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/hooks"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
 )
 
-// MemoryThoughtHook retrieves relevant memory records before each LLM call
-// and injects them as context into the system prompt.
+// MemoryThoughtHook 在每次 LLM 调用前，按时间倒序取最新 10 条记忆
+// （当前 AgentName+ProjectDir 范围），拼到系统指令区末尾（单 system message）。
 //
-// Two retrievals are performed:
-//  1. Current-session memory: scoped by SessionID for conversation continuity
-//  2. Cross-session memory: scoped by AgentName for long-term knowledge
-//
-// Both are injected as separate sections so the LLM can distinguish context sources.
+// 新语义（memmache.md）：
+//   - 不再用语义检索，改为按时间倒序固定取前 10 条
+//   - 范围：当前 AgentName + ProjectDir（跨会话）
+//   - 注入位置：系统指令区末尾（单 system message，KV 缓存友好）
+//   - 记忆条目按时间顺序由旧至新插入
 type MemoryThoughtHook struct {
 	memory memory.Memory
+	Logger logging.Logger
 }
 
 // NewMemoryThoughtHook creates a new MemoryThoughtHook with the given memory store.
@@ -28,87 +28,87 @@ func NewMemoryThoughtHook(mem memory.Memory) *MemoryThoughtHook {
 // Priority returns the priority for MemoryThoughtHook (50).
 func (h *MemoryThoughtHook) Priority() int { return 50 }
 
-// BeforeLLM retrieves relevant memory records for the current input
-// and injects them as a single, optional second system message.
+// BeforeLLM 按时间倒序取最新记忆并注入到系统指令区末尾。
 //
-// This preserves KV cache efficiency: the first system message (static base
-// instructions) never changes, so the LLM provider can cache it. The second
-// message is only appended when memory results exist and carries all dynamic
-// content (session memory + cross-session memory) combined.
+// 通过类型断言检查 Memory 是否实现 LatestRetriever 可选接口；
+// 未实现则跳过（保持兼容性）。
 func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
-	if input.UserMessage == "" || h.memory == nil {
+	if h.memory == nil || input.AgentName == "" {
+		h.Logger.Debug("MemoryThoughtHook: skipped (memory nil or agent empty)",
+			"session_id", sessionID, "memory_nil", h.memory == nil, "agent", input.AgentName)
 		return hooks.HookResult{}
 	}
 
-	var parts []string
-
-	// 1. Session-scoped retrieval (current conversation)
-	sessionRecords, err := h.memory.Retrieve(nil, input.UserMessage,
-		memory.WithMemorySessionID(sessionID),
-		memory.WithMinScore(0.3),
-	)
-	if err == nil && len(sessionRecords) > 0 {
-		if content := memory.FormatMemoryRecords(sessionRecords); content != "" {
-			parts = append(parts,
-				"## 相关记忆\n"+
-					"以下是当前对话的相关记忆，可能对你的推理有参考作用。\n"+
-					content,
-			)
-		}
+	// 通过类型断言检查是否支持 RetrieveLatest（时间倒序，不依赖向量检索）
+	latestRetriever, ok := h.memory.(memory.LatestRetriever)
+	if !ok {
+		h.Logger.Debug("MemoryThoughtHook: memory does not implement LatestRetriever, skipping",
+			"session_id", sessionID, "agent", input.AgentName)
+		return hooks.HookResult{}
 	}
 
-	// 2. Cross-session retrieval (other sessions for this agent)
-	if input.AgentName != "" {
-		crossRecords, err := h.memory.Retrieve(nil, input.UserMessage,
-			memory.WithAgentName(input.AgentName),
-			memory.WithMinScore(0.3),
-		)
-		if err == nil && len(crossRecords) > 0 {
-			// Deduplicate: skip chunks already shown in session context
-			seen := make(map[string]struct{}, len(sessionRecords))
-			for _, r := range sessionRecords {
-				seen[r.ID] = struct{}{}
+	const latestLimit = 20
+	records, err := latestRetriever.RetrieveLatest(nil, input.AgentName, input.ProjectDir, latestLimit)
+	if err != nil {
+		h.Logger.Debug("MemoryThoughtHook: RetrieveLatest failed",
+			"session_id", sessionID, "agent", input.AgentName, "project", input.ProjectDir, "error", err)
+		return hooks.HookResult{}
+	}
+	if len(records) == 0 && sessionID != "" {
+		// Fallback: agent+project 过滤空结果时按 sessionID 捞回
+		if sessionRetriever, ok := h.memory.(memory.SessionRetriever); ok {
+			h.Logger.Debug("MemoryThoughtHook: falling back to RetrieveBySession",
+				"session_id", sessionID, "agent", input.AgentName)
+			records, err = sessionRetriever.RetrieveBySession(nil, sessionID, latestLimit)
+			if err != nil {
+				h.Logger.Debug("MemoryThoughtHook: RetrieveBySession failed",
+					"session_id", sessionID, "error", err)
+				return hooks.HookResult{}
 			}
-			filtered := make([]memory.MemoryChunk, 0, len(crossRecords))
-			for _, r := range crossRecords {
-				if _, dup := seen[r.ID]; !dup {
-					filtered = append(filtered, r)
-				}
-			}
-			if len(filtered) > 0 {
-				if content := memory.FormatMemoryRecords(filtered); content != "" {
-					parts = append(parts,
-						"## 其他会话的相关内容\n"+
-							"以下是我在其他会话中与当前对话相关的记忆。"+
-							"它们可能包含一些有帮助性的内容——请根据你的判断决定其适用性:\n\n"+
-							content,
-					)
-				}
+			if len(records) > 0 {
+				h.Logger.Info("MemoryThoughtHook: retrieved memory records via session fallback",
+					"session_id", sessionID, "count", len(records))
 			}
 		}
 	}
+	if len(records) == 0 {
+		h.Logger.Debug("MemoryThoughtHook: no memory records found",
+			"session_id", sessionID, "agent", input.AgentName, "project", input.ProjectDir)
+		return hooks.HookResult{}
+	}
+	h.Logger.Info("MemoryThoughtHook: retrieved memory records",
+		"session_id", sessionID, "agent", input.AgentName, "project", input.ProjectDir, "count", len(records))
 
-	// Fallback: if only session-scoped retrieval returned results but
-	// FormatMemoryRecords was empty on first attempt, retry as generic context
-	if len(parts) == 0 && len(sessionRecords) > 0 {
-		if content := memory.FormatMemoryRecords(sessionRecords); content != "" {
-			parts = append(parts,
-				"## 相关上下文\n"+
-					"以下是相关的历史记忆:\n\n"+
-					content,
-			)
-		}
+	// memmache.md: "将记忆条目按时间顺序由旧至新插入至摘要缓冲区"
+	// records 已是倒序（最新在前），反转为正序（旧至新）注入
+	reversed := make([]memory.MemoryChunk, len(records))
+	for i, r := range records {
+		reversed[len(records)-1-i] = r
 	}
 
-	// Append a single dynamic system message only when there is memory content.
-	// This gives the LLM exactly 2 system messages at most:
-	//   [0] static base instructions (KV-cache friendly, never rebuilt)
-	//   [1] dynamic memory context (absent when no results)
-	if len(parts) > 0 {
-		input.SystemPromptSections = append(
-			input.SystemPromptSections,
-			gochatcore.NewSystemMessage(strings.Join(parts, "\n\n")),
-		)
+	content := memory.FormatMemoryRecords(reversed)
+	if content == "" {
+		h.Logger.Debug("MemoryThoughtHook: formatted content is empty",
+			"session_id", sessionID, "agent", input.AgentName)
+		return hooks.HookResult{}
+	}
+	h.Logger.Debug("MemoryThoughtHook: formatted memory content",
+		"session_id", sessionID, "agent", input.AgentName, "content_len", len(content))
+
+	// 拼到最后一条 system message 的内容末尾（不新增第二条 system message）
+	if len(input.SystemPromptSections) > 0 {
+		last := &input.SystemPromptSections[len(input.SystemPromptSections)-1]
+		memText := "## 记忆缓冲区\n\n" + content
+		if len(last.Content) > 0 {
+			last.Content = append(last.Content, gochatcore.ContentBlock{Type: "text", Text: memText})
+		} else {
+			last.Content = []gochatcore.ContentBlock{{Type: "text", Text: memText}}
+		}
+		h.Logger.Info("MemoryThoughtHook: injected memory into system prompt",
+			"session_id", sessionID, "agent", input.AgentName, "records", len(records), "mem_bytes", len(memText))
+	} else {
+		h.Logger.Debug("MemoryThoughtHook: SystemPromptSections is empty, cannot inject memory",
+			"session_id", sessionID, "agent", input.AgentName)
 	}
 	return hooks.HookResult{}
 }

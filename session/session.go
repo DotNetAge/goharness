@@ -39,13 +39,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
 	"github.com/oklog/ulid/v2"
 )
@@ -67,6 +67,24 @@ type SessionConfig func(*Session)
 // Messages will be persisted to this store when appended.
 func WithStore(store SessionStore) SessionConfig {
 	return func(s *Session) { s.store = store }
+}
+
+// WithLogger sets the structured logger for session operations.
+// If not set, all log output is silently discarded.
+func WithLogger(l logging.Logger) SessionConfig {
+	return func(s *Session) { s.log = l }
+}
+
+func (s *Session) logInfo(msg string, keyvals ...any) {
+	if s.log != nil {
+		s.log.Info(msg, keyvals...)
+	}
+}
+
+func (s *Session) logError(msg string, err error, keyvals ...any) {
+	if s.log != nil {
+		s.log.Error(msg, err, keyvals...)
+	}
 }
 
 // WithMemory configures the memory store for context summaries.
@@ -132,8 +150,8 @@ func New(agentName, sponsor, projectDir string, opts ...SessionConfig) *Session 
 		opt(s)
 	}
 	if s.projectDir == "" {
-		log.Printf("[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir — 这是一个严重缺陷", s.id, agentName)
-		fmt.Fprintf(os.Stderr, "[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir\n", s.id, agentName)
+		s.logError("createNewSession: ProjectDir not set", nil, "session_id", s.id, "agent", agentName)
+		fmt.Fprintf(os.Stderr, "FATAL: session %s (agent=%s) created without ProjectDir\n", s.id, agentName)
 	}
 	return s
 }
@@ -214,9 +232,8 @@ func NewSession(id, agentName string, opts ...SessionConfig) *Session {
 	// This is the authoritative source; store metadata lazy-load is only a
 	// restore mechanism for existing sessions, NOT an alternative to providing it.
 	if s.projectDir == "" {
-		log.Printf("[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir — 这是一个严重缺陷", id, agentName)
-		// Also write to stderr for visibility in daemon logs
-		fmt.Fprintf(os.Stderr, "[SESSION] 致命错误: 会话 %s (代理=%s) 创建时未设置 ProjectDir\n", id, agentName)
+		s.logError("NewServiceSession: ProjectDir not set", nil, "session_id", id, "agent", agentName)
+		fmt.Fprintf(os.Stderr, "FATAL: session %s (agent=%s) created without ProjectDir\n", id, agentName)
 	}
 	return s
 }
@@ -280,6 +297,9 @@ type Session struct {
 	// store provides persistent message storage
 	store SessionStore
 
+	// log is the structured logger for session operations.
+	log logging.Logger
+
 	// summarizer generates summaries during compaction
 	summarizer Summarizer
 
@@ -288,6 +308,18 @@ type Session struct {
 
 	// compactionHandler is called after each compaction event
 	compactionHandler func(CompactionEvent)
+
+	// compactStartHandler is called before TryCompact begins compaction.
+	compactStartHandler func(windowTokens int64, maxWindowSize int64)
+
+	// compactDoneHandler is called after TryCompact completes.
+	compactDoneHandler func(messagesSlid int, windowTokens int64)
+
+	// microCompactStartHandler is called before TryMicroCompact begins.
+	microCompactStartHandler func(windowTokens int64, maxWindowSize int64)
+
+	// microCompactDoneHandler is called after TryMicroCompact completes.
+	microCompactDoneHandler func(compressed, deduped int, windowTokens int64)
 
 	// loaded indicates whether messages have been loaded from the persistent store.
 	// When false, Current() and Append() will trigger automatic lazy-loading.
@@ -358,6 +390,117 @@ func (s *Session) Sponsor() string {
 	return s.sponsor
 }
 
+// MaxWindowSize returns the configured maximum context window size in tokens.
+// Returns 0 if automatic compaction is disabled.
+func (s *Session) MaxWindowSize() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxWindowSize
+}
+
+// ── Store-level operations ──────────────────────────────────────────────
+// These functions wrap SessionStore methods so that external code never
+// calls SessionStore methods directly. All session operations go through
+// the session package.
+
+// ListSessions returns all sessions from the store.
+func ListSessions(ctx context.Context, store SessionStore) ([]SessionInfo, error) {
+	return store.ListSessions(ctx)
+}
+
+// CreateSession creates a new session in the store with the given agent name and options.
+func CreateSession(ctx context.Context, store SessionStore, agentName string, opts ...SessionOption) (*SessionInfo, error) {
+	return store.Create(ctx, agentName, opts...)
+}
+
+// DeleteSession removes a session from the store.
+func DeleteSession(ctx context.Context, store SessionStore, sessionID string) error {
+	return store.DeleteSession(ctx, sessionID)
+}
+
+// GetSessionMeta returns session metadata from the store.
+func GetSessionMeta(ctx context.Context, store SessionStore, sessionID string) (*SessionInfo, error) {
+	return store.GetMeta(ctx, sessionID)
+}
+
+// SetMaxWindowSize sets the maximum context window size in tokens.
+// When the active window exceeds 80% of this value, compaction is triggered.
+// A value of 0 or negative disables automatic compaction.
+func (s *Session) SetMaxWindowSize(n int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxWindowSize = n
+}
+
+// CurrentWindowTokens estimates the token count of the active window
+// (messages[cursor:]) using the same DeepSeek-based formula
+// as MicroCompact/TryMicroCompact.
+func (s *Session) CurrentWindowTokens() int64 {
+	s.ensureLoaded(context.Background())
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	window := s.messages[s.cursor:]
+	if len(window) == 0 {
+		return 0
+	}
+
+	return estimateWindowTokensV2(window)
+}
+
+// ContextWindowUsage holds the current context window usage information.
+// The calculation is consistent with the MicroCompact/TryMicroCompact method.
+type ContextWindowUsage struct {
+	// WindowTokens is the estimated token count of the active window.
+	WindowTokens int64 `json:"window_tokens"`
+
+	// MaxWindowSize is the configured maximum context window size in tokens.
+	// If 0, compaction is disabled and usage ratio is undefined.
+	MaxWindowSize int64 `json:"max_window_size"`
+
+	// UsageRatio is the proportion of the active window relative to the max
+	// window size (WindowTokens / MaxWindowSize). Ranges from 0.0 to 1.0+.
+	// Returns 0 if MaxWindowSize is 0.
+	UsageRatio float64 `json:"usage_ratio"`
+
+	// MessageCount is the total number of messages in the session.
+	MessageCount int `json:"message_count"`
+
+	// Cursor is the current cursor position separating historical from active.
+	Cursor int `json:"cursor"`
+
+	// ActiveMessageCount is the number of messages in the active window.
+	ActiveMessageCount int `json:"active_message_count"`
+}
+
+// ContextUsage returns the current context window usage information,
+// using the same token estimation method as MicroCompact/TryMicroCompact.
+func (s *Session) ContextUsage() ContextWindowUsage {
+	s.ensureLoaded(context.Background())
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	window := s.messages[s.cursor:]
+	windowTokens := estimateWindowTokensV2(window)
+	mws := s.maxWindowSize
+
+	var ratio float64
+	if mws > 0 {
+		ratio = float64(windowTokens) / float64(mws)
+	}
+
+	return ContextWindowUsage{
+		WindowTokens:       windowTokens,
+		MaxWindowSize:      mws,
+		UsageRatio:         ratio,
+		MessageCount:       len(s.messages),
+		Cursor:             s.cursor,
+		ActiveMessageCount: len(window),
+	}
+}
+
 // SessionDir returns the filesystem path where session data is stored.
 // Returns empty string if no persistent store is configured or if
 // the store cannot resolve the session directory.
@@ -391,12 +534,12 @@ func (s *Session) All() []Message {
 
 // Current returns messages in the active window (from cursor to end).
 // These are the messages that would be sent to the LLM on next inference.
-// Returns nil if cursor has reached the end of messages.
+//
+// Cursor 语义：cursor 是当前窗口的起始偏移量，messages 是完整历史。
+// 当前窗口 = messages[cursor:]。TryCompact 清空 = cursor = len(messages)。
 //
 // This method implements lazy-loading: if messages haven't been loaded from the
 // persistent store yet, it will automatically load them on first access.
-// This ensures that resumed sessions always have access to historical context
-// without requiring an explicit Restore() call.
 //
 // The returned slice is a copy and safe to modify.
 func (s *Session) Current() []Message {
@@ -412,19 +555,11 @@ func (s *Session) Current() []Message {
 	return out
 }
 
-// ensureLoaded implements lazy-loading for session messages and cursor position.
-// On first access (when loaded==false), it loads all messages from the persistent store
-// AND restores the compaction cursor position.
+// ensureLoaded implements lazy-loading for session messages.
+// On first access (when loaded==false), it loads all messages from the persistent store.
 //
-// CRITICAL: The cursor must be restored to maintain correct compaction state across
-// Session object lifecycles. Without this, a new Session would load all messages but
-// reset cursor to 0, causing Current() to return too many messages (exceeding token limits).
-//
-// IMPORTANT - Compaction State Recovery:
-// When compaction occurs, old messages are deleted from memory but the Store may still
-// contain the complete history (all appended messages). The cursor marks how many messages
-// were at the front before compaction. On lazy-load, we must apply the same compaction
-// logic to avoid restoring "deleted" messages.
+// Cursor 语义：cursor 是当前窗口的起始偏移量（从 store.GetCursor 恢复）。
+// messages 是完整历史，当前窗口 = messages[cursor:]。
 //
 // This method is thread-safe and handles concurrent access correctly:
 // - First caller acquires loadingMu and performs the load
@@ -451,62 +586,31 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 	msgs, err := s.store.Get(ctx, s.id)
 	if err != nil {
 		// If load fails, mark as loaded anyway to avoid retry loops.
-		// Session will start empty, which is safe (just no history).
 		s.loaded = true
 		return
 	}
 
-	// Restore cursor position from persistent store (internal SessionStore operation)
-	// This ensures that if compaction occurred in a previous Session lifecycle,
-	// the cursor is correctly positioned (not reset to 0)
+	// Restore cursor (偏移量) from persistent store
 	cursor, cursorErr := s.store.GetCursor(ctx, s.id)
 	if cursorErr != nil {
-		cursor = 0 // Default to 0 on error (no compaction)
+		cursor = 0
 	}
 
 	// Restore project directory from session metadata for file operations.
-	// meta.json already contains ProjectWorkingDir (stored by FileSessionStore.Create
-	// or statSessionInfo fallback), but Session.projectDir was never populated from it.
 	var projectDir string
 	if info, infoErr := s.store.GetMeta(ctx, s.id); infoErr == nil {
 		projectDir = info.ProjectDir
 	}
 
 	s.mu.Lock()
-
-	// Apply compaction recovery if needed
-	// If cursor > 0, it means compaction occurred in a previous lifecycle.
-	// The store has all historical messages, but we need to reconstruct
-	// the compacted state by keeping only messages[:cursor] + messages after the slid region.
-	// However, without knowing newCursor, we use a simpler heuristic:
-	// Keep only the last (len(msgs) - cursor) messages as the active window.
-	// This approximates the compaction result.
-	if cursor > 0 && cursor < len(msgs) {
-		activeWindowLen := len(msgs) - cursor
-		if activeWindowLen > 0 {
-			maxActiveWindow := 100
-			if activeWindowLen > maxActiveWindow {
-				activeWindowLen = maxActiveWindow
-			}
-			startActive := len(msgs) - activeWindowLen
-			if startActive < cursor {
-				startActive = cursor
-			}
-			msgs = append(msgs[:cursor], msgs[startActive:]...)
-		} else {
-			msgs = msgs[:cursor]
-		}
-	}
-
-	s.messages = msgs
-	s.cursor = cursor // Restore persisted cursor, NOT hardcoded 0!
+	s.messages = msgs // 完整历史
+	s.cursor = cursor // 偏移量：当前窗口 = messages[cursor:]
 	if s.projectDir == "" {
-		s.projectDir = projectDir // Load project dir from session metadata (only if not set at construction)
+		s.projectDir = projectDir
 	}
 	s.mu.Unlock()
 
 	// Restore tracked modified files from store (if any).
-	// modify_files.yml is written by persistModifyFilesLocked during Write/FileEdit.
 	s.loadModifyFiles()
 
 	s.loaded = true
@@ -518,10 +622,7 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 // this method is OPTIONAL. Current() and Append() will automatically load
 // messages on first access if they haven't been loaded yet.
 //
-// Use Restore() when you need to:
-// - Force a reload of messages (e.g., after external modifications)
-// - Pre-load messages before time-critical operations
-// - Explicitly control when loading occurs for debugging/monitoring
+// 偏移量模型：从 store 恢复 messages（完整历史）和 cursor（偏移量）。
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
@@ -538,9 +639,12 @@ func (s *Session) Restore(ctx context.Context) error {
 		return fmt.Errorf("恢复会话 %s: %w", s.id, err)
 	}
 
+	// 与 ensureLoaded 一致：恢复 cursor 偏移量
+	cursor, _ := s.store.GetCursor(ctx, s.id)
+
 	s.mu.Lock()
-	s.messages = msgs
-	s.cursor = 0
+	s.messages = msgs // 完整历史
+	s.cursor = cursor // 偏移量
 	s.mu.Unlock()
 
 	s.loadingMu.Lock()
@@ -569,8 +673,14 @@ func (s *Session) MarkAsContentRef(toolCallID, refTag string) bool {
 	return false
 }
 
-// Append adds new messages to the session and triggers automatic compaction
-// if the context window exceeds configured thresholds.
+// Append adds new messages to the session.
+//
+// 偏移量模型：messages 是完整历史，cursor 是当前窗口起始偏移量。
+// Append 只追加消息到 messages 末尾，cursor 保持不变（新消息自然落入
+// 当前窗口 messages[cursor:]，因为它们在 cursor 之后）。
+//
+// 摘要触发（TryCompact）不在 Append 末尾调用 —— 改由 runtime 在新一个
+// 轮次开始前调用，避免工具结果 append 中途触发清空破坏 tool_call 配对。
 //
 // This operation is thread-safe and can be called concurrently from multiple
 // goroutines (e.g., tool execution results streaming in).
@@ -585,8 +695,6 @@ func (s *Session) MarkAsContentRef(toolCallID, refTag string) bool {
 //
 // Side Effects:
 //   - Persists messages to the configured SessionStore
-//   - May trigger compaction if window size exceeded
-//   - May invoke the summarizer and compaction handler
 func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	s.ensureLoaded(ctx)
 
@@ -603,6 +711,7 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	s.mu.Lock()
 
 	s.messages = append(s.messages, filtered...)
+	// cursor 不变 —— 它是当前窗口的起始偏移量，Append 只追加到末尾
 
 	if s.store != nil {
 		for _, msg := range filtered {
@@ -611,95 +720,200 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	}
 
 	s.mu.Unlock()
-
-	s.tryCompact(ctx)
 }
 
-// tryCompact checks if the active window exceeds token thresholds and performs
-// compaction if necessary. This method uses a lock-free design to prevent deadlocks:
+// TryCompact 检查当前会话窗口的 Token 是否超限，若超限则对活跃窗口
+// (messages[cursor:]) 进行一次摘要、持久化到 MemoryStore，然后将 cursor
+// 移到 messages 末尾（cursor = len(messages)），使当前窗口变为空切片。
 //
-// Algorithm:
-//  1. Acquire read lock to check if compaction is needed
-//  2. Release read lock before calling summarizer (prevents holding lock during I/O)
-//  3. Acquire write lock only when modifications are needed
-//  4. Use atomic state snapshot to detect concurrent modifications
+// Cursor 语义（偏移量模型）：
+//   - messages = 完整历史（不删除）
+//   - cursor = 当前窗口起始偏移量
+//   - 当前窗口 = messages[cursor:]
+//   - 清空 = cursor = len(messages)（切片为空，但不删除历史消息）
 //
-// This approach eliminates the deadlock risk present in the original implementation
-// where multiple Lock/Unlock cycles could interact badly with concurrent Append calls.
+// 触发条件：WindowTokens > 80% * maxWindowSize
+// 调用时机：由 runtime 在新一个轮次开始前调用（不在 Append 末尾调用，
+// 避免工具结果 append 中途触发清空破坏 tool_call 配对）
 //
-// Thresholds:
-//   - Trigger: Window exceeds 80% of maxWindowSize
-//   - Target: Compact to ~60% of maxWindowSize
-func (s *Session) tryCompact(ctx context.Context) {
-
+// 无锁设计：先 captureState（读锁快照）→ 无锁调用 summarizer（I/O）→
+// 写锁内执行 cursor 移动。避免持锁期间进行 LLM 调用。
+func (s *Session) TryCompact(ctx context.Context) {
 	state := s.captureState()
 
+	s.logInfo("TryCompact: entered", "session_id", s.id,
+		"window_tokens", state.windowTokens,
+		"max_window_size", state.maxWindowSize,
+		"active_messages", len(state.activeMessages))
+
 	if !state.needsCompaction() {
+		if state.maxWindowSize <= 0 {
+			s.logInfo("TryCompact: skipped (maxWindowSize=0, compaction disabled)", "session_id", s.id)
+		} else if len(state.activeMessages) == 0 {
+			s.logInfo("TryCompact: skipped (active window is empty)", "session_id", s.id)
+		} else {
+			threshold := int64(float64(state.maxWindowSize) * 0.8)
+			s.logInfo("TryCompact: skipped (windowTokens <= threshold)", "session_id", s.id,
+				"window_tokens", state.windowTokens,
+				"threshold", threshold)
+		}
 		return
 	}
 
-	plan := state.calculateCompactionPlan()
+	s.logInfo("TryCompact: triggered (windowTokens > 80% of maxWindowSize)", "session_id", s.id,
+		"window_tokens", state.windowTokens,
+		"max_window_size", state.maxWindowSize)
 
-	if plan.shouldCompact {
-
-		if s.summarizer != nil && plan.messagesToSlide > 0 {
-			slided := s.getMessagesToSlide(plan)
-			chunks := s.generateSummary(ctx, slided)
-			s.persistSummary(ctx, chunks)
-		}
-
-		s.executeCompactionPlan(plan)
-
-		// Persist cursor position after compaction (internal SessionStore operation)
-		// This ensures that when a new Session object is created (lazy-loaded),
-		// it will restore the correct cursor position and Current() will return
-		// the correct active window (not all messages, which would exceed token limits)
-		if s.store != nil {
-			s.mu.RLock()
-			currentCursor := s.cursor
-			s.mu.RUnlock()
-
-			if err := s.store.SetCursor(ctx, s.id, currentCursor); err != nil {
-				// Log error but don't fail - session can still function,
-				// just cursor won't survive across restarts
-				// (next lazy-load will reset to 0, which is safe)
-			}
-		}
+	// 触发 compact start handler
+	if s.compactStartHandler != nil {
+		s.compactStartHandler(state.windowTokens, s.maxWindowSize)
 	}
+
+	// 摘要当前活跃窗口（无锁，允许 LLM I/O 阻塞）
+	slidCount := 0
+	summaryFailed := false
+	if s.summarizer != nil && len(state.activeMessages) > 0 {
+		s.logInfo("TryCompact: generating summary", "session_id", s.id,
+			"active_messages", len(state.activeMessages))
+		chunks, err := s.generateSummary(ctx, state.activeMessages)
+		if err != nil {
+			s.logError("TryCompact: summary generation FAILED, will not compact", err, "session_id", s.id)
+			summaryFailed = true
+		} else {
+			s.logInfo("TryCompact: summary generated", "session_id", s.id, "chunks", len(chunks))
+			s.persistSummary(ctx, chunks)
+			s.logInfo("TryCompact: summary persisted", "session_id", s.id)
+		}
+	} else if s.summarizer == nil {
+		s.logInfo("TryCompact: no summarizer configured, skipping summary generation", "session_id", s.id)
+	}
+
+	if !summaryFailed {
+		// 移动 cursor 到末尾（清空当前窗口，不删除历史消息）
+		slidCount = s.executeFullCompaction(ctx)
+		s.logInfo("TryCompact: cursor moved", "session_id", s.id, "slid_count", slidCount)
+	} else {
+		s.logInfo("TryCompact: skipped cursor movement due to summarization failure", "session_id", s.id)
+	}
+
+	// 触发 compact done handler
+	afterTokens := s.CurrentWindowTokens()
+	if s.compactDoneHandler != nil {
+		s.compactDoneHandler(slidCount, afterTokens)
+	}
+
+	s.logInfo("TryCompact: done", "session_id", s.id, "after_tokens", afterTokens)
 }
 
-// sessionState is a snapshot of session state captured atomically for compaction decisions.
+// ForceCompact 执行与 TryCompact 相同的压缩逻辑（摘要 + cursor 移动），
+// 但使用独立阈值：仅当当前活跃窗口 tokens 超过 100K 时执行。
+//
+// 适用于前端手动触发的强制压缩（前端已通过 100K tokens 判断按钮可用性），
+// 不应由 Runtime 自动调用。
+func (s *Session) ForceCompact(ctx context.Context) {
+	state := s.captureState()
+
+	s.logInfo("ForceCompact: entered", "session_id", s.id,
+		"window_tokens", state.windowTokens,
+		"active_messages", len(state.activeMessages))
+
+	if len(state.activeMessages) == 0 {
+		s.logInfo("ForceCompact: skipped (active window is empty)", "session_id", s.id)
+		return
+	}
+
+	const forceCompactThreshold int64 = 100_000
+	if state.windowTokens <= forceCompactThreshold {
+		s.logInfo("ForceCompact: skipped (windowTokens <= threshold)", "session_id", s.id,
+			"window_tokens", state.windowTokens,
+			"threshold", forceCompactThreshold)
+		return
+	}
+
+	s.logInfo("ForceCompact: triggered (windowTokens > threshold)", "session_id", s.id,
+		"window_tokens", state.windowTokens,
+		"threshold", forceCompactThreshold)
+
+	// 触发 compact start handler
+	if s.compactStartHandler != nil {
+		s.compactStartHandler(state.windowTokens, s.maxWindowSize)
+	}
+
+	// 摘要当前活跃窗口（无锁，允许 LLM I/O 阻塞）
+	slidCount := 0
+	summaryFailed := false
+	if s.summarizer != nil && len(state.activeMessages) > 0 {
+		s.logInfo("ForceCompact: generating summary", "session_id", s.id,
+			"active_messages", len(state.activeMessages))
+		chunks, err := s.generateSummary(ctx, state.activeMessages)
+		if err != nil {
+			s.logError("ForceCompact: summary generation FAILED, will not compact", err, "session_id", s.id)
+			summaryFailed = true
+		} else {
+			s.logInfo("ForceCompact: summary generated", "session_id", s.id, "chunks", len(chunks))
+			s.persistSummary(ctx, chunks)
+			s.logInfo("ForceCompact: summary persisted", "session_id", s.id)
+		}
+	} else if s.summarizer == nil {
+		s.logInfo("ForceCompact: no summarizer configured, skipping summary generation", "session_id", s.id)
+	}
+
+	if !summaryFailed {
+		// 移动 cursor 到末尾（清空当前窗口，不删除历史消息）
+		slidCount = s.executeFullCompaction(ctx)
+		s.logInfo("ForceCompact: cursor moved", "session_id", s.id, "slid_count", slidCount)
+	} else {
+		s.logInfo("ForceCompact: skipped cursor movement due to summarization failure", "session_id", s.id)
+	}
+
+	// 触发 compact done handler
+	afterTokens := s.CurrentWindowTokens()
+	if s.compactDoneHandler != nil {
+		s.compactDoneHandler(slidCount, afterTokens)
+	}
+
+	s.logInfo("ForceCompact: done", "session_id", s.id, "after_tokens", afterTokens)
+}
+
+// sessionState 是 compaction 决策用的会话状态快照。
+//
+// 偏移量模型：messages 是完整历史，cursor 是当前窗口起始偏移量，
+// activeMessages = messages[cursor:] 是即将被清空的活跃窗口。
 type sessionState struct {
-	cursor        int
-	messageCount  int
-	maxWindowSize int64
-	windowTokens  int64
-	messages      []Message
+	cursor         int
+	messageCount   int
+	maxWindowSize  int64
+	windowTokens   int64
+	messages       []Message
+	activeMessages []Message // 当前活跃窗口 messages[cursor:]
 }
 
-// captureState atomically captures current session state under read lock.
+// captureState 在读锁下原子地捕获当前会话状态。
+// 偏移量模型：windowTokens 基于 activeMessages（messages[cursor:]）计算。
 func (s *Session) captureState() sessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	windowMsgs := s.messages[s.cursor:]
-	tokens := estimateWindowTokensV2(windowMsgs)
+	activeMessages := s.messages[s.cursor:]
+	tokens := estimateWindowTokensV2(activeMessages)
 
 	return sessionState{
-		cursor:        s.cursor,
-		messageCount:  len(s.messages),
-		maxWindowSize: s.maxWindowSize,
-		windowTokens:  tokens,
-		messages:      s.messages,
+		cursor:         s.cursor,
+		messageCount:   len(s.messages),
+		maxWindowSize:  s.maxWindowSize,
+		windowTokens:   tokens,
+		messages:       s.messages,
+		activeMessages: activeMessages,
 	}
 }
 
-// needsCompaction determines if the current state requires compaction.
+// needsCompaction 判断当前状态是否需要触发摘要清空。
+// 偏移量模型：只要活跃窗口非空且 WindowTokens 超过 80% 阈值即触发。
 func (st sessionState) needsCompaction() bool {
 	if st.maxWindowSize <= 0 {
 		return false
 	}
-	if st.cursor >= st.messageCount {
+	if len(st.activeMessages) == 0 {
 		return false
 	}
 
@@ -707,75 +921,156 @@ func (st sessionState) needsCompaction() bool {
 	return st.windowTokens > threshold
 }
 
-// compactionPlan contains the calculated parameters for a compaction operation.
-type compactionPlan struct {
-	shouldCompact   bool
-	newCursor       int
-	messagesToSlide int
-	currentCursor   int
-	originalLength  int
-}
+// executeFullCompaction 在写锁内执行清空：cursor = len(messages)。
+//
+// 偏移量模型核心动作：
+//   - 不删除 messages（完整历史保留在内存和持久化存储中）
+//   - 只把 cursor 移到 messages 末尾，使当前窗口 messages[cursor:] 变为空切片
+//   - 通过 SetCursor 持久化新的 cursor 偏移量
+//   - 不调用 UpdateMessages —— 保留 session.yml 中的完整原始消息
+//
+// 返回被清空的活跃窗口消息数（len(messages) - 旧 cursor）。
+func (s *Session) executeFullCompaction(ctx context.Context) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-// calculateCompactionPlan determines what needs to be compacted based on current state.
-func (st sessionState) calculateCompactionPlan() compactionPlan {
-	target := int64(float64(st.maxWindowSize) * 0.6)
+	// 被清空的活跃窗口消息数
+	slidCount := len(s.messages) - s.cursor
 
-	var newCursor int
-	var slidTokens int64
+	// 移动 cursor 到末尾 —— 当前窗口 messages[cursor:] 变为空切片
+	s.cursor = len(s.messages)
 
-	for i := st.cursor; i < st.messageCount; i++ {
-		t := int64(len(st.messages[i].Content)/4 + 1)
-		newCursor = i
-		slidTokens += t
-		if st.windowTokens-slidTokens <= target {
-			newCursor = i + 1
-			break
-		}
+	if s.store != nil {
+		// 只持久化 cursor 偏移量，不删除 session.yml 中的原始消息
+		_ = s.store.SetCursor(ctx, s.id, s.cursor)
 	}
 
-	return compactionPlan{
-		shouldCompact:   newCursor > st.cursor,
-		newCursor:       newCursor,
-		messagesToSlide: newCursor - st.cursor,
-		currentCursor:   st.cursor,
-		originalLength:  st.messageCount,
-	}
-}
-
-// getMessagesToSlide extracts the messages that will be compacted.
-func (s *Session) getMessagesToSlide(plan compactionPlan) []Message {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if plan.newCursor > len(s.messages) {
-		return nil
+	if s.compactionHandler != nil {
+		s.compactionHandler(CompactionEvent{
+			MessagesSlid:   slidCount,
+			RemainingAfter: 0,
+			WindowSize:     s.maxWindowSize,
+		})
 	}
 
-	slided := make([]Message, plan.messagesToSlide)
-	copy(slided, s.messages[plan.currentCursor:plan.newCursor])
-	return slided
+	return slidCount
 }
 
 // generateSummary calls the summarizer outside of any locks to prevent deadlocks.
+// sanitizeMessagesForLLM 全局清洗消息序列，确保符合 Anthropic API 的角色交替规则：
+//   - 移除末尾未配对的 tool_call/tool_result
+//   - 移除序列中任何 tool_call 但后续没有足够的 tool 消息跟随的 assistant 消息中的 tool_calls
+//   - 移除没有对应 pending tool_call 的孤立 tool 消息
+func sanitizeMessagesForLLM(msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	// 第一遍：构建 tool_call 期望表
+	type expectedCall struct {
+		idx      int // 消息索引
+		required int // 需要的 tool 消息数
+		got      int // 实际收到的 tool 消息数
+	}
+	exp := make(map[string]*expectedCall) // callID → expected
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role == "tool" {
+			continue
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				exp[tc.ID] = &expectedCall{idx: i, required: 1, got: 0}
+			}
+		}
+	}
+	// 统计每个 call_id 实际有多少 tool 消息
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			if e, ok := exp[m.ToolCallID]; ok {
+				e.got++
+			}
+		}
+	}
+
+	// 找出不完整的 tool_calls（期待 > 实际）
+	incomplete := make(map[string]bool)
+	for id, e := range exp {
+		if e.got < e.required {
+			incomplete[id] = true
+		}
+	}
+
+	// 第二遍：构建干净的输出
+	out := make([]Message, 0, len(msgs))
+	pendingIncomplete := false // 当前 assistant 是否有不完整的 tool_call
+	for _, m := range msgs {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// 检查这个 assistant 的 tool_calls 是否全部完整
+			allComplete := true
+			for _, tc := range m.ToolCalls {
+				if incomplete[tc.ID] {
+					allComplete = false
+					break
+				}
+			}
+			if allComplete {
+				out = append(out, m)
+				pendingIncomplete = false
+			} else {
+				// 这个 assistant 的 tool_calls 不完整 → 只保留文字内容，去掉 ToolCalls
+				cleaned := m
+				cleaned.ToolCalls = nil
+				out = append(out, cleaned)
+				pendingIncomplete = true
+			}
+		} else if m.Role == "tool" {
+			if incomplete[m.ToolCallID] || pendingIncomplete {
+				continue // 跳过孤立的 tool 消息
+			}
+			out = append(out, m)
+		} else {
+			out = append(out, m)
+			pendingIncomplete = false
+		}
+	}
+
+	return out
+}
+
 // 把所有待摘要消息完整交给 LLM，由 LLM 借助 prompt 的 Quality rules
 // 自主判断哪些值得记忆（识别 trivial/重复/纠正/冲突）。代码层不做源头过滤，
 // 因为砍掉消息会让 LLM 失去完整上下文，反而降低摘要质量。
-func (s *Session) generateSummary(ctx context.Context, messages []Message) []memory.MemoryChunk {
+// 但必须先剔除末尾未配对的 tool_call/tool_result（Anthropic API 校验）。
+func (s *Session) generateSummary(ctx context.Context, messages []Message) ([]memory.MemoryChunk, error) {
 	if s.summarizer == nil || len(messages) == 0 {
-		return nil
+		return nil, nil
+	}
+
+	// 剔除末尾未配对的 tool_call/tool_result，避免 LLM API 校验拒绝
+	messages = sanitizeMessagesForLLM(messages)
+	if len(messages) == 0 {
+		s.logInfo("generateSummary: all messages stripped by LLM sanitization", "session_id", s.id)
+		return nil, nil
 	}
 
 	chunks, err := s.summarizer.Summarize(ctx, messages)
-	if err != nil || len(chunks) == 0 {
-		return nil
+	if err != nil {
+		s.logError("generateSummary: Summarize failed", err, "session_id", s.id)
+		return nil, err
+	}
+	if len(chunks) == 0 {
+		s.logInfo("generateSummary: Summarize returned empty chunks (no substantive content)", "session_id", s.id)
+		return nil, nil
 	}
 
-	// Enrich chunks with agent name, session ID, and timestamp fallback.
+	// Enrich chunks with agent name, session ID, project dir, and timestamp fallback.
 	// Timestamp 优先使用 LLM 在 JSON 中提供的事件时间；LLM 未填或解析失败时
 	// 才 fallback 到 summarize 触发时间。
 	for i := range chunks {
 		chunks[i].AgentName = s.agentName
 		chunks[i].SessionID = s.id
+		chunks[i].ProjectDir = s.projectDir
 		if chunks[i].Timestamp.IsZero() {
 			chunks[i].Timestamp = time.Now()
 		}
@@ -785,38 +1080,21 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) []mem
 		}
 	}
 
-	return chunks
+	return chunks, nil
 }
 
 // persistSummary stores the generated memory chunks in the memory store.
-func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChunk) {
+// Returns an error if storage fails; caller may still move cursor (best-effort storage).
+func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChunk) error {
 	if s.mem == nil || len(chunks) == 0 {
-		return
+		return nil
 	}
 
-	_ = s.mem.StoreChunks(ctx, s.id, chunks)
-}
-
-// executeCompactionPlan applies the compaction plan under write lock with CAS semantics.
-func (s *Session) executeCompactionPlan(plan compactionPlan) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.cursor != plan.currentCursor || len(s.messages) != plan.originalLength {
-		return
+	if err := s.mem.StoreChunks(ctx, s.id, chunks); err != nil {
+		s.logError("persistSummary: StoreChunks failed", err, "session_id", s.id)
+		return err
 	}
-
-	slidCount := plan.newCursor - s.cursor
-	s.messages = append(s.messages[:s.cursor], s.messages[plan.newCursor:]...)
-	s.cursor = len(s.messages[:s.cursor])
-
-	if s.compactionHandler != nil {
-		s.compactionHandler(CompactionEvent{
-			MessagesSlid:   slidCount,
-			RemainingAfter: len(s.messages),
-			WindowSize:     s.maxWindowSize,
-		})
-	}
+	return nil
 }
 
 // SetCompactionHandler updates the callback function invoked after compaction events.
@@ -827,32 +1105,73 @@ func (s *Session) SetCompactionHandler(h func(CompactionEvent)) {
 	s.compactionHandler = h
 }
 
-// Compact manually triggers compaction of historical messages, keeping only
-// the most recent assistant messages as specified by keepRecent.
+// SetSummarizer sets the LLM-based summarizer for context compaction.
+// This can be called at any time to change or remove the summarizer.
+// Pass nil to disable summarization during compaction.
+func (s *Session) SetSummarizer(ss Summarizer) {
+	s.summarizer = ss
+}
+
+// SetMemory sets the memory store used for persisting compaction summaries.
+// This can be called at any time to change or remove the memory store.
+// Pass nil to disable summary persistence.
+func (s *Session) SetMemory(mem MemoryStore) {
+	s.mem = mem
+}
+
+// SetMicroCompactDoneHandler sets a callback invoked after TryMicroCompact completes.
+// The callback receives (compressed, deduped, windowTokens) counters.
+// Pass nil to disable.
+func (s *Session) SetMicroCompactDoneHandler(h func(compressed, deduped int, windowTokens int64)) {
+	s.microCompactDoneHandler = h
+}
+
+// SetCompactStartHandler sets a callback invoked before TryCompact begins
+// LLM-based summarization compaction. The callback receives (windowTokens, maxWindowSize).
+// Pass nil to disable.
+func (s *Session) SetCompactStartHandler(h func(windowTokens, maxWindowSize int64)) {
+	s.compactStartHandler = h
+}
+
+// SetCompactDoneHandler sets a callback invoked after TryCompact completes.
+// The callback receives (messagesSlid, windowTokens).
+// Pass nil to disable.
+func (s *Session) SetCompactDoneHandler(h func(messagesSlid int, windowTokens int64)) {
+	s.compactDoneHandler = h
+}
+
+// SetMicroCompactStartHandler sets a callback invoked before TryMicroCompact
+// begins tool-message compression. The callback receives (windowTokens, maxWindowSize).
+// Pass nil to disable.
+func (s *Session) SetMicroCompactStartHandler(h func(windowTokens, maxWindowSize int64)) {
+	s.microCompactStartHandler = h
+}
+
+// Compact manually triggers MicroCompact compression on the active window.
 //
-// Unlike automatic compaction (triggered by token limits), this method allows
-// explicit control over how much history to preserve.
+// 偏移量模型：只对活跃窗口 messages[cursor:] 执行无 LLM 压缩
+// （tool 消息归档为占位符），保留 messages[:cursor] 历史分区不变。
+// 压缩后的结果拼接回 messages，cursor 保持原位。
 //
 // Parameters:
 //   - keepRecent: Number of recent assistant messages to retain in compacted form
-//
-// Use Cases:
-//   - Reducing context before a new topic
-//   - Freeing memory in long sessions
-//   - Preparing for export or analysis
 func (s *Session) Compact(keepRecent int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cursor <= 0 {
+	if len(s.messages) == 0 || s.cursor >= len(s.messages) {
 		return
 	}
-	historical := s.messages[:s.cursor]
-	if len(historical) == 0 {
-		return
+	activeWindow := s.messages[s.cursor:]
+	compacted := MicroCompact(activeWindow, keepRecent)
+	// 重新拼接：保留历史分区 messages[:cursor] + 压缩后的活跃窗口
+	newMessages := make([]Message, 0, s.cursor+len(compacted))
+	newMessages = append(newMessages, s.messages[:s.cursor]...)
+	newMessages = append(newMessages, compacted...)
+	s.messages = newMessages
+	// cursor 不变 —— 仍指向原历史分区的边界
+	if s.store != nil {
+		_ = s.store.UpdateMessages(context.Background(), s.id, s.cursor, s.messages)
 	}
-	compacted := MicroCompact(historical, keepRecent)
-	s.messages = append(compacted, s.messages[s.cursor:]...)
-	s.cursor = len(compacted)
 }
 
 // Reset clears all messages and resets the cursor to zero.
@@ -873,7 +1192,8 @@ func (s *Session) Reset() {
 // only the first keepCount messages. This is used for retry scenarios
 // where the last exchange needs to be undone before resending.
 //
-// The cursor is also adjusted if it points beyond the truncated boundary.
+// 偏移量模型：截断消息后，若 cursor 超过截断点则回退到截断点，
+// 避免 cursor 指向已不存在的消息。cursor 不会前进。
 // Changes are persisted to the SessionStore if one is configured.
 func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 	s.ensureLoaded(ctx)
@@ -888,6 +1208,7 @@ func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 	}
 
 	s.messages = s.messages[:keepCount]
+	// cursor 不能超过截断点，否则会指向不存在的消息
 	if s.cursor > keepCount {
 		s.cursor = keepCount
 	}
