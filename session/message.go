@@ -33,3 +33,7 @@ type Message struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"` // for role="tool" messages
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`    // for role="assistant" messages
 }
+
+// GetID returns the unique identifier for this message.
+// Timestamp (ULID-based int64) is guaranteed unique within a session.
+func (m Message) GetID() int64 { return m.Timestamp }

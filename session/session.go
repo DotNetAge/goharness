@@ -722,6 +722,102 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) {
 	s.mu.Unlock()
 }
 
+// getRoundRange 返回指定游标所在轮次的结束索引（exclusive）。
+// active 必须为 messages[s.cursor:]，cursor 为其中的相对偏移量。
+// 轮次范围 = [cursor, roundEnd)。
+func (s *Session) getRoundRange(cursor int, active []Message) (roundEnd int, err error) {
+	if cursor < 0 || cursor >= len(active) {
+		return 0, fmt.Errorf("session: cursor %d out of range [0, %d)", cursor, len(active))
+	}
+	if active[cursor].Role != "user" {
+		return 0, fmt.Errorf("session: cursor %d points to %q message, must point to user message",
+			cursor, active[cursor].Role)
+	}
+	roundEnd = cursor + 1
+	for roundEnd < len(active) {
+		if active[roundEnd].Role == "user" {
+			break
+		}
+		roundEnd++
+	}
+	return roundEnd, nil
+}
+
+// GetRound 获取指定游标所在轮次的所有消息（不含后续轮次）。
+//
+// 游标 cursor 是当前活跃窗口（messages[cursor:]）内的相对偏移量，0 为起点。
+// 游标必须指向一条 User 消息，否则返回 error。
+// 返回从该 User 消息起、到下一个 User 消息或窗口末尾为止的完整轮次切片。
+func (s *Session) GetRound(ctx context.Context, cursor int) ([]Message, error) {
+	s.ensureLoaded(ctx)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if cursor < 0 || cursor >= len(s.messages[s.cursor:]) {
+		return nil, fmt.Errorf("session: cursor %d out of range [0, %d)", cursor, len(s.messages[s.cursor:]))
+	}
+	active := s.messages[s.cursor:]
+	roundEnd, err := s.getRoundRange(cursor, active)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Message, roundEnd-cursor)
+	copy(out, active[cursor:roundEnd])
+	return out, nil
+}
+
+// DeleteRound 删除指定消息所在的完整轮次。
+//
+// messageID 是消息的唯一标识（Message.Timestamp），必须在活跃窗口中存在。
+// 该方法会找到该消息在活跃窗口（messages[cursor:]）中的位置，
+// 确认其为 User 消息后，删除整个轮次。
+func (s *Session) DeleteRound(ctx context.Context, messageID int64) error {
+	s.ensureLoaded(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	active := s.messages[s.cursor:]
+
+	// 按 Timestamp 查找消息在活跃窗口中的位置
+	cursor := -1
+	for i, m := range active {
+		if m.Timestamp == messageID {
+			cursor = i
+			break
+		}
+	}
+	if cursor < 0 {
+		return fmt.Errorf("session: message %d not found in active window", messageID)
+	}
+
+	roundEnd, err := s.getRoundRange(cursor, active)
+	if err != nil {
+		return err
+	}
+
+	absStart := s.cursor + cursor
+	absEnd := s.cursor + roundEnd
+
+	// 从持久化存储中删除
+	if s.store != nil {
+		for i := absStart; i < absEnd; i++ {
+			if err := s.store.Delete(ctx, s.messages[i].Timestamp, s.id); err != nil {
+				s.logError("DeleteRound: store.Delete failed",
+					err, "session_id", s.id, "idx", i, "role", s.messages[i].Role)
+				return fmt.Errorf("session: DeleteRound store delete at index %d: %w", i, err)
+			}
+		}
+	}
+
+	// 从内存切片中移除
+	s.messages = append(s.messages[:absStart], s.messages[absEnd:]...)
+
+	return nil
+}
+
 // TryCompact 检查当前会话窗口的 Token 是否超限，若超限则对活跃窗口
 // (messages[cursor:]) 进行一次摘要、持久化到 MemoryStore，然后将 cursor
 // 移到 messages 末尾（cursor = len(messages)），使当前窗口变为空切片。
