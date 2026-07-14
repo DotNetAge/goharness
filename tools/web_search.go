@@ -339,6 +339,99 @@ func (t *WebSearchTool) Info() *ToolInfo {
 	}
 }
 
+// searchAllAdapters 针对单个查询在所有适配器上并行搜索，合并并去重结果。
+func (t *WebSearchTool) searchAllAdapters(ctx context.Context, query string, opts SearchOptions, maxResults int) ([]SearchResult, []string) {
+	t.adapterMu.RLock()
+	adapters := make([]SearchAdapter, len(t.adapters))
+	copy(adapters, t.adapters)
+	t.adapterMu.RUnlock()
+
+	logger := getLogger(ctx)
+
+	type adapterResult struct {
+		results []SearchResult
+		err     error
+		adapter string
+	}
+
+	resultCh := make(chan adapterResult, len(adapters))
+	var wg sync.WaitGroup
+
+	for _, adapter := range adapters {
+		wg.Add(1)
+		go func(a SearchAdapter) {
+			defer wg.Done()
+
+			if ctx.Err() != nil {
+				resultCh <- adapterResult{err: fmt.Errorf("上下文已取消"), adapter: a.Name()}
+				return
+			}
+
+			searchResults, err := a.Search(ctx, query, opts)
+			if err != nil {
+				logger.Warn("search adapter failed", "adapter", a.Name(), "error", err)
+				resultCh <- adapterResult{err: err, adapter: a.Name()}
+				return
+			}
+			if len(searchResults) == 0 {
+				resultCh <- adapterResult{results: []SearchResult{}, adapter: a.Name()}
+				return
+			}
+			resultCh <- adapterResult{results: searchResults, adapter: a.Name()}
+		}(adapter)
+	}
+
+	deadline := time.After(8 * time.Second)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	var allResults []SearchResult
+	var failedAdapters []string
+	collected := 0
+
+collectLoop:
+	for collected < len(adapters) {
+		select {
+		case result := <-resultCh:
+			collected++
+			if result.err == nil && len(result.results) > 0 {
+				for i := range result.results {
+					result.results[i].Source = result.adapter
+				}
+				allResults = append(allResults, result.results...)
+				if len(allResults) >= maxResults {
+					break collectLoop
+				}
+			} else if result.err != nil {
+				failedAdapters = append(failedAdapters, fmt.Sprintf("%s (%v)", result.adapter, result.err))
+			}
+		case <-done:
+			break collectLoop
+		case <-deadline:
+			break collectLoop
+		case <-ctx.Done():
+			break collectLoop
+		}
+	}
+
+	// Deduplicate by URL
+	seenURLs := make(map[string]bool)
+	var deduped []SearchResult
+	for _, r := range allResults {
+		if !seenURLs[r.URL] {
+			seenURLs[r.URL] = true
+			deduped = append(deduped, r)
+		}
+	}
+	if maxResults > 0 && len(deduped) > maxResults {
+		deduped = deduped[:maxResults]
+	}
+	return deduped, failedAdapters
+}
+
 func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	query, err := ValidateRequiredString(params, "query")
 	if err != nil {
@@ -374,7 +467,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 	}
 
-	// Check KVStore cache (2-day TTL)
+	// Check KVStore cache (2-day TTL) — 使用原始查询做缓存键
 	cacheKey := query + "|" + strings.Join(allowedDomains, ",") + "|" + strings.Join(blockedDomains, ",")
 	kvs := GetToolContext(ctx).KVStore
 	if kvs != nil {
@@ -389,13 +482,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 	}
 
-	// Hybrid parallel search: run all adapters concurrently, merge results
-	// Each adapter returns top 5 results, then we merge and deduplicate
-	t.adapterMu.RLock()
-	adapters := make([]SearchAdapter, len(t.adapters))
-	copy(adapters, t.adapters)
-	t.adapterMu.RUnlock()
-
 	logger := getLogger(ctx)
 
 	hybridOpts := SearchOptions{
@@ -404,125 +490,63 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		BlockedDomains: blockedDomains,
 	}
 
-	type adapterResult struct {
-		results []SearchResult
-		err     error
-		adapter string
-	}
-
-	resultCh := make(chan adapterResult, len(adapters))
-	var wg sync.WaitGroup
-
-	for _, adapter := range adapters {
-		wg.Add(1)
-		go func(a SearchAdapter) {
-			defer wg.Done()
-
-			if ctx.Err() != nil {
-				resultCh <- adapterResult{err: fmt.Errorf("上下文已取消"), adapter: a.Name()}
-				return
-			}
-
-			searchResults, err := a.Search(ctx, query, hybridOpts)
-			if err != nil {
-				logger.Warn("search adapter failed in hybrid mode",
-					"adapter", a.Name(),
-					"error", err,
-				)
-				resultCh <- adapterResult{err: err, adapter: a.Name()}
-				return
-			}
-
-			if len(searchResults) == 0 {
-				logger.Info("search adapter returned empty results in hybrid mode",
-					"adapter", a.Name(),
-					"query", truncateStr(query, 50),
-				)
-				resultCh <- adapterResult{results: []SearchResult{}, adapter: a.Name()}
-				return
-			}
-
-			resultCh <- adapterResult{results: searchResults, adapter: a.Name()}
-		}(adapter)
-	}
-
-	deadline := time.After(8 * time.Second)
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
+	// 将查询按空白符拆分为多个关键词，分别检索后合并去重。
+	// LLM 倾向于输入空格分隔的关键词而非自然语句（如 "redis 迁移 配置"），
+	// 多次查询能召回更全面的结果。
+	tokens := splitQueryTokens(query)
+	logger.Info("[WebSearch]开始搜索",
+		"query", query,
+		"tokens", tokens,
+		"max_results", maxResults,
+	)
 
 	var allResults []SearchResult
-	var failedAdapters []string
-	successCount := 0
-	collected := 0
-
-collectLoop:
-	for collected < len(adapters) {
-		select {
-		case result := <-resultCh:
-			collected++
-			if result.err == nil && len(result.results) > 0 {
-				for i := range result.results {
-					result.results[i].Source = result.adapter
-				}
-				allResults = append(allResults, result.results...)
-				successCount++
-				logger.Info("search adapter succeeded in hybrid mode",
-					"adapter", result.adapter,
-					"result_count", len(result.results),
-				)
-				if len(allResults) >= maxResults {
-					break collectLoop
-				}
-			} else if result.err != nil {
-				failedAdapters = append(failedAdapters, fmt.Sprintf("%s (%v)", result.adapter, result.err))
-			}
-		case <-done:
-			break collectLoop
-		case <-deadline:
-			break collectLoop
-		case <-ctx.Done():
-			break collectLoop
-		}
-	}
-
-	// Deduplicate results by URL (keep first occurrence)
 	seenURLs := make(map[string]bool)
-	var dedupedResults []SearchResult
-	for _, r := range allResults {
-		if !seenURLs[r.URL] {
-			seenURLs[r.URL] = true
-			dedupedResults = append(dedupedResults, r)
+	failedAdapterSet := make(map[string]bool)
+
+	for _, token := range tokens {
+		results, failedAdapters := t.searchAllAdapters(ctx, token, hybridOpts, maxResults)
+		for _, r := range results {
+			if !seenURLs[r.URL] {
+				seenURLs[r.URL] = true
+				allResults = append(allResults, r)
+			}
+		}
+		for _, f := range failedAdapters {
+			failedAdapterSet[f] = true
 		}
 	}
 
-	// Apply max_results limit to final merged results
-	if maxResults > 0 && len(dedupedResults) > maxResults {
-		dedupedResults = dedupedResults[:maxResults]
+	if maxResults > 0 && len(allResults) > maxResults {
+		allResults = allResults[:maxResults]
 	}
 
-	results := dedupedResults
+	results := allResults
 
 	if len(results) == 0 {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("搜索在 %v 后超时（查询：%q）。失败的适配器：[%s]。搜索引擎可能正在限流或遇到问题。请稍后重试。",
-				15*time.Second, query, strings.Join(failedAdapters, ", "))
+			failedList := make([]string, 0, len(failedAdapterSet))
+			for f := range failedAdapterSet {
+				failedList = append(failedList, f)
+			}
+			return nil, fmt.Errorf("搜索超时（查询：%q）。失败的适配器：[%s]。请稍后重试。",
+				query, strings.Join(failedList, ", "))
 		}
-		return nil, fmt.Errorf("未找到查询的结果：%q。所有搜索引擎均失败：[%s]。可能的原因：GFW 阻止、限流或网络问题。请尝试简化您的查询。",
-			query, strings.Join(failedAdapters, ", "))
+		return nil, fmt.Errorf("未找到查询的结果：%q。请尝试简化您的查询。", query)
 	}
 
 	var adapterNote string
-	if len(failedAdapters) > 0 {
-		adapterNote = fmt.Sprintf("\n\n[搜索状态] %d/%d 个引擎成功。失败：%s",
-			successCount, len(adapters), strings.Join(failedAdapters, ", "))
+	if len(failedAdapterSet) > 0 {
+		failedList := make([]string, 0, len(failedAdapterSet))
+		for f := range failedAdapterSet {
+			failedList = append(failedList, f)
+		}
+		adapterNote = fmt.Sprintf("\n\n[搜索状态] 部分引擎失败：%s", strings.Join(failedList, ", "))
 	} else {
-		adapterNote = fmt.Sprintf("\n\n[搜索状态] 所有 %d 个引擎均成功。", len(adapters))
+		adapterNote = fmt.Sprintf("\n\n[搜索状态] 所有引擎均成功。")
 	}
 
-	// Cache results in KVStore (2-day TTL)
+	// Cache results in KVStore (2-day TTL) — 以原始查询为键
 	if kvs != nil {
 		if data, err := json.Marshal(cachedSearch{
 			Results:   results,
@@ -534,9 +558,12 @@ collectLoop:
 	}
 
 	formatted := formatSearchResults(query, results) + adapterNote
-	if logger := getLogger(ctx); logger != nil {
-		logger.Info("WebSearch result", "query", query, "result_count", len(results), "formatted_len", len(formatted), "adapters_tried", len(adapters))
-	}
+	logger.Info("WebSearch result",
+		"query", query,
+		"tokens", tokens,
+		"result_count", len(results),
+		"formatted_len", len(formatted),
+	)
 	return formatted, nil
 }
 

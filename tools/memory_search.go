@@ -77,49 +77,94 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		}
 	}
 
-	var opts []memory.RetrieveOption
-	opts = append(opts, memory.WithMemoryLimit(limit))
+	var baseOpts []memory.RetrieveOption
+	baseOpts = append(baseOpts, memory.WithMemoryLimit(limit))
 
 	// 始终按当前 Agent 过滤
 	if tc := GetToolContext(ctx); tc != nil {
 		if tc.Session != nil {
-			opts = append(opts, memory.WithAgentName(tc.Session.AgentName()))
+			baseOpts = append(baseOpts, memory.WithAgentName(tc.Session.AgentName()))
 		}
 	}
 
 	// project_dir 不为空则限定到指定项目目录（即当前会话范围）
 	if raw, ok := params["project_dir"]; ok {
 		if dir, ok := raw.(string); ok && dir != "" {
-			opts = append(opts, memory.WithProjectDir(dir))
+			baseOpts = append(baseOpts, memory.WithProjectDir(dir))
 		}
 	}
+
+	// 将查询按空白符拆分为多个关键词，分别检索后合并去重。
+	// LLM 倾向于输入空格分隔的关键词而非自然语句（如 "redis 迁移 配置"），
+	// 多次查询比单次全文检索能召回更全面的结果。
+	tokens := splitQueryTokens(query)
 
 	logger := getLogger(ctx)
 	logger.Info("[MemorySearch]记忆搜索",
 		"query", truncateStr(query, 100),
+		"tokens", tokens,
 		"limit", limit,
 	)
 
-	chunks, err := t.memory.Retrieve(ctx, query, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("记忆搜索失败：%w", err)
+	var all []memory.MemoryChunk
+	seen := make(map[string]bool)
+	for _, token := range tokens {
+		chunks, err := t.memory.Retrieve(ctx, token, baseOpts...)
+		if err != nil {
+			logger.Warn("[MemorySearch]子查询失败，跳过", "token", token, "error", err)
+			continue
+		}
+		for _, c := range chunks {
+			if seen[c.ID] {
+				continue
+			}
+			seen[c.ID] = true
+			all = append(all, c)
+		}
 	}
 
-	if len(chunks) == 0 {
+	if len(all) == 0 {
 		return fmt.Sprintf("未找到关于查询的记忆：%q\n\n记忆为空或未找到相关信息。请尝试换一种方式表述您的查询，或搜索互联网。", query), nil
 	}
 
-	if len(chunks) > limit {
-		chunks = chunks[:limit]
+	if len(all) > limit {
+		all = all[:limit]
 	}
 
-	result := formatMemorySearchResults(query, chunks)
+	result := formatMemorySearchResults(query, all)
 	logger.Info("memory search completed",
 		"query", truncateStr(query, 100),
-		"result_count", len(chunks),
+		"result_count", len(all),
 	)
 
 	return result, nil
+}
+
+// splitQueryTokens 将查询拆分为多个关键词。
+// 如果查询本身是自然语句（含空格但长度 > 50），视为完整查询不拆分。
+// 否则按空白符拆分为多个关键词，过滤掉过短的词。
+func splitQueryTokens(query string) []string {
+	// 长文本视为自然语句，不拆分
+	if len(query) > 50 {
+		return []string{query}
+	}
+
+	parts := strings.Fields(query)
+	if len(parts) <= 1 {
+		return []string{query}
+	}
+
+	// 过滤掉过短的词（<=1 字符）
+	tokens := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if len(p) >= 2 {
+			tokens = append(tokens, p)
+		}
+	}
+	if len(tokens) == 0 {
+		return []string{query}
+	}
+	return tokens
 }
 
 func formatMemorySearchResults(query string, chunks []memory.MemoryChunk) string {
@@ -136,9 +181,9 @@ func formatMemorySearchResults(query string, chunks []memory.MemoryChunk) string
 		if c.Summary != "" {
 			fmt.Fprintf(&sb, "摘要：%s\n", c.Summary)
 		}
-		if c.AgentName != "" {
-			fmt.Fprintf(&sb, "代理：%s\n", c.AgentName)
-		}
+		// if c.AgentName != "" {
+		// 	fmt.Fprintf(&sb, "代理：%s\n", c.AgentName)
+		// }
 		if len(c.Tags) > 0 {
 			fmt.Fprintf(&sb, "标签：[%s]\n", strings.Join(c.Tags, ", "))
 		}
