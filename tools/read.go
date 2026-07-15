@@ -54,10 +54,17 @@ func NewReadToolWithLimits(limits FileReadingLimits) *Read {
 		limits: limits,
 		info: &ToolInfo{
 			Name:        "Read",
-			Description: "从本地文件系统读取文件。",
+			Description: "从本地文件系统读取文件。支持 PDF、DOCX、XLSX、EPUB 文档自动转换为 Markdown。",
 			Prompt: `从本地文件系统读取文件。
+
+**文本文件（.go, .py, .txt, .json 等）**
 - 结果使用 cat -n 格式显示行号。
-- 使用 offset/limit 读取特定范围，默认从开头读取最多 500 行。`,
+- 使用 offset/limit 读取特定范围，默认从开头读取最多 500 行。
+
+**文档文件（.pdf, .docx, .xlsx, .epub）**
+- 自动转换为 Markdown 格式返回。
+- offset/limit 参数不适用（全文转换）。
+- 结果中会包含 format、title、author、pages 等元数据字段。`,
 			Tags:               []string{"file", "filesystem", "read", "content"},
 			SecurityLevel:      events.LevelSafe,
 			IsReadOnly:         true,
@@ -173,6 +180,40 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 					"或先使用 grep/glob 定位相关部分。",
 				float64(info.Size())/1024, r.limits.MaxSizeBytes/1024),
 		}, nil
+	}
+
+	// 检测文档格式（PDF/DOCX/XLSX/EPUB），直接转换为 Markdown 返回
+	if format := detectDocFormat(resolvedPath); format != "" {
+		f, err := store.OS.Open(cleanPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open file: %w", err)
+		}
+		defer f.Close()
+
+		doc, err := convertDocument(format, f)
+		if err != nil {
+			return nil, err
+		}
+
+		result := map[string]any{
+			"_note":      fmt.Sprintf("已将 %s 文件转换为 Markdown 格式", strings.ToUpper(format)),
+			"success":    true,
+			"path":       resolvedPath,
+			"scope":      scope,
+			"format":     format,
+			"size_bytes": info.Size(),
+			"content":    doc.content,
+		}
+		if doc.title != "" {
+			result["title"] = doc.title
+		}
+		if doc.author != "" {
+			result["author"] = doc.author
+		}
+		if doc.pages > 0 {
+			result["pages"] = doc.pages
+		}
+		return result, nil
 	}
 
 	// Read file content via fs.FS

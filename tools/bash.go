@@ -7,10 +7,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+)
+
+var (
+	defaultWhitelistOnce sync.Once
+	cachedWhitelist      []string
 )
 
 // defaultBashTimeoutMs 是 Bash 工具的默认超时时间（毫秒）。
@@ -134,7 +141,7 @@ func (t *BashTool) Info() *ToolInfo {
 			{
 				Name:        "working_dir",
 				Type:        "string",
-				Description: "命令执行的工作目录。默认为进程当前目录。",
+				Description: "命令执行的工作目录。默认为当前会话的项目目录（ProjectDir）。设置为 ProjectDir 之外的绝对路径以在其他目录下执行。",
 				Required:    false,
 			},
 		},
@@ -167,18 +174,18 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return nil, fmt.Errorf("empty command parameter")
+		return nil, fmt.Errorf("缺少 command 参数")
 	}
 
 	logger := getLogger(ctx)
 	sessionID := ExtractSessionID(ctx)
 
 	if len(command) > 100000 {
-		logger.Warn("command exceeds maximum length",
+		logger.Warn("command 长度超过 100K 字符，拒绝执行",
 			"length", len(command),
 			"max", 100000,
 		)
-		return nil, fmt.Errorf("command exceeds maximum length of 100000 characters")
+		return nil, fmt.Errorf("command 长度超过 100K 字符，拒绝执行")
 	}
 
 	if blocked := detectDangerousCommand(command); blocked != "" {
@@ -193,15 +200,14 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	if t.whitelistEnabled {
-		if allowed := t.isCommandWhitelisted(command); !allowed {
-			cmds := extractCommands(command)
-			blockedCmd := "unknown"
-			if len(cmds) > 0 {
-				blockedCmd = cmds[0]
+		if allowed, failedCmd := t.isCommandWhitelisted(command); !allowed {
+			blockedCmd := failedCmd
+			if blockedCmd == "" {
+				blockedCmd = "unknown"
 			}
 			return map[string]any{
 				"stdout":      "",
-				"stderr":      fmt.Sprintf("已阻止：命令 %q 不在白名单中。允许的命令：%s", blockedCmd, strings.Join(getDefaultWhitelist(), ", ")),
+				"stderr":      fmt.Sprintf("已阻止：命令 %q 不在白名单中。允许的命令：%s", blockedCmd, t.whitelistDisplay()),
 				"exit_code":   126,
 				"interrupted": false,
 				"success":     false,
@@ -232,11 +238,15 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
-		wd = filepath.Clean(wd)
-		cmd.Dir = wd
+		cmd.Dir = filepath.Clean(wd)
+	} else {
+		// 默认以 ProjectDir 为工作目录
+		if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+			cmd.Dir = tc.Session.ProjectDir()
+		}
 	}
 
-	logger.Info("executing bash command",
+	logger.Info("执行 Bash 命令",
 		"command", truncateForLog(command, 200),
 		"session_id", sessionID,
 		"timeout_ms", timeoutMs,
@@ -274,21 +284,21 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 		}
 	}
 
-	const maxOutputSize = maxBashOutputSize
-	result["stdout"] = truncateOutput(stdoutStr, maxOutputSize)
-	result["stderr"] = truncateOutput(stderrStr, maxOutputSize)
+	result["stdout"] = truncateOutput(stdoutStr, maxBashOutputSize)
+	result["stderr"] = truncateOutput(stderrStr, maxBashOutputSize)
 
-	result["success"] = result["exit_code"] == 0
-	if !result["success"].(bool) {
+	success := result["exit_code"] == 0
+	result["success"] = success
+	if !success {
 		result["error"] = fmt.Sprintf("命令执行失败，退出码 %v", result["exit_code"])
-		logger.Warn("bash command failed",
+		logger.Warn("Bash 命令执行失败",
 			"exit_code", result["exit_code"],
 			"elapsed_ms", elapsed.Milliseconds(),
 			"stderr_len", len(stderrStr),
 			"session_id", sessionID,
 		)
 	} else {
-		logger.Debug("bash command completed",
+		logger.Debug("Bash 命令执行成功",
 			"exit_code", 0,
 			"elapsed_ms", elapsed.Milliseconds(),
 			"stdout_len", len(stdoutStr),
@@ -326,9 +336,10 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	}
 
 	if t.whitelistEnabled {
-		if !t.isCommandWhitelisted(command) {
+		if allowed, failedCmd := t.isCommandWhitelisted(command); !allowed {
 			cmds := extractCommands(command)
-			// Check session whitelist before asking the user.
+
+			// 先检查会话级白名单（用户之前选择"记住本次会话"的授权）
 			if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
 				allInSession := true
 				for _, cmd := range cmds {
@@ -348,7 +359,15 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 					return true, ""
 				}
 			}
-			return false, fmt.Sprintf("Bash command %q is not in the whitelist. ", cmds[0])
+
+			// 准确报告实际不在白名单中的命令
+			blockedCmd := failedCmd
+			if blockedCmd == "" && len(cmds) > 0 {
+				blockedCmd = cmds[0]
+			} else if blockedCmd == "" {
+				blockedCmd = "unknown"
+			}
+			return false, fmt.Sprintf("Bash：命令 %q 不在白名单中", blockedCmd)
 		}
 	}
 
@@ -460,12 +479,20 @@ func detectDangerousCommand(command string) string {
 //   - 网络工具：curl, wget, ssh 等
 //   - 系统工具：ps, top, df, du 等
 func getDefaultWhitelist() []string {
+	defaultWhitelistOnce.Do(func() {
+		cachedWhitelist = buildDefaultWhitelist()
+	})
+	return cachedWhitelist
+}
+
+// buildDefaultWhitelist 构建默认白名单列表（仅在首次调用时执行一次）。
+func buildDefaultWhitelist() []string {
 	baseCmds := []string{
 		"cat", "echo", "head", "tail", "less", "more",
 		"ls", "wc", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
 		"chmod", "chown", "ln", "tar", "gzip", "gunzip", "zip", "unzip",
 		"git", "svn", "hg",
-		"python", "python3", "pip", "pip3", "node", "npm", "npx",
+		"python", "python3", "pip", "pip3", "node", "npm", "cnpm", "npx", "nvm",
 		"go", "cargo", "rustc",
 		"make", "cmake", "gcc", "g++", "clang", "clang++",
 		"docker", "kubectl", "helm",
@@ -507,6 +534,20 @@ func getDefaultWhitelist() []string {
 	return baseCmds
 }
 
+// whitelistDisplay 返回活跃白名单的可读字符串（用于错误信息展示）。
+// 优先使用自定义白名单，否则返回默认白名单。
+func (t *BashTool) whitelistDisplay() string {
+	if len(t.customWhitelist) > 0 {
+		cmds := make([]string, 0, len(t.customWhitelist))
+		for cmd := range t.customWhitelist {
+			cmds = append(cmds, cmd)
+		}
+		sort.Strings(cmds)
+		return strings.Join(cmds, ", ")
+	}
+	return strings.Join(getDefaultWhitelist(), ", ")
+}
+
 // extractCommands 从 Shell 命令字符串中提取所有真实的命令名。
 // 处理复合命令（for/while/if/case），提取 do / then / ; / && / || 后面的真正命令。
 // 例如："for i in 1 2 3; do rm -rf /tmp; done" → ["rm"]
@@ -519,27 +560,46 @@ func extractCommands(command string) []string {
 		return nil
 	}
 
-	// 用 ; && || | 分割
-	separator := regexp.MustCompile(`[;&|]+`)
-	segments := separator.Split(trimmed, -1)
+	// 第一层：按逻辑分隔符 && || ; 分割（保留管道 | 单独处理）
+	logicSep := regexp.MustCompile(`&&|\|\||;`)
+	logicSegments := logicSep.Split(trimmed, -1)
 
 	var cmds []string
 	seen := make(map[string]bool)
-	for _, seg := range segments {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			continue
+	for _, seg := range logicSegments {
+		// 第二层：按管道 | 分割
+		pipeSegments := strings.Split(seg, "|")
+		for _, ps := range pipeSegments {
+			ps = strings.TrimSpace(ps)
+			if ps == "" {
+				continue
+			}
+			// 持续跳过 shell 关键字，提取每个管道分段中的第一个真实命令
+			for {
+				m := baseCommandPattern.FindStringSubmatch(ps)
+				if len(m) < 2 {
+					break
+				}
+				cmd := m[1]
+				ps = strings.TrimSpace(ps[len(m[0]):])
+
+				if shellKeywords[cmd] {
+					if cmd == "for" {
+						// for 循环变量名不是命令，跳过
+						if m2 := baseCommandPattern.FindStringSubmatch(ps); len(m2) >= 2 {
+							ps = strings.TrimSpace(ps[len(m2[0]):])
+						}
+					}
+					continue // 跳过关键字，继续查找同一分段的下一个命令
+				}
+				if seen[cmd] {
+					break // 已处理过该命令
+				}
+				seen[cmd] = true
+				cmds = append(cmds, cmd)
+				break // 每个管道分段只提取第一个真实命令
+			}
 		}
-		m := baseCommandPattern.FindStringSubmatch(seg)
-		if len(m) < 2 {
-			continue
-		}
-		cmd := m[1]
-		if shellKeywords[cmd] || seen[cmd] {
-			continue
-		}
-		seen[cmd] = true
-		cmds = append(cmds, cmd)
 	}
 	return cmds
 }
@@ -552,10 +612,11 @@ func extractCommands(command string) []string {
 //
 // 返回：
 //   - bool: 如果所有子命令都在白名单中返回 true，否则返回 false
-func (t *BashTool) isCommandWhitelisted(command string) bool {
+//   - string: 第一个不在白名单中的命令名（如果全部允许则为空字符串）
+func (t *BashTool) isCommandWhitelisted(command string) (bool, string) {
 	cmds := extractCommands(command)
 	if len(cmds) == 0 {
-		return false
+		return false, ""
 	}
 
 	// 构建白名单 map
@@ -572,8 +633,8 @@ func (t *BashTool) isCommandWhitelisted(command string) bool {
 
 	for _, cmd := range cmds {
 		if !wl[cmd] {
-			return false
+			return false, cmd
 		}
 	}
-	return true
+	return true, ""
 }

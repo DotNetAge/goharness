@@ -275,13 +275,13 @@ func (e *platformScriptExecutor) executeShell(ctx context.Context, skillRoot, sc
 func (e *platformScriptExecutor) executeRuby(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	rubyBin := "ruby"
 	if _, err := exec.LookPath("ruby"); err != nil {
-		return nil, fmt.Errorf("Ruby解释器不在系统 PATH 中： %w")
+		return nil, fmt.Errorf("Ruby解释器不在系统 PATH 中： %v", err)
 	}
 
 	absScript, _ := filepath.Abs(scriptPath)
 	fullArgs := append([]string{absScript}, args...)
 	cmd := exec.CommandContext(ctx, rubyBin, fullArgs...)
-	cmd.Dir = skillRoot
+	e.setProjectDir(ctx, cmd)
 
 	return runScriptCommand(cmd)
 }
@@ -289,7 +289,7 @@ func (e *platformScriptExecutor) executeRuby(ctx context.Context, skillRoot, scr
 func (e *platformScriptExecutor) executeNode(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	nodeBin := "node"
 	if _, err := exec.LookPath("node"); err != nil {
-		return nil, fmt.Errorf("Node解释器不在系统 PATH 中： %w")
+		return nil, fmt.Errorf("Node解释器不在系统 PATH 中： %v", err)
 	}
 
 	absScript, _ := filepath.Abs(scriptPath)
@@ -303,7 +303,7 @@ func (e *platformScriptExecutor) executeNode(ctx context.Context, skillRoot, scr
 func (e *platformScriptExecutor) executeBatch(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	cmd := exec.CommandContext(ctx, "cmd.exe", "/c", scriptPath)
 	cmd.Args = append(cmd.Args, args...)
-	cmd.Dir = skillRoot
+	e.setProjectDir(ctx, cmd)
 
 	return runScriptCommand(cmd)
 }
@@ -316,7 +316,7 @@ func (e *platformScriptExecutor) executePowerShell(ctx context.Context, skillRoo
 
 	cmd := exec.CommandContext(ctx, psBin, "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.Args = append(cmd.Args, args...)
-	cmd.Dir = skillRoot
+	e.setProjectDir(ctx, cmd)
 
 	return runScriptCommand(cmd)
 }
@@ -347,7 +347,7 @@ func (e *platformScriptExecutor) executeAppleScript(ctx context.Context, skillRo
 func (e *platformScriptExecutor) executeExecutable(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	absScript, _ := filepath.Abs(scriptPath)
 	cmd := exec.CommandContext(ctx, absScript, args...)
-	cmd.Dir = skillRoot
+	e.setProjectDir(ctx, cmd)
 
 	return runScriptCommand(cmd)
 }
@@ -355,7 +355,7 @@ func (e *platformScriptExecutor) executeExecutable(ctx context.Context, skillRoo
 func (e *platformScriptExecutor) executeGeneric(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	absScript, _ := filepath.Abs(scriptPath)
 	cmd := exec.CommandContext(ctx, absScript, args...)
-	cmd.Dir = skillRoot
+	e.setProjectDir(ctx, cmd)
 
 	return runScriptCommand(cmd)
 }
@@ -382,6 +382,15 @@ func runScriptCommand(cmd *exec.Cmd) (*scriptResult, error) {
 		Stdout:   string(stdout),
 		Duration: duration,
 	}, nil
+}
+
+// setProjectDir sets the working directory to the session's ProjectDir.
+// This decouples the script execution directory (where the script lives)
+// from the actual working directory (where the user's project is).
+func (e *platformScriptExecutor) setProjectDir(ctx context.Context, cmd *exec.Cmd) {
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		cmd.Dir = tc.Session.ProjectDir()
+	}
 }
 
 // ---------------------------------------------------------------------------

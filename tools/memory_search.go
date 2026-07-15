@@ -49,7 +49,7 @@ func (t *MemorySearch) Info() *ToolInfo {
 			{
 				Name:        "project_dir",
 				Type:        "string",
-				Description: "限定只搜索指定项目目录下的记忆。不传则搜索当前 Agent 下所有会话的记忆。",
+				Description: "限定只搜索指定项目目录下的记忆。不传则默认为当前会话的项目目录。",
 				Required:    false,
 			},
 		},
@@ -87,11 +87,19 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		}
 	}
 
-	// project_dir 不为空则限定到指定项目目录（即当前会话范围）
+	// 默认为当前会话的项目目录，确保搜索范围限定在当前项目内
+	projectDir := ""
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		projectDir = tc.Session.ProjectDir()
+	}
+	// 显式传入 project_dir 则覆盖默认值（可用于搜索其他项目记忆）
 	if raw, ok := params["project_dir"]; ok {
 		if dir, ok := raw.(string); ok && dir != "" {
-			baseOpts = append(baseOpts, memory.WithProjectDir(dir))
+			projectDir = dir
 		}
+	}
+	if projectDir != "" {
+		baseOpts = append(baseOpts, memory.WithProjectDir(projectDir))
 	}
 
 	// 将查询按空白符拆分为多个关键词，分别检索后合并去重。
@@ -173,25 +181,13 @@ func formatMemorySearchResults(query string, chunks []memory.MemoryChunk) string
 	fmt.Fprintf(&sb, "找到 %d 条相关记忆记录：\n\n", len(chunks))
 
 	for i, c := range chunks {
-		fmt.Fprintf(&sb, "--- 记录 %d ---\n", i+1)
-
-		if c.ID != "" {
-			fmt.Fprintf(&sb, "ID：%s\n", c.ID)
-		}
-		if c.Summary != "" {
-			fmt.Fprintf(&sb, "摘要：%s\n", c.Summary)
-		}
-		// if c.AgentName != "" {
-		// 	fmt.Fprintf(&sb, "代理：%s\n", c.AgentName)
-		// }
-		if len(c.Tags) > 0 {
-			fmt.Fprintf(&sb, "标签：[%s]\n", strings.Join(c.Tags, ", "))
-		}
 		if !c.Timestamp.IsZero() {
-			fmt.Fprintf(&sb, "时间：%s\n", c.Timestamp.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(&sb, "[%s]", c.Timestamp.Format("2006-01-02 15:04:05"))
 		}
-
-		fmt.Fprintf(&sb, "\n%s\n", c.Content)
+		fmt.Fprintf(&sb, "%s", c.Content)
+		if len(c.Tags) > 0 {
+			fmt.Fprintf(&sb, "标签:%s\n", strings.Join(c.Tags, ", "))
+		}
 
 		if i < len(chunks)-1 {
 			fmt.Fprintln(&sb)
