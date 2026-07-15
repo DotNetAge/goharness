@@ -3,9 +3,9 @@ package session
 // ToolCall represents a tool invocation in an assistant message.
 // Mirrors gochat/core.ToolCall for wire-format compatibility.
 type ToolCall struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON-encoded argument map
+	ID        string `json:"id" yaml:"id"`
+	Name      string `json:"name" yaml:"name"`
+	Arguments string `json:"arguments" yaml:"arguments"` // JSON-encoded argument map
 }
 
 // CompactedMeta stores metadata for a MicroCompact-compressed tool message.
@@ -25,13 +25,14 @@ type CompactedMeta struct {
 //   - tool_call_id: correlation ID for tool result messages
 //   - compacted: JSON-encoded CompactedMeta, non-empty when content is archived to disk
 type Message struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content"`
-	Compacted        string     `json:"compacted,omitempty"`        // JSON(CompactedMeta), non-empty → content is archived
-	ReasoningContent string     `json:"reasoning_content,omitempty"` // thinking stream (DeepSeek-R1 etc.)
-	Timestamp        int64      `json:"timestamp"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"` // for role="tool" messages
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`    // for role="assistant" messages
+	Role             string      `json:"role" yaml:"role"`
+	Content          string      `json:"content" yaml:"content"`
+	Compacted        string      `json:"compacted,omitempty" yaml:"compacted,omitempty"`                 // JSON(CompactedMeta), non-empty → content is archived
+	ReasoningContent string      `json:"reasoning_content,omitempty" yaml:"reasoning_content,omitempty"` // thinking stream (DeepSeek-R1 etc.)
+	Timestamp        int64       `json:"timestamp" yaml:"timestamp"`
+	ToolCallID       string      `json:"tool_call_id,omitempty" yaml:"tool_call_id,omitempty"` // for role="tool" messages
+	ToolCalls        []ToolCall  `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`     // for role="assistant" messages
+	Usage            *TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"`   // token consumption (assistant messages only)
 }
 
 // GetID returns the unique identifier for this message.

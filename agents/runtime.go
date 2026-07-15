@@ -879,6 +879,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
 		})
 	}
+	// Clear b.question when the magic word was consumed so the loop below
+	// does not re-inject it into the LLM call as a regular user message.
+	if magicHandled {
+		b.question = ""
+	}
 	// Determine if this agent has SubAgent for conditional core tools.
 	hasSubAgent := false
 	if rt.agentReg != nil {
@@ -1102,14 +1107,15 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// Record token usage from stream
 		fmt.Printf("[SSE-TRACE L4] About to call stream.Usage(), session=%s, iter=%d\n", sid, iter)
 		u := stream.Usage()
+		var callUsage session.TokenUsage
 		if u != nil {
 			fmt.Printf("[SSE-TRACE L4] stream.Usage() NON-NIL: prompt=%d, completion=%d, total=%d, session=%s\n",
 				u.PromptTokens, u.CompletionTokens, u.TotalTokens, sid)
-			callUsage := session.TokenUsage{
-				Timestamp:    time.Now(),
-				InputTokens:  u.PromptTokens,
-				OutputTokens: u.CompletionTokens,
-				TotalTokens:  u.TotalTokens,
+			callUsage = session.TokenUsage{
+				Timestamp:        time.Now(),
+				PromptTokens:     u.PromptTokens,
+				CompletionTokens: u.CompletionTokens,
+				TotalTokens:      u.TotalTokens,
 			}
 			if u.PromptTokensDetails != nil {
 				callUsage.CachedTokens = u.PromptTokensDetails.CachedTokens
@@ -1126,8 +1132,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				ModelName:        rt.model.Name,
 				ProviderName:     rt.model.Provider,
 				AgentName:        b.agentName,
-				PromptTokens:     callUsage.InputTokens,
-				CompletionTokens: callUsage.OutputTokens,
+				PromptTokens:     callUsage.PromptTokens,
+				CompletionTokens: callUsage.CompletionTokens,
 				CachedTokens:     callUsage.CachedTokens,
 				ReasoningTokens:  callUsage.ReasoningTokens,
 				TotalTokens:      callUsage.TotalTokens,
@@ -1138,15 +1144,16 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				fmt.Printf("[SSE-TRACE L4] Append FAILED: %v, session=%s\n", err, sid)
 			} else {
 				fmt.Printf("[SSE-TRACE L4] Append OK: prompt=%d, completion=%d, total=%d, cached=%d, session=%s\n",
-					callUsage.InputTokens, callUsage.OutputTokens, callUsage.TotalTokens, callUsage.CachedTokens, sid)
+					callUsage.PromptTokens, callUsage.CompletionTokens, callUsage.TotalTokens, callUsage.CachedTokens, sid)
 
 				// Emit per-call token usage event for real-time client notification
 				emit(events.TokenUsageRecorded, record)
 			}
-			totalUsage.InputTokens += callUsage.InputTokens
-			totalUsage.OutputTokens += callUsage.OutputTokens
+			totalUsage.PromptTokens += callUsage.PromptTokens
+			totalUsage.CompletionTokens += callUsage.CompletionTokens
 			totalUsage.TotalTokens += callUsage.TotalTokens
 			totalUsage.CachedTokens += callUsage.CachedTokens
+			totalUsage.ReasoningTokens += callUsage.ReasoningTokens
 			totalUsage.Timestamp = time.Now()
 			logger.Info("token usage recorded", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
 		} else {
@@ -1154,22 +1161,25 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			// 基于内容长度估算 token 数量（中英混合约 4 字符/token），确保统计不为 0
 			contentLen := len(contentBuf.String())
 			reasoningLen := len(reasoningBuf.String())
-			estimatedInput := (contentLen + reasoningLen) / 4 // 粗略估算输入（含历史上下文无法精确计算）
-			estimatedOutput := contentLen / 4                 // 输出 token 估算
+			// Fallback: provider 未返回 usage 时，只能估算本次生成的输出。
+			// 输入侧包含整个上下文窗口，无法从当前响应内容推导，故不重复计入输出。
+			estimatedOutput := (contentLen + reasoningLen) / 4
 			if estimatedOutput < 1 {
 				estimatedOutput = 1 // 至少记录 1 个 output token
 			}
-			estimatedTotal := estimatedInput + estimatedOutput
+			estimatedInput := 0  // 无 usage 时输入无法可靠估算，避免重复计费
+			estimatedTotal := estimatedOutput
 
 			logger.Warn("stream.Usage() returned nil — using estimated tokens",
 				"session", sid, "iter", iter, "model", rt.model.Name,
 				"estimated_input", estimatedInput, "estimated_output", estimatedOutput)
 
-			callUsage := session.TokenUsage{
-				Timestamp:    time.Now(),
-				InputTokens:  estimatedInput,
-				OutputTokens: estimatedOutput,
-				TotalTokens:  estimatedTotal,
+			callUsage = session.TokenUsage{
+				Timestamp:        time.Now(),
+				PromptTokens:     estimatedInput,
+				CompletionTokens: estimatedOutput,
+				TotalTokens:      estimatedTotal,
+				ReasoningTokens:  reasoningLen / 4,
 			}
 
 			record := session.TokenUsageRecord{
@@ -1179,10 +1189,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				ModelName:        rt.model.Name,
 				ProviderName:     rt.model.Provider,
 				AgentName:        b.agentName,
-				PromptTokens:     callUsage.InputTokens,
-				CompletionTokens: callUsage.OutputTokens,
+				PromptTokens:     callUsage.PromptTokens,
+				CompletionTokens: callUsage.CompletionTokens,
 				CachedTokens:     0,
-				ReasoningTokens:  reasoningLen / 4,
+				ReasoningTokens:  callUsage.ReasoningTokens,
 				TotalTokens:      callUsage.TotalTokens,
 				Timestamp:        time.Now(),
 			}
@@ -1191,9 +1201,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			} else {
 				emit(events.TokenUsageRecorded, record)
 			}
-			totalUsage.InputTokens += callUsage.InputTokens
-			totalUsage.OutputTokens += callUsage.OutputTokens
+			totalUsage.PromptTokens += callUsage.PromptTokens
+			totalUsage.CompletionTokens += callUsage.CompletionTokens
 			totalUsage.TotalTokens += callUsage.TotalTokens
+			totalUsage.ReasoningTokens += callUsage.ReasoningTokens
 			totalUsage.Timestamp = time.Now()
 		}
 
@@ -1251,6 +1262,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			Content:          content,
 			ReasoningContent: reasoningBuf.String(),
 			Timestamp:        time.Now().Unix(),
+			Usage:            &callUsage,
 		}
 		for i := range streamToolCalls {
 			if streamToolCalls[i].ID == "" {

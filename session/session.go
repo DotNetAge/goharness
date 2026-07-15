@@ -144,7 +144,6 @@ func New(agentName, sponsor, projectDir string, opts ...SessionConfig) *Session 
 		projectDir: projectDir,
 		messages:   make([]Message, 0),
 		store:      NewMemorySessionStore(),
-		mem:        newInMemoryMemory(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -187,7 +186,6 @@ func Load(sessionID, agentName string, store SessionStore, opts ...SessionConfig
 		projectDir: info.ProjectDir,
 		messages:   make([]Message, 0),
 		store:      store,
-		mem:        newInMemoryMemory(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -222,7 +220,6 @@ func NewSession(id, agentName string, opts ...SessionConfig) *Session {
 		agentName: agentName,
 		messages:  make([]Message, 0),
 		store:     NewMemorySessionStore(),
-		mem:       newInMemoryMemory(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -472,11 +469,21 @@ type ContextWindowUsage struct {
 
 	// ActiveMessageCount is the number of messages in the active window.
 	ActiveMessageCount int `json:"active_message_count"`
+
+	// TotalActualTokens is the sum of ActualTokens() across active window messages
+	// that have Usage data (assistant messages only). Represents net token consumption
+	// excluding cache hits within the current active window.
+	TotalActualTokens int64 `json:"total_actual_tokens"`
+
+	// TotalCost is the sum of Cost() across active window messages that have Usage data,
+	// computed using the given pricing. 0 if no pricing is provided.
+	TotalCost float64 `json:"total_cost"`
 }
 
 // ContextUsage returns the current context window usage information,
 // using the same token estimation method as MicroCompact/TryMicroCompact.
-func (s *Session) ContextUsage() ContextWindowUsage {
+// If pricing is non-nil, TotalCost is computed from each message's Usage data.
+func (s *Session) ContextUsage(pricing ...PricingUnit) ContextWindowUsage {
 	s.ensureLoaded(context.Background())
 
 	s.mu.RLock()
@@ -491,6 +498,19 @@ func (s *Session) ContextUsage() ContextWindowUsage {
 		ratio = float64(windowTokens) / float64(mws)
 	}
 
+	// Compute totals from the active window that have Usage data
+	var totalActual int64
+	var totalCost float64
+	for _, m := range window {
+		if m.Usage == nil {
+			continue
+		}
+		totalActual += int64(m.Usage.ActualTokens())
+		if len(pricing) > 0 {
+			totalCost += m.Usage.Cost(pricing[0])
+		}
+	}
+
 	return ContextWindowUsage{
 		WindowTokens:       windowTokens,
 		MaxWindowSize:      mws,
@@ -498,6 +518,8 @@ func (s *Session) ContextUsage() ContextWindowUsage {
 		MessageCount:       len(s.messages),
 		Cursor:             s.cursor,
 		ActiveMessageCount: len(window),
+		TotalActualTokens:  totalActual,
+		TotalCost:          totalCost,
 	}
 }
 
@@ -875,10 +897,19 @@ func (s *Session) TryCompact(ctx context.Context) {
 		if err != nil {
 			s.logError("TryCompact: summary generation FAILED, will not compact", err, "session_id", s.id)
 			summaryFailed = true
+		} else if len(chunks) == 0 {
+			// generateSummary 返回 nil,nil 时（LLM 判定无实质信息 / sanitize 全剥离），
+			// 不做 cursor 移动以免丢消息历史但不留记忆。
+			s.logInfo("TryCompact: summary empty (no substantive content), skipped compaction", "session_id", s.id)
+			summaryFailed = true
 		} else {
 			s.logInfo("TryCompact: summary generated", "session_id", s.id, "chunks", len(chunks))
-			s.persistSummary(ctx, chunks)
-			s.logInfo("TryCompact: summary persisted", "session_id", s.id)
+			if err := s.persistSummary(ctx, chunks); err != nil {
+				s.logError("TryCompact: persist summary FAILED, will not compact", err, "session_id", s.id)
+				summaryFailed = true
+			} else {
+				s.logInfo("TryCompact: summary persisted", "session_id", s.id)
+			}
 		}
 	} else if s.summarizer == nil {
 		s.logInfo("TryCompact: no summarizer configured, skipping summary generation", "session_id", s.id)
@@ -945,10 +976,17 @@ func (s *Session) ForceCompact(ctx context.Context) {
 		if err != nil {
 			s.logError("ForceCompact: summary generation FAILED, will not compact", err, "session_id", s.id)
 			summaryFailed = true
+		} else if len(chunks) == 0 {
+			s.logInfo("ForceCompact: summary empty (no substantive content), skipped compaction", "session_id", s.id)
+			summaryFailed = true
 		} else {
 			s.logInfo("ForceCompact: summary generated", "session_id", s.id, "chunks", len(chunks))
-			s.persistSummary(ctx, chunks)
-			s.logInfo("ForceCompact: summary persisted", "session_id", s.id)
+			if err := s.persistSummary(ctx, chunks); err != nil {
+				s.logError("ForceCompact: persist summary FAILED, will not compact", err, "session_id", s.id)
+				summaryFailed = true
+			} else {
+				s.logInfo("ForceCompact: summary persisted", "session_id", s.id)
+			}
 		}
 	} else if s.summarizer == nil {
 		s.logInfo("ForceCompact: no summarizer configured, skipping summary generation", "session_id", s.id)
@@ -1180,10 +1218,17 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) ([]me
 }
 
 // persistSummary stores the generated memory chunks in the memory store.
-// Returns an error if storage fails; caller may still move cursor (best-effort storage).
+// Returns an error if storage fails; caller must treat this as a compaction failure.
+// When mem is nil (no memory store configured), this is treated as an error —
+// summaries are expected to be persisted, not silently dropped.
 func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChunk) error {
-	if s.mem == nil || len(chunks) == 0 {
+	if len(chunks) == 0 {
 		return nil
+	}
+	if s.mem == nil {
+		err := fmt.Errorf("persistSummary: memory store is nil, cannot persist summary chunks")
+		s.logError("persistSummary: memory store not configured", err, "session_id", s.id)
+		return err
 	}
 
 	if err := s.mem.StoreChunks(ctx, s.id, chunks); err != nil {

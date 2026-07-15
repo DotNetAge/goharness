@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -60,7 +61,20 @@ content 按以下分类组织要点（用「」标注类别，每类下用 - 列
 - 「问题与路径」：已解决的问题及路径、已否决的方案（标注"已否决"）
 
 示例：
-[{"summary":"Redis 迁移","content":"「决策与结论」\n- 迁移到 Cluster 已确认","tags":["redis-migration"],"timestamp":"2026-07-02T14:30:45Z"},{"summary":"前端构建改造","content":"「决策与结论」\n- 构建工具切 Vite","tags":["vite"],"timestamp":"2026-07-03T09:15:00Z"}]
+[
+  {
+    "summary": "Redis 迁移",
+    "content": "「决策与结论」\n- 迁移到 Cluster 已确认",
+    "tags": ["redis-migration"],
+    "timestamp": "2026-07-02T14:30:45Z"
+  },
+  {
+    "summary": "前端构建改造",
+    "content": "「决策与结论」\n- 构建工具切 Vite",
+    "tags": ["vite"],
+    "timestamp": "2026-07-03T09:15:00Z"
+  }
+]
 
 规则：
 - 只输出原始 JSON 数组，无其他文本
@@ -76,11 +90,18 @@ content 按以下分类组织要点（用「」标注类别，每类下用 - 列
 const retryInstruction = `将以上全部的对话输出为 JSON 数组。每条格式：{"summary":"标题","content":"要点","tags":["标签"],"timestamp":"ISO 8601"}。只输出 JSON 数组，无其他文本。无实质信息时返回 []。`
 
 // NewLLMSummarizer 创建一个新的 LLM 摘要器实例。
+// maxTokens 默认使用 model.MaxTokens（模型配置），
+// 可通过 WithMaxTokens 选项覆盖。模型未配置时默认 2048。
 func NewLLMSummarizer(model config.ModelConfig, opts ...SummarizerOption) Summarizer {
+	// 优先使用模型配置的 max_tokens，确保摘要输出不会被截断
+	maxTokens := 2048
+	if model.MaxTokens > 0 {
+		maxTokens = int(model.MaxTokens)
+	}
 	s := &llmSummarizer{
 		model:        model,
 		systemPrompt: defaultSystemPrompt,
-		maxTokens:    2048,
+		maxTokens:    maxTokens,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -271,6 +292,26 @@ type rawChunk struct {
 
 // parseResponse 解析 LLM 返回的 JSON 数组响应为 MemoryChunk 列表。
 func (s *llmSummarizer) parseResponse(response string) ([]memory.MemoryChunk, error) {
+	text := s.preprocessJSON(response)
+	if text == "" {
+		return nil, nil
+	}
+
+	chunks, err := s.tryParseJSON(text)
+	if err != nil {
+		// 记录原始输出前 200 字符便于调试
+		preview := text
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("summarizer: LLM 输出不是有效的 JSON 数组 (preview: %q), discarded: %w", preview, err)
+	}
+	return chunks, nil
+}
+
+// preprocessJSON 清理和预处理 LLM 原始输出，提取 JSON 文本。
+// 返回空字符串表示无实质信息。
+func (s *llmSummarizer) preprocessJSON(response string) string {
 	text := strings.TrimSpace(response)
 
 	// 尝试提取 JSON（可能被 markdown 代码块包裹）
@@ -285,24 +326,43 @@ func (s *llmSummarizer) parseResponse(response string) ([]memory.MemoryChunk, er
 
 	// 空响应、空对象、空数组 — LLM 判定无实质信息
 	if text == "" || text == "{}" || text == "[]" {
-		return nil, nil
+		return ""
 	}
+	return text
+}
 
-	// 解析为 JSON 数组
+// tryParseJSON 尝试将文本解析为 JSON 数组，失败时进行容错清洗后重试。
+func (s *llmSummarizer) tryParseJSON(text string) ([]memory.MemoryChunk, error) {
+	rawChunks, err := s.unmarshalJSON(text)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildChunks(rawChunks), nil
+}
+
+// unmarshalJSON 尝试将文本解析为 rawChunk 数组。
+// 首次失败时会对非法转义序列做清洗后重试。
+func (s *llmSummarizer) unmarshalJSON(text string) ([]rawChunk, error) {
 	var rawChunks []rawChunk
 	if err := json.Unmarshal([]byte(text), &rawChunks); err != nil {
-		// 记录原始输出前 200 字符便于调试
-		preview := text
-		if len(preview) > 200 {
-			preview = preview[:200]
+		// 清洗非法转义序列后重试（如 \   → 空格，\x → x）
+		sanitized := sanitizeJSON(text)
+		if sanitized != text {
+			var retry []rawChunk
+			if err2 := json.Unmarshal([]byte(sanitized), &retry); err2 == nil {
+				return retry, nil
+			}
 		}
-		return nil, fmt.Errorf("summarizer: LLM output is not a valid JSON array (preview: %q), discarded: %w", preview, err)
+		return nil, err
 	}
+	return rawChunks, nil
+}
 
+// buildChunks 将 rawChunk 列表转为 MemoryChunk 列表，过滤空 content。
+func (s *llmSummarizer) buildChunks(rawChunks []rawChunk) []memory.MemoryChunk {
 	if len(rawChunks) == 0 {
-		return nil, nil
+		return nil
 	}
-
 	chunks := make([]memory.MemoryChunk, 0, len(rawChunks))
 	for _, rc := range rawChunks {
 		if rc.Content == "" {
@@ -311,9 +371,21 @@ func (s *llmSummarizer) parseResponse(response string) ([]memory.MemoryChunk, er
 		chunks = append(chunks, buildChunkFromRaw(rc))
 	}
 	if len(chunks) == 0 {
-		return nil, nil
+		return nil
 	}
-	return chunks, nil
+	return chunks
+}
+
+// invalidJSONEscapeRe 匹配 JSON 字符串中反斜杠后跟非法转义字符的序列。
+// 合法 JSON 转义：\" \\ \/ \b \f \n \r \t \u
+var invalidJSONEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
+
+// sanitizeJSON 尝试修复 LLM 输出的常见 JSON 格式问题：
+//   - 移除非法转义序列（如 \后跟空格 → 仅保留空格）
+//
+// 只对明显非法的序列做替换，不会改变合法 JSON。
+func sanitizeJSON(text string) string {
+	return invalidJSONEscapeRe.ReplaceAllString(text, "$1")
 }
 
 // buildChunkFromRaw 将 LLM 输出的 rawChunk 转为 MemoryChunk。

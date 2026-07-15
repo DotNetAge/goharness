@@ -7,43 +7,48 @@ import (
 )
 
 // TokenUsage records the token consumption for a single LLM call.
-// It is used as a transfer value type in events and LLM streaming.
+// Field names align with the standard OpenAI-compatible API Usage response format.
 // For persistent storage with grouping dimensions, use TokenUsageRecord instead.
-//
-// Detailed fields (CachedTokens, ReasoningTokens, etc.) are provider-specific.
-// When the provider returns detailed token breakdowns (e.g., OpenAI's
-// prompt_tokens_details / completion_tokens_details), they are preserved here.
-// Fields that are not reported by the provider remain at their zero value.
 type TokenUsage struct {
-	Timestamp    time.Time `json:"timestamp"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	TotalTokens  int       `json:"total_tokens"`
-	RemainTokens int       `json:"remain_tokens"`
+	Timestamp        time.Time `json:"timestamp" yaml:"timestamp"`
+	PromptTokens     int       `json:"prompt_tokens" yaml:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens" yaml:"completion_tokens"`
+	TotalTokens      int       `json:"total_tokens" yaml:"total_tokens"`
 
-	// CachedTokens is the number of tokens read from the prompt cache
-	// (prompt_tokens_details.cached_tokens).
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	// CachedTokens is the number of cached prompt tokens
+	// (prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens).
+	CachedTokens int `json:"cached_tokens,omitempty" yaml:"cached_tokens"`
 
-	// ReasoningTokens is the number of tokens used for reasoning/thinking
+	// ReasoningTokens is the number of thinking/reasoning tokens in the output
 	// (completion_tokens_details.reasoning_tokens).
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty" yaml:"reasoning_tokens"`
+}
 
-	// AudioTokensInput is the number of audio tokens in the prompt
-	// (prompt_tokens_details.audio_tokens).
-	AudioTokensInput int `json:"audio_tokens_input,omitempty"`
+// ActualTokens returns the actual net token consumption excluding cache hits.
+func (u TokenUsage) ActualTokens() int {
+	n := u.PromptTokens + u.CompletionTokens - u.CachedTokens
+	if n < 0 {
+		return 0
+	}
+	return n
+}
 
-	// AudioTokensOutput is the number of audio tokens in the completion
-	// (completion_tokens_details.audio_tokens).
-	AudioTokensOutput int `json:"audio_tokens_output,omitempty"`
+// PricingUnit defines per-model token pricing (per 1M tokens).
+type PricingUnit struct {
+	InputPricePer1M  float64
+	OutputPricePer1M float64
+}
 
-	// AcceptedPredictionTokens is the number of tokens accepted from speculation
-	// (completion_tokens_details.accepted_prediction_tokens).
-	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
-
-	// RejectedPredictionTokens is the number of tokens rejected from speculation
-	// (completion_tokens_details.rejected_prediction_tokens).
-	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+// Cost calculates the monetary cost using the given pricing.
+// Matches mindx/internal/core.CalculateCost — the canonical pricing algorithm.
+// Cached tokens reduce the chargeable input rather than being billed separately.
+func (u TokenUsage) Cost(p PricingUnit) float64 {
+	netInput := u.PromptTokens - u.CachedTokens
+	if netInput < 0 {
+		netInput = 0
+	}
+	return float64(netInput)/1_000_000*p.InputPricePer1M +
+		float64(u.CompletionTokens)/1_000_000*p.OutputPricePer1M
 }
 
 // SlideEvent is emitted when the ContextWindow slides out old messages.

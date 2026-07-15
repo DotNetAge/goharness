@@ -32,14 +32,23 @@ func processContent(content string) (sha32 string, tokens int64) {
 	return hex.EncodeToString(h.Sum(nil))[:32], int64(t) + 1
 }
 
-// estimateWindowTokensV2 calculates total token usage using the DeepSeek formula.
-// For compacted messages (Compacted != ""), uses the placeholder size (~20 tokens)
-// instead of full Content, since the LLM only sees the short placeholder.
+// estimateWindowTokensV2 estimates the token count of the given messages as they
+// appear in the active context window.
+//
+// For assistant messages with Usage data, only CompletionTokens (+ ReasoningTokens)
+// are counted. TotalTokens must NOT be used here because it includes the entire
+// prompt history sent with that request, which would repeatedly count earlier
+// messages already present in the window.
+//
+// For compacted messages (Compacted != ""), uses the placeholder size (~20 tokens).
+// For all other messages, falls back to the DeepSeek character-level estimation.
 func estimateWindowTokensV2(msgs []Message) int64 {
 	var total int64
 	for _, m := range msgs {
 		if m.Compacted != "" {
-			total += 20 // placeholder "[已压缩] 工具: X | N tokens | 路径: ..." ≈ 20 tokens
+			total += 20 // placeholder "…" ≈ 20 tokens
+		} else if m.Role == "assistant" && m.Usage != nil && (m.Usage.CompletionTokens > 0 || m.Usage.ReasoningTokens > 0) {
+			total += int64(m.Usage.CompletionTokens + m.Usage.ReasoningTokens)
 		} else {
 			_, tokens := processContent(m.Content)
 			total += tokens
