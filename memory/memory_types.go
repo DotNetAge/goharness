@@ -98,10 +98,10 @@ func FormatMemoryRecords(chunks []MemoryChunk) string {
 		}
 		sb.WriteString("] ")
 		// 标题
-		if c.Summary != "" {
-			sb.WriteString(c.Summary)
-		}
-		sb.WriteString(" - ")
+		// if c.Summary != "" {
+		// 	sb.WriteString(c.Summary)
+		// }
+		// sb.WriteString(" - ")
 		// 内容
 		content := strings.TrimSpace(c.Content)
 		if content != "" {

@@ -54,23 +54,19 @@ const summarizeInstruction = `将上面对话浓缩为 JSON 数组格式的要�
   }
 ]
 
-content 按以下分类组织要点（用「」标注类别，每类下用 - 列要点，无内容的类别省略）：
-- 「决策与结论」：已确定的方案、用户拍板的选择
-- 「关键信息」：用户偏好、约束条件、重要事实
-- 「文件与路径」：涉及的关键文件绝对路径、函数/模块名
-- 「问题与路径」：已解决的问题及路径、已否决的方案（标注"已否决"）
+content 要点式摘要（保留关键细节、路径、技术术语、重要资源）
 
 示例：
 [
   {
     "summary": "Redis 迁移",
-    "content": "「决策与结论」\n- 迁移到 Cluster 已确认",
+    "content": "迁移到 Cluster 已确认",
     "tags": ["redis-migration"],
     "timestamp": "2026-07-02T14:30:45Z"
   },
   {
     "summary": "前端构建改造",
-    "content": "「决策与结论」\n- 构建工具切 Vite",
+    "content": "构建工具切 Vite",
     "tags": ["vite"],
     "timestamp": "2026-07-03T09:15:00Z"
   }

@@ -98,7 +98,7 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	// 拼到最后一条 system message 的内容末尾（不新增第二条 system message）
 	if len(input.SystemPromptSections) > 0 {
 		last := &input.SystemPromptSections[len(input.SystemPromptSections)-1]
-		memText := "## 记忆缓冲区\n\n" + content
+		memText := "## 对话记忆\n\n" + content
 		if len(last.Content) > 0 {
 			last.Content = append(last.Content, gochatcore.ContentBlock{Type: "text", Text: memText})
 		} else {
