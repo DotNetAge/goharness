@@ -427,8 +427,6 @@ var dangerousPatterns = []struct {
 	{regexp.MustCompile(`mkfs\.`), "危险：磁盘格式化命令"},
 	{regexp.MustCompile(`:\(\)\{\s*\|.*:\s*&\s*;:\s*\}$`), "危险：检测到 fork bomb"},
 	{regexp.MustCompile(`(curl|wget)\s+.*\|\s*(sh|bash)\b`), "危险：远程代码执行管道 (curl|sh)"},
-	{regexp.MustCompile(`\$\(`), "危险：通过 $() 进行命令替换"},
-	{regexp.MustCompile("`[^`]*`"), "危险：通过反引号进行命令替换"},
 	{regexp.MustCompile(`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`), "危险：远程下载二进制文件到系统路径"},
 	{regexp.MustCompile(`chmod\s+-R\s+777\s+/`), "危险：根文件系统设置为全局可写"},
 	{regexp.MustCompile(`chown\s+-R.*\s+/`), "危险：递归更改根目录所有权"},
@@ -548,6 +546,47 @@ func (t *BashTool) whitelistDisplay() string {
 	return strings.Join(getDefaultWhitelist(), ", ")
 }
 
+// splitPipeSegments 按 Shell 管道运算符 | 分割字符串，同时正确处理引号和转义。
+// 只有在引号外且未被转义的 | 才被视为管道分割符。
+func splitPipeSegments(s string) []string {
+	var segments []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+
+	for _, r := range s {
+		if escape {
+			current.WriteRune(r)
+			escape = false
+			continue
+		}
+		if r == '\\' && !inSingle {
+			current.WriteRune(r)
+			escape = true
+			continue
+		}
+		if r == '\'' && !inDouble {
+			inSingle = !inSingle
+			current.WriteRune(r)
+			continue
+		}
+		if r == '"' && !inSingle {
+			inDouble = !inDouble
+			current.WriteRune(r)
+			continue
+		}
+		if r == '|' && !inSingle && !inDouble {
+			segments = append(segments, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteRune(r)
+	}
+	segments = append(segments, current.String())
+	return segments
+}
+
 // extractCommands 从 Shell 命令字符串中提取所有真实的命令名。
 // 处理复合命令（for/while/if/case），提取 do / then / ; / && / || 后面的真正命令。
 // 例如："for i in 1 2 3; do rm -rf /tmp; done" → ["rm"]
@@ -567,8 +606,8 @@ func extractCommands(command string) []string {
 	var cmds []string
 	seen := make(map[string]bool)
 	for _, seg := range logicSegments {
-		// 第二层：按管道 | 分割
-		pipeSegments := strings.Split(seg, "|")
+		// 第二层：按管道 | 分割（识别引号和转义，不会误切引号内的 |）
+		pipeSegments := splitPipeSegments(seg)
 		for _, ps := range pipeSegments {
 			ps = strings.TrimSpace(ps)
 			if ps == "" {
