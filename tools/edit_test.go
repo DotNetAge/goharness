@@ -21,6 +21,11 @@ func TestEdit(t *testing.T) {
 
 	edit := &EditTool{}
 	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	read.Execute(ctx, map[string]any{"filePath": filePath})
+
 	params := map[string]any{
 		"filePath":   filePath,
 		"old_string": "line 2",
@@ -32,15 +37,12 @@ func TestEdit(t *testing.T) {
 		t.Fatalf("replace failed: %v", err)
 	}
 
-	str, ok := result.(string)
+	editResult, ok := result.(*EditResult)
 	if !ok {
-		t.Fatalf("expected string result, got %T", result)
+		t.Fatalf("expected *EditResult, got %T", result)
 	}
-	cwd, _ := os.Getwd()
-	absPath := filepath.Join(cwd, filePath)
-	expected := "文件 " + absPath + " 更新成功。[scope: project]"
-	if str != expected {
-		t.Errorf("unexpected result: %q", str)
+	if !editResult.Success {
+		t.Error("expected success to be true")
 	}
 
 	newContent, err := os.ReadFile(filePath)
@@ -52,7 +54,8 @@ func TestEdit(t *testing.T) {
 		t.Errorf("unexpected content: got %q, want %q", string(newContent), want)
 	}
 
-	// second replace on same file (no error expected)
+	// 第二次编辑前需要重新读取
+	read.Execute(ctx, map[string]any{"filePath": filePath})
 	params2 := map[string]any{
 		"filePath":   filePath,
 		"old_string": "line 1",
@@ -100,6 +103,11 @@ func TestEditWithSpecialCharacters(t *testing.T) {
 
 	edit := &EditTool{}
 	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	read.Execute(ctx, map[string]any{"filePath": filePath})
+
 	params := map[string]any{
 		"filePath":   filePath,
 		"old_string": "<world> & {foo}",
@@ -133,6 +141,11 @@ func TestEditUnicodeContent(t *testing.T) {
 
 	edit := &EditTool{}
 	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	read.Execute(ctx, map[string]any{"filePath": filePath})
+
 	params := map[string]any{
 		"filePath":   filePath,
 		"old_string": "世界",
@@ -192,6 +205,11 @@ func TestEditReplaceAll(t *testing.T) {
 
 	edit := &EditTool{}
 	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	read.Execute(ctx, map[string]any{"filePath": filePath})
+
 	params := map[string]any{
 		"filePath":    filePath,
 		"old_string":  "foo",
@@ -226,6 +244,11 @@ func TestEditLimit(t *testing.T) {
 
 	edit := &EditTool{}
 	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	read.Execute(ctx, map[string]any{"filePath": filePath})
+
 	params := map[string]any{
 		"filePath":   filePath,
 		"old_string": "x",
@@ -260,6 +283,11 @@ func TestEditStringNotFound(t *testing.T) {
 
 	edit := &EditTool{}
 	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	read.Execute(ctx, map[string]any{"filePath": filePath})
+
 	params := map[string]any{
 		"filePath":   filePath,
 		"old_string": "nonexistent",

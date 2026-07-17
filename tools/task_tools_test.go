@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/store"
 )
@@ -19,10 +20,15 @@ func newTestKVStore(t *testing.T) (store.KVStore, func()) {
 	return store, func() {}
 }
 
-func withKVStoreContext(ctx context.Context, kv store.KVStore, sessionID string) context.Context {
+func withKVStoreContext(ctx context.Context, kv store.KVStore, _ string) context.Context {
+	store := newMockSessionStore()
+	sess, err := session.New("test-agent", "", "/tmp/test", store, logging.NewNopLogger())
+	if err != nil {
+		panic(err)
+	}
 	toolCtx := &ToolContext{
 		KVStore:   kv,
-		Session:   session.NewSession(sessionID, ""),
+		Session:   sess,
 		EmitEvent: func(e events.ReactEvent) {},
 	}
 	return WithToolContext(ctx, toolCtx)
@@ -60,9 +66,14 @@ func TestTaskCreateTool_Execute(t *testing.T) {
 		t.Errorf("Execute() subject = %q, want 'Analyze data'", subj)
 	}
 
-	task, err := GetTask(ctx, "test-session-1", resultMap["task_id"].(string))
+	// 使用实际的 session ID 而不是硬编码值
+	tc := GetToolContext(ctx)
+	task, err := GetTask(ctx, tc.Session.ID(), resultMap["task_id"].(string))
 	if err != nil {
 		t.Fatalf("GetTask() error = %v", err)
+	}
+	if task == nil {
+		t.Fatal("GetTask() returned nil task")
 	}
 	if task.Status != TaskPending {
 		t.Errorf("Task status = %v, want %v", task.Status, TaskPending)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 )
 
@@ -54,7 +55,12 @@ func (m *mockExecutorTool) Execute(ctx context.Context, params map[string]any) (
 
 // mockSession creates a simple session for testing.
 func mockSession() *session.Session {
-	return session.NewSession("test-session", "test-agent")
+	store := newMockSessionStore()
+	sess, err := session.New("test-agent", "", "/tmp/test", store, logging.NewNopLogger())
+	if err != nil {
+		panic(err)
+	}
+	return sess
 }
 
 // TestNewToolExecutor tests executor creation.
@@ -361,7 +367,7 @@ func TestToolExecutor_LargeResult(t *testing.T) {
 // TestExecutorOptionFunctions tests executor option functions.
 func TestExecutorOptionFunctions(t *testing.T) {
 	t.Run("WithSession", func(t *testing.T) {
-		sess := session.NewSession("test-session", "test-agent")
+		sess := mockSession()
 		opt := WithSession(sess)
 		cfg := &executorConfig{}
 		opt(cfg)
@@ -372,7 +378,7 @@ func TestExecutorOptionFunctions(t *testing.T) {
 
 	t.Run("组合多个选项", func(t *testing.T) {
 		cfg := &executorConfig{}
-		sess := session.NewSession("test-session", "test-agent")
+		sess := mockSession()
 		opts := []ExecutorOption{
 			WithSession(sess),
 			WithEventEmitter(func(events.ReactEvent) {}),

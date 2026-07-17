@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/config"
 )
 
@@ -327,9 +326,9 @@ func searchIndex(s, substr string) int {
 	return -1
 }
 
-// ─── toLLMMessages 时间戳前缀测试 ─────────────────────────
+// ─── formatMessages 时间戳前缀测试 ─────────────────────────
 
-func TestToLLMMessages_TimestampPrefix(t *testing.T) {
+func TestFormatMessages_TimestampPrefix(t *testing.T) {
 	model := config.ModelConfig{Name: "test", APIKey: "key"}
 	s := NewLLMSummarizer(model).(*llmSummarizer)
 
@@ -339,29 +338,18 @@ func TestToLLMMessages_TimestampPrefix(t *testing.T) {
 		{Role: "assistant", Content: "有什么可以帮你的？", Timestamp: ts + 5},
 	}
 
-	result := s.toLLMMessages(messages)
-	if len(result) != 2 {
-		t.Fatalf("应返回 2 条消息，得到 %d", len(result))
-	}
+	result := s.formatMessages(messages)
 
-	// 第一条 user 消息的 Content 应包含 ISO 8601 时间戳前缀
-	if result[0].Role != gochatcore.RoleUser {
-		t.Errorf("第一条应为 user 角色，得到 %v", result[0].Role)
+	// 应包含 ISO 8601 时间戳前缀
+	if !contains(result, "2026-07-02T14:35:00Z") {
+		t.Errorf("消息应包含时间戳前缀，得到 %q", result)
 	}
-	if !contains(result[0].Content[0].Text, "2026-07-02T14:35:00Z") {
-		t.Errorf("user 消息应包含时间戳前缀，得到 %q", result[0].Content[0].Text)
-	}
-	if !contains(result[0].Content[0].Text, "你好") {
-		t.Errorf("user 消息应保留原始内容")
-	}
-
-	// 第二条 assistant 消息同样应带时间戳
-	if result[1].Role != gochatcore.RoleAssistant {
-		t.Errorf("第二条应为 assistant 角色，得到 %v", result[1].Role)
+	if !contains(result, "你好") {
+		t.Errorf("消息应保留原始内容")
 	}
 }
 
-func TestToLLMMessages_NoTimestampSkipsPrefix(t *testing.T) {
+func TestFormatMessages_NoTimestampSkipsPrefix(t *testing.T) {
 	model := config.ModelConfig{Name: "test", APIKey: "key"}
 	s := NewLLMSummarizer(model).(*llmSummarizer)
 
@@ -369,14 +357,13 @@ func TestToLLMMessages_NoTimestampSkipsPrefix(t *testing.T) {
 		{Role: "user", Content: "你好"}, // Timestamp 默认为 0
 	}
 
-	result := s.toLLMMessages(messages)
-	text := result[0].Content[0].Text
+	result := s.formatMessages(messages)
 	// 不应有 "[" 开头的 ISO 时间戳前缀（如果内容里碰巧有 "[" 不在此断言范围内）
-	if contains(text, "T00:00:00Z") || contains(text, "[1970-") {
-		t.Errorf("Timestamp=0 时不应生成前缀，得到 %q", text)
+	if contains(result, "T00:00:00Z") || contains(result, "[1970-") {
+		t.Errorf("Timestamp=0 时不应生成前缀，得到 %q", result)
 	}
-	if text != "你好" {
-		t.Errorf("应原样保留内容，得到 %q", text)
+	if !contains(result, "你好") {
+		t.Errorf("应原样保留内容，得到 %q", result)
 	}
 }
 

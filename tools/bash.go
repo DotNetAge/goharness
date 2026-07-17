@@ -111,9 +111,9 @@ func (t *BashTool) Info() *ToolInfo {
 		Description:        "在工作区环境中执行 POSIX shell 命令。在 Linux/proot 环境下，环境可扩展——可以安装软件包。在 macOS 上，命令通过 /bin/bash 原生运行。",
 		Prompt: `执行给定的 bash 命令并返回其输出。
 
-**重要**：以下命令会被 Bash 工具白名单阻止——请使用专用工具：
+**重要**：以下任务请使用专用工具不要使用Bash命令：
 - 文件搜索：使用 Glob（不要用 find）
-- 内容搜索：使用 Grep
+- 内容搜索：使用 Grep（不要用 grep）
 - 读取文件：使用 Read（不要用 cat/head/tail）
 - 编辑文件：使用 Edit（不要用 sed/awk）
 - 写入文件：使用 Write（不要用 tee/cat）
@@ -607,7 +607,7 @@ func buildDefaultWhitelist() []string {
 		"python", "python3", "pip", "pip3", "node", "npm", "cnpm", "npx", "nvm",
 		"go", "cargo", "rustc",
 		"make", "cmake", "gcc", "g++", "clang", "clang++",
-		"docker", "kubectl", "helm",
+		"docker", "docker-compose", "kubectl", "helm",
 		"curl", "wget", "ssh", "scp", "rsync",
 		"ps", "top", "htop", "kill", "killall", "pgrep", "pkill", "mindx",
 		"df", "du", "free", "uname", "date", "whoami", "id",

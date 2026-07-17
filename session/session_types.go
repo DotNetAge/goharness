@@ -4,27 +4,29 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/DotNetAge/goharness/memory"
 )
 
-// TokenUsage records the token consumption for a single LLM call.
-// Field names align with the standard OpenAI-compatible API Usage response format.
-// For persistent storage with grouping dimensions, use TokenUsageRecord instead.
+// TokenUsage 记录单次 LLM 调用的 token 消耗。
+// 字段名与标准 OpenAI 兼容 API 的 Usage 响应格式对齐。
+// 如需带分组维度的持久化存储，使用 TokenUsageRecord。
 type TokenUsage struct {
 	Timestamp        time.Time `json:"timestamp" yaml:"timestamp"`
 	PromptTokens     int       `json:"prompt_tokens" yaml:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens" yaml:"completion_tokens"`
 	TotalTokens      int       `json:"total_tokens" yaml:"total_tokens"`
 
-	// CachedTokens is the number of cached prompt tokens
-	// (prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens).
+	// CachedTokens 是缓存的提示词 token 数
+	// (prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens)。
 	CachedTokens int `json:"cached_tokens,omitempty" yaml:"cached_tokens"`
 
-	// ReasoningTokens is the number of thinking/reasoning tokens in the output
-	// (completion_tokens_details.reasoning_tokens).
+	// ReasoningTokens 是输出中的思考/推理 token 数
+	// (completion_tokens_details.reasoning_tokens)。
 	ReasoningTokens int `json:"reasoning_tokens,omitempty" yaml:"reasoning_tokens"`
 }
 
-// ActualTokens returns the actual net token consumption excluding cache hits.
+// ActualTokens 返回实际净 token 消耗（排除缓存命中）。
 func (u TokenUsage) ActualTokens() int {
 	n := u.PromptTokens + u.CompletionTokens - u.CachedTokens
 	if n < 0 {
@@ -33,15 +35,15 @@ func (u TokenUsage) ActualTokens() int {
 	return n
 }
 
-// PricingUnit defines per-model token pricing (per 1M tokens).
+// PricingUnit 定义每个模型的 token 定价（每百万 token）。
 type PricingUnit struct {
 	InputPricePer1M  float64
 	OutputPricePer1M float64
 }
 
-// Cost calculates the monetary cost using the given pricing.
-// Matches mindx/internal/core.CalculateCost — the canonical pricing algorithm.
-// Cached tokens reduce the chargeable input rather than being billed separately.
+// Cost 使用给定定价计算费用。
+// 与 mindx/internal/core.CalculateCost 一致 — 标准定价算法。
+// 缓存 token 减少可计费输入，而非单独计费。
 func (u TokenUsage) Cost(p PricingUnit) float64 {
 	netInput := u.PromptTokens - u.CachedTokens
 	if netInput < 0 {
@@ -51,9 +53,8 @@ func (u TokenUsage) Cost(p PricingUnit) float64 {
 		float64(u.CompletionTokens)/1_000_000*p.OutputPricePer1M
 }
 
-// SlideEvent is emitted when the ContextWindow slides out old messages.
-// It contains the messages that were evicted, so consumers (e.g. RAG/Memory)
-// can semantically process them into long-term knowledge.
+// SlideEvent 在上下文窗口滑出旧消息时发出。
+// 包含被驱逐的消息，消费者（如 RAG/Memory）可以将其语义处理为长期知识。
 type SlideEvent struct {
 	SessionID string    `json:"session_id"`
 	Slided    []Message `json:"slided"`
@@ -61,26 +62,35 @@ type SlideEvent struct {
 	Timestamp int64     `json:"timestamp"`
 }
 
-// SlideHandler is the callback type for consuming slide events.
-// Implementations can store slid messages into RAG or other long-term storage.
+// SlideHandler 是消费 slide 事件的回调类型。
+// 实现可以将滑出的消息存储到 RAG 或其他长期存储中。
 type SlideHandler func(ctx context.Context, event SlideEvent)
 
-// SessionInfo holds metadata about a session, used by ListSessions and GetMeta.
-// It includes directory context that is essential for tool execution and prompt generation.
+// SessionInfo 保存会话的元数据，用于 ListSessions 和 GetMeta。
+// 包含对工具执行和提示词生成至关重要的目录上下文。
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
-	Sponsor        string    `json:"sponsor,omitempty"` // Agent that created this session (empty = user-initiated)
-	Title          string    `json:"title,omitempty"` // First user message content (for session list display)
+	Sponsor        string    `json:"sponsor,omitempty"` // 创建此会话的智能体（空 = 用户发起）
+	Title          string    `json:"title,omitempty"`   // 首条用户消息内容（用于会话列表显示）
 	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`         // Last meta.json save time
-	LastActivityAt time.Time `json:"last_activity_at"`   // Last message activity timestamp
-	ProjectDir     string    `json:"project_dir,omitempty"` // Working directory at session creation time
-	SessionDir     string    `json:"session_dir,omitempty"` // Session sandbox directory (managed by Store)
-	MessageCount   int       `json:"message_count"`         // Total messages in session
-	Cursor         int       `json:"cursor"`                // Compaction cursor position (0 = no compaction)
+	UpdatedAt      time.Time `json:"updated_at"`            // 上次 meta.json 保存时间
+	LastActivityAt time.Time `json:"last_activity_at"`      // 上次消息活动时间戳
+	ProjectDir     string    `json:"project_dir,omitempty"` // 会话创建时的工作目录
+	SessionDir     string    `json:"session_dir,omitempty"` // 会话沙箱目录（由 Store 管理）
+	MessageCount   int       `json:"message_count"`         // 会话中的总消息数
+	Cursor         int       `json:"cursor"`                // 压缩游标位置（0 = 未压缩）
 	Messages       []Message `json:"messages,omitempty"`
-	ModifyFiles    []string  `json:"modify_files,omitempty"`  // Tracked modified file paths
+	ModifyFiles    []string  `json:"modify_files,omitempty"` // 追踪的已修改文件路径
+}
+
+// Summarizer 定义了摘要器接口。
+// 将消息列表浓缩为多个 MemoryChunk，每个包含摘要、内容和标签。
+type Summarizer interface {
+	// Summarize 将消息列表摘要为多个记忆片。
+	// 返回的 MemoryChunk 包含 Summary（摘要）、Content（原文精华）和 Tags（标签）。
+	// AgentName、SessionID、Timestamp 由调用方填充。
+	Summarize(ctx context.Context, messages []Message) ([]memory.MemoryChunk, error)
 }
 
 type SessionStore interface {
@@ -99,61 +109,39 @@ type SessionStore interface {
 	GetCursor(ctx context.Context, sessionID string) (int, error)
 	SetCursor(ctx context.Context, sessionID string, cursor int) error
 
-	// ModifyFiles persistence for file change tracking
+	// SaveModifyFiles 持久化文件修改追踪
 	SaveModifyFiles(sessionID string, files []string) error
 	GetModifyFiles(sessionID string) ([]string, error)
 
-	// UpdateMessages persists modifications to existing messages (e.g. MicroCompact
-	// changes to the Compacted field). Takes the current cursor and full message list.
-	// The store replaces the existing messages for the session atomically.
+	// UpdateMessages 持久化对现有消息的修改（如 MicroCompact 对 Compacted 字段的更改）。
+	// 接收当前游标和完整消息列表。存储原子替换会话的现有消息。
 	UpdateMessages(ctx context.Context, sessionID string, cursor int, messages []Message) error
 
-		// Truncate removes messages after keepCount, keeping only the first keepCount messages.
-		Truncate(ctx context.Context, sessionID string, keepCount int) error
+	// Truncate 移除 keepCount 之后的消息，只保留前 keepCount 条消息。
+	Truncate(ctx context.Context, sessionID string, keepCount int) error
 }
 
-// Cursor persistence for compaction state recovery.
-// These methods are used internally by Session to save/restore the cursor position.
-// They are NOT part of the public Session API - external code should never call these.
-//
-// When compaction occurs (via tryCompact/executeCompactionPlan), the cursor advances.
-// Without persisting it, a new Session object would load all messages but start with
-// cursor=0, causing Current() to return too many messages (exceeding token limits).
-//
-// Implementation notes:
-//   - FileSessionStore: stores cursor in meta.json
-//   - MemorySessionStore: stores cursor in memory map
-//   - GetCursor returns 0 if no cursor has been set (no compaction occurred)
-type cursorCursorMethods struct{}
-
-// CursorStore is an optional interface for session stores that support cursor persistence.
-// Stores may implement this to support cursor-based compaction.
-type CursorStore interface {
-	GetCursor(ctx context.Context, sessionID string) (int, error)
-	SetCursor(ctx context.Context, sessionID string, cursor int) error
-}
-
-// SessionOption is a functional option for configuring session creation.
+// SessionOption 是会话创建时的函数式选项。
 type SessionOption func(*SessionInfo)
 
-// WithProjectDirOption sets the project working directory for a new session info.
-// If not provided, the implementation should use os.Getwd() as default.
+// WithProjectDirOption 为新会话信息设置项目工作目录。
+// 如果未提供，实现应使用 os.Getwd() 作为默认值。
 func WithProjectDirOption(dir string) SessionOption {
 	return func(s *SessionInfo) {
 		s.ProjectDir = dir
 	}
 }
 
-// WithSponsorOption sets the sponsor agent for a new session info.
-// Sponsor identifies the agent that created/sponsored this session.
-// Empty means user-initiated.
+// WithSponsorOption 为新会话信息设置发起智能体。
+// Sponsor 标识创建/发起此会话的智能体。
+// 空值表示用户发起。
 func WithSponsorOption(sponsor string) SessionOption {
 	return func(s *SessionInfo) {
 		s.Sponsor = sponsor
 	}
 }
 
-// NoopSlideHandler is a no-op SlideHandler for implementations that don't need it.
+// NoopSlideHandler 是一个空操作的 SlideHandler，用于不需要它的实现。
 func NoopSlideHandler(_ context.Context, _ SlideEvent) {}
 
 var ErrSessionNotFound = errors.New("未找到对应角色的会话")

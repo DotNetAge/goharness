@@ -13,7 +13,7 @@ func newTestSessionWithModify() *Session {
 		id:           "test-session-modify",
 		agentName:    "test-agent",
 		messages:     make([]Message, 0),
-		store:        NewMemorySessionStore(),
+		store:        newMockStore(),
 		mem:          newInMemoryMemory(),
 		modifyFiles:  make([]string, 0),
 	}
@@ -436,10 +436,10 @@ func TestCleanFilePath(t *testing.T) {
 	}
 }
 
-// ── MemorySessionStore ModifyFiles persistence tests ─────────────────────
+// ── mockStore ModifyFiles persistence tests ─────────────────────────────
 
-func TestMemorySessionStore_SaveAndGetModifyFiles(t *testing.T) {
-	store := NewMemorySessionStore()
+func TestMockStore_SaveAndGetModifyFiles(t *testing.T) {
+	store := newMockStore()
 
 	sessionID := "test-mf-persist"
 	files := []string{"/path/a.go", "/path/b.go"}
@@ -458,8 +458,8 @@ func TestMemorySessionStore_SaveAndGetModifyFiles(t *testing.T) {
 	}
 }
 
-func TestMemorySessionStore_GetModifyFiles_NotFound(t *testing.T) {
-	store := NewMemorySessionStore()
+func TestMockStore_GetModifyFiles_NotFound(t *testing.T) {
+	store := newMockStore()
 
 	got, err := store.GetModifyFiles("nonexistent")
 	if err != nil {
@@ -470,8 +470,8 @@ func TestMemorySessionStore_GetModifyFiles_NotFound(t *testing.T) {
 	}
 }
 
-func TestMemorySessionStore_DeleteSession_CleansModifyFiles(t *testing.T) {
-	store := NewMemorySessionStore()
+func TestMockStore_DeleteSession_CleansModifyFiles(t *testing.T) {
+	store := newMockStore()
 
 	sessionID := "test-mf-delete"
 	store.SaveModifyFiles(sessionID, []string{"/a.go"})

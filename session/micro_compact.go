@@ -9,15 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
-// processContent computes SHA256 (first 32 hex chars, 128 bit) and DeepSeek-based
-// token estimate in a single pass over the content.
+// processContent 计算内容的 SHA256（前 32 个十六进制字符，128 位）和基于 DeepSeek 的 token 估算。
 //
-// Token estimation uses the DeepSeek official formula:
-//   - ASCII/English characters ≈ 0.3 token each
-//   - CJK/full-width characters ≈ 0.6 token each
+// Token 估算使用 DeepSeek 官方公式：
+//   - ASCII/英文字符 ≈ 每个 0.3 token
+//   - CJK/全角字符 ≈ 每个 0.6 token
 func processContent(content string) (sha32 string, tokens int64) {
 	h := sha256.New()
 	var t float64
@@ -32,16 +30,14 @@ func processContent(content string) (sha32 string, tokens int64) {
 	return hex.EncodeToString(h.Sum(nil))[:32], int64(t) + 1
 }
 
-// estimateWindowTokensV2 estimates the token count of the given messages as they
-// appear in the active context window.
+// estimateWindowTokensV2 估算给定消息在活跃上下文窗口中的 token 数。
 //
-// For assistant messages with Usage data, only CompletionTokens (+ ReasoningTokens)
-// are counted. TotalTokens must NOT be used here because it includes the entire
-// prompt history sent with that request, which would repeatedly count earlier
-// messages already present in the window.
+// 对于有 Usage 数据的助手消息，只计算 CompletionTokens（+ ReasoningTokens）。
+// 不能在这里使用 TotalTokens，因为它包含了随该请求发送的整个提示历史，
+// 会重复计算窗口中已存在的早期消息。
 //
-// For compacted messages (Compacted != ""), uses the placeholder size (~20 tokens).
-// For all other messages, falls back to the DeepSeek character-level estimation.
+// 对于已压缩消息（Compacted != ""），使用占位符大小（约 20 tokens）。
+// 对于所有其他消息，回退到 DeepSeek 字符级估算。
 func estimateWindowTokensV2(msgs []Message) int64 {
 	var total int64
 	for _, m := range msgs {
@@ -57,8 +53,7 @@ func estimateWindowTokensV2(msgs []Message) int64 {
 	return total
 }
 
-// BuildToolNameByID builds a map from tool_call_id → tool name by scanning
-// assistant messages' ToolCalls lists.
+// BuildToolNameByID 通过扫描助手消息的 ToolCalls 列表，构建从 tool_call_id → 工具名称的映射。
 func BuildToolNameByID(msgs []Message) map[string]string {
 	m := make(map[string]string)
 	for _, msg := range msgs {
@@ -74,10 +69,9 @@ func BuildToolNameByID(msgs []Message) map[string]string {
 	return m
 }
 
-// RenderCompactedPlaceholder returns the single-line placeholder that replaces
-// the content of a compressed tool message in the LLM context.
+// RenderCompactedPlaceholder 返回替换 LLM 上下文中压缩工具消息内容的单行占位符。
 //
-// Format: [已压缩] 工具: {tool} | {n} tokens | 路径: {path}
+// 格式：[已压缩] 工具: {tool} | {n} tokens | 路径: {path}
 func RenderCompactedPlaceholder(msg Message, toolNameByID map[string]string) string {
 	var meta CompactedMeta
 	if err := json.Unmarshal([]byte(msg.Compacted), &meta); err != nil {
@@ -94,9 +88,9 @@ func RenderCompactedPlaceholder(msg Message, toolNameByID map[string]string) str
 		toolName, meta.TokenCount, meta.Path)
 }
 
-// stripDuplicateToolMessages removes adjacent tool messages with identical content.
-// Only operates on role="tool" messages to avoid breaking assistant-tool pairings.
-// Returns the deduplicated slice and the set of orphaned ToolCallIDs that were removed.
+// stripDuplicateToolMessages 移除内容相同的相邻工具消息。
+// 仅操作 role="tool" 消息，以避免破坏助手-工具配对。
+// 返回去重后的切片和被移除的孤立 ToolCallID 集合。
 func stripDuplicateToolMessages(msgs []Message) ([]Message, map[string]bool) {
 	orphaned := make(map[string]bool)
 	if len(msgs) < 2 {
@@ -130,13 +124,12 @@ const (
 	microCompactMinTokens     = 500 // skip short messages (not worth compressing)
 )
 
-// TryMicroCompact checks whether the session's active window exceeds the
-// MicroCompact trigger threshold (45% of maxWindowSize). If so, it compresses
-// eligible tool messages in the 25%-65% position range until the window drops
-// below 40%, then persists the session.
+// TryMicroCompact 检查会话的活跃窗口是否超过 MicroCompact 触发阈值（maxWindowSize 的 45%）。
+// 如果是，它压缩 25%-65% 位置范围内符合条件的工具消息，直到窗口降至 40% 以下，然后持久化会话。
 //
-// Returns true if compression was performed and the session was saved.
-func (s *Session) TryMicroCompact(sessionDir string) bool {
+// 如果执行了压缩并保存了会话，返回 true。
+// 使用 s.SessionDir() 获取会话目录，无需外部传入。
+func (s *Session) TryMicroCompact() bool {
 	if s.maxWindowSize <= 0 {
 		return false
 	}
@@ -224,6 +217,7 @@ func (s *Session) TryMicroCompact(sessionDir string) bool {
 	})
 
 	// Step 6: Compress candidates one by one until below target threshold
+	sessionDir := s.SessionDir()
 	var compressed int
 	for _, c := range candidates {
 		if windowTokens <= targetTokens {
@@ -270,9 +264,8 @@ func (s *Session) TryMicroCompact(sessionDir string) bool {
 	return false
 }
 
-// removeOrphanedToolCalls removes ToolCall entries from assistant messages
-// whose tool_call_id is in the orphaned set. This is called after dedup to
-// prevent "insufficient tool messages" errors from orphaned ToolCall entries.
+// removeOrphanedToolCalls 从助手消息中移除 tool_call_id 在孤立集合中的 ToolCall 条目。
+// 这在去重后调用，以防止孤立 ToolCall 条目导致"工具消息不足"错误。
 func (s *Session) removeOrphanedToolCalls(cursor int, orphanedIDs map[string]bool) {
 	for i := cursor; i < len(s.messages); i++ {
 		m := &s.messages[i]
@@ -291,117 +284,4 @@ func (s *Session) removeOrphanedToolCalls(cursor int, orphanedIDs map[string]boo
 	}
 }
 
-// ── Legacy helpers: kept for Compact() and backward compatibility ─────────
 
-// IsReadOnlyTool returns whether the given tool name is a read-only tool.
-// Kept for backward compatibility with existing callers.
-func IsReadOnlyTool(name string) bool {
-	return name == "Read" || name == "Grep" || name == "Glob" ||
-		name == "WebSearch" || name == "WebFetch" || name == "Skill" || name == "AskUser"
-}
-
-// MicroCompact is the legacy compression function. It is kept for backward
-// compatibility with Session.Compact() which uses it on historical (out-of-window)
-// messages. New code should use TryMicroCompact for in-window compression.
-func MicroCompact(messages []Message, keepRecent int) []Message {
-	if keepRecent < 1 {
-		keepRecent = 1
-	}
-
-	// Build a lookup from tool_call_id -> tool name
-	toolNameByID := make(map[string]string)
-	for _, m := range messages {
-		if m.Role != "assistant" {
-			continue
-		}
-		for _, tc := range m.ToolCalls {
-			if tc.ID != "" && tc.Name != "" {
-				toolNameByID[tc.ID] = tc.Name
-			}
-		}
-	}
-
-	var asstIdxs []int
-	for i, m := range messages {
-		if m.Role == "assistant" {
-			asstIdxs = append(asstIdxs, i)
-		}
-	}
-
-	keepFromIdx := 0
-	if len(asstIdxs) > keepRecent {
-		keepFromIdx = asstIdxs[len(asstIdxs)-keepRecent]
-	}
-
-	removedToolCallIDs := make(map[string]bool)
-	result := make([]Message, 0, len(messages))
-	for i, m := range messages {
-		if i >= keepFromIdx {
-			result = append(result, m)
-			continue
-		}
-
-		if m.Role != "tool" {
-			result = append(result, m)
-			continue
-		}
-
-		name := toolNameByID[m.ToolCallID]
-		if name == "" {
-			name = parseToolNameFromContent(m.Content)
-		}
-		if name != "" && !IsReadOnlyTool(name) {
-			result = append(result, m)
-			continue
-		}
-		if name == "" {
-			result = append(result, m)
-			continue
-		}
-
-		if m.ToolCallID != "" {
-			removedToolCallIDs[m.ToolCallID] = true
-		}
-	}
-
-	if len(removedToolCallIDs) > 0 {
-		for i := range result {
-			if result[i].Role != "assistant" || len(result[i].ToolCalls) == 0 {
-				continue
-			}
-			kept := make([]ToolCall, 0, len(result[i].ToolCalls))
-			for _, tc := range result[i].ToolCalls {
-				if !removedToolCallIDs[tc.ID] {
-					kept = append(kept, tc)
-				}
-			}
-			if len(kept) != len(result[i].ToolCalls) {
-				result[i] = Message{
-					Role:             result[i].Role,
-					Content:          result[i].Content,
-					Compacted:        result[i].Compacted,
-					ReasoningContent: result[i].ReasoningContent,
-					Timestamp:        result[i].Timestamp,
-					ToolCalls:        kept,
-				}
-			}
-		}
-	}
-
-	return result
-}
-
-func parseToolNameFromContent(content string) string {
-	if len(content) < 3 || content[0] != '[' {
-		return ""
-	}
-	end := strings.IndexByte(content, ']')
-	if end == -1 || end == 1 {
-		return ""
-	}
-	return content[1:end]
-}
-
-func IsReadOnlyToolResultName(name string) bool {
-	return IsReadOnlyTool(name)
-}

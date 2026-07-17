@@ -400,7 +400,7 @@ func (rt *Runtime) registerDefaultTools() {
 			subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
 				tc := tools.GetToolContext(ctx)
 				if tc == nil || tc.Session == nil {
-					return "", fmt.Errorf("no session in context")
+					return "", fmt.Errorf("上下文未包含会话")
 				}
 				sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
 				return sess.ID(), nil
@@ -484,7 +484,11 @@ func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor str
 	if s, ok := rt.subAgentSessionCache[key]; ok {
 		return s
 	}
-	s := session.New(agentName, sponsor, projectDir, session.WithStore(store), session.WithLogger(rt.logger))
+	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger)
+	if err != nil {
+		rt.logger.Error("创建子智能体会话失败", err, "agent", agentName, "project", projectDir)
+		return nil
+	}
 	rt.subAgentSessionCache[key] = s
 	return s
 }
@@ -500,7 +504,7 @@ func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor str
 func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (answer string, sessionID string, err error) {
 	if rt.agentReg != nil {
 		if cfg := rt.agentReg.Get(agentName); cfg == nil {
-			return "", "", fmt.Errorf("agent %q not found in registry", agentName)
+			return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
 		}
 	}
 
@@ -875,9 +879,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	// Append user message to session (only if it's not a consumed magic word).
 	if !magicHandled {
-		b.session.Append(ctx, session.Message{
+		if err := b.session.Append(ctx, session.Message{
 			Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
-		})
+		}); err != nil {
+			logger.Error("用户消息追加失败，错误: %v", err)
+		}
 	}
 	// Clear b.question when the magic word was consumed so the loop below
 	// does not re-inject it into the LLM call as a regular user message.
@@ -961,7 +967,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			b.resultAnswer = hr.AbortReason
 			b.resultTerminationReason = "hook_abort"
 			setIterResult(iter)
-			logger.Info("loop aborted by hook", "reason", hr.AbortReason)
+			logger.Info("循环被钩子函数中止，原因: %v", "reason", hr.AbortReason)
 			return
 		}
 
@@ -1000,10 +1006,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 					}
 				}
 			}
-			// if len(sysTexts) > 0 {
-			// 	rt.logger.Debug("===== SYSTEM PROMPT =====",
-			// 		"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n---\n"))
-			// }
+			// ------------ Debug tools don't remove ----------------
+			if len(sysTexts) > 0 {
+				rt.logger.Debug("===== SYSTEM PROMPT =====",
+					"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n---\n"))
+			}
 		}
 
 		// ── Stream LLM ──
@@ -1037,18 +1044,18 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			builder = builder.Tools(toolDefs...)
 		}
 
-		logger.Info("llm stream started", "session", sid, "iter", iter)
+		logger.Info("LLM思想流开始", "session", sid, "iter", iter)
 
 		stream, err := builder.GetStream()
 		if err != nil {
-			logger.Error("llm GetStream failed", err, "session", sid, "iter", iter)
+			logger.Error("LLM思想流失败，错误: %v", err, "session", sid, "iter", iter)
 			emit(events.LLMTimeout, events.LLMTimeoutData{
 				SessionID: sid,
 				Timeout:   4 * time.Minute,
 				Elapsed:   time.Since(start),
 				Error:     err.Error(),
 			})
-			b.resultErr = fmt.Errorf("llm stream failed: %w", err)
+			b.resultErr = fmt.Errorf("LLM思想流失败，错误: %w", err)
 			b.resultTerminationReason = "llm_error"
 			setIterResult(iter)
 			return
@@ -1140,7 +1147,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Timestamp:        time.Now(),
 			}
 			if err := rt.tokenUsageStore.Append(ctx, record); err != nil {
-				logger.Error("token usage store Append failed", err, "session", sid)
+				logger.Error("添加词元使用记录失败，", err, "session", sid)
 				fmt.Printf("[SSE-TRACE L4] Append FAILED: %v, session=%s\n", err, sid)
 			} else {
 				fmt.Printf("[SSE-TRACE L4] Append OK: prompt=%d, completion=%d, total=%d, cached=%d, session=%s\n",
@@ -1155,7 +1162,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			totalUsage.CachedTokens += callUsage.CachedTokens
 			totalUsage.ReasoningTokens += callUsage.ReasoningTokens
 			totalUsage.Timestamp = time.Now()
-			logger.Info("token usage recorded", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
+			logger.Info("记录词元使用信息", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
 		} else {
 			// Fallback: 某些 Provider（如 Qwen/DashScope）流式响应不返回 usage 数据
 			// 基于内容长度估算 token 数量（中英混合约 4 字符/token），确保统计不为 0
@@ -1167,10 +1174,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			if estimatedOutput < 1 {
 				estimatedOutput = 1 // 至少记录 1 个 output token
 			}
-			estimatedInput := 0  // 无 usage 时输入无法可靠估算，避免重复计费
+			estimatedInput := 0 // 无 usage 时输入无法可靠估算，避免重复计费
 			estimatedTotal := estimatedOutput
 
-			logger.Warn("stream.Usage() returned nil — using estimated tokens",
+			logger.Warn("stream.Usage() 返回 nil — 使用估算 token",
 				"session", sid, "iter", iter, "model", rt.model.Name,
 				"estimated_input", estimatedInput, "estimated_output", estimatedOutput)
 
@@ -1197,7 +1204,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Timestamp:        time.Now(),
 			}
 			if err := rt.tokenUsageStore.Append(ctx, record); err != nil {
-				logger.Error("token usage store Append (estimated) failed", err, "session", sid)
+				logger.Error("添加词元使用估算记录失败", err, "session", sid)
 			} else {
 				emit(events.TokenUsageRecorded, record)
 			}
@@ -1267,7 +1274,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		for i := range streamToolCalls {
 			if streamToolCalls[i].ID == "" {
 				streamToolCalls[i].ID = "syn_" + session.NewRecordID()
-				logger.Warn("tool call arrived without id; backfilled synthetic id",
+				logger.Warn("LLM调用了工具但没有包含ID，已填充合成的工具ID",
 					"session", sid, "iter", iter, "tool", streamToolCalls[i].Name, "id", streamToolCalls[i].ID)
 			}
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, session.ToolCall{
@@ -1276,7 +1283,9 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Arguments: streamToolCalls[i].Arguments,
 			})
 		}
-		b.session.Append(ctx, assistantMsg)
+		if err := b.session.Append(ctx, assistantMsg); err != nil {
+			logger.Error("添加助手消息失败", err)
+		}
 
 		lastIteration = iter + 1
 		emit(events.CycleEnd, events.CycleInfo{
@@ -1337,7 +1346,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			})
 			b.resultTerminationReason = "permission_pending"
 			setIterResult(iter)
-			logger.Info("loop paused: tool requires permission, waiting for user approval", "tool", pending.ToolName)
+			logger.Info("循环暂停:工具需要授权，等待用户批准", "tool", pending.ToolName)
 			return
 		}
 
@@ -1354,21 +1363,23 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		for _, tr := range toolResults {
 			var content string
 			if tr.Error != "" {
-				content = fmt.Sprintf("[%s] error: %s", tr.ToolName, tr.Error)
+				content = fmt.Sprintf("[%s] 执行错误: %s", tr.ToolName, tr.Error)
 			} else if tr.Result != "" {
 				content = tr.Result
 			} else {
-				content = fmt.Sprintf("[%s] returned: (empty result)", tr.ToolName)
+				content = fmt.Sprintf("[%s] 返回结果: (空结果)", tr.ToolName)
 			}
 			preview := content
 			if len(preview) > 120 {
 				preview = preview[:120]
 			}
-			logger.Info("tool result persisted", "session", sid, "tool", tr.ToolName, "content_len", len(content), "content_preview", preview)
-			b.session.Append(ctx, session.Message{
+			logger.Info("工具结果已持久化", "session", sid, "tool", tr.ToolName, "content_len", len(content), "content_preview", preview)
+			if err := b.session.Append(ctx, session.Message{
 				Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 				ToolCallID: tr.ToolCallID,
-			})
+			}); err != nil {
+				logger.Error("append tool message failed", err)
+			}
 		}
 
 		// Backfill "skipped" tool results for any tool_call that the assistant
@@ -1384,13 +1395,15 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			if name == "" {
 				name = "<unknown>"
 			}
-			skippedContent := fmt.Sprintf("[%s] skipped: no executor handled this tool_call (id=%s)", name, tc.ID)
-			logger.Warn("tool call skipped, backfilling tool result",
+			skippedContent := fmt.Sprintf("[%s]是个未知的工具，跳过执行: (id=%s)", name, tc.ID)
+			logger.Warn("跳过执行工具",
 				"session", sid, "tool", name, "tool_call_id", tc.ID)
-			b.session.Append(ctx, session.Message{
+			if err := b.session.Append(ctx, session.Message{
 				Role: "tool", Content: skippedContent, Timestamp: time.Now().Unix(),
 				ToolCallID: tc.ID,
-			})
+			}); err != nil {
+				logger.Error("跳过执行工具结果失败", err)
+			}
 		}
 
 		// ── Non-blocking AskUser detection ──
@@ -2448,7 +2461,7 @@ func (rt *Runtime) checkPermissionGrants(
 			Reason:        reason,
 			SecurityLevel: info.SecurityLevel,
 		})
-		logger.Info("permission required",
+		logger.Info("需要授权",
 			"tool", inv.Name,
 			"reason", reason,
 			"session", b.session.ID(),
@@ -2489,7 +2502,7 @@ func (rt *Runtime) resolvePermissionMagicWord(
 		return false
 	}
 
-	logger.Info("permission magic word received",
+	logger.Info("接收到授权回应",
 		"action", action,
 		"tool", pending.ToolName,
 		"tool_call_id", pending.ToolCallID,
@@ -2503,7 +2516,7 @@ func (rt *Runtime) resolvePermissionMagicWord(
 		// Add to session whitelist before executing.
 		if entry := rt.buildWhitelistEntry(pending, b.session); entry != "" {
 			if err := b.session.AddToWhitelist(pending.ToolName, entry); err != nil {
-				logger.Error("failed to add to session whitelist", err)
+				logger.Error("添加到会话白名单失败", err)
 			}
 		}
 		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
@@ -2532,7 +2545,7 @@ func (rt *Runtime) buildWhitelistEntry(pending *session.PendingPermission, sess 
 		}
 		return parts[0]
 	case "write", "edit":
-		path, _ := pending.Arguments["path"].(string)
+		path, _ := pending.Arguments["filePath"].(string)
 		if path == "" {
 			return ""
 		}
@@ -2595,19 +2608,19 @@ func (rt *Runtime) executePendingAndAppend(
 
 	var content string
 	if execErr != nil {
-		content = fmt.Sprintf("[%s] error: %s", pending.ToolName, execErr.Error())
+		content = fmt.Sprintf("[%s] 错误: %s", pending.ToolName, execErr.Error())
 	} else if execResult != nil {
 		if execResult.Error != nil {
-			content = fmt.Sprintf("[%s] error: %s", pending.ToolName, execResult.Error.Error())
+			content = fmt.Sprintf("[%s] 错误: %s", pending.ToolName, execResult.Error.Error())
 		} else if execResult.Result != "" {
 			content = execResult.Result
 		} else {
-			content = fmt.Sprintf("[%s] returned: (empty result)", pending.ToolName)
+			content = fmt.Sprintf("[%s] 返回: (空结果)", pending.ToolName)
 		}
 	} else {
-		content = fmt.Sprintf("[%s] returned: (no result)", pending.ToolName)
+		content = fmt.Sprintf("[%s] 返回: (无结果)", pending.ToolName)
 	}
-	logger.Info("pending tool executed (Allow)",
+	logger.Info("工具执行结果 (Allow)",
 		"tool", pending.ToolName,
 		"tool_call_id", pending.ToolCallID,
 		"duration_ms", duration.Milliseconds(),

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 )
 
@@ -16,7 +17,11 @@ import (
 func testCtx(t *testing.T) context.Context {
 	t.Helper()
 	cwd, _ := os.Getwd()
-	sess := session.New("test-agent", "", cwd)
+	store := newMockSessionStore()
+	sess, err := session.New("test-agent", "", cwd, store, logging.NewNopLogger())
+	if err != nil {
+		t.Fatalf("创建会话失败: %v", err)
+	}
 	return WithToolContext(context.Background(), &ToolContext{
 		Session:   sess,
 		EmitEvent: func(e events.ReactEvent) {},
@@ -315,18 +320,20 @@ func TestWrite(t *testing.T) {
 
 	t.Run("write to temp file", func(t *testing.T) {
 		testFile := "goharness_test_write.txt"
+		// 先清理可能存在的文件
+		os.Remove(testFile)
 		result, err := write.Execute(ctx, map[string]any{
-			"path":    testFile,
-			"content": "hello world",
+			"filePath": testFile,
+			"content":  "hello world",
 		})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["success"] != true {
+		writeResult := result.(*WriteResult)
+		if !writeResult.Success {
 			t.Error("Expected success to be true")
 		}
-		if resultMap["bytes_written"] == nil {
+		if writeResult.BytesWritten == 0 {
 			t.Error("Expected bytes_written to be set")
 		}
 		os.Remove(testFile)
@@ -334,31 +341,31 @@ func TestWrite(t *testing.T) {
 
 	t.Run("append to file", func(t *testing.T) {
 		testFile := "goharness_test_append.txt"
-		write.Execute(ctx, map[string]any{"path": testFile, "content": "line1\n"})
+		write.Execute(ctx, map[string]any{"filePath": testFile, "content": "line1\n"})
 		result, err := write.Execute(ctx, map[string]any{
-			"path":    testFile,
-			"content": "line2\n",
-			"append":  true,
+			"filePath": testFile,
+			"content":  "line2\n",
+			"append":   true,
 		})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["mode"] != "append" {
-			t.Errorf("Expected mode 'append', got %v", resultMap["mode"])
+		writeResult := result.(*WriteResult)
+		if writeResult.Type != "append" {
+			t.Errorf("Expected type 'append', got %v", writeResult.Type)
 		}
 		os.Remove(testFile)
 	})
 
-	t.Run("missing path", func(t *testing.T) {
+	t.Run("missing filePath", func(t *testing.T) {
 		_, err := write.Execute(ctx, map[string]any{"content": "hello"})
 		if err == nil {
-			t.Error("Expected error for missing path")
+			t.Error("Expected error for missing filePath")
 		}
 	})
 
 	t.Run("missing content", func(t *testing.T) {
-		_, err := write.Execute(ctx, map[string]any{"path": "/tmp/test.txt"})
+		_, err := write.Execute(ctx, map[string]any{"filePath": "/tmp/test.txt"})
 		if err == nil {
 			t.Error("Expected error for missing content")
 		}
@@ -589,30 +596,29 @@ func TestWrite_EdgeCases(t *testing.T) {
 	t.Run("写入空内容", func(t *testing.T) {
 		emptyFile := filepath.Join(tempDir, "empty_write.txt")
 		result, err := write.Execute(ctx, map[string]any{
-			"path":    emptyFile,
-			"content": "",
+			"filePath": emptyFile,
+			"content":  "",
 		})
 		if err != nil {
 			t.Fatalf("写入空内容失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		bytesWritten := resultMap["bytes_written"].(int)
-		if bytesWritten != 0 {
-			t.Errorf("写入空内容应返回 0 字节，得到 %d", bytesWritten)
+		writeResult := result.(*WriteResult)
+		if writeResult.BytesWritten != 0 {
+			t.Errorf("写入空内容应返回 0 字节，得到 %d", writeResult.BytesWritten)
 		}
 	})
 
 	t.Run("创建深层目录结构", func(t *testing.T) {
 		deepFile := filepath.Join(tempDir, "a", "b", "c", "deep.txt")
 		result, err := write.Execute(ctx, map[string]any{
-			"path":    deepFile,
-			"content": "deep content",
+			"filePath": deepFile,
+			"content":  "deep content",
 		})
 		if err != nil {
 			t.Fatalf("创建深层目录失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["success"] != true {
+		writeResult := result.(*WriteResult)
+		if !writeResult.Success {
 			t.Error("应自动创建目录结构")
 		}
 	})
@@ -621,22 +627,21 @@ func TestWrite_EdgeCases(t *testing.T) {
 		appendFile := filepath.Join(tempDir, "append_test.txt")
 
 		write.Execute(ctx, map[string]any{
-			"path":    appendFile,
-			"content": "first line\n",
+			"filePath": appendFile,
+			"content":  "first line\n",
 		})
 
 		result, err := write.Execute(ctx, map[string]any{
-			"path":    appendFile,
-			"content": "second line\n",
-			"append":  true,
+			"filePath": appendFile,
+			"content":  "second line\n",
+			"append":   true,
 		})
 		if err != nil {
 			t.Fatalf("追加模式失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		totalSize := resultMap["total_size"].(int64)
-		if totalSize < 20 { // "first line\n" + "second line\n"
-			t.Errorf("追加后文件大小应大于 20 字节，得到 %d", totalSize)
+		writeResult := result.(*WriteResult)
+		if writeResult.TotalSize < 20 { // "first line\n" + "second line\n"
+			t.Errorf("追加后文件大小应大于 20 字节，得到 %d", writeResult.TotalSize)
 		}
 	})
 
@@ -644,21 +649,24 @@ func TestWrite_EdgeCases(t *testing.T) {
 		overwriteFile := filepath.Join(tempDir, "overwrite.txt")
 
 		write.Execute(ctx, map[string]any{
-			"path":    overwriteFile,
-			"content": strings.Repeat("original ", 100),
+			"filePath": overwriteFile,
+			"content":  strings.Repeat("original ", 100),
 		})
 
+		// 覆盖前必须先读取文件（读前写约束）
+		read := NewReadTool()
+		read.Execute(ctx, map[string]any{"filePath": overwriteFile})
+
 		result, err := write.Execute(ctx, map[string]any{
-			"path":    overwriteFile,
-			"content": "new short content",
+			"filePath": overwriteFile,
+			"content":  "new short content",
 		})
 		if err != nil {
 			t.Fatalf("覆盖模式失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		totalSize := resultMap["total_size"].(int64)
-		if totalSize != int64(len("new short content")) {
-			t.Errorf("覆盖后文件大小不匹配: 期望 %d，得到 %d", len("new short content"), totalSize)
+		writeResult := result.(*WriteResult)
+		if writeResult.TotalSize != int64(len("new short content")) {
+			t.Errorf("覆盖后文件大小不匹配: 期望 %d，得到 %d", len("new short content"), writeResult.TotalSize)
 		}
 	})
 }
@@ -723,6 +731,10 @@ func TestEdit_EdgeCases(t *testing.T) {
 		content := "apple banana apple cherry apple\n"
 		os.WriteFile(filePath, []byte(content), 0644)
 
+		// 编辑前必须先读取文件（读前写约束）
+		read := NewReadTool()
+		read.Execute(ctx, map[string]any{"filePath": filePath})
+
 		edit := &EditTool{}
 		_, err = edit.Execute(ctx, map[string]any{
 			"filePath":    filePath,
@@ -763,16 +775,22 @@ func TestEdit_EdgeCases(t *testing.T) {
 
 		edit := &EditTool{}
 
+		// 第一次编辑前需要读取文件
+		read := NewReadTool()
+		read.Execute(ctx, map[string]any{"filePath": filePath})
 		edit.Execute(ctx, map[string]any{
 			"filePath":   filePath,
 			"old_string": "hello",
 			"new_string": "hi",
 		})
+		// 后续编辑前也需要重新读取
+		read.Execute(ctx, map[string]any{"filePath": filePath})
 		edit.Execute(ctx, map[string]any{
 			"filePath":   filePath,
 			"old_string": "world",
 			"new_string": "earth",
 		})
+		read.Execute(ctx, map[string]any{"filePath": filePath})
 		edit.Execute(ctx, map[string]any{
 			"filePath":   filePath,
 			"old_string": "foo",

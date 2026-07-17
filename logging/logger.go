@@ -61,3 +61,17 @@ func (l *SlogAdapter) Debug(msg string, keyvals ...any) {
 func (l *SlogAdapter) Warn(msg string, keyvals ...any) {
 	l.logger.Warn(msg, keyvals...)
 }
+
+// NopLogger is a Logger implementation that discards all log messages.
+type NopLogger struct{}
+
+// NewNopLogger returns a Logger that discards all messages.
+// NOTES: 此方法仅用于测试，禁止用于实际应用场景
+func NewNopLogger() Logger {
+	return &NopLogger{}
+}
+
+func (n *NopLogger) Info(msg string, keyvals ...any)  {}
+func (n *NopLogger) Error(msg string, err error, keyvals ...any) {}
+func (n *NopLogger) Debug(msg string, keyvals ...any) {}
+func (n *NopLogger) Warn(msg string, keyvals ...any)  {}
