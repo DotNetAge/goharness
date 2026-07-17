@@ -68,7 +68,7 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 	}
 
 	limit := 5
-	if raw, ok := params["limit"]; ok {
+	if raw, found := GetParam(params, "limit"); found {
 		if v, ok := ToFloat64(raw); ok && v > 0 {
 			limit = int(v)
 			if limit > 20 {
@@ -93,7 +93,7 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		projectDir = tc.Session.ProjectDir()
 	}
 	// 显式传入 project_dir 则覆盖默认值（可用于搜索其他项目记忆）
-	if raw, ok := params["project_dir"]; ok {
+	if raw, found := GetParam(params, "project_dir"); found {
 		if dir, ok := raw.(string); ok && dir != "" {
 			projectDir = dir
 		}

@@ -69,7 +69,8 @@ func NewWriteTool() *Write {
 // is NOT a Grant concern: there's no user override for it, so asking is
 // misleading.
 func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	filePath, _ := params["filePath"].(string)
+	raw, _ := GetParam(params, "file_path")
+	filePath, _ := raw.(string)
 	if filePath == "" {
 		// Let Execute report the missing parameter cleanly.
 		return true, ""
@@ -172,12 +173,14 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 
 	// Check if append mode is enabled
 	appendMode := false
-	if append, ok := params["append"].(bool); ok {
-		appendMode = append
-	} else if appendStr, ok := params["append"].(string); ok {
-		appendMode = appendStr == "true" || appendStr == "1"
-	} else if appendNum, ok := params["append"].(float64); ok {
-		appendMode = appendNum != 0
+	if raw, found := GetParam(params, "append"); found {
+		if v, ok := raw.(bool); ok {
+			appendMode = v
+		} else if v, ok := raw.(string); ok {
+			appendMode = v == "true" || v == "1"
+		} else if v, ok := raw.(float64); ok {
+			appendMode = v != 0
+		}
 	}
 
 	var file *os.File

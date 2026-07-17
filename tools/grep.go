@@ -64,9 +64,12 @@ func (t *GrepTool) Info() *ToolInfo {
 }
 
 func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	pattern, _ := params["pattern"].(string)
-	include, _ := params["include"].(string)
-	outputMode, _ := params["output_mode"].(string)
+	rawPattern, _ := GetParam(params, "pattern")
+	pattern, _ := rawPattern.(string)
+	rawInclude, _ := GetParam(params, "include")
+	include, _ := rawInclude.(string)
+	rawOutputMode, _ := GetParam(params, "output_mode")
+	outputMode, _ := rawOutputMode.(string)
 
 	if pattern == "" {
 		return nil, fmt.Errorf("pattern 是必需的")

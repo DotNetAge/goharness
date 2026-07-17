@@ -47,8 +47,10 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 		return nil, fmt.Errorf("TaskList 需要包含 SessionID 的 ToolContext")
 	}
 
-	statusFilter, _ := params["status_filter"].(string)
-	ownerFilter, _ := params["owner_filter"].(string)
+	rawStatusFilter, _ := GetParam(params, "status_filter")
+	statusFilter, _ := rawStatusFilter.(string)
+	rawOwnerFilter, _ := GetParam(params, "owner_filter")
+	ownerFilter, _ := rawOwnerFilter.(string)
 
 	taskIDs, err := ListTasks(ctx, tc.Session.ID())
 	if err != nil {

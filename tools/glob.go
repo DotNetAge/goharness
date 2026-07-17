@@ -66,8 +66,10 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	searchPath := "."
-	if p, ok := params["path"].(string); ok && p != "" {
-		searchPath = p
+	if raw, found := GetParam(params, "path"); found {
+		if p, ok := raw.(string); ok && p != "" {
+			searchPath = p
+		}
 	}
 
 	info, err := os.Stat(searchPath)

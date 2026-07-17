@@ -98,7 +98,8 @@ func (t *EditTool) Info() *ToolInfo {
 // workspace boundary". Everything else (file not found, old_string missing,
 // stale modification time, etc.) is a normal Execute-level error.
 func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	filePath, _ := params["filePath"].(string)
+	raw, _ := GetParam(params, "file_path")
+	filePath, _ := raw.(string)
 	if filePath == "" {
 		return true, ""
 	}
@@ -195,13 +196,17 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil, err
 	}
 
-	replaceAll, _ := params["replace_all"].(bool)
-	lastReadTimeStr, _ := params["last_read_time"].(string)
+	rawReplaceAll, _ := GetParam(params, "replace_all")
+	replaceAll, _ := rawReplaceAll.(bool)
+	rawLastReadTime, _ := GetParam(params, "last_read_time")
+	lastReadTimeStr, _ := rawLastReadTime.(string)
 
 	// Parse optional limit (-1 = all, 0 = default, N = at most N occurrences)
 	var limit int
-	if l, ok := params["limit"].(float64); ok {
-		limit = int(l)
+	if raw, found := GetParam(params, "limit"); found {
+		if l, ok := raw.(float64); ok {
+			limit = int(l)
+		}
 	}
 
 	// Staleness check

@@ -29,7 +29,8 @@ func (t *TeamGetTasksTool) Info() *ToolInfo {
 }
 
 func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	teamName, _ := params["team_name"].(string)
+	rawTeamName, _ := GetParam(params, "team_name")
+	teamName, _ := rawTeamName.(string)
 	if teamName == "" {
 		return nil, fmt.Errorf("team_name 不能为空")
 	}

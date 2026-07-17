@@ -51,7 +51,11 @@ func (t *ToolSelectorTool) Info() *ToolInfo {
 }
 
 func (t *ToolSelectorTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	rawNames, ok := params["names"].([]any)
+	rawNamesVal, found := GetParam(params, "names")
+	if !found {
+		return nil, fmt.Errorf("names is required and must be a non-empty array of tool name strings")
+	}
+	rawNames, ok := rawNamesVal.([]any)
 	if !ok || len(rawNames) == 0 {
 		return nil, fmt.Errorf("names is required and must be a non-empty array of tool name strings")
 	}

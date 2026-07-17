@@ -595,12 +595,20 @@ func buildRunScriptInfo(platform Platform) *ToolInfo {
 // Hard-blocks (e.g. malformed command) are Execute-level errors, not
 // Grant concerns.
 func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	command, _ := params["command"].(string)
+	rawCommand, ok := GetParam(params, "command")
+	command := ""
+	if ok {
+		command, _ = rawCommand.(string)
+	}
 	if strings.TrimSpace(command) == "" {
 		return true, ""
 	}
 
-	workingDir, _ := params["working_dir"].(string)
+	rawWd, ok := GetParam(params, "working_dir")
+	workingDir := ""
+	if ok {
+		workingDir, _ = rawWd.(string)
+	}
 	if workingDir == "" {
 		workingDir = "."
 	}
@@ -655,14 +663,19 @@ func (t *RunScript) Info() *ToolInfo {
 }
 
 func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, error) {
-	command, ok := params["command"].(string)
+	rawCmd, ok := GetParam(params, "command")
+	if !ok {
+		return nil, fmt.Errorf("缺少必需参数：command")
+	}
+	command, ok := rawCmd.(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return nil, fmt.Errorf("缺少必需参数：command")
 	}
 
 	logger := getLogger(ctx)
 
-	workingDir, _ := params["working_dir"].(string)
+	rawWd, _ := GetParam(params, "working_dir")
+	workingDir, _ := rawWd.(string)
 	if workingDir == "" {
 		workingDir = "."
 	}
@@ -680,14 +693,16 @@ func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, er
 	)
 
 	var args []string
-	if rawArgs, ok := params["args"].([]any); ok {
-		for _, a := range rawArgs {
-			if s, ok := a.(string); ok {
-				args = append(args, s)
+	if rawArgs, found := GetParam(params, "args"); found {
+		if ra, ok := rawArgs.([]any); ok {
+			for _, a := range ra {
+				if s, ok := a.(string); ok {
+					args = append(args, s)
+				}
 			}
+		} else if ra, ok := rawArgs.([]string); ok {
+			args = ra
 		}
-	} else if rawArgs, ok := params["args"].([]string); ok {
-		args = rawArgs
 	}
 
 	result, err := t.scriptExecutor.Execute(ctx, workingDir, scriptPath, args)

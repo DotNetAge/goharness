@@ -102,11 +102,19 @@ func (t *SubAgentTool) Info() *ToolInfo {
 //   - map[string]any: 包含 status, agent_name, session_id
 //   - error: 参数缺失或配置不完整时返回错误
 func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	agentName, _ := params["agent_name"].(string)
+	rawAgentName, ok := GetParam(params, "agent_name")
+	agentName := ""
+	if ok {
+		agentName, _ = rawAgentName.(string)
+	}
 	if agentName == "" {
 		return nil, fmt.Errorf("agent_name 不能为空")
 	}
-	task, _ := params["task"].(string)
+	rawTask, ok := GetParam(params, "task")
+	task := ""
+	if ok {
+		task, _ = rawTask.(string)
+	}
 	if task == "" {
 		return nil, fmt.Errorf("task 不能为空")
 	}

@@ -166,10 +166,112 @@ func (t *BashTool) Info() *ToolInfo {
 // 返回：
 //   - map[string]any: 包含 stdout、stderr、exit_code、success 等字段
 //   - error: 仅在参数验证失败时返回错误，执行错误在 result 中
+
+// generateKeyVariants 根据规范键名（小写+下划线格式）生成所有常见命名约定的变体，
+// 用于实现大小写和命名风格不敏感的参数查找。
+//
+// 例如，输入 "working_dir" 会生成：
+//   - WORKING_DIR（全大写+下划线）
+//   - workingdir（全小写无分隔符）
+//   - WORKINGDIR（全大写无分隔符）
+//   - working-dir（小写+连字符）
+//   - WORKING-DIR（大写+连字符）
+//   - WorkingDir（大驼峰 PascalCase）
+//   - workingDir（小驼峰 camelCase）
+func GenerateKeyVariants(key string) []string {
+	parts := strings.Split(key, "_")
+	n := len(parts)
+
+	variants := make([]string, 0, 8)
+
+	// 全大写+下划线: WORKING_DIR
+	variants = append(variants, strings.ToUpper(key))
+
+	// 全小写无分隔符: workingdir
+	lowerJoined := strings.Join(parts, "")
+	variants = append(variants, lowerJoined)
+
+	// 全大写无分隔符: WORKINGDIR
+	variants = append(variants, strings.ToUpper(lowerJoined))
+
+	// 小写+连字符: working-dir
+	variants = append(variants, strings.Join(parts, "-"))
+
+	// 大写+连字符: WORKING-DIR
+	upperParts := make([]string, n)
+	for i, p := range parts {
+		upperParts[i] = strings.ToUpper(p)
+	}
+	variants = append(variants, strings.Join(upperParts, "-"))
+
+	// 大驼峰 PascalCase: WorkingDir
+	pascalParts := make([]string, n)
+	for i, p := range parts {
+		if len(p) > 0 {
+			pascalParts[i] = strings.ToUpper(p[:1]) + p[1:]
+		} else {
+			pascalParts[i] = p
+		}
+	}
+	variants = append(variants, strings.Join(pascalParts, ""))
+
+	// 小驼峰 camelCase: workingDir（多词时才与 PascalCase 不同）
+	if n > 0 {
+		camelParts := make([]string, n)
+		camelParts[0] = parts[0]
+		for i := 1; i < n; i++ {
+			if len(parts[i]) > 0 {
+				camelParts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+			} else {
+				camelParts[i] = parts[i]
+			}
+		}
+		variants = append(variants, strings.Join(camelParts, ""))
+	}
+
+	return variants
+}
+
+// getParam 从 params 中按多种命名约定提取参数值，提供大小写和命名风格不敏感的鲁棒匹配。
+// 优先精确匹配 key，再尝试 generateKeyVariants 生成的所有变体。
+//
+// 支持的命名格式包括：
+//   - 原始格式（如 "working_dir"）
+//   - 全大写+下划线（如 "WORKING_DIR"）
+//   - 全小写无分隔符（如 "workingdir"）
+//   - 全大写无分隔符（如 "WORKINGDIR"）
+//   - 小写+连字符（如 "working-dir"）
+//   - 大写+连字符（如 "WORKING-DIR"）
+//   - 大驼峰（如 "WorkingDir"）
+//   - 小驼峰（如 "workingDir"）
+//
+// 参数：
+//   - params: 参数映射
+//   - key: 规范形式的键名（小写+下划线，如 "working_dir"）
+//
+// 返回：
+//   - any: 找到的参数值
+//   - bool: 是否找到匹配的键
+func GetParam(params map[string]any, key string) (any, bool) {
+	if val, ok := params[key]; ok {
+		return val, true
+	}
+	for _, variant := range GenerateKeyVariants(key) {
+		if val, ok := params[variant]; ok {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
 func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	command, ok := params["command"].(string)
+	rawCommand, ok := GetParam(params, "command")
 	if !ok {
 		return nil, fmt.Errorf("缺少 command 参数")
+	}
+	command, ok := rawCommand.(string)
+	if !ok {
+		return nil, fmt.Errorf("command 参数必须是字符串类型")
 	}
 
 	command = strings.TrimSpace(command)
@@ -217,13 +319,15 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	timeoutMs := defaultBashTimeoutMs
-	if val, ok := params["timeout"].(float64); ok {
-		timeoutMs = int(val)
-		if timeoutMs < 1000 {
-			timeoutMs = 1000
-		}
-		if timeoutMs > 300000 {
-			timeoutMs = 300000
+	if rawTimeout, ok := GetParam(params, "timeout"); ok {
+		if val, ok := rawTimeout.(float64); ok {
+			timeoutMs = int(val)
+			if timeoutMs < 1000 {
+				timeoutMs = 1000
+			}
+			if timeoutMs > 300000 {
+				timeoutMs = 300000
+			}
 		}
 	}
 
@@ -237,7 +341,13 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", command)
 	}
 
-	if wd, ok := params["working_dir"].(string); ok && wd != "" {
+	wd := ""
+	if rawWd, ok := GetParam(params, "working_dir"); ok {
+		if s, ok := rawWd.(string); ok {
+			wd = s
+		}
+	}
+	if wd != "" {
 		cmd.Dir = filepath.Clean(wd)
 	} else {
 		// 默认以 ProjectDir 为工作目录
@@ -323,7 +433,11 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 // Anything that passes both checks is "obviously safe enough to just run"
 // and Grant returns granted=true. The runtime will then proceed to Execute.
 func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	command, _ := params["command"].(string)
+	rawCommand, ok := GetParam(params, "command")
+	command := ""
+	if ok {
+		command, _ = rawCommand.(string)
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		// No command? Let Execute produce a clean error — no point asking

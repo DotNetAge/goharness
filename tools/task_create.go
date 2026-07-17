@@ -35,11 +35,13 @@ func (t *TaskCreateTool) Info() *ToolInfo {
 }
 
 func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	subject, _ := params["subject"].(string)
+	rawSubject, _ := GetParam(params, "subject")
+	subject, _ := rawSubject.(string)
 	if subject == "" {
 		return nil, fmt.Errorf("subject 不能为空")
 	}
-	description, _ := params["description"].(string)
+	rawDesc, _ := GetParam(params, "description")
+	description, _ := rawDesc.(string)
 	if description == "" {
 		return nil, fmt.Errorf("description 不能为空")
 	}
@@ -59,10 +61,12 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		CreatedAt:   time.Now(),
 	}
 
-	if activeForm, ok := params["active_form"].(string); ok && activeForm != "" {
+	rawActiveForm, _ := GetParam(params, "active_form")
+	if activeForm, ok := rawActiveForm.(string); ok && activeForm != "" {
 		task.ActiveForm = activeForm
 	}
-	if meta, ok := params["metadata"].(map[string]any); ok && len(meta) > 0 {
+	rawMeta, _ := GetParam(params, "metadata")
+	if meta, ok := rawMeta.(map[string]any); ok && len(meta) > 0 {
 		task.Metadata = meta
 	}
 

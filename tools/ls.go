@@ -95,8 +95,10 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 
 	// Get directory path (defaults to current directory)
 	dirPath := "."
-	if path, ok := params["path"].(string); ok && path != "" {
-		dirPath = path
+	if rawPath, found := GetParam(params, "path"); found {
+		if path, ok := rawPath.(string); ok && path != "" {
+			dirPath = path
+		}
 	}
 
 	// Security check
@@ -119,13 +121,17 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 
 	// Get parameters
 	recursive := false
-	if rec, ok := params["recursive"].(bool); ok {
-		recursive = rec
+	if rawRec, found := GetParam(params, "recursive"); found {
+		if rec, ok := rawRec.(bool); ok {
+			recursive = rec
+		}
 	}
 
 	showHidden := false
-	if hidden, ok := params["show_hidden"].(bool); ok {
-		showHidden = hidden
+	if rawHidden, found := GetParam(params, "show_hidden"); found {
+		if hidden, ok := rawHidden.(bool); ok {
+			showHidden = hidden
+		}
 	}
 
 	// Read directory contents

@@ -56,21 +56,25 @@ func (t *TeamCreateTool) Info() *ToolInfo {
 }
 
 func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	teamName, _ := params["team_name"].(string)
+	rawTeamName, _ := GetParam(params, "team_name")
+	teamName, _ := rawTeamName.(string)
 	if teamName == "" {
 		return nil, fmt.Errorf("team_name 不能为空")
 	}
-	description, _ := params["description"].(string)
+	rawDescription, _ := GetParam(params, "description")
+	description, _ := rawDescription.(string)
 	if description == "" {
 		return nil, fmt.Errorf("description 不能为空")
 	}
-	leader, _ := params["leader"].(string)
+	rawLeader, _ := GetParam(params, "leader")
+	leader, _ := rawLeader.(string)
 	if leader == "" {
 		return nil, fmt.Errorf("leader 不能为空")
 	}
 
 	var members []string
-	if rawMembers, ok := params["members"].([]any); ok {
+	rawMembersVal, _ := GetParam(params, "members")
+	if rawMembers, ok := rawMembersVal.([]any); ok {
 		for _, m := range rawMembers {
 			if str, ok := m.(string); ok && str != "" {
 				members = append(members, str)
@@ -98,7 +102,8 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	var taskIDs []string
-	if rawTasks, ok := params["tasks"].([]any); ok {
+	rawTasksVal, _ := GetParam(params, "tasks")
+	if rawTasks, ok := rawTasksVal.([]any); ok {
 		for _, rawTask := range rawTasks {
 			taskDesc, _ := rawTask.(string)
 			if taskDesc == "" {

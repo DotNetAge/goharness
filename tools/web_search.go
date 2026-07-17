@@ -442,7 +442,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	}
 
 	maxResults := 5
-	if raw, ok := params["max_results"]; ok {
+	if raw, found := GetParam(params, "max_results"); found {
 		if v, ok := ToFloat64(raw); ok && v > 0 {
 			maxResults = int(v)
 			if maxResults > 20 {
@@ -452,17 +452,21 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	}
 
 	var allowedDomains, blockedDomains []string
-	if raw, ok := params["allowed_domains"].([]any); ok {
-		for _, v := range raw {
-			if s, ok := v.(string); ok {
-				allowedDomains = append(allowedDomains, s)
+	if raw, found := GetParam(params, "allowed_domains"); found {
+		if rawSlice, ok := raw.([]any); ok {
+			for _, v := range rawSlice {
+				if s, ok := v.(string); ok {
+					allowedDomains = append(allowedDomains, s)
+				}
 			}
 		}
 	}
-	if raw, ok := params["blocked_domains"].([]any); ok {
-		for _, v := range raw {
-			if s, ok := v.(string); ok {
-				blockedDomains = append(blockedDomains, s)
+	if raw, found := GetParam(params, "blocked_domains"); found {
+		if rawSlice, ok := raw.([]any); ok {
+			for _, v := range rawSlice {
+				if s, ok := v.(string); ok {
+					blockedDomains = append(blockedDomains, s)
+				}
 			}
 		}
 	}

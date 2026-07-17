@@ -58,7 +58,11 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		return nil, fmt.Errorf("collect_results 工具需要包含 Session 和 SessionStore 的 ToolContext")
 	}
 
-	rawIDs, ok := params["session_ids"].([]any)
+	rawIDsVal, found := GetParam(params, "session_ids")
+	if !found {
+		return nil, fmt.Errorf("session_ids 必须是字符串数组")
+	}
+	rawIDs, ok := rawIDsVal.([]any)
 	if !ok {
 		return nil, fmt.Errorf("session_ids 必须是字符串数组")
 	}

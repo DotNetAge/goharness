@@ -39,7 +39,8 @@ func (t *TaskUpdateTool) Info() *ToolInfo {
 }
 
 func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	taskID, _ := params["task_id"].(string)
+	rawTaskID, _ := GetParam(params, "task_id")
+	taskID, _ := rawTaskID.(string)
 	if taskID == "" {
 		return nil, fmt.Errorf("task_id is required")
 	}
@@ -60,27 +61,32 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	updated := false
 
 	// Update basic fields
-	if subj, ok := params["subject"].(string); ok && subj != "" && subj != task.Subject {
+	rawSubj, _ := GetParam(params, "subject")
+	if subj, ok := rawSubj.(string); ok && subj != "" && subj != task.Subject {
 		task.Subject = subj
 		updated = true
 	}
-	if desc, ok := params["description"].(string); ok && desc != "" && desc != task.Description {
+	rawDesc, _ := GetParam(params, "description")
+	if desc, ok := rawDesc.(string); ok && desc != "" && desc != task.Description {
 		task.Description = desc
 		updated = true
 	}
-	if owner, ok := params["owner"].(string); ok && owner != "" && owner != task.Owner {
+	rawOwner, _ := GetParam(params, "owner")
+	if owner, ok := rawOwner.(string); ok && owner != "" && owner != task.Owner {
 		task.Owner = owner
 		updated = true
 	}
 
 	// Update active_form
-	if activeForm, ok := params["active_form"].(string); ok && activeForm != "" && activeForm != task.ActiveForm {
+	rawActiveForm, _ := GetParam(params, "active_form")
+	if activeForm, ok := rawActiveForm.(string); ok && activeForm != "" && activeForm != task.ActiveForm {
 		task.ActiveForm = activeForm
 		updated = true
 	}
 
 	// Update metadata (merge)
-	if meta, ok := params["metadata"].(map[string]any); ok {
+	rawMeta, _ := GetParam(params, "metadata")
+	if meta, ok := rawMeta.(map[string]any); ok {
 		if task.Metadata == nil {
 			task.Metadata = make(map[string]any)
 		}
@@ -95,7 +101,8 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	// Update status with transition validation
-	if statusStr, ok := params["status"].(string); ok && statusStr != "" {
+	rawStatus, _ := GetParam(params, "status")
+	if statusStr, ok := rawStatus.(string); ok && statusStr != "" {
 		newStatus := TaskStatus(statusStr)
 		if newStatus != task.Status {
 			if !ValidTaskTransition(task.Status, newStatus) {
@@ -107,7 +114,8 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	// Add blocks (this task blocks listed tasks → listed tasks' blockedBy += this)
-	if rawBlocks, ok := params["addBlocks"].([]any); ok && len(rawBlocks) > 0 {
+	rawBlocksVal, _ := GetParam(params, "add_blocks")
+	if rawBlocks, ok := rawBlocksVal.([]any); ok && len(rawBlocks) > 0 {
 		for _, raw := range rawBlocks {
 			if blockID, ok := raw.(string); ok && blockID != "" {
 				if canReach(ctx, tc.Session.ID(), blockID, taskID) {
@@ -132,7 +140,8 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	// Add blockedBy (this task is blocked by listed tasks → listed tasks' blocks += this)
-	if rawBlockedBy, ok := params["addBlockedBy"].([]any); ok && len(rawBlockedBy) > 0 {
+	rawBlockedByVal, _ := GetParam(params, "add_blocked_by")
+	if rawBlockedBy, ok := rawBlockedByVal.([]any); ok && len(rawBlockedBy) > 0 {
 		for _, raw := range rawBlockedBy {
 			if depID, ok := raw.(string); ok && depID != "" {
 				if canReach(ctx, tc.Session.ID(), taskID, depID) {

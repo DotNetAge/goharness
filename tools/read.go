@@ -224,12 +224,16 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 
 	// Get pagination parameters
 	startLine := 1
-	if offset, ok := ToFloat64(params["offset"]); ok && offset > 0 {
-		startLine = int(offset)
+	if rawOffset, found := GetParam(params, "offset"); found {
+		if offset, ok := ToFloat64(rawOffset); ok && offset > 0 {
+			startLine = int(offset)
+		}
 	}
 	maxLines := r.limits.DefaultLines
-	if limit, ok := ToFloat64(params["limit"]); ok && limit > 0 {
-		maxLines = int(limit)
+	if rawLimit, found := GetParam(params, "limit"); found {
+		if limit, ok := ToFloat64(rawLimit); ok && limit > 0 {
+			maxLines = int(limit)
+		}
 	}
 	endLine := startLine + maxLines - 1
 

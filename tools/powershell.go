@@ -75,7 +75,11 @@ func (t *PowerShellTool) Info() *ToolInfo {
 }
 
 func (t *PowerShellTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	cmdStr, ok := params["command"].(string)
+	rawCmd, found := GetParam(params, "command")
+	if !found {
+		return nil, fmt.Errorf("command 不能为空")
+	}
+	cmdStr, ok := rawCmd.(string)
 	if !ok || cmdStr == "" {
 		return nil, fmt.Errorf("command 不能为空")
 	}

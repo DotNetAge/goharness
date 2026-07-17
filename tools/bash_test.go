@@ -169,3 +169,270 @@ func TestDetectDangerousCommand_SubshellNotBlocked(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateKeyVariants(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want []string
+	}{
+		{
+			name: "多词组键名",
+			key:  "working_dir",
+			want: []string{
+				"WORKING_DIR",
+				"workingdir",
+				"WORKINGDIR",
+				"working-dir",
+				"WORKING-DIR",
+				"WorkingDir",
+				"workingDir",
+			},
+		},
+		{
+			name: "三词组键名",
+			key:  "add_blocked_by",
+			want: []string{
+				"ADD_BLOCKED_BY",
+				"addblockedby",
+				"ADDBLOCKEDBY",
+				"add-blocked-by",
+				"ADD-BLOCKED-BY",
+				"AddBlockedBy",
+				"addBlockedBy",
+			},
+		},
+		{
+			name: "单词组键名",
+			key:  "command",
+			want: []string{
+				"COMMAND",
+				"Command",
+			},
+		},
+		{
+			name: "无下划线单词组",
+			key:  "timeout",
+			want: []string{
+				"TIMEOUT",
+				"Timeout",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GenerateKeyVariants(tt.key)
+			for _, want := range tt.want {
+				found := false
+				for _, g := range got {
+					if g == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("GenerateKeyVariants(%q) 缺少变体 %q，结果：%#v", tt.key, want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestGetParam(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  map[string]any
+		key     string
+		wantVal any
+		wantOK  bool
+	}{
+		{
+			name:    "nil参数映射",
+			params:  nil,
+			key:     "working_dir",
+			wantVal: nil,
+			wantOK:  false,
+		},
+		{
+			name:    "空参数映射",
+			params:  map[string]any{},
+			key:     "working_dir",
+			wantVal: nil,
+			wantOK:  false,
+		},
+		{
+			name:    "精确匹配 working_dir",
+			params:  map[string]any{"working_dir": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "全大写+下划线 WORKING_DIR",
+			params:  map[string]any{"WORKING_DIR": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "全小写无分隔符 workingdir",
+			params:  map[string]any{"workingdir": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "全大写无分隔符 WORKINGDIR",
+			params:  map[string]any{"WORKINGDIR": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "小写+连字符 working-dir",
+			params:  map[string]any{"working-dir": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "大写+连字符 WORKING-DIR",
+			params:  map[string]any{"WORKING-DIR": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "大驼峰 WorkingDir",
+			params:  map[string]any{"WorkingDir": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "小驼峰 workingDir",
+			params:  map[string]any{"workingDir": "/tmp"},
+			key:     "working_dir",
+			wantVal: "/tmp",
+			wantOK:  true,
+		},
+		{
+			name:    "单词组精确匹配 command",
+			params:  map[string]any{"command": "ls"},
+			key:     "command",
+			wantVal: "ls",
+			wantOK:  true,
+		},
+		{
+			name:    "单词组全大写 COMMAND",
+			params:  map[string]any{"COMMAND": "ls"},
+			key:     "command",
+			wantVal: "ls",
+			wantOK:  true,
+		},
+		{
+			name:    "单词组大驼峰 Command",
+			params:  map[string]any{"Command": "ls"},
+			key:     "command",
+			wantVal: "ls",
+			wantOK:  true,
+		},
+		{
+			name:    "三词组小驼峰 addBlockedBy",
+			params:  map[string]any{"addBlockedBy": []any{"id1"}},
+			key:     "add_blocked_by",
+			wantVal: []any{"id1"},
+			wantOK:  true,
+		},
+		{
+			name:    "三词组 PascalCase AddBlockedBy",
+			params:  map[string]any{"AddBlockedBy": []any{"id1"}},
+			key:     "add_blocked_by",
+			wantVal: []any{"id1"},
+			wantOK:  true,
+		},
+		{
+			name:    "匹配 false 值",
+			params:  map[string]any{"recursive": false},
+			key:     "recursive",
+			wantVal: false,
+			wantOK:  true,
+		},
+		{
+			name:    "匹配 0 值",
+			params:  map[string]any{"timeout": float64(0)},
+			key:     "timeout",
+			wantVal: float64(0),
+			wantOK:  true,
+		},
+		{
+			name:    "匹配空字符串",
+			params:  map[string]any{"working_dir": ""},
+			key:     "working_dir",
+			wantVal: "",
+			wantOK:  true,
+		},
+		{
+			name:    "精确匹配优先于变体",
+			params:  map[string]any{"working_dir": "/exact", "WORKING_DIR": "/caps"},
+			key:     "working_dir",
+			wantVal: "/exact",
+			wantOK:  true,
+		},
+		{
+			name:    "未匹配到任何变体",
+			params:  map[string]any{"unrelated": "value"},
+			key:     "working_dir",
+			wantVal: nil,
+			wantOK:  false,
+		},
+		{
+			name:    "键完全不存在",
+			params:  map[string]any{"command": "ls"},
+			key:     "working_dir",
+			wantVal: nil,
+			wantOK:  false,
+		},
+		{
+			name:    "string 类型值",
+			params:  map[string]any{"max_results": "10"},
+			key:     "max_results",
+			wantVal: "10",
+			wantOK:  true,
+		},
+		{
+			name:    "float64 类型值",
+			params:  map[string]any{"duration_ms": float64(5000)},
+			key:     "duration_ms",
+			wantVal: float64(5000),
+			wantOK:  true,
+		},
+		{
+			name:    "slice 类型值",
+			params:  map[string]any{"allowed_domains": []any{"example.com"}},
+			key:     "allowed_domains",
+			wantVal: []any{"example.com"},
+			wantOK:  true,
+		},
+		{
+			name:    "map 类型值",
+			params:  map[string]any{"metadata": map[string]any{"key": "val"}},
+			key:     "metadata",
+			wantVal: map[string]any{"key": "val"},
+			wantOK:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := GetParam(tt.params, tt.key)
+			if ok != tt.wantOK {
+				t.Errorf("GetParam(%q) ok = %v, wantOK %v", tt.key, ok, tt.wantOK)
+			}
+			if !reflect.DeepEqual(got, tt.wantVal) {
+				t.Errorf("GetParam(%q) = %v (%T), want %v (%T)", tt.key, got, got, tt.wantVal, tt.wantVal)
+			}
+		})
+	}
+}

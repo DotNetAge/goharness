@@ -152,7 +152,10 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	if err != nil {
 		return nil, err
 	}
-	prompt, _ := params["prompt"].(string)
+	var prompt string
+	if raw, found := GetParam(params, "prompt"); found {
+		prompt, _ = raw.(string)
+	}
 
 	rawURL = strings.TrimSpace(rawURL)
 	if strings.HasPrefix(rawURL, "http://") {

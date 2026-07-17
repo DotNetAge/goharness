@@ -67,7 +67,7 @@ func (t *SleepTool) Info() *ToolInfo {
 //   - error: only if parameter validation fails
 func (t *SleepTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	durationMs := 5000
-	if raw, ok := params["duration_ms"]; ok {
+	if raw, found := GetParam(params, "duration_ms"); found {
 		if v, ok := ToFloat64(raw); ok && v > 0 {
 			durationMs = int(v)
 			if durationMs < 1000 {

@@ -40,7 +40,8 @@ func (t *TaskGetTool) Info() *ToolInfo {
 }
 
 func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	taskID, _ := params["task_id"].(string)
+	rawTaskID, _ := GetParam(params, "task_id")
+	taskID, _ := rawTaskID.(string)
 	if taskID == "" {
 		return nil, fmt.Errorf("task_id is required")
 	}
