@@ -233,21 +233,21 @@ func TestRead(t *testing.T) {
 	absPath := mustAbs(t, "builtin_test.go")
 
 	t.Run("read this test file", func(t *testing.T) {
-		result, err := read.Execute(ctx, map[string]any{"filePath": absPath})
+		resultI, err := read.Execute(ctx, map[string]any{"filePath": absPath})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["success"] != true {
+		rr := resultI.(*ReadResult)
+		if rr.Data.Success != true {
 			t.Error("Expected success to be true")
 		}
-		if resultMap["content"] == nil {
+		if rr.Data.Content == "" {
 			t.Error("Expected content to be set")
 		}
 	})
 
 	t.Run("read with line range", func(t *testing.T) {
-		result, err := read.Execute(ctx, map[string]any{
+		resultI, err := read.Execute(ctx, map[string]any{
 			"filePath":   absPath,
 			"start_line": 1.0,
 			"end_line":   5.0,
@@ -255,8 +255,8 @@ func TestRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["success"] != true {
+		rr := resultI.(*ReadResult)
+		if rr.Data.Success != true {
 			t.Error("Expected success to be true")
 		}
 	})
@@ -269,16 +269,30 @@ func TestRead(t *testing.T) {
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		_, err := read.Execute(ctx, map[string]any{"filePath": "/nonexistent_file_12345.txt"})
-		if err == nil {
-			t.Error("Expected error for non-existent file")
+		resultI, err := read.Execute(ctx, map[string]any{"filePath": "./nonexistent_file_12345.txt"})
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		rr := resultI.(*ReadResult)
+		if rr.Data.Success != false {
+			t.Error("Expected success to be false for non-existent file")
+		}
+		if rr.Data.Suggestion != SuggestionFileNotFound {
+			t.Errorf("Expected _suggestion=%q, got %v", SuggestionFileNotFound, rr.Data.Suggestion)
 		}
 	})
 
 	t.Run("path is a directory", func(t *testing.T) {
-		_, err := read.Execute(ctx, map[string]any{"filePath": "."})
-		if err == nil {
-			t.Error("Expected error when path is a directory")
+		resultI, err := read.Execute(ctx, map[string]any{"filePath": "."})
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		rr := resultI.(*ReadResult)
+		if rr.Data.Success != false {
+			t.Error("Expected success to be false for directory")
+		}
+		if rr.Data.Suggestion != SuggestionIsDirectory {
+			t.Errorf("Expected _suggestion=%q, got %v", SuggestionIsDirectory, rr.Data.Suggestion)
 		}
 	})
 
@@ -511,15 +525,15 @@ func TestRead_EdgeCases(t *testing.T) {
 		emptyFile := filepath.Join(tempDir, "empty.txt")
 		os.WriteFile(emptyFile, []byte(""), 0644)
 
-		result, err := read.Execute(ctx, map[string]any{"filePath": emptyFile})
+		resultI, err := read.Execute(ctx, map[string]any{"filePath": emptyFile})
 		if err != nil {
 			t.Fatalf("读取空文件失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["success"] != true {
+		rr := resultI.(*ReadResult)
+		if rr.Data.Success != true {
 			t.Error("读取空文件应成功")
 		}
-		_ = resultMap["content"]
+		_ = rr.Data.Content
 	})
 
 	t.Run("offset 和 limit 参数", func(t *testing.T) {
@@ -530,7 +544,7 @@ func TestRead_EdgeCases(t *testing.T) {
 		}
 		os.WriteFile(multiLineFile, []byte(strings.Join(lines, "\n")), 0644)
 
-		result, err := read.Execute(ctx, map[string]any{
+		resultI, err := read.Execute(ctx, map[string]any{
 			"filePath": multiLineFile,
 			"offset":   float64(5),
 			"limit":  float64(3),
@@ -538,9 +552,9 @@ func TestRead_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("分页读取失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		startLine := resultMap["start_line"].(int)
-		linesRead := resultMap["lines_read"].(int)
+		rr := resultI.(*ReadResult)
+		startLine := rr.Data.StartLine
+		linesRead := rr.Data.LinesRead
 
 		if startLine != 5 {
 			t.Errorf("start_line 应为 5，得到 %d", startLine)
@@ -551,12 +565,12 @@ func TestRead_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("相对路径处理", func(t *testing.T) {
-		result, err := read.Execute(ctx, map[string]any{"filePath": "./builtin_test.go"})
+		resultI, err := read.Execute(ctx, map[string]any{"filePath": "./builtin_test.go"})
 		if err != nil {
 			t.Fatalf("相对路径读取失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
-		if resultMap["success"] != true {
+		rr := resultI.(*ReadResult)
+		if rr.Data.Success != true {
 			t.Error("相对路径应能正常工作")
 		}
 	})

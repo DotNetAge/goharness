@@ -6,15 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/tools/diffutil"
+	"github.com/DotNetAge/goharness/tools/filestate"
 )
 
 // Write 实现了文件写入工具。
-// 支持将内容写入本地文件系统，具有以下特性：
-//   - 覆盖模式：默认行为，覆盖已有文件
-//   - 追加模式：通过 append=true 参数启用
-//   - 自动创建目录：如果父目录不存在会自动创建
+//
+// 改进（见 WRITE_DESIGN.md）：
+//   - 读前写约束：覆盖已有文件前必须已读取（A 节）
+//   - 语义化输出：区分 create / overwrite / append（B 节）
+//   - Create vs Update 语义：返回 WriteResult.Type（B 节）
+//   - Diff 生成：overwrite 场景返回 unified diff（C 节，P2）
+//   - 追加尾换行检测：追加时检测文件末尾换行（M3）
 //
 // 安全级别：LevelSensitive（敏感），因为会修改文件系统
 type Write struct {
@@ -36,7 +42,7 @@ const writeDescription = `将内容写入文件。自动创建父目录。使用
 // NewWriteTool 创建一个文件写入工具实例。
 //
 // 返回：
-//   - FuncTool: 配置好的 Write 工具实例
+//   - *Write: 配置好的 Write 工具实例
 func NewWriteTool() *Write {
 	return &Write{
 		info: &ToolInfo{
@@ -44,10 +50,13 @@ func NewWriteTool() *Write {
 			Description: writeDescription,
 			Prompt: `将文件写入本地文件系统。
 
-用法：
-- 如果提供的路径存在文件，此工具将覆盖现有文件。如果是现有文件，你必须先使用 Read 工具读取文件内容。如果你没有先读取文件，此工具将失败。
-- 修改现有文件时优先使用 Edit 工具——它只发送差异。仅使用此工具创建新文件或完全重写。
-- 仅在用户明确要求时使用表情符号。避免在文件中写入表情符号，除非被要求。`,
+**用法**
+- Write 用于创建新文件或完全重写已有文件。
+- 覆盖已有文件前必须先用 Read 工具读取文件。Write 会自动检测读取状态，未读取时拒绝操作。
+- 修改已有文件的小部分内容时，优先使用 Edit 工具（只发送差异，更安全）。
+- 使用 append=true 在文件末尾追加内容（追加模式不要求先读取）。
+- 写入会返回变更差异（diff），请通过 diff 验证写入是否正确。
+- 仅在用户明确要求时使用表情符号。`,
 			Tags:          []string{"file", "filesystem", "write", "create"},
 			SecurityLevel: events.LevelSensitive,
 			Parameters: []Parameter{
@@ -59,27 +68,17 @@ func NewWriteTool() *Write {
 	}
 }
 
-// Grant implements tools.PermissionRequired. It pre-resolves the target filePath
-// and asks "is this write going to land inside the workspace?". Anything
-// outside the project/session boundary is escalated to the user — these
-// writes may be legitimate (build output dir, mounted volume) but we don't
-// guess.
-//
-// Hard "no" (sensitive files like .env, .ssh) is enforced in Execute and
-// is NOT a Grant concern: there's no user override for it, so asking is
-// misleading.
+// Grant implements tools.PermissionRequired.
+// 与设计保持一致：硬拒绝（敏感文件 .env/.ssh）在 Execute 中处理，不在 Grant 中重复。
 func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	raw, _ := GetParam(params, "file_path")
 	filePath, _ := raw.(string)
 	if filePath == "" {
-		// Let Execute report the missing parameter cleanly.
 		return true, ""
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil {
-		// No session info available (e.g. a unit-test invocation). Fall
-		// through to Execute; boundary checks there will use os.Getwd().
 		return true, ""
 	}
 
@@ -89,13 +88,11 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 	}
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
-		// Check tool-level whitelist first (configured at initialization).
 		for _, dir := range w.whitelist {
 			if strings.HasPrefix(resolved, dir) {
 				return true, ""
 			}
 		}
-		// Then check session whitelist (user "remember my choice").
 		if tc.SessionWhitelist != nil {
 			for _, allowed := range tc.SessionWhitelist.Write {
 				if strings.HasPrefix(resolved, allowed) {
@@ -118,22 +115,37 @@ func (w *Write) Info() *ToolInfo {
 
 // Execute 执行文件写入操作。
 //
-// 处理流程：
-//  1. 验证 filePath 和 content 参数（必须为非空字符串）
-//  2. 解析并验证目标路径
-//  3. 安全性检查（路径不能超出项目目录）
-//  4. 自动创建父目录（如果不存在）
-//  5. 确定写入模式（覆盖或追加）
-//  6. 写入内容到文件
-//  7. 返回写入结果统计
+// 处理流程（严格遵循 WRITE_DESIGN.md 数据流图）：
+//
+//	params 进入 → Grant → 参数校验 → 路径解析 + 安全校验 → MkdirAll
+//	    │
+//	    ├── append=true → 追加模式
+//	    │   ├── 跳过读前检查
+//	    │   ├── M3：检测文件是否以 \n 结尾
+//	    │   │   ├── 不以 \n 结尾 → 在 content 前加 "\n"
+//	    │   │   └── 正常 → 原样追加
+//	    │   └── os.OpenFile(O_APPEND|O_CREATE) → 写入 → 返回 WriteResult{Type:"append"}
+//	    │
+//	    └── append=false
+//	        ├── 文件已存在？
+//	        │   ├── 是（overwrite）
+//	        │   │   ├── filestate.CheckStale 读前检查
+//	        │   │   ├── 读取原内容用于 diff
+//	        │   │   └── os.Create → 写入 → 生成 diff → 清除 StaleState
+//	        │   │
+//	        │   └── 否（create）
+//	        │       ├── 跳过读前检查（审计 m4：记录 INFO 日志）
+//	        │       └── os.Create → 写入 → 记录 StaleState
+//	        │
+//	        └── 返回 WriteResult{Type:"create"|"overwrite"}
 //
 // 参数：
 //   - ctx: 上下文（包含 ToolContext）
 //   - params: 必须包含 "filePath" 和 "content"，可选 "append"
 //
 // 返回：
-//   - map[string]any: 包含 success, filePath, mode, bytes_written 等字段
-//   - error: 参数错误、路径验证失败或 I/O 错误
+//   - *WriteResult: 结构化的写入结果（见 content_types.go）
+//   - error: 参数错误、路径验证失败、读前检查失败或 I/O 错误
 func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error) {
 	filePath, err := ValidateRequiredString(params, "filePath")
 	if err != nil {
@@ -147,31 +159,28 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 
 	logger := getLogger(ctx)
 
-	// Resolve filePath with optional session: prefix support
 	tc := GetToolContext(ctx)
 	resolvedPath, scope := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
 	logger.Info("writing file",
-		"input_filePath", filePath,
-		"resolved_filePath", resolvedPath,
+		"input_path", filePath,
+		"resolved_path", resolvedPath,
 		"scope", scope,
 		"content_len", len(content),
 	)
 
-	// Security check: block sensitive system files.
-	// Workspace boundary enforcement is handled by FileBoundaryChecker
-	// at the permission chain level (executor).
+	// 安全校验
 	if err := checkSensitiveFiles(resolvedPath); err != nil {
 		return nil, err
 	}
 
-	// Ensure the parent directory exists
+	// 确保父目录存在
 	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("创建目录失败：%w", err)
 	}
 
-	// Check if append mode is enabled
+	// 判断写入模式
 	appendMode := false
 	if raw, found := GetParam(params, "append"); found {
 		if v, ok := raw.(bool); ok {
@@ -183,53 +192,129 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		}
 	}
 
-	var file *os.File
+	var writeType string
+	var diffStr string
+
 	if appendMode {
-		// Append mode
-		file, err = os.OpenFile(resolvedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, fmt.Errorf("打开文件以追加失败：%w", err)
+		// ── 追加模式 ──
+		writeType = "append"
+
+		// M3：检测文件是否以 \n 结尾
+		if info, statErr := os.Stat(resolvedPath); statErr == nil && info.Size() > 0 {
+			orig, readErr := os.ReadFile(resolvedPath)
+			if readErr == nil {
+				origStr := string(orig)
+				if !strings.HasSuffix(origStr, "\n") {
+					content = "\n" + content
+					logger.Info("append M3: prepended newline to content",
+						"path", resolvedPath,
+					)
+				}
+			}
 		}
+
+		// 写入（追加）
+		file, openErr := os.OpenFile(resolvedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if openErr != nil {
+			return nil, fmt.Errorf("打开文件以追加失败：%w", openErr)
+		}
+		bytesWritten, writeErr := file.WriteString(content)
+		file.Close()
+		if writeErr != nil {
+			return nil, fmt.Errorf("写入内容失败：%w", writeErr)
+		}
+
+		info, statErr := os.Stat(resolvedPath)
+		if statErr != nil {
+			return nil, fmt.Errorf("获取文件状态失败：%w", statErr)
+		}
+
+		logger.Info("file appended",
+			"path", resolvedPath,
+			"bytes_written", bytesWritten,
+		)
+
+		return &WriteResult{
+			Success:      true,
+			Type:         writeType,
+			FilePath:     resolvedPath,
+			Scope:        string(scope),
+			BytesWritten: bytesWritten,
+			TotalSize:    info.Size(),
+		}, nil
+	}
+
+	// ── 覆盖 / 创建模式 ──
+	// 检查文件是否已存在
+	_, statErr := os.Stat(resolvedPath)
+	if statErr == nil {
+		// 文件已存在 → overwrite 路径
+		writeType = "overwrite"
+
+		// A. 读前写约束：filestate.CheckStale
+		if err := filestate.CheckStale(resolvedPath); err != nil {
+			return nil, err
+		}
+
+		// 读取原始内容（用于 diff）
+		orig, readErr := os.ReadFile(resolvedPath)
+		if readErr == nil {
+			origStr := string(orig)
+
+			// C. 生成 unified diff（P2，超过 8KB 截断）
+			if len(origStr) > 0 && len(origStr) <= 8*1024 {
+				_, d := diffutil.GenerateDiff(origStr, content)
+				diffStr = d
+			}
+		}
+	} else if os.IsNotExist(statErr) {
+		// 文件不存在 → create 路径
+		writeType = "create"
+		// 审计 m4：记录 INFO 日志
+		logger.Info("creating new file",
+			"path", resolvedPath,
+		)
 	} else {
-		// Overwrite mode
-		file, err = os.Create(resolvedPath)
-		if err != nil {
-			return nil, fmt.Errorf("创建文件失败：%w", err)
-		}
-	}
-	defer file.Close()
-
-	// Write content
-	bytesWritten, err := file.WriteString(content)
-	if err != nil {
-		return nil, fmt.Errorf("写入内容失败：%w", err)
+		return nil, fmt.Errorf("无法访问文件 %s: %w", resolvedPath, statErr)
 	}
 
-	// Get file info
-	info, err := os.Stat(resolvedPath)
-	if err != nil {
-		return nil, fmt.Errorf("获取文件状态失败：%w", err)
+	// 执行写入
+	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
+		return nil, fmt.Errorf("写入文件失败：%w", err)
 	}
 
-	return map[string]any{
-		"success":  true,
-		"filePath": resolvedPath,
-		"scope":    scope,
-		"mode": func() string {
-			if appendMode {
-				return "append"
-			} else {
-				return "overwrite"
-			}
-		}(),
-		"bytes_written": bytesWritten,
-		"total_size":    info.Size(),
-		"message": func() string {
-			if appendMode {
-				return "内容追加成功"
-			} else {
-				return "文件写入成功"
-			}
-		}(),
-	}, nil
+	// 写入后清除 StaleState（保证后续操作重新读取）
+	filestate.DeleteStale(resolvedPath)
+
+	// 写入后记录新的 StaleState（供后续 overwrite 使用）
+	filestate.SetStale(resolvedPath, time.Now(), []byte(content))
+
+	// 清除 NegativeCache
+	invalidateNegativeCache(resolvedPath)
+
+	// 获取写入后的文件大小
+	newInfo, statErr := os.Stat(resolvedPath)
+	totalSize := int64(0)
+	if statErr == nil {
+		totalSize = newInfo.Size()
+	}
+
+	logger.Info("file written",
+		"path", resolvedPath,
+		"type", writeType,
+		"total_size", totalSize,
+	)
+
+	result := &WriteResult{
+		Success:      true,
+		Type:         writeType,
+		FilePath:     resolvedPath,
+		Scope:        string(scope),
+		BytesWritten: len(content),
+		TotalSize:    totalSize,
+	}
+	if diffStr != "" {
+		result.Diff = diffStr
+	}
+	return result, nil
 }
