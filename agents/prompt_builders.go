@@ -11,10 +11,6 @@ import (
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
-func articleFor(word string) string {
-	return ""
-}
-
 func buildIdentity(name, role, description, introduction string) string {
 	if role == "" {
 		return fmt.Sprintf("- 名称: %s\n- 职责: %s\n\n%s",

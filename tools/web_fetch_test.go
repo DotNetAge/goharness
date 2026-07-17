@@ -43,10 +43,10 @@ func TestWebFetchTool_Real_ExampleCom(t *testing.T) {
 	if !strings.Contains(s, "Example Domain") {
 		t.Errorf("should contain 'Example Domain', got: %.200s...", s)
 	}
-	if !strings.Contains(s, "--- 网页获取:") {
+	if !strings.Contains(s, "--- 网页获取：") {
 		t.Error("result should contain header")
 	}
-	if !strings.Contains(s, "状态:") {
+	if !strings.Contains(s, "状态：") {
 		t.Error("result should contain status code")
 	}
 }

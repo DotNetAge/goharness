@@ -99,3 +99,9 @@ func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
 func WithSearchStrategy(builder func() string) RuntimeConfig {
 	return func(r *Runtime) { r.searchStrategyBuilder = builder }
 }
+
+// WithLLMClient 设置自定义大语言模型客户端。
+// 注入的客户端将替代默认的 gochat 实现，便于单元测试 mock 或多提供商切换。
+func WithLLMClient(client LLMClient) RuntimeConfig {
+	return func(r *Runtime) { r.llmClient = client }
+}

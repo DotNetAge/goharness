@@ -1,73 +1,57 @@
-// Package agents provides the AI Agent runtime core for executing ReAct (Reasoning + Acting) loops.
+// Package agents 提供执行 ReAct（推理 + 行动）循环的 AI Agent 运行时核心。
 //
-// This package implements the central orchestration layer for AI agents, managing:
-//   - LLM interactions with streaming support and tool use
-//   - Tool registration, discovery, and execution (sync/async)
-//   - Skill catalogs for agent capabilities
-//   - Behavioral rules and system prompt construction
-//   - Session management with conversation history and compaction
-//   - Hook system for extending loop behavior (BeforeLLM, AfterLLM, Tool hooks)
-//   - Event emission for real-time monitoring and observability
+// 本包实现 AI 智能体的中央编排层，负责：
+//   - 支持流式输出与工具调用的大语言模型交互
+//   - 工具注册、发现及执行（同步 / 异步）
+//   - 智能体能力目录（Skill）管理
+//   - 行为规则与系统提示词构建
+//   - 会话管理与对话历史压缩
+//   - 扩展钩子系统（BeforeLLM、AfterLLM、Tool hooks）
+//   - 事件发射，用于实时监控与可观测性
 //
-// # Architecture Overview
+// # 架构概览
 //
-// The Runtime struct is the central orchestrator that replaces the old Reactor architecture.
-// It follows a cleaner separation of concerns:
+// Runtime 是替代旧 Reactor 架构的中央编排器，职责划分更清晰：
 //
-//	Runtime (this file)
-//	├── Model Configuration (LLM settings)
-//	├── Registries (Tools, Skills, Rules, Agents, Providers)
-//	├── Executor (Tool execution engine)
-//	├── Hooks (LoopHooks + ToolHooks)
-//	└── Logger
+//	Runtime（本文件）
+//	├── 模型配置（大语言模型设置）
+//	├── 注册表（工具、技能、规则、智能体、提供商）
+//	├── 执行器（工具执行引擎）
+//	├── 钩子（LoopHooks + ToolHooks）
+//	└── 日志器
 //
-//	Session (separate package)
-//	├── Message storage & retrieval
-//	├── Conversation window management
-//	├── Compaction (sliding window for token limits)
-//	└── Persistence
+//	Session（独立包）
+//	├── 消息存储与读取
+//	├── 对话窗口管理
+//	├── 压缩（Token 限制下的滑动窗口）
+//	└── 持久化
 //
-// # Thinking Loop Lifecycle
+// # 思考循环生命周期
 //
-// The core execution flow (exec method) implements a ReAct loop:
+// 核心执行流程（exec 方法）实现 ReAct 循环：
 //
-//  1. Build system prompts from registries + session state
-//  2. Execute BeforeLLM hooks (can abort/modify)
-//  3. Assemble messages (system + history + user question)
-//  4. Stream LLM response (content + thinking + tool calls)
-//  5. Execute AfterLLM hooks (can abort/modify)
-//  6. If no tool calls → return final answer
-//  7. If tool calls → execute tools with hook chain
-//  8. Append results to session → repeat from step 1
-//  9. Terminate: completed / max_iterations / cancelled / error
+//  1. 根据注册表和会话状态构建系统提示词
+//  2. 执行 BeforeLLM hooks（可中止 / 修改）
+//  3. 组装消息（system + 历史 + 用户问题）
+//  4. 流式调用大语言模型（content + thinking + tool calls）
+//  5. 执行 AfterLLM hooks（可中止 / 修改）
+//  6. 若没有工具调用 → 返回最终答案
+//  7. 若有工具调用 → 通过钩子链执行工具
+//  8. 将结果追加到会话 → 回到步骤 1
+//  9. 终止原因：completed / max_iterations / cancelled / error 等
 //
-// # Thread Safety
+// # 线程安全
 //
-// Runtime is designed for single-threaded use within an Ask context.
-// For concurrent Ask calls, create separate Runtime instances or use external synchronization.
-// Internal state (registries) is typically initialized once and read during execution.
-//
-// # Quick Start
-//
-//	rt := NewRuntime(
-//	    WithModel(config.ModelConfig{...}),
-//	    WithToolRegistry(customRegistry),
-//	)
-//	result, err := rt.Ask("agent-name", "What files are in this directory?", session).Execute()
+// Runtime 设计为单个 Ask 上下文中单线程使用。
+// 若需要并发调用 Ask，请创建独立的 Runtime 实例或在外部同步。
+// 内部注册表通常在初始化后只读。
 package agents
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
-
-	gochat "github.com/DotNetAge/gochat"
-	gochatcore "github.com/DotNetAge/gochat/core"
-	"github.com/google/uuid"
 
 	"github.com/DotNetAge/goharness/config"
 	"github.com/DotNetAge/goharness/events"
@@ -83,66 +67,33 @@ import (
 	"github.com/DotNetAge/goharness/tools"
 )
 
-// Runtime holds the infrastructure and registries needed to run the ThinkingLoop.
-// It is the replacement for the old Reactor: Runtime + Session together replicate
-// all Reactor functionality without the circular architectural issues.
+// 默认常量。
+const (
+	// defaultMaxIterations 是单轮 Ask 中思考循环的最大迭代次数。
+	defaultMaxIterations = 20
+
+	// defaultLLMTimeout 是单次大语言模型调用的默认超时。
+	defaultLLMTimeout = 4 * time.Minute
+)
+
+// Runtime 承载运行思考循环所需的基础设施和注册表。
+// 它替代旧的 Reactor：Runtime 与 Session 一起，在避免循环架构问题的同时复现 Reactor 的全部能力。
 //
-// # Architecture Diagram
+// # 字段说明
 //
-//	┌─────────────────────────────────────────────────────────────┐
-//	│                        Runtime                               │
-//	├─────────────────────────────────────────────────────────────┤
-//	│  model: ModelConfig          (LLM API settings)              │
-//	│  ─────────────────────────────────────────────────────────  │
-//	│  Registries:                                                 │
-//	│    ├─ toolReg: ToolRegistry    (Grep, Bash, WebSearch...)    │
-//	│    ├─ skillReg: SkillRegistry  (Agent capabilities)          │
-//	│    ├─ ruleReg: RuleRegistry    (Behavioral rules)            │
-//	│    ├─ agentReg: AgentRegistry  (Agent configurations)        │
-//	│    └─ providerReg: ProviderRegistry (LLM providers)         │
-//	│  ─────────────────────────────────────────────────────────  │
-//	│  Execution:                                                   │
-//	│    ├─ toolExec: ToolExecutor   (Tool execution engine)       │
-//	│    └─ mem: Memory             (Vector/memory store)          │
-//	│  ─────────────────────────────────────────────────────────  │
-//	│  Extensions:                                                  │
-//	│    ├─ loopHooks: []LoopHook    (BeforeLLM, AfterLLM, Abort)  │
-//	│    ├─ toolHooks: []ToolHook   (Before, After tool execution) │
-//	│    └─ logger: Logger          (Structured logging)           │
-//	│  ─────────────────────────────────────────────────────────  │
-//	│  Timeouts:                                                    │
-//	│    ├─ asyncTimeout: Duration   (For async tools)             │
-//	│    └─ syncTimeout: Duration    (For sync tools)              │
-//	└─────────────────────────────────────────────────────────────┘
-//
-// # Field Descriptions
-//
-//   - model: LLM configuration including API key, base URL, model name,
-//     temperature, max tokens, and sampling parameters (top_p, top_k, etc.)
-//   - toolReg: Registry of available tools (file operations, web access, code execution)
-//   - skillReg: Registry of agent skills/capabilities exposed in system prompt
-//   - ruleReg: Registry of behavioral rules that constrain agent behavior
-//   - mem: Memory interface for vector storage and retrieval (RAG)
-//   - agentReg: Registry of named agent configurations (role, description, intro)
-//   - providerReg: Registry of LLM provider configurations
-//   - toolExec: Tool execution engine with hook support and event emission
-//   - logger: Structured logger for debug/info/warning/error output
-//   - loopHooks: Hooks that run before/after each LLM call in the thinking loop
-//   - toolHooks: Hooks that run before/after each tool execution
-//   - asyncTimeout: Maximum execution time for async (concurrent) tools
-//   - syncTimeout: Maximum execution time for synchronous (sequential) tools
-//
-// # Thread Safety
-//
-// Runtime is NOT safe for concurrent use. Each Ask call should use its own Runtime instance,
-// or external synchronization must be applied. The typical pattern is:
-//
-//   - Create one Runtime per application/service
-//   - Use it sequentially for Ask calls, OR
-//   - Create a Runtime pool for concurrent processing
-//
-// Internal registries are typically initialized once at construction time and then read-only
-// during execution. If dynamic registration is needed, external locking is required.
+//   - model: 大语言模型配置，包括 API 密钥、基础 URL、模型名、温度、最大 token 数及采样参数等。
+//   - toolReg: 可用工具注册表（Grep、Bash、WebSearch 等）。
+//   - skillReg: 智能体技能 / 能力注册表，用于在系统提示词中展示。
+//   - ruleReg: 行为规则注册表，约束智能体行为。
+//   - mem: 向量存储与检索（RAG）接口。
+//   - agentReg: 具名智能体配置注册表（角色、描述、介绍）。
+//   - providerReg: 大语言模型提供商配置注册表。
+//   - toolExec: 工具执行引擎，支持钩子与事件发射。
+//   - logger: 结构化日志器。
+//   - loopHooks: 思考循环中每次大语言模型调用前后运行的钩子。
+//   - toolHooks: 每次工具执行前后运行的钩子。
+//   - asyncTimeout: 异步（并发）工具的最大执行时间。
+//   - syncTimeout: 同步（顺序）工具的最大执行时间。
 type Runtime struct {
 	model config.ModelConfig
 
@@ -155,14 +106,11 @@ type Runtime struct {
 	providerReg config.ProviderRegistry
 	toolExec    tools.ToolExecutor
 
-	// kvStore provides session-scoped key-value storage for tools that
-	// need per-session persistence (TaskCreate/TaskGet/TaskUpdate/TaskList).
-	// If nil, those tools return "KVStore not available". Configured via
-	// WithKVStore().
+	// kvStore 为需要会话级持久化的工具（TaskCreate / TaskGet / TaskUpdate / TaskList）
+	// 提供键值存储。若为 nil，这些工具返回“KVStore 不可用”。通过 WithKVStore 配置。
 	kvStore store.KVStore
 
-	// sessionStore provides access to load sub-session messages for
-	// CollectResults recovery. Configured via WithSessionStore().
+	// sessionStore 用于加载子会话消息以支持 CollectResults 恢复。通过 WithSessionStore 配置。
 	sessionStore session.SessionStore
 
 	logger    logging.Logger
@@ -172,85 +120,49 @@ type Runtime struct {
 	asyncTimeout time.Duration
 	syncTimeout  time.Duration
 
-	// subAgentSessionCache caches SubAgent sessions keyed by "agentName:projectDir".
-	// Ensures 1 Agent + 1 ProjectDir = 1 SessionID: same SubAgent on the same
-	// project reuses the same session for conversation continuity.
+	// subAgentSessionCache 按 "agentName:projectDir" 缓存子智能体会话。
+	// 保证“同一 Agent + 同一 ProjectDir = 同一会话 ID”：同一子智能体在同一项目中复用同一会话，
+	// 以维持对话连续性。
 	subAgentSessionCache map[string]*session.Session
+	subAgentSessionMu    sync.RWMutex
 
-	// tokenUsageStore persists LLM token usage records with grouping dimensions and cost.
-	// Default: NoopTokenUsageStore (no-op). Inject via WithTokenUsageStore().
+	// tokenUsageStore 持久化大语言模型 token 使用记录，包含分组维度与成本。
+	// 默认：NoopTokenUsageStore（空操作）。通过 WithTokenUsageStore 注入。
 	tokenUsageStore session.TokenUsageStore
 
-	// fileModifyTracker provides TrackFunc per sessionID for FileModifyHook.
-	// Set via WithFileModifyTracker() to enable automatic file backup before Write/FileEdit.
+	// fileModifyTracker 为 FileModifyHook 提供按 sessionID 的 TrackFunc。
+	// 通过 WithFileModifyTracker 设置，以在 Write / FileEdit 前自动备份文件。
 	fileModifyTracker action.TrackerProvider
 
-	// fileModifyHook holds a reference to the registered FileModifyHook,
-	// allowing WithFileModifyTracker to dynamically update its provider after init.
+	// fileModifyHook 保存已注册 FileModifyHook 的引用，
+	// 使 WithFileModifyTracker 能在初始化后动态更新其 provider。
 	fileModifyHook *action.FileModifyHook
 
-	// skillsCatalogBuilder overrides the default buildSkillsCatalog output.
-	// If set, it receives the filtered agent skills and returns the catalog string.
-	// When nil, the default buildSkillsCatalog is used.
-	// Set via WithSkillsCatalogBuilder().
+	// skillsCatalogBuilder 覆盖默认的 buildSkillsCatalog 输出。
+	// 若设置，接收过滤后的智能体技能并返回目录字符串；为 nil 时使用默认实现。
+	// 通过 WithSkillsCatalogBuilder 设置。
 	skillsCatalogBuilder func(skills []*skill.Skill) string
 
-	// envsBuilder overrides the default Environment section in system prompts.
-	// If set, it receives EnvsParams and returns the complete env section string.
-	// When nil, the default buildEnvironmentInfo is used.
+	// envsBuilder 覆盖系统提示词中的默认环境信息段落。
+	// 若设置，接收 EnvsParams 并返回完整的环境段落字符串；为 nil 时使用默认实现。
 	envsBuilder func(EnvsParams) string
 
-	// searchStrategyBuilder overrides the default Search Strategy section in
-	// system prompts. If set, it returns the complete section string.
-	// When nil (default), the built-in buildSearchPriority is used.
-	// Set via WithSearchStrategy().
+	// searchStrategyBuilder 覆盖系统提示词中的默认搜索策略段落。
+	// 若设置，返回完整段落字符串；为 nil（默认）时使用内置 buildSearchPriority。
+	// 通过 WithSearchStrategy 设置。
 	searchStrategyBuilder func() string
 
-	// activeToolSet is the per-Ask ActiveToolSet. Set by exec() before the
-	// thinking loop and cleared after. Used by ToolActivationHook getter.
-	activeToolSet *ActiveToolSet
-
-	// toolActivationHook holds a reference to the registered ToolActivationHook,
-	// allowing the hook's getter to access the current Ask's ActiveToolSet.
+	// toolActivationHook 保存已注册 ToolActivationHook 的引用。
+	// exec 在每次 Ask 开始时通过 SetActiveToolSet 绑定本轮的 ActiveToolSet。
 	toolActivationHook *ToolActivationHook
+
+	// llmClient 负责与大语言模型交互。
+	// 默认为基于 gochat 的实现；可通过 WithLLMClient 注入 mock 或其他提供商实现。
+	llmClient LLMClient
 }
 
-// RunResult holds execution results from a single Ask call.
-// It provides comprehensive information about the thinking loop execution,
-// including the final answer, resource usage, and termination details.
-//
-// # Fields
-//
-//   - Answer: The final response text from the agent. This is the content
-//     returned when the loop terminates normally (no more tool calls needed).
-//     If the content is empty but reasoning exists, the reasoning is used.
-//   - TokenUsage: Detailed token consumption statistics including input tokens,
-//     output tokens, total tokens, and timestamp of usage recording.
-//   - Duration: Total wall-clock time for the entire Ask execution, from start
-//     to termination (including all iterations, tool executions, and LLM calls).
-//   - Iterations: Number of thinking loop iterations completed before termination.
-//     Each iteration includes one LLM call and potentially tool executions.
-//   - TerminationReason: String indicating why the loop terminated. Possible values:
-//     "completed" - Agent provided final answer without tool calls
-//     "max_iterations" - Reached maximum iteration limit (default 20)
-//     "max_tokens" - LLM response hit token limit (finish_reason: length)
-//     "content_filtered" - LLM response was filtered by safety systems
-//     "cancelled" - Context was cancelled externally
-//     "llm_error" - LLM API call failed (network, auth, rate limit)
-//     "hook_error" - A hook panicked or returned an error
-//     "hook_abort" - A hook intentionally aborted the loop
-//
-// # Usage Example
-//
-//	result, err := rt.Ask("coder", "Explain this code", sess).Execute()
-//	if err != nil {
-//	    log.Fatalf("Ask failed: %v", err)
-//	}
-//	fmt.Printf("Answer: %s\n", result.Answer)
-//	fmt.Printf("Iterations: %d\n", result.Iterations)
-//	fmt.Printf("Tokens: %d\n", result.TokenUsage.TotalTokens)
-//	fmt.Printf("Duration: %v\n", result.Duration)
-//	fmt.Printf("Termination: %s\n", result.TerminationReason)
+// RunResult 保存单次 Ask 调用的执行结果，
+// 包括最终答案、资源使用情况及终止信息。
 type RunResult struct {
 	Answer            string
 	TokenUsage        session.TokenUsage
@@ -259,89 +171,30 @@ type RunResult struct {
 	TerminationReason string
 }
 
-// NewRuntime creates a new Runtime instance with the given configuration options.
-// It initializes all default registries, tools, and sets sensible defaults for timeouts.
+// NewRuntime 使用给定的配置选项创建新的 Runtime 实例。
+// 自动初始化所有默认注册表、工具，并设置合理的超时默认值。
 //
-// # Parameters
+// 默认行为：
+//   - 默认工具注册表，包含 15+ 内置工具（Grep、Glob、Read、Write、Bash 等）
+//   - 默认技能注册表（空，可继续注册）
+//   - 默认日志器（标准输出，结构化 JSON）
+//   - 同步 / 异步工具超时均为 5 分钟
+//   - 无智能体注册表、规则注册表或记忆（nil）
+//   - 未注册任何钩子
 //
-// opts: Variadic list of RuntimeConfig functions that configure the Runtime.
-//
-//	    Available options include:
-//	- WithModel(config.ModelConfig): Set LLM model configuration (required)
-//	- WithToolRegistry(tools.ToolRegistry): Use custom tool registry
-//	- WithSkillRegistry(skill.SkillRegistry): Use custom skill registry
-//	- WithRuleRegistry(rule.RuleRegistry): Use custom rule registry
-//	- WithAgentRegistry(*config.AgentRegistry): Use custom agent registry
-//	- WithProviderRegistry(config.ProviderRegistry): Use custom provider registry
-//	- WithMemory(memory.Memory): Set memory/RAG backend
-//	- WithLogger(logging.Logger): Set custom logger
-//	- WithLoopHooks(...hooks.LoopHook): Add loop lifecycle hooks
-//	- WithToolHooks(...hooks.ToolHook): Add tool execution hooks
-//	- WithAsyncTimeout(time.Duration): Set timeout for async tools (default: 5min)
-//	- WithSyncTimeout(time.Duration): Set timeout for sync tools (default: 5min)
-//
-// # Default Behavior
-//
-// When created without options, NewRuntime provides:
-//   - DefaultToolRegistry with 15+ built-in tools (Grep, Glob, Read, Write, Bash, etc.)
-//   - DefaultSkillRegistry (empty, ready for registration)
-//   - DefaultLogger (stdout with structured JSON output)
-//   - 5 minute timeouts for both sync and async tool execution
-//   - No agent registry, rule registry, or memory (nil)
-//   - No hooks registered
-//
-// # Built-in Tools
-//
-// The following tools are automatically registered:
-//
-//	File Operations: Grep, Glob, Read, Write, FileEdit, Ls
-//	Execution: Bash, RunScript
-//	Web Access: WebSearch, WebFetch
-//	Interaction: AskUser
-//	Task Management: CollectResults, TaskList, TaskGet, TaskUpdate
-//	Platform-specific: PowerShell (Windows only)
-//
-// # Return Value
-//
-// *Runtime: A fully initialized Runtime ready for use. The Runtime is NOT
-//
-//	safe for concurrent use. Create separate instances or synchronize externally.
-//
-// # Example: Minimal Setup
-//
-//	rt := NewRuntime(
-//	    WithModel(config.ModelConfig{
-//	        Name:      "gpt-4",
-//	        APIKey:    "sk-...",
-//	        BaseURL:   "https://api.openai.com/v1",
-//	        MaxTokens: 4096,
-//	    }),
-//	)
-//
-// # Example: Full Configuration
-//
-//	customTools := tools.NewDefaultToolRegistry()
-//	customTools.Register(tools.NewCustomTool())
-//
-//	rt := NewRuntime(
-//	    WithModel(config.ModelConfig{
-//	        Name:               "claude-3-opus",
-//	        APIKey:             "sk-ant-...",
-//	        BaseURL:            "https://api.anthropic.com",
-//	        MaxTokens:          8192,
-//	        Temperature:        0.7,
-//	        TopP:              0.9,
-//	        MaxTurns:          30,
-//	    }),
-//	    WithToolRegistry(customTools),
-//	    WithSkillRegistry(mySkillReg),
-//	    WithRuleRegistry(myRuleReg),
-//	    WithMemory(vectorStore),
-//	    WithLoopHooks(&MyLoggingHook{}),
-//	    WithToolHooks(&SecurityHook{}),
-//	    WithAsyncTimeout(10 * time.Minute),
-//	    WithSyncTimeout(2 * time.Minute),
-//	)
+// 参数 opts 是可变 RuntimeConfig 函数列表，常见选项包括：
+//   - WithModel(config.ModelConfig)：设置大语言模型配置（必需）
+//   - WithToolRegistry(tools.ToolRegistry)：使用自定义工具注册表
+//   - WithSkillRegistry(skill.SkillRegistry)：使用自定义技能注册表
+//   - WithRuleRegistry(rule.RuleRegistry)：使用自定义规则注册表
+//   - WithAgentRegistry(*config.AgentRegistry)：使用自定义智能体注册表
+//   - WithProviderRegistry(config.ProviderRegistry)：使用自定义提供商注册表
+//   - WithMemory(memory.Memory)：设置记忆 / RAG 后端
+//   - WithLogger(logging.Logger)：设置自定义日志器
+//   - WithLoopHooks(...hooks.LoopHook)：添加循环生命周期钩子
+//   - WithToolHooks(...hooks.ToolHook)：添加工具执行钩子
+//   - WithAsyncTimeout(time.Duration)：设置异步工具超时（默认 5 分钟）
+//   - WithSyncTimeout(time.Duration)：设置同步工具超时（默认 5 分钟）
 func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	r := &Runtime{
 		toolReg:              tools.NewDefaultToolRegistry(),
@@ -357,6 +210,9 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	if r.tokenUsageStore == nil {
 		r.tokenUsageStore = session.NewNoopTokenUsageStore()
 	}
+	if r.llmClient == nil {
+		r.llmClient = NewDefaultLLMClient(r.model.APIKey, r.model.BaseURL)
+	}
 	r.toolExec = tools.NewToolExecutor(r.toolReg,
 		tools.WithSessionStore(r.sessionStore),
 		tools.WithKVStore(r.kvStore),
@@ -366,14 +222,11 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	return r
 }
 
-// ── Default tool registration ───────────────────────────────────────────────
-
-// registerDefaultTools registers all built-in tools into the tool registry.
-// Called automatically by NewRuntime during initialization.
-// Includes file operations (Grep, Glob, Read, Write, FileEdit, Ls),
-// execution tools (Bash, RunScript), web tools (WebSearch, WebFetch),
-// interaction tools (AskUser), and task management tools.
-// On Windows, additionally registers PowerShell tool.
+// registerDefaultTools 将所有内置工具注册到工具注册表。
+// 由 NewRuntime 在初始化期间自动调用。
+// 包含文件操作（Grep、Glob、Read、Write、FileEdit、Ls）、执行工具（Bash、RunScript）、
+// 网络工具（WebSearch、WebFetch）、交互工具（AskUser）及任务管理工具。
+// 在 Windows 上额外注册 PowerShell 工具。
 func (rt *Runtime) registerDefaultTools() {
 	bundled := []struct {
 		name    string
@@ -427,18 +280,18 @@ func (rt *Runtime) registerDefaultTools() {
 	}
 }
 
-// registerDefaultHooks registers the default set of loop and tool hooks.
-// Called automatically by NewRuntime during initialization.
+// registerDefaultHooks 注册默认的循环钩子与工具钩子。
+// 由 NewRuntime 在初始化期间自动调用。
 //
-// Loop hooks (executed in priority order per iteration):
-//   - LoopLoggerHook (45): LLM call logging
-//   - ConvergenceHook (49): Irrecoverable error detection → Abort
-//   - MemoryThoughtHook (50): RAG context injection (prepended if mem set)
+// 循环钩子（每轮按优先级顺序执行）：
+//   - LoopLoggerHook (45)：大语言模型调用日志
+//   - ConvergenceHook (49)：不可恢复错误检测 → 中止
+//   - MemoryThoughtHook (50)：RAG 上下文注入（设置 mem 时前置）
 //
-// Tool hooks (executed in priority order per tool call):
-//   - PermissionHook (41): Permission chain evaluation → Deny + Abort
-//   - FileModifyHook (42): File backup/before Write/FileEdit (provider may be nil)
-//   - ToolLoggerHook (46): Tool execution logging
+// 工具钩子（每次工具调用按优先级顺序执行）：
+//   - PermissionHook (41)：权限链评估 → 拒绝并中止
+//   - FileModifyHook (42)：Write / FileEdit 前备份文件（provider 可能为 nil）
+//   - ToolLoggerHook (46)：工具执行日志
 func (rt *Runtime) registerDefaultHooks() {
 	rt.loopHooks = append(rt.loopHooks, loop.Defaults(rt.logger)...)
 	if rt.mem != nil {
@@ -447,17 +300,14 @@ func (rt *Runtime) registerDefaultHooks() {
 		rt.loopHooks = append([]hooks.LoopHook{hook}, rt.loopHooks...)
 	}
 
-	// Register ToolActivationHook (runs early, priority 20) to update
-	// ActiveToolSet when ToolSelector or Skill return results.
-	rt.toolActivationHook = NewToolActivationHook(
-		func() *ActiveToolSet { return rt.activeToolSet },
-		rt.logger,
-	)
+	// 注册 ToolActivationHook（优先级 20，较早运行），以便 ToolSelector 或 Skill
+	// 返回结果时更新 ActiveToolSet。
+	rt.toolActivationHook = NewToolActivationHook(rt.logger)
 	rt.toolHooks = append(rt.toolHooks, rt.toolActivationHook)
 
 	defaultHooks := action.Defaults(nil, rt.skillReg, rt.logger, rt.fileModifyTracker)
 
-	// Capture FileModifyHook reference for late binding via WithFileModifyTracker.
+	// 捕获 FileModifyHook 引用，以便通过 WithFileModifyTracker 延迟绑定。
 	rt.fileModifyHook = nil
 	for _, h := range defaultHooks {
 		if fmh, ok := h.(*action.FileModifyHook); ok {
@@ -469,165 +319,20 @@ func (rt *Runtime) registerDefaultHooks() {
 	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
 }
 
-// parentEmitKey is a context key for passing the parent EventBus emitter
-// from a parent exec() to its sub-agents, enabling cross-agent event forwarding.
-type parentEmitKeyType struct{}
-
-// ── SubAgent: async task delegation ────────────────────────────────────────────
-
-// getOrCreateSubAgentSession returns an existing cached SubAgent session for the
-// given (agentName, projectDir) pair, or creates a new one. This enforces the
-// 1 Agent + 1 ProjectDir = 1 SessionID invariant so that the same SubAgent on
-// the same project always has conversation continuity.
-func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor string, store session.SessionStore) *session.Session {
-	key := agentName + ":" + projectDir
-	if s, ok := rt.subAgentSessionCache[key]; ok {
-		return s
-	}
-	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger)
-	if err != nil {
-		rt.logger.Error("创建子智能体会话失败", err, "agent", agentName, "project", projectDir)
-		return nil
-	}
-	rt.subAgentSessionCache[key] = s
-	return s
-}
-
-// spawnSubAgent implements SpawnFunc for creating and running sub-agents.
-// Sub-agents run in the background via an independent ThinkLoop, and their results
-// are collected later via CollectResultsTool.
+// Ask 创建用于启动与智能体对话的 AskBuilder。
+// 这是与 Runtime 思考循环交互的主要入口。
 //
-// Design decisions:
-//   - Creates a unique session per spawn (no session reuse — one-shot task)
-//   - Runs via Runtime.Ask() — same ThinkLoop as the main agent
-//   - Independent session = full isolation from the parent's context
-func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (answer string, sessionID string, err error) {
-	if rt.agentReg != nil {
-		if cfg := rt.agentReg.Get(agentName); cfg == nil {
-			return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
-		}
-	}
-
-	tc := tools.GetToolContext(ctx)
-	sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
-	rt.logger.Info("sub-agent spawn started",
-		"agent_name", agentName,
-		"session_id", sess.ID(),
-	)
-
-	builder := rt.Ask(agentName, task, sess)
-	// Forward this sub-agent's events to the parent EventBus
-	// so clients subscribed to the parent can see all agent events.
-	if pe, ok := ctx.Value(parentEmitKeyType{}).(func(events.ReactEvent)); ok {
-		builder.parentEmit = pe
-	}
-	result, err := builder.Run()
-	sessionID = sess.ID()
-	if err != nil {
-		return "", sessionID, fmt.Errorf("sub-agent %q: %w", agentName, err)
-	}
-
-	return result.Answer, sessionID, nil
-}
-
-// ── Entry point ─────────────────────────────────────────────────────────────
-
-// Ask creates an AskBuilder for initiating a conversation with an agent.
-// This is the primary entry point for interacting with the Runtime's thinking loop.
+// Ask 使用构建器模式，允许在执行前灵活配置。
+// 返回的 AskBuilder 可通过事件处理器定制，然后执行以运行完整的 ReAct 循环。
 //
-// Ask uses the Builder pattern to allow flexible configuration before execution.
-// The returned AskBuilder can be customized with event handlers, then executed
-// to run the full ReAct (Reasoning + Acting) loop.
+// 参数：
+//   - agentName: 要使用的智能体配置标识符。必须匹配 AgentRegistry 中注册的名称。
+//     智能体配置定义系统提示词中使用的角色、描述和介绍。
+//   - question: 用户的问题或指令，将作为用户消息追加到会话并发送给大语言模型。
+//   - s: 维护对话历史和状态的 Session 实例。每次 Ask 调用都会向该会话追加消息。
 //
-// # Parameters
-//
-//   - agentName: String identifier for the agent configuration to use.
-//     Must match a name registered in the AgentRegistry. The agent config
-//     defines the role, description, and introduction used in system prompts.
-//     Example values: "coder", "analyst", "assistant", "researcher"
-//
-//   - question: The user's question or instruction to the agent. This will be
-//     appended to the session as a user message and sent to the LLM.
-//     Can be any natural language query, code request, or task description.
-//     Example: "What files are in this directory?", "Explain this function",
-//     "Refactor this code to use generics", "Search the web for..."
-//
-//   - s: A Session instance that maintains conversation history and state.
-//     The session handles message storage, compaction, and provides context
-//     window management. Each Ask call appends messages to this session.
-//     Create sessions with session.New() or session.NewWithConfig().
-//
-// # Return Value
-//
-// *AskBuilder: A builder that can be configured and then executed.
-//
-//	Call builder.Execute() to run the thinking loop and get results.
-//	Call builder.OnEvent() to register event handlers for real-time updates.
-//
-// # Execution Flow
-//
-// When Execute() is called on the returned builder:
-//
-//  1. Append user question to session
-//  2. Build system prompt from agent config + registries + session state
-//  3. For each iteration (up to MaxTurns):
-//     a. Run BeforeLLM hooks (can modify/abort)
-//     b. Assemble messages (system + history + user)
-//     c. Stream LLM response (content + thinking + tool calls)
-//     d. Run AfterLLM hooks (can modify/abort)
-//     e. If no tool calls → return answer (termination)
-//     f. If tool calls → execute tools with hook chain
-//     g. Append tool results to session → next iteration
-//  4. Return RunResult with answer, usage, duration, termination reason
-//
-// # Event Handling
-//
-// Register event handlers to receive real-time updates:
-//
-//	result, err := rt.Ask("agent", "question", sess).
-//	    OnEvent(events.ContentDelta, func(data any) {
-//	        fmt.Print(data.(string))  // Stream content to stdout
-//	    }).
-//	    OnEvent(events.ToolExecStart, func(data any) {
-//	        log.Printf("Tool executing: %v", data)
-//	    }).
-//	    Execute()
-//
-// Available event types: ContentDelta, ThinkingDelta, ToolUseDelta,
-// ToolExecStart, ToolExecEnd, CycleEnd, FinalAnswer, Error, etc.
-//
-// # Example: Basic Usage
-//
-//	sess := session.New(session.Config{
-//	    SessionDir:  "./sessions",
-//	    ProjectDir:  ".",
-//	    AgentName:   "coder",
-//	})
-//
-//	result, err := rt.Ask("coder", "List all Go files", sess).Execute()
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	fmt.Println(result.Answer)
-//
-// # Example: With Event Streaming
-//
-//	builder := rt.Ask("researcher", "Find recent papers on LLMs", sess)
-//	builder.OnEvent(events.ContentDelta, func(data any) {
-//	    ws.Send(data.(string))  // Stream to WebSocket client
-//	})
-//	result, err := builder.Execute()
-//
-// # Cancellation
-//
-// The AskBuilder includes a context.Context that can be cancelled:
-//
-//	builder := rt.Ask("agent", "long task", sess)
-//	go func() {
-//	    time.Sleep(30 * time.Second)
-//	    builder.Cancel()  // Cancel after 30 seconds
-//	}()
-//	result, err := builder.Execute()
+// 返回 *AskBuilder，可调用 builder.Execute() 运行思考循环并获取结果，
+// 或调用 builder.OnEvent() 注册实时更新的事件处理器。
 func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuilder {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &AskBuilder{
@@ -641,1658 +346,45 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 	}
 }
 
-// ── ThinkingLoop ────────────────────────────────────────────────────────────
-
-// exec runs the full ThinkingLoop for the AskBuilder.
-// This is the core execution engine that implements the ReAct (Reasoning + Acting) pattern.
-//
-// # Architecture
-//
-// exec replaces the old Reactor.Run() with a cleaner separation:
-//   - Session handles message storage and compaction (sliding window)
-//   - Runtime (this method) handles system prompt building, LLM calls, and tool execution
-//   - Hooks are integrated into the loop at key points (BeforeLLM, AfterLLM, Tool)
-//   - Event bus provides real-time observability
-//
-// # Execution Flow
-//
-//  1. Initialize event bus and wire up event handlers from builder
-//  2. Set session compaction handler for token limit management
-//  3. Create tool executor with event emission and logging
-//  4. Determine max iterations from model config (default: 20)
-//  5. Append user question to session
-//  6. Build tool definitions (stable across iterations)
-//  7. For each iteration:
-//     a. Check context cancellation
-//     b. Build system prompts from registries + session state
-//     c. Execute BeforeLLM hooks (can abort/modify)
-//     d. Assemble messages (system sections + history + user question)
-//     e. Stream LLM response with full configuration
-//     f. Parse streaming events (content, thinking, tool calls, errors)
-//     g. Execute AfterLLM hooks (can abort/modify)
-//     h. Persist assistant message to session
-//     i. If no tool calls → emit FinalAnswer and return
-//     j. If tool calls → execute tools with hook chain
-//     k. Persist tool results to session → next iteration
-//  8. On max iterations: return error with termination reason
-//
-// # Termination Conditions
-//
-// The loop terminates when:
-//   - Context is cancelled (user-initiated or timeout)
-//   - A hook aborts the loop (BeforeLLM or AfterLLM returns terminal result)
-//   - LLM returns no tool calls (agent has final answer)
-//   - LLM returns an error (network, auth, rate limit)
-//   - Max iterations reached (default 20, configurable via ModelConfig.MaxTurns)
-//
-// # Thread Safety
-//
-// This method is NOT safe for concurrent calls on the same Runtime instance.
-// Each call should use its own Runtime or be externally synchronized.
-func (rt *Runtime) exec(b *AskBuilder) {
-	ctx := b.ctx
-	sid := b.session.ID()
-	logger := rt.logger
-
-	logger.Info("exec started", "session", sid, "agent", b.agentName, "model", rt.model.Name)
-
-	var start time.Time
-	start = time.Now()
-	defer func() {
-		logger.Info("exec finished",
-			"session", sid,
-			"agent", b.agentName,
-			"reason", b.resultTerminationReason,
-			"iterations", b.resultIterations,
-			"duration_ms", time.Since(start).Milliseconds(),
-			"answer_len", len(b.resultAnswer),
-			"has_error", b.resultErr != nil,
-		)
-	}()
-
-	// Event bus
-	eb := events.NewEventBus()
-	if logger != nil {
-		eb.SetLogger(logger)
-	}
-	_, cancel := eb.SubscribeFiltered(func(ev events.ReactEvent) bool {
-		// Forward to parent EventBus if this is a sub-agent,
-		// enabling client-side visibility across agent boundaries.
-		if b.parentEmit != nil {
-			logger.Debug("[exec] forwarding event to parent EventBus",
-				"type", ev.Type,
-				"agent", ev.AgentName,
-				"session", ev.SessionID,
-			)
-			b.parentEmit(ev)
-		}
-		// Fire catch-all OnEvent handlers before type-specific handlers.
-		// Used by the daemon to track agent_name across forwarded events.
-		for _, h := range b.onAnyEvent {
-			h(ev)
-		}
-		if handlers, ok := b.onEvent[ev.Type]; ok {
-			for _, h := range handlers {
-				h(ev.Data)
-			}
-		}
-		return false
-	})
-	defer cancel()
-
-	emit := func(typ events.ReactEventType, data any) {
-		eb.Emit(events.ReactEvent{
-			SessionID: sid,
-			AgentName: b.agentName,
-			Type:      typ,
-			Data:      data,
-			Timestamp: time.Now().UnixMilli(),
-		})
-	}
-	// Store parent EventBus emitter in context so sub-agents (spawnSubAgent)
-	// can retrieve it and forward their events to the parent's EventBus.
-	ctx = context.WithValue(ctx, parentEmitKeyType{}, func(ev events.ReactEvent) {
-		eb.Emit(ev)
-	})
-	conversationID := session.NewRecordID()
-	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
-	defer func() {
-		emit(events.ExecutionSummary, events.ExecutionSummaryData{
-			TotalIterations:   b.resultIterations,
-			TotalDuration:     b.resultDuration,
-			TokensUsed:        totalUsage,
-			TerminationReason: b.resultTerminationReason,
-		})
-	}()
-
-	// Wire session compaction handler to emit compaction events
-	b.session.SetCompactionHandler(func(ev session.CompactionEvent) {
-		emit(events.Compaction, events.CompactionData{
-			SessionID:      sid,
-			MessagesSlid:   ev.MessagesSlid,
-			RemainingAfter: ev.RemainingAfter,
-			WindowSize:     ev.WindowSize,
-		})
-	})
-
-	// Wire compact start handler — emits before Tokens.
-	var compactBeforeTokens int64
-	b.session.SetCompactStartHandler(func(windowTokens, maxWindowSize int64) {
-		compactBeforeTokens = windowTokens
-		emit(events.CompactStart, events.CompactStartData{
-			SessionID:     sid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: maxWindowSize,
-		})
-	})
-
-	// Wire compact done handler — emits after Tokens + ratio.
-	b.session.SetCompactDoneHandler(func(messagesSlid int, windowTokens int64) {
-		var ratio float64
-		if compactBeforeTokens > 0 {
-			ratio = float64(windowTokens) / float64(compactBeforeTokens)
-		}
-		emit(events.CompactDone, events.CompactDoneData{
-			SessionID:     sid,
-			MessagesSlid:  messagesSlid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.MaxWindowSize(),
-			Ratio:         ratio,
-		})
-	})
-
-	// Wire micro-compact start handler.
-	var microCompactBeforeTokens int64
-	b.session.SetMicroCompactStartHandler(func(windowTokens, maxWindowSize int64) {
-		microCompactBeforeTokens = windowTokens
-		emit(events.MicroCompactStart, events.MicroCompactStartData{
-			SessionID:     sid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: maxWindowSize,
-		})
-	})
-
-	// Wire micro-compact done handler.
-	b.session.SetMicroCompactDoneHandler(func(compressed, deduped int, windowTokens int64) {
-		var ratio float64
-		if microCompactBeforeTokens > 0 {
-			ratio = float64(windowTokens) / float64(microCompactBeforeTokens)
-		}
-		emit(events.MicroCompactDone, events.MicroCompactDoneData{
-			SessionID:     sid,
-			Compressed:    compressed,
-			Deduped:       deduped,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.MaxWindowSize(),
-			Ratio:         ratio,
-		})
-	})
-
-	// Pre-load session metadata (projectDir, cursor, messages) from store
-	// before creating the tool executor, so that WithProjectDirExecutor receives
-	// the correct project directory from the persisted session metadata.
-	b.session.Current()
-
-	// 偏移量模型（memmache.md）：在新一个轮次开始前检查活跃窗口 Token 是否超限，
-	// 若超限则对 messages[cursor:] 全量摘要并清空（cursor = len(messages)）。
-	// 不在 Append 末尾或 exec 循环中调用，避免工具结果 append 中途触发清空
-	// 破坏 tool_call 配对。
-	// Budget 动态可调：只有 maxWindowSize > 0（即模型 ContextLength <= 128K）时
-	// 才会真正触发；超长上下文模型不设置 maxWindowSize，TryCompact 直接返回。
-	b.session.TryCompact(ctx)
-
-	// Tool executor — Session pointer is passed as the authoritative source
-	// for session-level state (ID, ProjectDir, AgentName, etc.). Tools access
-	// these properties through Session getter methods, not extracted copies.
-	//
-	// Permission flow: the executor no longer carries a ToolPermissionChecker.
-	// Permission enforcement is now an in-tool concern (see
-	// tools.PermissionRequired / Grant). The runtime pre-checks Grant() before
-	// calling the tool here; denied tools are stopped at the runtime level,
-	// not inside the executor.
-	toolExec := tools.NewToolExecutor(rt.toolReg,
-		tools.WithEventEmitter(func(ev events.ReactEvent) { eb.Emit(ev) }),
-		tools.WithLogger(logger),
-		tools.WithSession(b.session),
-		tools.WithSessionStore(rt.sessionStore),
-		tools.WithKVStore(rt.kvStore),
-	)
-
-	maxIter := rt.model.MaxTurns
-	if maxIter <= 0 {
-		maxIter = 20
-	}
-
-	// ── Permission magic-word resolution ──
-	// If the user message is "PermissionAllow" / "PermissionDeny" and the
-	// session has a pending permission from a previous loop iteration,
-	// resolve it here: run the tool (Allow) or synthesize a denied result
-	// (Deny). The user's magic word is NOT appended to the session — the
-	// LLM only ever sees the tool result.
-	//
-	// This happens BEFORE the user message is appended so that:
-	//  - On Allow, the tool result message (with the original tool_call_id)
-	//    is in the session when the LLM is next called.
-	//  - The session's "assistant with tool_call" is now paired with a
-	//    "tool" message, so OpenAI's strict validation is satisfied.
-	magicHandled := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, logger)
-
-	// Append user message to session (only if it's not a consumed magic word).
-	if !magicHandled {
-		if err := b.session.Append(ctx, session.Message{
-			Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
-		}); err != nil {
-			logger.Error("用户消息追加失败，错误: %v", err)
-		}
-	}
-	// Clear b.question when the magic word was consumed so the loop below
-	// does not re-inject it into the LLM call as a regular user message.
-	if magicHandled {
-		b.question = ""
-	}
-	// Determine if this agent has SubAgent for conditional core tools.
-	hasSubAgent := false
-	if rt.agentReg != nil {
-		if cfg := rt.agentReg.Get(b.agentName); cfg != nil {
-			// Check if SubAgent is NOT in ExcludeTools
-			excluded := make(map[string]bool, len(cfg.ExcludeTools))
-			for _, name := range cfg.ExcludeTools {
-				excluded[name] = true
-			}
-			hasSubAgent = !excluded["SubAgent"]
-		}
-	}
-
-	// Create and store ActiveToolSet for this Turn.
-	activeToolSet := NewActiveToolSet(rt.toolReg, hasSubAgent)
-	rt.activeToolSet = activeToolSet
-	defer func() {
-		rt.activeToolSet = nil
-	}()
-	// Reset to core + conditional at the start of each Ask.
-	activeToolSet.Reset()
-
-	// Build system prompt sections once (static per session — none change between rounds)
-	systemSections := rt.buildSystemPrompts(sid, b.session)
-
-	start = time.Now()
-	var lastIteration int
-	var prevToolResults []hooks.ToolResult
-
-	setIterResult := func(iter int) {
-		b.resultIterations = iter + 1
-		b.resultDuration = time.Since(start)
-		b.resultUsage = totalUsage
-	}
-
-	for iter := 0; iter < maxIter; iter++ {
-		if err := ctx.Err(); err != nil {
-			b.resultErr = err
-			b.resultTerminationReason = "cancelled"
-			setIterResult(iter)
-			return
-		}
-
-		// Get current conversation window
-		window := b.session.Current()
-		logger.Info("session.Current() window", "session", sid, "iter", iter, "msg_count", len(window), "total_chars", func() int {
-			total := 0
-			for _, m := range window {
-				total += len(m.Content)
-			}
-			return total
-		}())
-
-		// Build tool definitions from the current ActiveToolSet.
-		// This may change between iterations when ToolSelector or Skill activate new tools.
-		toolDefs := activeToolSet.BuildDefinitions()
-
-		// ── Loop Hooks BeforeLLM (with panic recovery) ──
-		callInput := &hooks.CallInput{
-			SessionID:            sid,
-			AgentName:            b.agentName,
-			ProjectDir:           b.session.ProjectDir(),
-			SystemPromptSections: systemSections,
-			UserMessage:          b.question,
-			History:              window,
-			Tools:                toolDefs,
-		}
-		if hr := rt.execBeforeLLMHooks(sid, iter, callInput, emit); hr.IsTerminal() {
-			if hr.Error != nil {
-				b.resultErr = hr.Error
-				b.resultTerminationReason = "hook_error"
-				setIterResult(iter)
-				return
-			}
-			b.resultAnswer = hr.AbortReason
-			b.resultTerminationReason = "hook_abort"
-			setIterResult(iter)
-			logger.Info("循环被钩子函数中止，原因: %v", "reason", hr.AbortReason)
-			return
-		}
-
-		// Assemble messages (hooks may have modified systemSections, e.g. MemoryThoughtHook)
-		windowHasQuestion := false
-		for _, m := range window {
-			if m.Role == "user" && m.Content == b.question {
-				windowHasQuestion = true
-				break
-			}
-		}
-		question := ""
-		if !windowHasQuestion {
-			question = b.question
-		}
-
-		// MicroCompact (Dupdu) 已禁用 —— 它修改上下文中间的 tool 消息内容，
-		// 会破坏从首次请求累积下来的 KV 缓存，导致修改点之后的所有 KV 失效
-		// 并重新计算。对于超长上下文模型，重算成本远大于保留"垃圾"的 attention
-		// 成本；对于短上下文模型，TryCompact 会清空当前窗口，已足够控制长度。
-
-		// Re-read window — Current() returns a fresh copy of messages[cursor:].
-		window = b.session.Current()
-
-		msgs := rt.assembleMessages(callInput.SystemPromptSections, window, question)
-
-		// ── Debug: dump full system prompt ──
-		if rt.logger != nil {
-			var sysTexts []string
-			for _, m := range msgs {
-				if m.Role == "system" {
-					for _, block := range m.Content {
-						if block.Type == "text" {
-							sysTexts = append(sysTexts, block.Text)
-						}
-					}
-				}
-			}
-			// ------------ Debug tools don't remove ----------------
-			if len(sysTexts) > 0 {
-				rt.logger.Debug("===== SYSTEM PROMPT =====",
-					"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n---\n"))
-			}
-		}
-
-		// ── Stream LLM ──
-		client := gochat.Client().Config(
-			gochat.WithAPIKey(rt.model.APIKey),
-			gochat.WithBaseURL(rt.model.BaseURL),
-			gochat.WithTimeout(4*time.Minute),
-		).WithContext(ctx)
-		builder := client.
-			Messages(msgs...).
-			Model(rt.model.Name).
-			Temperature(rt.model.Temperature).
-			MaxTokens(int(rt.model.MaxTokens)).
-			EnableThinking(true).
-			ParallelToolCalls(true).
-			ToolChoice("auto")
-		if rt.model.TopP > 0 {
-			builder = builder.TopP(rt.model.TopP)
-		}
-		if rt.model.TopK > 0 {
-			builder = builder.TopK(int(rt.model.TopK))
-		}
-		if rt.model.RepetitionPenalty != 0 {
-			// RepetitionPenalty maps to gochat's PresencePenalty
-			builder = builder.PresencePenalty(rt.model.RepetitionPenalty)
-		}
-		if rt.model.FrequencyPenalty != 0 {
-			builder = builder.FrequencyPenalty(rt.model.FrequencyPenalty)
-		}
-		if len(toolDefs) > 0 {
-			builder = builder.Tools(toolDefs...)
-		}
-
-		logger.Info("LLM思想流开始", "session", sid, "iter", iter)
-
-		stream, err := builder.GetStream()
-		if err != nil {
-			logger.Error("LLM思想流失败，错误: %v", err, "session", sid, "iter", iter)
-			emit(events.LLMTimeout, events.LLMTimeoutData{
-				SessionID: sid,
-				Timeout:   4 * time.Minute,
-				Elapsed:   time.Since(start),
-				Error:     err.Error(),
-			})
-			b.resultErr = fmt.Errorf("LLM思想流失败，错误: %w", err)
-			b.resultTerminationReason = "llm_error"
-			setIterResult(iter)
-			return
-		}
-
-		// Streaming loop
-		var contentBuf, reasoningBuf strings.Builder
-		var streamToolCalls []gochatcore.ToolCall
-		var finishReason string
-		var streamErr error
-
-		for stream.Next() {
-			ev := stream.Event()
-			switch ev.Type {
-			case gochatcore.EventContent:
-				contentBuf.WriteString(ev.Content)
-				emit(events.ContentDelta, ev.Content)
-			case gochatcore.EventThinking:
-				reasoningBuf.WriteString(ev.Content)
-				emit(events.ThinkingDelta, ev.Content)
-			case gochatcore.EventToolCall:
-				for _, delta := range ev.ToolCallDeltas {
-					emit(events.ToolUseDelta, events.ToolUseDeltaData{
-						Index:     delta.Index,
-						ID:        delta.ID,
-						Name:      delta.Name,
-						Arguments: delta.Arguments,
-					})
-				}
-			case gochatcore.EventError:
-				streamErr = ev.Err
-			case gochatcore.EventDone:
-				finishReason = ev.FinishReason
-			}
-		}
-		stream.Close()
-
-		if streamErr != nil {
-			emit(events.LLMTimeout, events.LLMTimeoutData{
-				SessionID: sid,
-				Timeout:   4 * time.Minute,
-				Elapsed:   time.Since(start),
-				Error:     streamErr.Error(),
-			})
-			b.resultErr = streamErr
-			b.resultTerminationReason = "llm_error"
-			setIterResult(iter)
-			return
-		}
-
-		// Collect assembled tool calls from stream
-		streamToolCalls = stream.ToolCalls()
-
-		emit(events.ThinkingDone, nil)
-
-		// Record token usage from stream
-		fmt.Printf("[SSE-TRACE L4] About to call stream.Usage(), session=%s, iter=%d\n", sid, iter)
-		u := stream.Usage()
-		var callUsage session.TokenUsage
-		if u != nil {
-			fmt.Printf("[SSE-TRACE L4] stream.Usage() NON-NIL: prompt=%d, completion=%d, total=%d, session=%s\n",
-				u.PromptTokens, u.CompletionTokens, u.TotalTokens, sid)
-			callUsage = session.TokenUsage{
-				Timestamp:        time.Now(),
-				PromptTokens:     u.PromptTokens,
-				CompletionTokens: u.CompletionTokens,
-				TotalTokens:      u.TotalTokens,
-			}
-			if u.PromptTokensDetails != nil {
-				callUsage.CachedTokens = u.PromptTokensDetails.CachedTokens
-			}
-			if u.CompletionTokensDetails != nil {
-				callUsage.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
-			}
-
-			// Build and persist TokenUsageRecord with five-dimension grouping keys
-			record := session.TokenUsageRecord{
-				ID:               session.NewRecordID(),
-				SessionID:        sid,
-				ConversationID:   conversationID,
-				ModelName:        rt.model.Name,
-				ProviderName:     rt.model.Provider,
-				AgentName:        b.agentName,
-				PromptTokens:     callUsage.PromptTokens,
-				CompletionTokens: callUsage.CompletionTokens,
-				CachedTokens:     callUsage.CachedTokens,
-				ReasoningTokens:  callUsage.ReasoningTokens,
-				TotalTokens:      callUsage.TotalTokens,
-				Timestamp:        time.Now(),
-			}
-			if err := rt.tokenUsageStore.Append(ctx, record); err != nil {
-				logger.Error("添加词元使用记录失败，", err, "session", sid)
-				fmt.Printf("[SSE-TRACE L4] Append FAILED: %v, session=%s\n", err, sid)
-			} else {
-				fmt.Printf("[SSE-TRACE L4] Append OK: prompt=%d, completion=%d, total=%d, cached=%d, session=%s\n",
-					callUsage.PromptTokens, callUsage.CompletionTokens, callUsage.TotalTokens, callUsage.CachedTokens, sid)
-
-				// Emit per-call token usage event for real-time client notification
-				emit(events.TokenUsageRecorded, record)
-			}
-			totalUsage.PromptTokens += callUsage.PromptTokens
-			totalUsage.CompletionTokens += callUsage.CompletionTokens
-			totalUsage.TotalTokens += callUsage.TotalTokens
-			totalUsage.CachedTokens += callUsage.CachedTokens
-			totalUsage.ReasoningTokens += callUsage.ReasoningTokens
-			totalUsage.Timestamp = time.Now()
-			logger.Info("记录词元使用信息", "session", sid, "iter", iter, "input", u.PromptTokens, "output", u.CompletionTokens)
-		} else {
-			// Fallback: 某些 Provider（如 Qwen/DashScope）流式响应不返回 usage 数据
-			// 基于内容长度估算 token 数量（中英混合约 4 字符/token），确保统计不为 0
-			contentLen := len(contentBuf.String())
-			reasoningLen := len(reasoningBuf.String())
-			// Fallback: provider 未返回 usage 时，只能估算本次生成的输出。
-			// 输入侧包含整个上下文窗口，无法从当前响应内容推导，故不重复计入输出。
-			estimatedOutput := (contentLen + reasoningLen) / 4
-			if estimatedOutput < 1 {
-				estimatedOutput = 1 // 至少记录 1 个 output token
-			}
-			estimatedInput := 0 // 无 usage 时输入无法可靠估算，避免重复计费
-			estimatedTotal := estimatedOutput
-
-			logger.Warn("stream.Usage() 返回 nil — 使用估算 token",
-				"session", sid, "iter", iter, "model", rt.model.Name,
-				"estimated_input", estimatedInput, "estimated_output", estimatedOutput)
-
-			callUsage = session.TokenUsage{
-				Timestamp:        time.Now(),
-				PromptTokens:     estimatedInput,
-				CompletionTokens: estimatedOutput,
-				TotalTokens:      estimatedTotal,
-				ReasoningTokens:  reasoningLen / 4,
-			}
-
-			record := session.TokenUsageRecord{
-				ID:               session.NewRecordID(),
-				SessionID:        sid,
-				ConversationID:   conversationID,
-				ModelName:        rt.model.Name,
-				ProviderName:     rt.model.Provider,
-				AgentName:        b.agentName,
-				PromptTokens:     callUsage.PromptTokens,
-				CompletionTokens: callUsage.CompletionTokens,
-				CachedTokens:     0,
-				ReasoningTokens:  callUsage.ReasoningTokens,
-				TotalTokens:      callUsage.TotalTokens,
-				Timestamp:        time.Now(),
-			}
-			if err := rt.tokenUsageStore.Append(ctx, record); err != nil {
-				logger.Error("添加词元使用估算记录失败", err, "session", sid)
-			} else {
-				emit(events.TokenUsageRecorded, record)
-			}
-			totalUsage.PromptTokens += callUsage.PromptTokens
-			totalUsage.CompletionTokens += callUsage.CompletionTokens
-			totalUsage.TotalTokens += callUsage.TotalTokens
-			totalUsage.ReasoningTokens += callUsage.ReasoningTokens
-			totalUsage.Timestamp = time.Now()
-		}
-
-		// Build LLM response for hooks from streaming data
-		content := contentBuf.String()
-		reasoning := reasoningBuf.String()
-		usageCopy := totalUsage
-		llmResp := &hooks.LLMResponse{
-			Content:      content,
-			Reasoning:    reasoning,
-			FinishReason: finishReason,
-			ToolCalls:    parseToolInvocations(streamToolCalls),
-			TokenUsage:   &usageCopy,
-		}
-
-		// ── Loop Hooks AfterLLM (with panic recovery) ──
-		if hr := rt.execAfterLLMHooks(sid, iter, llmResp, prevToolResults, emit); hr.IsTerminal() {
-			if hr.Error != nil {
-				b.resultErr = hr.Error
-				b.resultTerminationReason = "hook_error"
-				setIterResult(iter)
-				return
-			}
-			llmResp.AbortReason = hr.AbortReason
-		}
-
-		// Handle abort from AfterLLM hook
-		if llmResp.AbortReason != "" {
-			emit(events.FinalAnswer, llmResp.Content)
-			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:    llmResp.Content,
-				TokenUsage: totalUsage,
-			})
-			b.resultAnswer = llmResp.Content
-			b.resultTerminationReason = "hook_abort"
-			setIterResult(iter)
-			return
-		}
-
-		// Persist assistant message (content + reasoning + tool_calls)
-		//
-		// Some LLM providers (DeepSeek, Qwen, local vLLM, etc.) may emit tool
-		// calls without a tool_call_id in their streaming response. OpenAI's
-		// strict message format requires that every tool_call in an assistant
-		// message be followed by a tool message with a matching tool_call_id,
-		// otherwise the next request returns 400 with
-		// "insufficient tool messages following tool_calls message".
-		//
-		// To keep the assistant.ToolCalls list and the subsequently persisted
-		// tool.ToolCallID in sync, we backfill a synthetic ID for any tool call
-		// that arrives without one. The same ID is then used by parseToolInvocations
-		// and executeTools, so the pair is always matched.
-		assistantMsg := session.Message{
-			Role:             "assistant",
-			Content:          content,
-			ReasoningContent: reasoningBuf.String(),
-			Timestamp:        time.Now().Unix(),
-			Usage:            &callUsage,
-		}
-		for i := range streamToolCalls {
-			if streamToolCalls[i].ID == "" {
-				streamToolCalls[i].ID = "syn_" + session.NewRecordID()
-				logger.Warn("LLM调用了工具但没有包含ID，已填充合成的工具ID",
-					"session", sid, "iter", iter, "tool", streamToolCalls[i].Name, "id", streamToolCalls[i].ID)
-			}
-			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, session.ToolCall{
-				ID:        streamToolCalls[i].ID,
-				Name:      streamToolCalls[i].Name,
-				Arguments: streamToolCalls[i].Arguments,
-			})
-		}
-		if err := b.session.Append(ctx, assistantMsg); err != nil {
-			logger.Error("添加助手消息失败", err)
-		}
-
-		lastIteration = iter + 1
-		emit(events.CycleEnd, events.CycleInfo{
-			Iteration: lastIteration, Duration: time.Since(start),
-		})
-		// ── No tool calls → answer complete ──
-		if len(streamToolCalls) == 0 {
-			answer := content
-			if answer == "" && reasoning != "" {
-				answer = reasoning
-			}
-			switch finishReason {
-			case "length", "max_tokens":
-				b.resultTerminationReason = "max_tokens"
-			case "content_filter":
-				b.resultTerminationReason = "content_filtered"
-			default:
-				b.resultTerminationReason = "completed"
-			}
-			emit(events.FinalAnswer, answer)
-			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:    answer,
-				TokenUsage: totalUsage,
-			})
-			b.resultAnswer = answer
-			b.resultIterations = lastIteration
-			b.resultDuration = time.Since(start)
-			b.resultUsage = totalUsage
-			return
-		}
-
-		// ── Execute tools with hooks ──
-		invocs := parseToolInvocations(streamToolCalls)
-
-		// ── Pre-execution Grant check (PermissionRequired) ──
-		// Tools that opt into permission flow implement PermissionRequired.Grant().
-		// For every invocation in this turn, we ask the tool "can you run
-		// as-is?" — if any tool says no, we:
-		//   1. Save the invocation to session.PendingPermission (so a later
-		//      magic word can resolve it),
-		//   2. Emit PermissionPending so the UI renders an allow/deny dialog,
-		//   3. Stop the loop. The tool is NOT executed; the assistant's
-		//      tool_call is persisted to the session (already done above)
-		//      but the corresponding tool message is NOT yet added. The
-		//      next Ask() call — once the user responds with PermissionAllow
-		//      or PermissionDeny — will append the result so OpenAI's strict
-		//      tool_call/tool-message pairing is satisfied.
-		//
-		// Because we never call toolExec.Execute for the denied tool, the
-		// LLM never sees a "permission_required" placeholder in its context.
-		// It only ever sees the eventual tool result (success on Allow,
-		// "Permission Denied" on Deny), so the permission flow is invisible
-		// to the LLM.
-		if pending := rt.checkPermissionGrants(ctx, b, invocs, emit, logger); pending != nil {
-			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:    fmt.Sprintf("请求授权执行工具: %s，等待用户批准...", pending.ToolName),
-				TokenUsage: totalUsage,
-			})
-			b.resultTerminationReason = "permission_pending"
-			setIterResult(iter)
-			logger.Info("循环暂停:工具需要授权，等待用户批准", "tool", pending.ToolName)
-			return
-		}
-
-		executed := make(map[string]struct{}, len(invocs))
-		for _, inv := range invocs {
-			executed[inv.ID] = struct{}{}
-		}
-
-		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec)
-
-		prevToolResults = toolResults
-
-		// Persist tool results (full content, not truncated)
-		for _, tr := range toolResults {
-			var content string
-			if tr.Error != "" {
-				content = fmt.Sprintf("[%s] 执行错误: %s", tr.ToolName, tr.Error)
-			} else if tr.Result != "" {
-				content = tr.Result
-			} else {
-				content = fmt.Sprintf("[%s] 返回结果: (空结果)", tr.ToolName)
-			}
-			preview := content
-			if len(preview) > 120 {
-				preview = preview[:120]
-			}
-			logger.Info("工具结果已持久化", "session", sid, "tool", tr.ToolName, "content_len", len(content), "content_preview", preview)
-			if err := b.session.Append(ctx, session.Message{
-				Role: "tool", Content: content, Timestamp: time.Now().Unix(),
-				ToolCallID: tr.ToolCallID,
-			}); err != nil {
-				logger.Error("append tool message failed", err)
-			}
-		}
-
-		// Backfill "skipped" tool results for any tool_call that the assistant
-		// message advertised but executeTools did not handle (e.g. an empty Name
-		// or a not-found tool). Without this, the assistant.ToolCalls list
-		// would be out of sync with the tool messages and the next LLM request
-		// would fail with OpenAI's "insufficient tool messages" error.
-		for _, tc := range streamToolCalls {
-			if _, ok := executed[tc.ID]; ok {
-				continue
-			}
-			name := tc.Name
-			if name == "" {
-				name = "<unknown>"
-			}
-			skippedContent := fmt.Sprintf("[%s]是个未知的工具，跳过执行: (id=%s)", name, tc.ID)
-			logger.Warn("跳过执行工具",
-				"session", sid, "tool", name, "tool_call_id", tc.ID)
-			if err := b.session.Append(ctx, session.Message{
-				Role: "tool", Content: skippedContent, Timestamp: time.Now().Unix(),
-				ToolCallID: tc.ID,
-			}); err != nil {
-				logger.Error("跳过执行工具结果失败", err)
-			}
-		}
-
-		// ── Non-blocking AskUser detection ──
-		// After tool execution, check if AskUser was invoked. If so, emit
-		// AskUserPending event and exit the loop. The user's answer will
-		// arrive as a regular user message in a new session turn.
-		if askUserInv := findAskUserInvocation(invocs); askUserInv != nil {
-			askUserData := buildAskUserPendingData(askUserInv.Arguments)
-			emit(events.AskUserPending, askUserData)
-			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:    "向用户提出问题，等待回答中...",
-				TokenUsage: totalUsage,
-			})
-			b.resultTerminationReason = "ask_user_pending"
-			setIterResult(iter)
-			logger.Info("loop paused: AskUser tool invoked, waiting for user response")
-			return
-		}
-	}
-
-	// Max iterations reached - emit event (NOT an error)
-	// This is a normal boundary condition, not a failure.
-	// The UI should display a friendly suggestion to the user.
-	emit(events.MaxTurnsReached, events.MaxTurnsReachedData{
-		TurnsCompleted: lastIteration,
-		MaxTurns:       maxIter,
-		Suggestion: fmt.Sprintf(
-			"已达到最大思考轮次 (%d/%d)。任务可能需要更详细的指令或分步完成。你可以发送\"继续\"让 AI 基于当前进度继续，或者提供更具体的指导。",
-			lastIteration, maxIter),
-	})
-	b.resultTerminationReason = "max_iterations"
-	b.resultIterations = lastIteration
-	b.resultDuration = time.Since(start)
-	b.resultUsage = totalUsage
-}
-
-// ── Hook execution helpers (with panic recovery + Abort notification) ────────
-
-// execBeforeLLMHooks executes all registered LoopHook.BeforeLLM methods in sequence.
-// This is called before each LLM call in the thinking loop, allowing hooks to:
-//   - Inspect and modify system prompts, user message, history, or tool definitions
-//   - Abort the loop by returning a terminal HookResult
-//   - Add context from external sources (e.g., memory retrieval)
-//
-// Parameters:
-//   - sid: Session ID for logging and hook context
-//   - iter: Current iteration number (0-based)
-//   - input: CallInput containing current state (system prompts, user msg, history, tools)
-//   - emit: Function to emit events for real-time monitoring
-//
-// Returns:
-//   - HookResult: Empty if all hooks passed; terminal result if a hook aborted
-//
-// Safety: Includes panic recovery to prevent one bad hook from crashing the entire loop.
-func (rt *Runtime) execBeforeLLMHooks(sid string, iter int, input *hooks.CallInput, emit func(events.ReactEventType, any)) (result hooks.HookResult) {
-	defer func() {
-		if p := recover(); p != nil {
-			rt.logger.Error("loop hook panic", fmt.Errorf("%v", p))
-			emit(events.Error, fmt.Sprintf("loop hook panic: %v", p))
-			result = hooks.HookResult{Error: fmt.Errorf("loop hook panic: %v", p)}
-		}
-	}()
-	for _, h := range rt.loopHooks {
-		hr := h.BeforeLLM(sid, iter, input)
-		if hr.IsTerminal() {
-			rt.notifyLoopAbort(sid, hr.AbortReason)
-			return hr
-		}
-	}
-	return hooks.HookResult{}
-}
-
-// execAfterLLMHooks executes all registered LoopHook.AfterLLM methods in sequence.
-// This is called after each LLM response, allowing hooks to:
-//   - Inspect and modify the LLM response (content, reasoning, tool calls)
-//   - Abort the loop by returning a terminal HookResult
-//   - Perform post-processing like content filtering or logging
-//
-// Parameters:
-//   - sid: Session ID for logging and hook context
-//   - iter: Current iteration number (0-based)
-//   - resp: LLMResponse containing the model's response (content, reasoning, tool calls, usage)
-//   - toolResults: Tool results from previous iteration (empty on first iteration)
-//   - emit: Function to emit events for real-time monitoring
-//
-// Returns:
-//   - HookResult: Empty if all hooks passed; terminal result if a hook aborted
-//
-// Safety: Includes panic recovery to prevent one bad hook from crashing the entire loop.
-func (rt *Runtime) execAfterLLMHooks(sid string, iter int, resp *hooks.LLMResponse, toolResults []hooks.ToolResult, emit func(events.ReactEventType, any)) (result hooks.HookResult) {
-	defer func() {
-		if p := recover(); p != nil {
-			rt.logger.Error("loop hook panic", fmt.Errorf("%v", p))
-			emit(events.Error, fmt.Sprintf("loop hook panic: %v", p))
-			result = hooks.HookResult{Error: fmt.Errorf("loop hook panic: %v", p)}
-		}
-	}()
-	for _, h := range rt.loopHooks {
-		hr := h.AfterLLM(sid, iter, resp, toolResults)
-		if hr.IsTerminal() {
-			rt.notifyLoopAbort(sid, hr.AbortReason)
-			return hr
-		}
-	}
-	return hooks.HookResult{}
-}
-
-// notifyLoopAbort notifies all registered hooks that the loop is being aborted.
-// Calls Abort() on each hook in reverse registration order (LIFO),
-// allowing hooks to perform cleanup in the opposite order of their setup.
-//
-// Parameters:
-//   - sessionID: Session ID for hook context
-//   - reason: Reason string explaining why the loop was aborted
-//
-// This is called when:
-//   - A BeforeLLM or AfterLLM hook returns a terminal result with abort reason
-//   - The loop needs to terminate early due to external conditions
-func (rt *Runtime) notifyLoopAbort(sessionID string, reason string) {
-	for i := len(rt.loopHooks) - 1; i >= 0; i-- {
-		rt.loopHooks[i].Abort(sessionID, reason)
-	}
-}
-
-// ── System Prompt Building ──────────────────────────────────────────────────
-
-// buildSystemPrompts constructs the system prompt sections from the Runtime's
-// registries and session state. This replaces the old Reactor's Prompt struct.
-//
-// The system prompt is built as multiple message sections to allow for:
-//   - Clear separation of concerns (identity, skills, rules, etc.)
-//   - KV cache optimization (static vs dynamic boundary)
-//   - Selective modification by hooks
-//
-// # Prompt Sections (in order):
-//
-//  0. Language Lock: Mandatory language detection — must be first message
-//  1. Identity: Agent name, role, description, introduction (from AgentRegistry)
-//  2. Skills Catalog: Available skills and their descriptions (from SkillRegistry)
-//  3. Behavioral Rules: Default rules + custom rules (from RuleRegistry)
-//  4. Tool Usage Guidelines: How to use tools effectively
-//  5. Tone & Style: Communication style instructions
-//  6. Environment Info: Session ID, working directories, platform info
-//  7. System Reminders: Important operational reminders
-//  8. Dynamic Boundary: Marker for KV cache split point
-//  9. Output Efficiency: Instructions for concise output
-//
-// Parameters:
-//   - sessionID: Current session identifier for environment info
-//   - s: Session instance for retrieving agent name and directory info
-//
-// Returns:
-//   - []gochatcore.Message: Array of system messages forming the complete prompt
-func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
-	var sections []string
-
-	// 1. Identity — from AgentRegistry by agent name
-	if rt.agentReg != nil {
-		cfg := rt.agentReg.Get(s.AgentName())
-		if cfg != nil {
-			sections = append(sections,
-				buildIdentity(cfg.Name, cfg.Role, cfg.Description, cfg.Introduction))
-		}
-	}
-
-	// 2. Skills catalog — filtered to current agent's declared skills only
-	if rt.skillReg != nil && rt.agentReg != nil {
-		cfg := rt.agentReg.Get(s.AgentName())
-		if cfg != nil && len(cfg.Skills) > 0 {
-			allSkills := rt.skillReg.ListSkills()
-			allowed := make(map[string]bool, len(cfg.Skills))
-			for _, name := range cfg.Skills {
-				allowed[name] = true
-			}
-			var agentSkills []*skill.Skill
-			for _, sk := range allSkills {
-				if allowed[sk.Name] {
-					agentSkills = append(agentSkills, sk)
-				}
-			}
-			if catalog := rt.skillsCatalog(agentSkills); catalog != "" {
-				sections = append(sections, catalog)
-			}
-		}
-	}
-
-	// 3. Behavioral rules
-	rules := defaultBehavioralRules()
-	if rt.ruleReg != nil {
-		if custom := rt.ruleReg.FormatPromptSection(); custom != "" {
-			sections = append(sections, rules)
-			sections = append(sections, "## 扩展规则\n\n"+custom)
-		} else {
-			sections = append(sections, rules)
-		}
-	} else {
-		sections = append(sections, rules)
-	}
-
-	// 3b. Search priority — how to prioritize local vs web search
-	sections = append(sections, rt.buildSearchStrategy())
-
-	// 4. Environment info
-	sections = append(sections, rt.buildEnvs(EnvsParams{
-		SessionID:  sessionID,
-		SessionDir: s.SessionDir(),
-		ProjectDir: s.ProjectDir(),
-	}))
-
-	// 5. Tool Catalog — informational only; tools must be activated via ToolSelector
-	sections = append(sections, buildToolCatalog(rt.toolReg))
-
-	// 6. Compressed content — 只在 MicroCompact 启用时插入（maxWindowSize > 0，
-	//    即模型 ContextLength <= 128K）。MicroCompact 禁用时不会产生 [已压缩]
-	//    占位符，插入此规则只会浪费 system prompt tokens。
-	if s.MaxWindowSize() <= 128*1024 {
-		sections = append(sections, buildCompressedContent())
-	}
-
-	// 7. Output efficiency (dynamic section)
-	sections = append(sections, buildOutputEfficiency())
-
-	// Merge all sections into a single system message to maximize LLM attention
-	// on system rules. Multiple system messages dilute attention across messages.
-	return []gochatcore.Message{gochatcore.NewSystemMessage(strings.Join(sections, "\n\n"))}
-}
-
-// skillsCatalog builds the skills catalog section using the override builder
-// if set, otherwise falling back to the default buildSkillsCatalog.
-func (rt *Runtime) skillsCatalog(agentSkills []*skill.Skill) string {
-	if rt.skillsCatalogBuilder != nil {
-		return rt.skillsCatalogBuilder(agentSkills)
-	}
-	return buildSkillsCatalog(agentSkills)
-}
-
-// buildEnvs builds the Environment section using the override builder
-// if set, otherwise falling back to the default buildEnvironmentInfo.
-func (rt *Runtime) buildEnvs(params EnvsParams) string {
-	if rt.envsBuilder != nil {
-		return rt.envsBuilder(params)
-	}
-	return buildEnvironmentInfo(params)
-}
-
-// buildSearchStrategy builds the Search Strategy section using the override
-// builder if set, otherwise falling back to the default buildSearchPriority.
-func (rt *Runtime) buildSearchStrategy() string {
-	if rt.searchStrategyBuilder != nil {
-		return rt.searchStrategyBuilder()
-	}
-	return buildSearchPriority()
-}
-
-// ── Message Assembly ────────────────────────────────────────────────────────
-
-// assembleMessages builds the complete message sequence for the LLM API call.
-// Combines system prompts, conversation history, and user question into the
-// correct order expected by the LLM provider.
-//
-// # Message Order:
-//
-// 1. System sections (from buildSystemPrompts) - multiple system messages
-// 2. Conversation history (micro-compacted, max 2 consecutive same-role msgs)
-//   - Converted from session.Message to gochatcore.Message format
-//   - Preserves tool calls and tool call IDs in assistant/tool messages
-//
-// 3. User question (if not already present as last message in history)
-//
-// # Compaction
-//
-// History is compacted using session.MicroCompact() which merges consecutive
-// messages of the same role to reduce token count while preserving information.
-//
-// Parameters:
-//   - systemSections: System prompt sections from buildSystemPrompts()
-//   - history: Conversation history from session.Current()
-//   - question: User's current question (may be empty if already in history)
-//
-// Returns:
-//   - []gochatcore.Message: Complete message sequence ready for LLM API call
-func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history []session.Message, question string) []gochatcore.Message {
-	var msgs []gochatcore.Message
-	msgs = append(msgs, systemSections...)
-
-	// Strip orphaned tool_calls that don't have corresponding tool responses.
-	// This prevents DeepSeek's strict validation from rejecting requests after
-	// a cancelled thinking loop where assistant+ToolCalls was persisted but
-	// the tool results were not (race between old exec cleanup and new message).
-	//
-	// NOTE: The old session.MicroCompact() call has been replaced by
-	// Session.TryMicroCompact(), which is called before assembleMessages
-	// and directly modifies the session. Compressed messages have their
-	// Compacted field set, which we render as a placeholder below.
-	window := history
-	window = stripOrphanedToolCalls(window)
-
-	// Build tool name lookup for compacted message rendering
-	toolNameByID := session.BuildToolNameByID(history)
-	for _, m := range window {
-		switch m.Role {
-		case "system":
-			msgs = append(msgs, gochatcore.NewSystemMessage(m.Content))
-		case "user":
-			msgs = append(msgs, gochatcore.NewUserMessage(m.Content))
-		case "assistant":
-			msg := gochatcore.NewTextMessage("assistant", m.Content)
-			msg.ReasoningContent = m.ReasoningContent
-			for _, tc := range m.ToolCalls {
-				msg.ToolCalls = append(msg.ToolCalls, gochatcore.ToolCall{
-					ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
-				})
-			}
-			msgs = append(msgs, msg)
-		case "tool":
-			// Render compacted placeholder when content is archived
-			content := m.Content
-			if m.Compacted != "" {
-				content = session.RenderCompactedPlaceholder(m, toolNameByID)
-			}
-			toolMsg := gochatcore.NewTextMessage("tool", content)
-			toolMsg.ToolCallID = m.ToolCallID
-			msgs = append(msgs, toolMsg)
-		default:
-			msgs = append(msgs, gochatcore.NewTextMessage(m.Role, m.Content))
-		}
-	}
-
-	// User message (if not already the last message in window)
-	if question != "" {
-		if len(window) == 0 || window[len(window)-1].Role != "user" || window[len(window)-1].Content != question {
-			msgs = append(msgs, gochatcore.NewUserMessage(question))
-		}
-	}
-
-	return msgs
-}
-
-// stripOrphanedToolCalls removes tool_calls from assistant messages that don't
-// have a corresponding tool response message. This prevents DeepSeek's strict
-// validation from rejecting requests with orphaned tool_calls, which can happen
-// when the thinking loop is cancelled mid-execution — the assistant message with
-// ToolCalls may be persisted before tool results are written, creating a race
-// condition when a new message is sent immediately after cancellation.
-func stripOrphanedToolCalls(history []session.Message) []session.Message {
-	// Collect all tool_call_ids that have a matching tool response
-	toolCallIDs := make(map[string]bool)
-	for _, m := range history {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			toolCallIDs[m.ToolCallID] = true
-		}
-	}
-
-	result := make([]session.Message, 0, len(history))
-	for _, m := range history {
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			kept := make([]session.ToolCall, 0, len(m.ToolCalls))
-			for _, tc := range m.ToolCalls {
-				if toolCallIDs[tc.ID] {
-					kept = append(kept, tc)
-				}
-			}
-
-			// If no tool_calls remain after filtering, drop the message
-			// entirely unless it has text content worth preserving.
-			if len(kept) == 0 && strings.TrimSpace(m.Content) == "" {
-				continue
-			}
-			if len(kept) == 0 {
-				m.ToolCalls = nil
-			} else {
-				m.ToolCalls = kept
-			}
-			result = append(result, m)
-		} else {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
-// ── Tool Execution ──────────────────────────────────────────────────────────
-
-// executeTools runs multiple tool calls with the ToolHook chain, supporting both
-// async (concurrent) and sync (sequential) execution modes.
-//
-// # Execution Strategy
-//
-// For each tool invocation:
-//   - If tool.IsAsync == true: Execute concurrently in a goroutine with asyncTimeout
-//   - If tool.IsAsync == false: Execute synchronously in sequence with syncTimeout
-//
-// Async tools run in parallel using WaitGroup for coordination. Results are collected
-// into a slice maintaining original invocation order (by index).
-//
-// # Hook Integration
-//
-// Each tool execution goes through:
-// 1. ToolHook.Before chain (all hooks, can abort/deny)
-// 2. Actual tool execution via ToolExecutor
-// 3. ToolHook.After chain (all hooks, can modify result)
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeout propagation
-//   - sessionID: Session ID for logging and hook context
-//   - invocs: Tool invocations to execute (from LLM response)
-//   - emit: Event emission function for real-time monitoring
-//   - toolExec: ToolExecutor instance to use for execution
-//
-// Returns:
-//   - []hooks.ToolResult: Results for each invocation, same order as input
-func (rt *Runtime) executeTools(
-	ctx context.Context,
-	sessionID string,
-	invocs []hooks.ToolCallInvocation,
-	emit func(events.ReactEventType, any),
-	toolExec tools.ToolExecutor,
-) []hooks.ToolResult {
-	if len(invocs) == 0 {
-		return nil
-	}
-
-	results := make([]hooks.ToolResult, len(invocs))
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	for i, inv := range invocs {
-		if rt.isToolAsync(inv.Name) {
-			wg.Add(1)
-			i, inv := i, inv
-			go func() {
-				defer wg.Done()
-				tr := rt.executeSingleTool(ctx, sessionID, inv, emit, toolExec, rt.asyncTimeout)
-				mu.Lock()
-				results[i] = tr
-				mu.Unlock()
-			}()
-		} else {
-			tr := rt.executeSingleTool(ctx, sessionID, inv, emit, toolExec, rt.syncTimeout)
-			results[i] = tr
-		}
-	}
-
-	wg.Wait()
-	return results
-}
-
-// isToolAsync checks if a tool should be executed asynchronously (concurrently).
-// Looks up the tool in the registry and returns its IsAsync flag.
-//
-// Parameters:
-//   - name: Tool name to look up
-//
-// Returns:
-//   - bool: true if tool exists and is marked as async, false otherwise
-func (rt *Runtime) isToolAsync(name string) bool {
-	if t, ok := rt.toolReg.Get(name); ok {
-		return t.Info().IsAsync
-	}
-	return false
-}
-
-// executeSingleTool executes a single tool invocation with full hook chain support.
-// This is the core tool execution function called by executeTools for each invocation.
-//
-// # Execution Flow:
-//
-// 1. ToolHook.Before chain:
-//   - Each hook can inspect and approve/deny the execution
-//   - If any hook aborts, returns failed result immediately
-//
-// 2. Emit ToolExecStart event
-// 3. Create timeout context (asyncTimeout or syncTimeout)
-// 4. Execute tool via ToolExecutor.Execute()
-// 5. Build ToolResult from execution result or error
-// 6. ToolHook.After chain:
-//   - Each hook can inspect and modify the result
-//   - If any hook aborts, replaces result with failure
-//
-// 7. Emit ToolExecEnd event with final result
-// 8. Return ToolResult
-//
-// Parameters:
-//   - ctx: Parent context for cancellation propagation
-//   - sessionID: Session ID for logging and hooks
-//   - inv: ToolCallInvocation containing name, ID, and arguments
-//   - emit: Event emission function
-//   - toolExec: ToolExecutor to use
-//   - timeout: Maximum execution duration for this tool call
-//
-// Returns:
-//   - hooks.ToolResult: Complete execution result including success/failure, output, error, duration
-func (rt *Runtime) executeSingleTool(
-	ctx context.Context,
-	sessionID string,
-	inv hooks.ToolCallInvocation,
-	emit func(events.ReactEventType, any),
-	toolExec tools.ToolExecutor,
-	timeout time.Duration,
-) hooks.ToolResult {
-	start := time.Now()
-
-	// ToolHook.Before
-	for _, h := range rt.toolHooks {
-		hr := h.Before(sessionID, inv.Name, inv.Arguments)
-		if hr.SkipWithResult != nil {
-			// Skip actual tool execution, use cached result.
-			emit(events.ToolExecStart, events.ToolExecStartData{
-				ToolName: inv.Name,
-				Params:   inv.Arguments,
-			})
-			result := *hr.SkipWithResult
-			result.ToolCallID = inv.ID
-			emit(events.ToolExecEnd, events.ToolExecEndData{
-				ToolName:   result.ToolName,
-				ToolCallID: result.ToolCallID,
-				Duration:   result.Duration,
-				Success:    result.Success,
-				Result:     result.Result,
-			})
-			return result
-		}
-		if hr.Abort {
-			emit(events.PermissionDenied, hr.AbortReason)
-			return failedToolResult(inv.Name, inv.ID, "aborted: "+hr.AbortReason, start)
-		}
-		if hr.Error != nil {
-			emit(events.PermissionDenied, hr.Error.Error())
-			return failedToolResult(inv.Name, inv.ID, hr.Error.Error(), start)
-		}
-	}
-
-	emit(events.ToolExecStart, events.ToolExecStartData{
-		ToolName: inv.Name,
-		Params:   inv.Arguments,
-	})
-	execCtx, execCancel := context.WithTimeout(ctx, timeout)
-	defer execCancel()
-
-	execResult, execErr := toolExec.Execute(execCtx, inv.Name, inv.Arguments)
-	tr := buildToolResult(inv, execResult, execErr, start)
-
-	// ToolHook.After
-	for _, h := range rt.toolHooks {
-		hr := h.After(&tr)
-		if hr.Abort {
-			tr = failedToolResult(inv.Name, inv.ID, "aborted: "+hr.AbortReason, start)
-			break
-		}
-		if hr.Error != nil {
-			tr = failedToolResult(inv.Name, inv.ID, hr.Error.Error(), start)
-			break
-		}
-	}
-
-	emit(events.ToolExecEnd, events.ToolExecEndData{
-		ToolName:   tr.ToolName,
-		ToolCallID: tr.ToolCallID,
-		Duration:   time.Since(start),
-		Success:    tr.Success,
-		Result:     tr.Result,
-		Error:      tr.Error,
-	})
-	return tr
-}
-
-// failedToolResult creates a failed ToolResult for tool execution errors or aborts.
-// Used when hooks deny execution, tools fail, or timeouts occur.
-//
-// Parameters:
-//   - toolName: Name of the tool that failed
-//   - toolCallID: ID of the tool call from LLM response
-//   - errMsg: Human-readable error message
-//   - start: Timestamp when execution started (for duration calculation)
-//
-// Returns:
-//   - hooks.ToolResult: Failed result with Success=false, Error set, Duration calculated
-func failedToolResult(toolName, toolCallID, errMsg string, start time.Time) hooks.ToolResult {
-	return hooks.ToolResult{
-		ToolName:   toolName,
-		ToolCallID: toolCallID,
-		Success:    false,
-		Error:      errMsg,
-		Duration:   time.Since(start),
-	}
-}
-
-// buildToolResult constructs a ToolResult from tool execution output or error.
-// Handles both successful executions (with result data) and failures.
-//
-// Parameters:
-//   - inv: Original tool invocation (name, ID, arguments)
-//   - execResult: Execution result from ToolExecutor (may be nil on error)
-//   - execErr: Error from tool execution (nil on success)
-//   - start: Start timestamp for duration calculation
-//
-// Returns:
-//   - hooks.ToolResult: Complete result with success status, output/error, metadata, duration
-func buildToolResult(inv hooks.ToolCallInvocation, execResult *tools.ToolExecutionResult, execErr error, start time.Time) hooks.ToolResult {
-	tr := hooks.ToolResult{
-		ToolName:   inv.Name,
-		ToolCallID: inv.ID,
-		Duration:   time.Since(start),
-	}
-	if execErr != nil {
-		tr.Error = execErr.Error()
-		tr.Success = false
-	} else if execResult != nil {
-		tr.Result = execResult.Result
-		tr.Metadata = execResult.Metadata
-		tr.Duration = execResult.Duration
-		tr.Success = execResult.Error == nil
-		if execResult.Error != nil {
-			tr.Error = execResult.Error.Error()
-		}
-	}
-	return tr
-}
-
-// ── LLM Response Parsing ────────────────────────────────────────────────────
-
-// parseToolInvocations converts LLM tool call objects into internal hook format.
-// Parses JSON arguments strings into parameter maps for each tool call.
-//
-// # Input Processing
-//
-// Filters out invalid calls (missing ID or name). For argument parsing:
-//   - Valid JSON: Unmarshal into map[string]any
-//   - Invalid JSON: Store as {"raw_args": original_string} to preserve data
-//
-// Parameters:
-//   - calls: Tool calls from gochat streaming response
-//
-// Returns:
-//   - []hooks.ToolCallInvocation: Parsed invocations ready for execution, or nil if empty
-func parseToolInvocations(calls []gochatcore.ToolCall) []hooks.ToolCallInvocation {
-	if len(calls) == 0 {
-		return nil
-	}
-	invocs := make([]hooks.ToolCallInvocation, 0, len(calls))
-	for _, tc := range calls {
-		if tc.ID == "" || tc.Name == "" {
-			continue
-		}
-		var params map[string]any
-		if tc.Arguments != "" {
-			if err := json.Unmarshal([]byte(tc.Arguments), &params); err != nil {
-				params = map[string]any{"raw_args": tc.Arguments}
-			}
-		}
-		invocs = append(invocs, hooks.ToolCallInvocation{
-			ID:        tc.ID,
-			Name:      tc.Name,
-			Arguments: params,
-		})
-	}
-	return invocs
-}
-
-// ── Tool Definition Building ────────────────────────────────────────────────
-
-// buildToolDefinitions converts active tools into LLM API tool definition format.
-// When an ActiveToolSet is available (set by exec()), it builds from the active set.
-// Otherwise, builds from all registered tools (backward compatibility).
-//
-// Each tool's Info() is converted to gochatcore.Tool with:
-//   - Name: Tool identifier
-//   - Description: Human-readable description for LLM
-//   - Parameters: JSON Schema object built from Parameter slice
-//
-// Returns:
-//   - []gochatcore.Tool: Array of tool definitions for LLM API, or nil if no tools registered
-func (rt *Runtime) buildToolDefinitions() []gochatcore.Tool {
-	if rt.activeToolSet != nil {
-		return rt.activeToolSet.BuildDefinitions()
-	}
-	if rt.toolReg == nil {
-		return nil
-	}
-	allTools := rt.toolReg.All()
-	if len(allTools) == 0 {
-		return nil
-	}
-	out := make([]gochatcore.Tool, 0, len(allTools))
-	for _, t := range allTools {
-		info := t.Info()
-		out = append(out, gochatcore.Tool{
-			Name:        info.Name,
-			Description: info.Description,
-			Parameters:  buildParamSchema(info.Parameters),
-		})
-	}
-	return out
-}
-
-// buildParamSchema converts a Parameter slice into JSON Schema format for LLM tool definitions.
-// Builds a proper JSON Schema "object" type with properties for each parameter.
-//
-// # Schema Structure
-//
-//	{
-//	  "type": "object",
-//	  "properties": {
-//	    "param1": {"type": "string", "description": "...", "enum": [...]},
-//	    "param2": {"type": "integer", "description": "..."}
-//	  }
-//	}
-//
-// Parameters:
-//   - params: Tool parameter definitions from tools.Info().Parameters
-//
-// Returns:
-//   - json.RawMessage: Marshaled JSON Schema, or empty object schema if params is nil/empty
-func buildParamSchema(params []tools.Parameter) json.RawMessage {
-	if len(params) == 0 {
-		return json.RawMessage(`{"type":"object","properties":{}}`)
-	}
-	schema := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-	}
-	props := schema["properties"].(map[string]any)
-	for _, p := range params {
-		prop := map[string]any{
-			"type":        paramTypeToJSONType(p.Type),
-			"description": p.Description,
-		}
-		if len(p.Enum) > 0 {
-			prop["enum"] = p.Enum
-		}
-		props[p.Name] = prop
-	}
-	b, err := json.Marshal(schema)
-	if err != nil {
-		return json.RawMessage(`{"type":"object","properties":{}}`)
-	}
-	return b
-}
-
-// paramTypeToJSONType maps Go/tool parameter type strings to JSON Schema type names.
-// Handles common aliases and defaults unknown types to "string".
-//
-// # Type Mapping
-//
-//   - "integer", "int", "int64", "int32" → "integer"
-//   - "number", "float64", "float32" → "number"
-//   - "boolean", "bool" → "boolean"
-//   - "array", "[]string", "[]int" → "array"
-//   - "object", "map" → "object"
-//   - Everything else → "string" (default)
-//
-// Parameters:
-//   - t: Type string from tool parameter definition
-//
-// Returns:
-//   - string: JSON Schema compatible type name
-func paramTypeToJSONType(t string) string {
-	switch t {
-	case "integer", "int", "int64", "int32":
-		return "integer"
-	case "number", "float64", "float32":
-		return "number"
-	case "boolean", "bool":
-		return "boolean"
-	case "array", "[]string", "[]int":
-		return "array"
-	case "object", "map":
-		return "object"
-	default:
-		return "string"
-	}
-}
-
-// ── RegistryHub accessors ─────────────────────────────────────────────────────
-
-// Logger returns the Runtime's structured logger instance.
-// The logger is used throughout the runtime for debug, info, warning, and error messages.
-// Default implementation outputs JSON-formatted logs to stdout.
-//
-// Returns:
-//   - logging.Logger: The configured logger instance. Never nil (defaults to DefaultLogger).
-//
-// Example:
-//
-//	logger := rt.Logger()
-//	logger.Info("Starting Ask", "agent", agentName, "question", question)
+// Logger 返回 Runtime 的结构化日志器实例。
+// 日志器用于运行时中的调试、信息、警告和错误消息。
+// 默认实现将 JSON 格式日志输出到标准输出。
 func (rt *Runtime) Logger() logging.Logger { return rt.logger }
 
-// ToolRegistry returns the Runtime's tool registry containing all registered tools.
-// The tool registry manages available tools that the LLM can invoke during execution.
-// Built-in tools are registered automatically by NewRuntime; additional tools
-// can be registered via RegisterTool() or WithToolRegistry().
-//
-// Returns:
-//   - tools.ToolRegistry: The tool registry instance. Never nil.
-//
-// Example:
-//
-//	reg := rt.ToolRegistry()
-//	if tool, ok := reg.Get("Bash"); ok {
-//	    fmt.Printf("Bash tool: %s\n", tool.Info().Description)
-//	}
+// ToolRegistry 返回 Runtime 的工具注册表，其中包含所有已注册工具。
+// 工具注册表管理大语言模型在执行期间可调用的可用工具。
+// NewRuntime 自动注册内置工具；额外工具可通过 RegisterTool 或 WithToolRegistry 注册。
 func (rt *Runtime) ToolRegistry() tools.ToolRegistry { return rt.toolReg }
 
-// SkillRegistry returns the Runtime's skill registry for managing agent capabilities.
-// Skills define high-level capabilities exposed to the agent in system prompts.
-// Unlike tools (which are function-calling), skills describe what an agent CAN do.
-//
-// Returns:
-//   - skill.SkillRegistry: The skill registry instance. May be nil if not configured.
-//
-// Example:
-//
-//	skills := rt.SkillRegistry()
-//	if skills != nil {
-//	    for _, s := range skills.ListSkills() {
-//	        fmt.Printf("Skill: %s - %s\n", s.Name, s.Description)
-//	    }
-//	}
+// SkillRegistry 返回 Runtime 的技能注册表，用于管理智能体能力。
+// 技能定义在系统提示词中向智能体展示的高级能力。
+// 与工具（函数调用）不同，技能描述智能体能做什么。
 func (rt *Runtime) SkillRegistry() skill.SkillRegistry { return rt.skillReg }
 
-// RuleRegistry returns the Runtime's rule registry for behavioral constraints.
-// Rules define how the agent should behave, what it should avoid, and any
-// operational boundaries. Rules are included in system prompts.
-//
-// Returns:
-//   - rule.RuleRegistry: The rule registry instance. May be nil if not configured.
-//
-// Example:
-//
-//	rules := rt.RuleRegistry()
-//	if rules != nil {
-//	    promptSection := rules.FormatPromptSection()
-//	    fmt.Println(promptSection)
-//	}
+// RuleRegistry 返回 Runtime 的行为规则注册表。
+// 规则定义智能体应如何表现、应避免什么以及任何操作边界。规则会纳入系统提示词。
 func (rt *Runtime) RuleRegistry() rule.RuleRegistry { return rt.ruleReg }
 
-// ProviderRegistry returns the Runtime's LLM provider registry.
-// Provider configurations can be used for multi-provider setups or fallback logic.
-//
-// Returns:
-//   - config.ProviderRegistry: The provider registry instance. May be nil.
+// ProviderRegistry 返回 Runtime 的大语言模型提供商注册表。
+// 提供商配置可用于多提供商设置或回退逻辑。
 func (rt *Runtime) ProviderRegistry() config.ProviderRegistry { return rt.providerReg }
 
-// ToolExecutor returns the Runtime's tool execution engine.
-// The executor handles tool invocation with hook support, timeout management,
-// and event emission. It wraps the ToolRegistry with execution logic.
-//
-// Returns:
-//   - tools.ToolExecutor: The tool executor instance.
-//
-// Note: For executing tools in custom code, prefer using this executor rather than
-// calling tools directly, as it includes hook chain and error handling.
+// ToolExecutor 返回 Runtime 的工具执行引擎。
+// 执行器处理带有钩子支持、超时管理和事件发射的工具调用。
+// 在自定义代码中执行工具时，建议使用此执行器而非直接调用工具，
+// 因为它包含钩子链和错误处理。
 func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
 	return rt.toolExec
 }
 
-// AgentRegistry returns the Runtime's agent configuration registry.
-// Agent configs define roles, descriptions, and introductions used to build
-// identity sections in system prompts.
-//
-// Returns:
-//   - *config.AgentRegistry: The agent registry pointer. May be nil.
-//
-// Example:
-//
-//	agents := rt.AgentRegistry()
-//	if agents != nil {
-//	    cfg := agents.Get("coder")
-//	    if cfg != nil {
-//	        fmt.Printf("Role: %s\n", cfg.Role)
-//	    }
-//	}
+// AgentRegistry 返回 Runtime 的智能体配置注册表。
+// 智能体配置定义角色、描述和介绍，用于构建系统提示词中的身份段落。
 func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.agentReg }
 
-// WithFileModifyTracker sets the file modification tracker provider for this Runtime.
-// When set, a FileModifyHook is automatically registered in the default tool hooks
-// to backup files before Write/FileEdit tools execute.
+// WithFileModifyTracker 设置当前 Runtime 的文件修改追踪器 provider。
+// 设置后，默认工具钩子中会自动注册 FileModifyHook，以在 Write / FileEdit 工具执行前备份文件。
 //
-// The provider function receives a sessionID and returns the session's TrackModify
-// function (or false if tracking is not available for that session).
-//
-// Example:
-//
-//	rt.WithFileModifyTracker(func(sessionID string) (action.TrackFunc, bool) {
-//	    sess := getSessionByID(sessionID)
-//	    if sess == nil { return nil, false }
-//	    return sess.TrackModify, true
-//	})
+// provider 函数接收 sessionID，返回该会话的 TrackModify 函数（若该会话无追踪能力则返回 false）。
 func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	rt.fileModifyTracker = provider
 	if rt.fileModifyHook != nil {
@@ -2300,363 +392,12 @@ func (rt *Runtime) WithFileModifyTracker(provider action.TrackerProvider) {
 	}
 }
 
-// RegisterTool adds a new tool to the Runtime's tool registry.
-// The tool will be available for the LLM to invoke in subsequent Ask calls.
-// Tool definitions are sent to the LLM as part of the API request.
+// RegisterTool 向 Runtime 的工具注册表添加新工具。
+// 该工具将在后续 Ask 调用中可供大语言模型调用。
+// 工具定义会作为 API 请求的一部分发送给大语言模型。
 //
-// Parameters:
-//   - tool: A FuncTool instance implementing the tool logic.
-//     Must have valid Name, Description, and Parameters in its Info().
-//
-// Returns:
-//   - error: Non-nil if tool registration fails (e.g., duplicate name, invalid config).
-//
-// Example:
-//
-//	customTool := tools.NewFuncTool(tools.Info{
-//	    Name:        "Weather",
-//	    Description: "Get current weather for a city",
-//	    Parameters: []tools.Parameter{
-//	        {Name: "city", Type: "string", Description: "City name"},
-//	    },
-//	}, func(ctx context.Context, params map[string]any) (string, error) {
-//	    city := params["city"].(string)
-//	    return getWeather(city), nil
-//	})
-//
-//	if err := rt.RegisterTool(customTool); err != nil {
-//	    log.Fatalf("Failed to register tool: %v", err)
-//	}
+// 参数 tool 必须实现 FuncTool，且 Info() 中具有有效的 Name、Description 和 Parameters。
+// 返回 error：当工具注册失败时非 nil（例如重名或无效配置）。
 func (rt *Runtime) RegisterTool(tool tools.FuncTool) error {
 	return rt.toolReg.Register(tool)
-}
-
-// ── AskUser helpers ────────────────────────────────────────────────────────
-
-// findAskUserInvocation finds an AskUser tool invocation in the list.
-// Returns nil if no AskUser invocation is found.
-func findAskUserInvocation(invocs []hooks.ToolCallInvocation) *hooks.ToolCallInvocation {
-	for i := range invocs {
-		if invocs[i].Name == "AskUser" {
-			return &invocs[i]
-		}
-	}
-	return nil
-}
-
-// buildAskUserPendingData extracts question data from AskUser arguments
-// and builds AskUserPendingData for frontend display.
-func buildAskUserPendingData(args map[string]any) events.AskUserPendingData {
-	question, _ := args["question"].(string)
-	multi, _ := args["multiSelect"].(bool)
-
-	q := events.AskUserQuestion{
-		Question:    question,
-		MultiSelect: multi,
-	}
-	if opts, ok := args["options"].([]any); ok {
-		for _, o := range opts {
-			if s, ok := o.(string); ok {
-				q.Options = append(q.Options, s)
-			}
-		}
-	}
-	return events.NewAskUserPendingData([]events.AskUserQuestion{q})
-}
-
-// ── Permission helpers ─────────────────────────────────────────────────────
-
-// securityLevelString converts an events.SecurityLevel to a stable,
-// human-readable string ("safe" / "sensitive" / "high_risk") for storage
-// on session.PendingPermission. The string form is what the audit log
-// expects; using the raw int would be opaque to humans reading it back.
-func securityLevelString(level events.SecurityLevel) string {
-	switch level {
-	case events.LevelSafe:
-		return "safe"
-	case events.LevelSensitive:
-		return "sensitive"
-	case events.LevelHighRisk:
-		return "high_risk"
-	default:
-		return "unknown"
-	}
-}
-
-// buildGrantToolContext constructs a ToolContext suitable for calling
-// tools.PermissionRequired.Grant from the runtime layer.
-//
-// Grant only needs to read session-level state (project dir, session dir,
-// logger) to do its pre-check. We deliberately keep this minimal — the
-// executor's full ToolContext is created later in the actual Execute call.
-func (rt *Runtime) buildGrantToolContext(ctx context.Context, sess *session.Session) context.Context {
-	tc := &tools.ToolContext{
-		EmitEvent:        nil, // Grant does not emit events.
-		Logger:           rt.logger,
-		Session:          sess,
-		SessionWhitelist: sess.Whitelist(),
-	}
-	return tools.WithToolContext(ctx, tc)
-}
-
-// checkPermissionGrants runs PermissionRequired.Grant on every invocation
-// in the current turn. If any tool's Grant returns granted=false:
-//
-//   - The invocation is saved to session.PendingPermission (so a later
-//     magic word from the user can resolve it).
-//   - A PermissionPending event is emitted so the UI can render the
-//     allow/deny dialog.
-//   - The function returns the pending struct so the caller can stop the
-//     loop and propagate termination metadata.
-//
-// The tool is NOT executed. That is the key difference from the old
-// executor-level "permission_required" placeholder: the LLM never sees
-// any "needs permission" text in its context, only the eventual tool
-// result (success on Allow, "Permission Denied" on Deny).
-//
-// Returns nil when every tool either does not implement PermissionRequired
-// or returns granted=true.
-func (rt *Runtime) checkPermissionGrants(
-	ctx context.Context,
-	b *AskBuilder,
-	invocs []hooks.ToolCallInvocation,
-	emit func(events.ReactEventType, any),
-	logger logging.Logger,
-) *session.PendingPermission {
-	if len(invocs) == 0 {
-		return nil
-	}
-	grantCtx := rt.buildGrantToolContext(ctx, b.session)
-
-	for _, inv := range invocs {
-		tool, ok := rt.toolReg.Get(inv.Name)
-		if !ok {
-			continue
-		}
-		pr, ok := tool.(tools.PermissionRequired)
-		if !ok {
-			// Tool opted out of permission flow — let Execute handle any
-			// input validation.
-			continue
-		}
-
-		granted, reason := pr.Grant(grantCtx, inv.Arguments)
-		if granted {
-			continue
-		}
-
-		info := tool.Info()
-		pending := &session.PendingPermission{
-			ToolName:      inv.Name,
-			ToolCallID:    inv.ID,
-			Arguments:     inv.Arguments,
-			Reason:        reason,
-			SecurityLevel: securityLevelString(info.SecurityLevel),
-		}
-		b.session.SetPendingPermission(*pending)
-		emit(events.PermissionPending, events.PermissionPendingData{
-			TickID:        uuid.New().String(),
-			ToolName:      inv.Name,
-			Params:        inv.Arguments,
-			Reason:        reason,
-			SecurityLevel: info.SecurityLevel,
-		})
-		logger.Info("需要授权",
-			"tool", inv.Name,
-			"reason", reason,
-			"session", b.session.ID(),
-		)
-		return pending
-	}
-	return nil
-}
-
-// resolvePermissionMagicWord inspects the new user message. If it matches
-// the "PermissionAllow" / "PermissionDeny" magic word AND the session has
-// a pending permission, the pending permission is resolved and the
-// matching tool result is appended to the session. The user message itself
-// is NOT appended — the LLM only ever sees the tool result.
-//
-// Returns true when the magic word was consumed (so the caller should
-// skip its own user-message append). Returns false when:
-//
-//   - the user message is not a magic word (treat as a normal user turn), or
-//   - the message IS a magic word but no pending permission exists
-//     (also treat as a normal user turn — probably a stale retry from
-//     the UI, no reason to swallow the message).
-func (rt *Runtime) resolvePermissionMagicWord(
-	ctx context.Context,
-	b *AskBuilder,
-	toolExec tools.ToolExecutor,
-	emit func(events.ReactEventType, any),
-	logger logging.Logger,
-) bool {
-	action := tools.ClassifyMagicWord(b.question)
-	if action == "" {
-		return false
-	}
-	pending := b.session.TakePendingPermission()
-	if pending == nil {
-		// Magic word but nothing pending — fall through and let the
-		// message be processed as a regular user turn.
-		return false
-	}
-
-	logger.Info("接收到授权回应",
-		"action", action,
-		"tool", pending.ToolName,
-		"tool_call_id", pending.ToolCallID,
-		"session", b.session.ID(),
-	)
-
-	switch action {
-	case tools.PermissionAllow:
-		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
-	case tools.PermissionAllowSession:
-		// Add to session whitelist before executing.
-		if entry := rt.buildWhitelistEntry(pending, b.session); entry != "" {
-			if err := b.session.AddToWhitelist(pending.ToolName, entry); err != nil {
-				logger.Error("添加到会话白名单失败", err)
-			}
-		}
-		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
-	case tools.PermissionDeny:
-		rt.appendDeniedResult(ctx, b, pending)
-	}
-	return true
-}
-
-// buildWhitelistEntry constructs the whitelist entry value for a tool
-// invocation based on the tool name and its arguments.
-//
-// Returns the entry to store (e.g. base command name for bash, resolved
-// file path for write/edit, script path for run_script), or "" if no
-// meaningful entry can be derived (in which case no whitelisting happens).
-func (rt *Runtime) buildWhitelistEntry(pending *session.PendingPermission, sess *session.Session) string {
-	switch pending.ToolName {
-	case "bash":
-		cmd, _ := pending.Arguments["command"].(string)
-		if cmd == "" {
-			return ""
-		}
-		parts := strings.Fields(cmd)
-		if len(parts) == 0 {
-			return ""
-		}
-		return parts[0]
-	case "write", "edit":
-		path, _ := pending.Arguments["filePath"].(string)
-		if path == "" {
-			return ""
-		}
-		resolved, _ := tools.ResolveTargetPath(path, sess.ProjectDir(), sess.SessionDir())
-		return resolved
-	case "run_script":
-		cmd, _ := pending.Arguments["command"].(string)
-		if cmd == "" {
-			return ""
-		}
-		workingDir, _ := pending.Arguments["working_dir"].(string)
-		if workingDir == "" {
-			workingDir = "."
-		}
-		parts := strings.Fields(cmd)
-		if len(parts) == 0 {
-			return ""
-		}
-		// Determine the script path. If the first token looks like an
-		// interpreter name (no path separators), use the second token.
-		scriptCandidate := parts[0]
-		if len(parts) > 1 && !strings.ContainsAny(parts[0], "./\\") {
-			scriptCandidate = parts[1]
-		}
-		// Resolve to absolute path, matching RunScript.Grant() behavior.
-		if !filepath.IsAbs(scriptCandidate) {
-			scriptCandidate = filepath.Join(workingDir, scriptCandidate)
-		}
-		return filepath.Clean(scriptCandidate)
-	default:
-		return ""
-	}
-}
-
-// executePendingAndAppend actually runs the tool that was held in the
-// pending permission, then appends a tool result message to the session
-// using the ORIGINAL tool_call_id. The LLM only ever sees the tool
-// result — never the "waiting for human approval" intermediate state.
-func (rt *Runtime) executePendingAndAppend(
-	ctx context.Context,
-	b *AskBuilder,
-	pending *session.PendingPermission,
-	toolExec tools.ToolExecutor,
-	emit func(events.ReactEventType, any),
-	logger logging.Logger,
-) {
-	// Build a ToolContext so the tool can access session info during
-	// execution (e.g. for file tools to resolve project-relative paths).
-	execCtx := rt.buildGrantToolContext(ctx, b.session)
-	execCtx, cancel := context.WithTimeout(execCtx, rt.syncTimeout)
-	defer cancel()
-
-	start := time.Now()
-	emit(events.ToolExecStart, events.ToolExecStartData{
-		ToolName: pending.ToolName,
-		Params:   pending.Arguments,
-	})
-	execResult, execErr := toolExec.Execute(execCtx, pending.ToolName, pending.Arguments)
-	duration := time.Since(start)
-
-	var content string
-	if execErr != nil {
-		content = fmt.Sprintf("[%s] 错误: %s", pending.ToolName, execErr.Error())
-	} else if execResult != nil {
-		if execResult.Error != nil {
-			content = fmt.Sprintf("[%s] 错误: %s", pending.ToolName, execResult.Error.Error())
-		} else if execResult.Result != "" {
-			content = execResult.Result
-		} else {
-			content = fmt.Sprintf("[%s] 返回: (空结果)", pending.ToolName)
-		}
-	} else {
-		content = fmt.Sprintf("[%s] 返回: (无结果)", pending.ToolName)
-	}
-	logger.Info("工具执行结果 (Allow)",
-		"tool", pending.ToolName,
-		"tool_call_id", pending.ToolCallID,
-		"duration_ms", duration.Milliseconds(),
-		"session", b.session.ID(),
-	)
-	emit(events.ToolExecEnd, events.ToolExecEndData{
-		ToolName:   pending.ToolName,
-		ToolCallID: pending.ToolCallID,
-		Duration:   duration,
-		Success:    execErr == nil,
-		Result:     content,
-	})
-
-	b.session.Append(ctx, session.Message{
-		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
-		ToolCallID: pending.ToolCallID,
-	})
-}
-
-// appendDeniedResult synthesizes a "Permission Denied" tool result for the
-// pending invocation and appends it to the session with the original
-// tool_call_id. The LLM only ever sees this — never a "user denied"
-// message — so it can adapt its plan (pick a different path, ask the
-// user, etc.) without knowing the human saw a deny button.
-func (rt *Runtime) appendDeniedResult(
-	ctx context.Context,
-	b *AskBuilder,
-	pending *session.PendingPermission,
-) {
-	reason := pending.Reason
-	if reason == "" {
-		reason = "用户拒绝"
-	}
-	content := fmt.Sprintf("权限被拒绝：%s", reason)
-	b.session.Append(ctx, session.Message{
-		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
-		ToolCallID: pending.ToolCallID,
-	})
 }

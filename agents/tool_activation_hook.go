@@ -7,31 +7,43 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 )
 
-// ToolActivationHook is a ToolHook that monitors tool execution results
-// and updates the ActiveToolSet accordingly.
+// ToolActivationHook 监听工具执行结果并更新 ActiveToolSet。
 //
-// It handles two cases:
-//   - ToolSelector: parses the `loaded` list from the result and activates those tools
-//   - Skill: parses `allowed_tools` from the result and activates them
+// 处理两种情况：
+//   - ToolSelector：解析结果中的 loaded 列表并激活对应工具
+//   - Skill：解析结果中的 allowed_tools 并激活对应工具
 //
-// Activation happens in After(), so the newly activated tools are available
-// starting from the next LLM iteration within the same Turn.
+// 激活发生在 After() 中，因此新激活的工具从同一 Turn 的下一轮 LLM 迭代开始可用。
 //
-// The ActiveToolSet is per-Ask, so the hook uses a getter function
-// (see SetActiveToolSet) to access the current ActiveToolSet.
+// ActiveToolSet 是单次 Ask 级别的，因此 hook 通过 setter 在每次 Ask 开始时
+// 绑定当前 ActiveToolSet，通过 getter 在 After() 中读取。
 type ToolActivationHook struct {
 	getActiveToolSet func() *ActiveToolSet
+	setActiveToolSet func(*ActiveToolSet)
 	logger           logging.Logger
 }
 
-// NewToolActivationHook creates a ToolActivationHook.
-// The getter function returns the current Ask's ActiveToolSet.
-func NewToolActivationHook(getter func() *ActiveToolSet, logger logging.Logger) *ToolActivationHook {
-	return &ToolActivationHook{getActiveToolSet: getter, logger: logger}
+// NewToolActivationHook 创建 ToolActivationHook。
+// 返回的 hook 可通过 SetActiveToolSet 绑定当前 Ask 的 ActiveToolSet。
+func NewToolActivationHook(logger logging.Logger) *ToolActivationHook {
+	var current *ActiveToolSet
+	return &ToolActivationHook{
+		getActiveToolSet: func() *ActiveToolSet { return current },
+		setActiveToolSet: func(ats *ActiveToolSet) { current = ats },
+		logger:           logger,
+	}
+}
+
+// SetActiveToolSet 设置当前 Ask 的 ActiveToolSet。
+// 在 exec 开始时调用；Ask 结束后应传 nil 解除绑定。
+func (h *ToolActivationHook) SetActiveToolSet(ats *ActiveToolSet) {
+	if h.setActiveToolSet != nil {
+		h.setActiveToolSet(ats)
+	}
 }
 
 func (h *ToolActivationHook) Priority() int {
-	// Run early so activated tools are available for subsequent hooks/ActionLoggerHook.
+	// 尽早运行，使激活的工具对后续钩子（如 ActionLoggerHook）可用。
 	return 20
 }
 
@@ -65,7 +77,7 @@ func (h *ToolActivationHook) handleToolSelector(result *hooks.ToolResult) {
 	}
 	var tsr toolSelectorResult
 	if err := json.Unmarshal([]byte(result.Result), &tsr); err != nil {
-		h.logger.Warn("ToolActivationHook: failed to parse ToolSelector result JSON", "error", err)
+		h.logger.Warn("ToolActivationHook: 解析 ToolSelector 结果 JSON 失败", "error", err)
 		return
 	}
 	if len(tsr.Loaded) > 0 {
@@ -74,7 +86,7 @@ func (h *ToolActivationHook) handleToolSelector(result *hooks.ToolResult) {
 			return
 		}
 		activated := ats.Activate(tsr.Loaded)
-		h.logger.Info("ToolActivationHook: tools activated via ToolSelector",
+		h.logger.Info("ToolActivationHook: 通过 ToolSelector 激活工具",
 			"count", len(activated), "tools", activated)
 	}
 }
@@ -92,7 +104,7 @@ func (h *ToolActivationHook) handleSkill(result *hooks.ToolResult) {
 	}
 	var sr skillResult
 	if err := json.Unmarshal([]byte(result.Result), &sr); err != nil {
-		h.logger.Warn("ToolActivationHook: failed to parse Skill result JSON", "error", err)
+		h.logger.Warn("ToolActivationHook: 解析 Skill 结果 JSON 失败", "error", err)
 		return
 	}
 	if len(sr.AllowedTools) > 0 {
@@ -101,7 +113,7 @@ func (h *ToolActivationHook) handleSkill(result *hooks.ToolResult) {
 			return
 		}
 		activated := ats.Activate(sr.AllowedTools)
-		h.logger.Info("ToolActivationHook: tools activated via Skill AllowedTools",
+		h.logger.Info("ToolActivationHook: 通过 Skill AllowedTools 激活工具",
 			"skill", sr.SkillName, "count", len(activated), "tools", activated)
 	}
 }
