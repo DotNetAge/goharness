@@ -149,7 +149,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	)
 
 	// A. 零 I/O 前置校验（设备文件黑名单、二进制扩展名）
-	if err := validateReadPath(resolvedPath); err != nil {
+	if err = validateReadPath(resolvedPath); err != nil {
 		return nil, err
 	}
 
@@ -271,7 +271,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	if format := detectDocFormat(resolvedPath); format != "" {
 		f, err := store.OS.Open(cleanPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open file: %w", err)
+			return nil, fmt.Errorf("无法打开文件: %w", err)
 		}
 		defer f.Close()
 
@@ -301,7 +301,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	if r.limits.EnableImageReading && isImageFile(resolvedPath) {
 		data, err := store.ReadFileFromFS(store.OS, resolvedPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read file: %w", err)
+			return nil, fmt.Errorf("无法读取文件: %w", err)
 		}
 
 		// 内联图片处理（见过度设计审计 #8：直接调用 compressAndEncodeImage，不再走 Hook）
@@ -325,7 +325,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	// 文本文件读取
 	data, err := store.ReadFileFromFS(store.OS, resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return nil, fmt.Errorf("无法读取文件: %w", err)
 	}
 
 	// 获取分页参数

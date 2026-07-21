@@ -66,8 +66,13 @@ func (s *Session) TrackModify(filePath string) error {
 	s.modifyFiles = append(s.modifyFiles, cleanPath)
 	s.persistModifyFilesLocked()
 
-	// 触发事件
-	if s.fileModifyHandler != nil && backupPath != "" {
+	// 触发事件。
+	//
+	// 注意：新文件（fileExists == false）的 backupPath 为空字符串，
+	// 但仍需触发事件，让前端能够显示「新增文件」的 DiffView。
+	// containsModifyFile 已在上面对重复追踪做了去重，
+	// 因此同一文件被多次修改时，handler 只会在首次追踪时触发一次。
+	if s.fileModifyHandler != nil {
 		s.fileModifyHandler(FileModifyEvent{
 			FilePath:   cleanPath,
 			BackupPath: backupPath,

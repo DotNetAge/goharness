@@ -13,7 +13,6 @@ import (
 
 // EditTool 实现了文件编辑工具。
 //
-// 改进（见 EDIT_DESIGN.md）：
 //   - 容错匹配：花引号降级 + 末尾换行容错（B 节）
 //   - Staleness 自动检测：通过 filestate.CheckStale（C 节）
 //   - 结构化输出：返回 EditResult（D 节）
@@ -55,7 +54,7 @@ func (t *EditTool) Info() *ToolInfo {
 		Tags: []string{"file", "edit", "code", "replace", "modification"},
 		Parameters: []Parameter{
 			{
-				Name:        "filePath",
+				Name:        "file_path",
 				Type:        "string",
 				Description: "要编辑的文件路径。",
 				Required:    true,
@@ -129,7 +128,7 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 
 // Execute 执行文件编辑操作。
 func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	filePath, err := ValidateRequiredString(params, "filePath")
+	filePath, err := ValidateRequiredString(params, "file_path")
 	if err != nil {
 		return nil, err
 	}

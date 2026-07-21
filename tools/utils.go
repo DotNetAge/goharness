@@ -17,7 +17,7 @@ import (
 //	    return nil, err
 //	}
 func ValidateRequired(params map[string]any, key string) error {
-	if _, ok := params[key]; !ok {
+	if _, ok := GetParam(params, key); !ok {
 		return fmt.Errorf("缺少必需参数: %s", key)
 	}
 	return nil
@@ -38,11 +38,11 @@ func ValidateRequiredString(params map[string]any, key string) (string, error) {
 		return "", err
 	}
 
-	str, ok := params[key].(string)
+	str, ok := GetParam(params, key)
 	if !ok {
 		return "", fmt.Errorf("invalid type for parameter '%s': expected string", key)
 	}
-	return str, nil
+	return str.(string), nil
 }
 
 // ValidateFileSafety verifies file access safety using path anchoring with TOCTOU protection.
@@ -245,7 +245,7 @@ func SafeCreateFile(path string, projectDir string, perm os.FileMode) (*os.File,
 			return nil, fmt.Errorf("无法创建文件 %s: %w", resolvedPath, err)
 		}
 	} else if err != nil {
-		return nil, fmt.Errorf("failed to create file %s: %w", resolvedPath, err)
+		return nil, fmt.Errorf("无法创建文件 %s: %w", resolvedPath, err)
 	}
 
 	if err := postOpenValidation(file, resolvedPath, projectDir); err != nil {
@@ -305,7 +305,7 @@ func resolveAndValidateForCreation(path string, projectDir string) (string, erro
 
 // postOpenValidation performs additional validation after a file has been opened.
 // This catches TOCTOU races where the path changed between validation and opening.
-func postOpenValidation(file *os.File, resolvedPath string, projectDir string) error {
+func postOpenValidation(_ *os.File, resolvedPath string, projectDir string) error {
 	actualPath, err := filepath.EvalSymlinks(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {

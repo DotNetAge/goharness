@@ -107,8 +107,11 @@ func (h *FileModifyHook) SetProvider(provider TrackerProvider) {
 func (h *FileModifyHook) Abort(reason string) {}
 
 // extractFilePath 从工具参数中提取目标文件路径。
+// 兼容多种命名约定：
+//   - path / file_path / filepath（蛇形 / 全小写）
+//   - filePath（驼峰，Write 工具使用）
 func extractFilePath(params map[string]any) string {
-	for _, key := range []string{"path", "file_path", "filepath"} {
+	for _, key := range []string{"filePath", "path", "file_path", "filepath"} {
 		if v, ok := params[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return s
