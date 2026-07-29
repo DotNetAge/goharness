@@ -5,64 +5,6 @@ import (
 	"testing"
 )
 
-func TestSplitPipeSegments(t *testing.T) {
-	tests := []struct {
-		name string
-		s    string
-		want []string
-	}{
-		{
-			name: "无管道符",
-			s:    "go build ./...",
-			want: []string{"go build ./..."},
-		},
-		{
-			name: "简单管道",
-			s:    "go doc fmt | head -10",
-			want: []string{"go doc fmt ", " head -10"},
-		},
-		{
-			name: "多个管道",
-			s:    "a | b | c",
-			want: []string{"a ", " b ", " c"},
-		},
-		{
-			name: "双引号内的管道符不分割",
-			s:    `grep -i "type.*Value\|Value "`,
-			want: []string{`grep -i "type.*Value\|Value "`},
-		},
-		{
-			name: "单引号内的管道符不分割",
-			s:    "grep -i 'hello|world'",
-			want: []string{"grep -i 'hello|world'"},
-		},
-		{
-			name: "引号内外的管道符混合",
-			s:    `echo "a|b" | grep c`,
-			want: []string{`echo "a|b" `, " grep c"},
-		},
-		{
-			name: "空字符串",
-			s:    "",
-			want: []string{""},
-		},
-		{
-			name: "只有管道符",
-			s:    "|",
-			want: []string{"", ""},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := splitPipeSegments(tt.s)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("splitPipeSegments(%q) = %#v, want %#v", tt.s, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestExtractCommands(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -124,6 +66,21 @@ func TestExtractCommands(t *testing.T) {
 			command: "ls -la && ls -R",
 			want:    []string{"ls"},
 		},
+		{
+			name:    "which && python -m 带引号代码",
+			command: `which python && python -m "print('hello world')"`,
+			want:    []string{"which", "python"},
+		},
+		{
+			name:    "cp 带引号路径 && cd && ls",
+			command: `cp "/tmp/src" "/tmp/dst" && cd /tmp/dst && ls .`,
+			want:    []string{"cp", "cd", "ls"},
+		},
+		{
+			name:    "node 带引号复杂代码",
+			command: `node "console.log('hello'); process.exit(0)"`,
+			want:    []string{"node"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -152,6 +109,30 @@ func TestExtractCommands_NoFalsePositiveValue(t *testing.T) {
 	allowed, failed := tool.isCommandWhitelisted(cmd)
 	if !allowed {
 		t.Errorf("isCommandWhitelisted(%q) 应该通过白名单检查，但失败于命令 %q", cmd, failed)
+	}
+}
+
+func TestExtractCommands_EdgeCaseWhitelist(t *testing.T) {
+	// 极端情况测试：确保带引号字符串、路径的连续指令能正确解析并通过白名单
+	edgeCases := []string{
+		`which python && python -m "print('hello world')"`,
+		`cp "/tmp/src" "/tmp/dst" && cd /tmp/dst && ls .`,
+		`node "console.log('hello'); process.exit(0)"`,
+	}
+	tool := NewBashTool().(*BashTool)
+	for _, cmd := range edgeCases {
+		// 验证 extractCommands 不会错误提取引号内的内容作为命令名
+		extracted := extractCommands(cmd)
+		for _, c := range extracted {
+			if c == "print" || c == "hello" || c == "console" || c == "process" || c == "exit" {
+				t.Errorf("extractCommands(%q) 错误地将引号内的代码提取为命令名：%#v", cmd, extracted)
+			}
+		}
+		// 验证白名单检查通过
+		allowed, failed := tool.isCommandWhitelisted(cmd)
+		if !allowed {
+			t.Errorf("isCommandWhitelisted(%q) 应该通过白名单检查，但失败于命令 %q", cmd, failed)
+		}
 	}
 }
 

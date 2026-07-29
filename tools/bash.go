@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 var (
@@ -87,19 +88,6 @@ func NewBashToolUnrestricted() FuncTool {
 		whitelistEnabled: false,
 		customWhitelist:  make(map[string]bool),
 	}
-}
-
-// baseCommandPattern 是用于提取命令基础名称的正则表达式。
-// 匹配命令行开头的字母数字命令名（如 ls, git, npm 等）。
-var baseCommandPattern = regexp.MustCompile(`^\s*([a-zA-Z][a-zA-Z0-9._\-]*)(\s|$)`)
-
-// shellKeywords are shell built-in control words that are not external commands.
-// Used to skip keyword-only segments when extracting real commands from compound statements.
-var shellKeywords = map[string]bool{
-	"for": true, "while": true, "until": true, "if": true, "then": true,
-	"else": true, "elif": true, "fi": true, "do": true, "done": true,
-	"case": true, "esac": true, "select": true, "function": true,
-	"in": true, "!": true, "{": true, "}": true,
 }
 
 // Info 返回 Bash 工具的元信息。
@@ -660,52 +648,12 @@ func (t *BashTool) whitelistDisplay() string {
 	return strings.Join(getDefaultWhitelist(), ", ")
 }
 
-// splitPipeSegments 按 Shell 管道运算符 | 分割字符串，同时正确处理引号和转义。
-// 只有在引号外且未被转义的 | 才被视为管道分割符。
-func splitPipeSegments(s string) []string {
-	var segments []string
-	var current strings.Builder
-	inSingle := false
-	inDouble := false
-	escape := false
-
-	for _, r := range s {
-		if escape {
-			current.WriteRune(r)
-			escape = false
-			continue
-		}
-		if r == '\\' && !inSingle {
-			current.WriteRune(r)
-			escape = true
-			continue
-		}
-		if r == '\'' && !inDouble {
-			inSingle = !inSingle
-			current.WriteRune(r)
-			continue
-		}
-		if r == '"' && !inSingle {
-			inDouble = !inDouble
-			current.WriteRune(r)
-			continue
-		}
-		if r == '|' && !inSingle && !inDouble {
-			segments = append(segments, current.String())
-			current.Reset()
-			continue
-		}
-		current.WriteRune(r)
-	}
-	segments = append(segments, current.String())
-	return segments
-}
-
 // extractCommands 从 Shell 命令字符串中提取所有真实的命令名。
-// 处理复合命令（for/while/if/case），提取 do / then / ; / && / || 后面的真正命令。
+// 使用 mvdan/sh 的 AST 解析器准确解析 shell 语法，避免正则表达式的误匹配。
+//
 // 例如："for i in 1 2 3; do rm -rf /tmp; done" → ["rm"]
 //
-//	"if [ -f file ]; then cat file; fi" → ["[", "cat"]
+//	"if [ -f file ]; then cat file; fi" → ["cat"]
 //	"git status && cargo build" → ["git", "cargo"]
 func extractCommands(command string) []string {
 	trimmed := strings.TrimSpace(command)
@@ -713,47 +661,38 @@ func extractCommands(command string) []string {
 		return nil
 	}
 
-	// 第一层：按逻辑分隔符 && || ; 分割（保留管道 | 单独处理）
-	logicSep := regexp.MustCompile(`&&|\|\||;`)
-	logicSegments := logicSep.Split(trimmed, -1)
-
-	var cmds []string
-	seen := make(map[string]bool)
-	for _, seg := range logicSegments {
-		// 第二层：按管道 | 分割（识别引号和转义，不会误切引号内的 |）
-		pipeSegments := splitPipeSegments(seg)
-		for _, ps := range pipeSegments {
-			ps = strings.TrimSpace(ps)
-			if ps == "" {
-				continue
-			}
-			// 持续跳过 shell 关键字，提取每个管道分段中的第一个真实命令
-			for {
-				m := baseCommandPattern.FindStringSubmatch(ps)
-				if len(m) < 2 {
-					break
-				}
-				cmd := m[1]
-				ps = strings.TrimSpace(ps[len(m[0]):])
-
-				if shellKeywords[cmd] {
-					if cmd == "for" {
-						// for 循环变量名不是命令，跳过
-						if m2 := baseCommandPattern.FindStringSubmatch(ps); len(m2) >= 2 {
-							ps = strings.TrimSpace(ps[len(m2[0]):])
-						}
-					}
-					continue // 跳过关键字，继续查找同一分段的下一个命令
-				}
-				if seen[cmd] {
-					break // 已处理过该命令
-				}
-				seen[cmd] = true
-				cmds = append(cmds, cmd)
-				break // 每个管道分段只提取第一个真实命令
-			}
-		}
+	file, err := syntax.NewParser(syntax.KeepComments(false)).Parse(strings.NewReader(trimmed), "")
+	if err != nil {
+		return nil
 	}
+
+	seen := make(map[string]bool)
+	var cmds []string
+
+	syntax.Walk(file, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		if len(call.Args[0].Parts) == 0 {
+			return true
+		}
+		lit, ok := call.Args[0].Parts[0].(*syntax.Lit)
+		if !ok {
+			return true
+		}
+		cmd := lit.Value
+		// 跳过 [ 和 [[ 这种内置 test 命令，它们不是用户意图中的"真实命令"
+		if cmd == "[" || cmd == "[[" {
+			return true
+		}
+		if !seen[cmd] {
+			seen[cmd] = true
+			cmds = append(cmds, cmd)
+		}
+		return true
+	})
+
 	return cmds
 }
 
