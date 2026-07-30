@@ -211,7 +211,7 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 		r.tokenUsageStore = session.NewNoopTokenUsageStore()
 	}
 	if r.llmClient == nil {
-		r.llmClient = NewDefaultLLMClient(r.model.APIKey, r.model.BaseURL)
+		r.llmClient = NewDefaultLLMClient(r.model.APIKey, r.model.BaseURL, r.model.Provider)
 	}
 	r.toolExec = tools.NewToolExecutor(r.toolReg,
 		tools.WithSessionStore(r.sessionStore),

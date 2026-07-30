@@ -282,6 +282,21 @@ func newTestSession(t testingT) *session.Session {
 	return sess
 }
 
+// newTestSessionWithResolver 创建带 modelContextResolver 的测试会话，
+// 用于测试依赖 ModelContextLength() 的逻辑（如压缩占位符开关）。
+func newTestSessionWithResolver(t testingT, resolver func() int64) *session.Session {
+	t.Helper()
+	store := newFakeSessionStore()
+	sess, err := session.New("test-agent", "", "/tmp/project", store, logging.NewNopLogger(),
+		session.WithModelContextResolver(resolver),
+	)
+	if err != nil {
+		t.Fatalf("创建测试会话失败: %v", err)
+	}
+	store.ensureMeta(sess)
+	return sess
+}
+
 // newTestRuntime 创建一个注入了内存依赖的测试 Runtime。
 func newTestRuntime(t testingT, opts ...RuntimeConfig) *Runtime {
 	t.Helper()

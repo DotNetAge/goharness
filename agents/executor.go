@@ -144,7 +144,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			SessionID:     sid,
 			MessagesSlid:  messagesSlid,
 			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.MaxWindowSize(),
+			MaxWindowSize: b.session.ModelContextLength(),
 			Ratio:         ratio,
 		})
 	})
@@ -171,7 +171,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			Compressed:    compressed,
 			Deduped:       deduped,
 			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.MaxWindowSize(),
+			MaxWindowSize: b.session.ModelContextLength(),
 			Ratio:         ratio,
 		})
 	})

@@ -133,7 +133,7 @@ func TestSession_TryCompact(t *testing.T) {
 	}
 
 	s := newTestSession("session-window-size", "agent", newMockStore(),
-		WithMaxWindowSize(100),
+		WithModelContextResolver(func() int64 { return 100 }),
 		WithSummarizer(mockSummarizer),
 		WithMemory(newInMemoryMemory()), // 必须配置 mem，否则 persistSummary 会失败
 		WithCompactionHandler(handler),
@@ -242,11 +242,17 @@ func TestInMemoryMemory_NonExistentSession(t *testing.T) {
 
 func TestSessionConfig_FunctionalOptions(t *testing.T) {
 	s := newTestSession("session-options", "agent", newMockStore(),
-		WithMaxWindowSize(5000),
+		WithModelContextResolver(func() int64 { return 5000 }),
 	)
 
-	if s.maxWindowSize != 5000 {
-		t.Errorf("WithMaxWindowSize not applied, got %v", s.maxWindowSize)
+	if s.ModelContextLength() != 5000 {
+		t.Errorf("WithModelContextResolver not applied, got %v", s.ModelContextLength())
+	}
+
+	// 未注入 resolver 时返回 0（禁用压缩）
+	s2 := newTestSession("session-options-nil", "agent", newMockStore())
+	if s2.ModelContextLength() != 0 {
+		t.Errorf("nil resolver should return 0, got %v", s2.ModelContextLength())
 	}
 
 	mockMem := &mockMemoryStoreImpl{}

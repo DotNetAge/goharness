@@ -50,22 +50,24 @@ func TestBuildSystemPromptsWithAgent(t *testing.T) {
 // TestBuildSystemPromptsCompactPlaceholder 验证压缩占位符的开关逻辑。
 func TestBuildSystemPromptsCompactPlaceholder(t *testing.T) {
 	rt := newTestRuntime(t)
-	sess := newTestSession(t)
 
-	// maxWindowSize = 0 时（未启用压缩）按实现也会插入占位符
-	sess.SetMaxWindowSize(0)
+	// 用可变 resolver 模拟不同模型窗口大小
+	currentCtx := int64(0)
+	sess := newTestSessionWithResolver(t, func() int64 { return currentCtx })
+
+	// ModelContextLength = 0 时（未注入/禁用压缩）按实现也会插入占位符
 	msgs := rt.buildSystemPrompts(sess.ID(), sess)
 	text := msgText(t, msgs[0])
 	assert.Contains(t, text, "## 压缩内容")
 
-	// maxWindowSize = 128K 时应插入压缩占位符
-	sess.SetMaxWindowSize(128 * 1024)
+	// ModelContextLength = 128K 时应插入压缩占位符
+	currentCtx = 128 * 1024
 	msgs = rt.buildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.Contains(t, text, "## 压缩内容")
 
-	// maxWindowSize > 128K 时不应插入压缩占位符
-	sess.SetMaxWindowSize(256 * 1024)
+	// ModelContextLength > 128K 时不应插入压缩占位符
+	currentCtx = 256 * 1024
 	msgs = rt.buildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.NotContains(t, text, "## 压缩内容")

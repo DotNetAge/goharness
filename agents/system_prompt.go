@@ -91,9 +91,9 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 	sections = append(sections, buildToolCatalog(rt.toolReg))
 
 	// 7. 压缩内容占位符：仅在 MicroCompact 启用时插入。
-	//    maxWindowSize > 0 意味着模型 ContextLength <= 128K；
-	//    超长上下文模型不设置 maxWindowSize，不会插入该占位符。
-	if s.MaxWindowSize() <= defaultCompactWindowThreshold {
+	//    ModelContextLength > 0 意味着模型 ContextLength <= 128K；
+	//    超长上下文模型不设置 ModelContextLength，不会插入该占位符。
+	if s.ModelContextLength() <= defaultCompactWindowThreshold {
 		sections = append(sections, buildCompressedContent())
 	}
 

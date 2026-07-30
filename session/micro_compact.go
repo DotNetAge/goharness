@@ -130,7 +130,7 @@ const (
 // 如果执行了压缩并保存了会话，返回 true。
 // 使用 s.SessionDir() 获取会话目录，无需外部传入。
 func (s *Session) TryMicroCompact() bool {
-	if s.maxWindowSize <= 0 {
+	if s.ModelContextLength() <= 0 {
 		return false
 	}
 
@@ -144,14 +144,14 @@ func (s *Session) TryMicroCompact() bool {
 
 	// Step 1: Check trigger threshold
 	windowTokens := estimateWindowTokensV2(window)
-	triggerTokens := int64(float64(s.maxWindowSize) * microCompactTriggerRatio)
+	triggerTokens := int64(float64(s.ModelContextLength()) * microCompactTriggerRatio)
 	if windowTokens < triggerTokens {
 		return false
 	}
 
 	// Fire micro-compact start handler
 	if s.microCompactStartHandler != nil {
-		s.microCompactStartHandler(windowTokens, s.maxWindowSize)
+		s.microCompactStartHandler(windowTokens, s.ModelContextLength())
 	}
 
 	// Step 2: Strip duplicate tool messages first (cheap, reduces noise)
@@ -192,7 +192,7 @@ func (s *Session) TryMicroCompact() bool {
 	}
 	positionStart := int(float64(len(window)) * microCompactPositionStart)
 	positionEnd := int(float64(len(window)) * microCompactPositionEnd)
-	targetTokens := int64(float64(s.maxWindowSize) * microCompactTargetRatio)
+	targetTokens := int64(float64(s.ModelContextLength()) * microCompactTargetRatio)
 
 	var candidates []candidate
 	for i := positionStart; i < positionEnd && i < len(window); i++ {

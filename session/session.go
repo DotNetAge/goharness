@@ -174,8 +174,10 @@ type Session struct {
 	// projectDir 是文件操作的工作目录
 	projectDir string
 
-	// maxWindowSize 是触发压缩前的 token 限制
-	maxWindowSize int64
+	// modelContextResolver 返回当前会话使用的模型的上下文长度（ContextLength）。
+	// 每次需要窗口大小时动态调用，保证切换模型后立即生效。
+	// 为 nil 时返回 0（禁用压缩），与旧行为一致。
+	modelContextResolver func() int64
 
 	// cursor 分隔历史消息和活跃窗口
 	cursor int
@@ -259,21 +261,18 @@ func (s *Session) Sponsor() string {
 	return s.sponsor
 }
 
-// MaxWindowSize 返回配置的最大上下文窗口大小（以 token 为单位）。
-// 如果禁用自动压缩，则返回 0。
-func (s *Session) MaxWindowSize() int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.maxWindowSize
-}
-
-// SetMaxWindowSize 设置最大上下文窗口大小（以 token 为单位）。
-// 当活跃窗口超过此值的 80% 时，触发压缩。
-// 值为 0 或负数会禁用自动压缩。
-func (s *Session) SetMaxWindowSize(n int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.maxWindowSize = n
+// ModelContextLength 返回当前会话使用的模型的上下文窗口大小（以 token 为单位）。
+//
+// 每次调用都通过 modelContextResolver 回调从当前默认模型动态读取，
+// 保证用户切换模型后立即生效——这是修复"窗口大小焊死在 session 上"
+// 设计 bug 的核心：窗口大小是模型能力的函数，不是会话的固定属性。
+//
+// 回调未注入或返回 0 时禁用自动压缩，与旧 maxWindowSize=0 行为一致。
+func (s *Session) ModelContextLength() int64 {
+	if s.modelContextResolver == nil {
+		return 0
+	}
+	return s.modelContextResolver()
 }
 
 // CurrentWindowTokens 使用与 MicroCompact/TryMicroCompact 相同的基于 DeepSeek 的公式
@@ -293,7 +292,7 @@ func (s *Session) ContextUsage(pricing ...PricingUnit) ContextWindowUsage {
 
 	window := s.messages[s.cursor:]
 	windowTokens := estimateWindowTokensV2(window)
-	mws := s.maxWindowSize
+	mws := s.ModelContextLength()
 
 	var ratio float64
 	if mws > 0 {

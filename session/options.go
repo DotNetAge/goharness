@@ -7,7 +7,7 @@ package session
 // Example:
 //
 //	session := NewSession("id", "agent",
-//	    WithMaxWindowSize(8000),
+//	    WithModelContextResolver(func() int64 { return model.ContextLength }),
 //	    WithSummarizer(mySummarizer),
 //	    WithCompactionHandler(myHandler),
 //	)
@@ -38,13 +38,16 @@ func WithSummarizer(ss Summarizer) SessionConfig {
 	return func(s *Session) { s.summarizer = ss }
 }
 
-// WithMaxWindowSize configures the maximum context window size in tokens.
-// When the active window exceeds 80% of this value, compaction is triggered
-// to trim it down to ~60% of the maximum.
+// WithModelContextResolver 注入一个回调，用于动态查询当前会话使用的
+// 模型的上下文窗口大小（ContextLength）。
 //
-// A value of 0 or negative disables automatic compaction.
-func WithMaxWindowSize(n int64) SessionConfig {
-	return func(s *Session) { s.maxWindowSize = n }
+// 每次需要窗口大小时（压缩触发判定、ContextUsage 计算等）都会调用此回调，
+// 保证用户切换模型后窗口大小立即更新——窗口大小是模型能力的函数，
+// 不是会话的固定属性。
+//
+// 回调未注入或返回 0 时禁用自动压缩。
+func WithModelContextResolver(fn func() int64) SessionConfig {
+	return func(s *Session) { s.modelContextResolver = fn }
 }
 
 // WithCompactionHandler sets a callback function that is invoked after each

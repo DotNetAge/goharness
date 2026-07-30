@@ -34,7 +34,7 @@ func (s *Session) captureState() sessionState {
 
 	return sessionState{
 		cursor:         s.cursor,
-		maxWindowSize:  s.maxWindowSize,
+		maxWindowSize:  s.ModelContextLength(),
 		windowTokens:   tokens,
 		activeMessages: activeMessages,
 	}
@@ -82,7 +82,7 @@ func (s *Session) executeFullCompaction(ctx context.Context) int {
 		s.compactionHandler(CompactionEvent{
 			MessagesSlid:   slidCount,
 			RemainingAfter: 0,
-			WindowSize:     s.maxWindowSize,
+			WindowSize:     s.ModelContextLength(),
 		})
 	}
 
@@ -248,7 +248,7 @@ func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChun
 func (s *Session) doCompact(ctx context.Context, state sessionState, operation string) {
 	// 触发 compact start handler
 	if s.compactStartHandler != nil {
-		s.compactStartHandler(state.windowTokens, s.maxWindowSize)
+		s.compactStartHandler(state.windowTokens, s.ModelContextLength())
 	}
 
 	// 摘要当前活跃窗口（无锁，允许 LLM I/O 阻塞）

@@ -377,7 +377,7 @@ func TestCursorBehavior_CurrentVsAll_WithCompaction(t *testing.T) {
 	sessionID := "cursor-with-compact"
 
 	s := newTestSession(sessionID, "agent", store,
-		WithMaxWindowSize(100),
+		WithModelContextResolver(func() int64 { return 100 }),
 		WithMemory(newInMemoryMemory()), // 必须配置 mem，否则 persistSummary 会失败
 		WithSummarizer(&mockSummarizer{
 			SummarizeFunc: func(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error) {
