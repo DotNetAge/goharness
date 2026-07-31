@@ -28,9 +28,6 @@ type ModelConfig struct {
 	// AuthToken 存储了额外的认证令牌，用于 OAuth 或其他认证机制，如果为空则从 Provider 继承。
 	AuthToken string `json:"auth_token" yaml:"auth_token"`
 
-	// MaxTokens 设置了单次生成响应的最大 token 数量限制。
-	MaxTokens int64 `json:"max_tokens" yaml:"max_tokens"`
-
 	// ContextLength 定义了模型支持的最大上下文窗口大小（token 数）。
 	ContextLength int64 `json:"context_length" yaml:"context_length"`
 
@@ -45,6 +42,10 @@ type ModelConfig struct {
 
 	// WebSearching 表示模型是否内置或支持联网搜索能力。
 	WebSearching bool `json:"web_searching" yaml:"web_searching"`
+
+	// Visioning 表示模型是否支持视觉理解（图片输入），
+	// 启用后允许在消息中传入 ImageUrl。
+	Visioning bool `json:"visioning" yaml:"visioning"`
 
 	// PrefixCon 控制是否启用前缀连续模式（Prefix Caching），用于优化长对话性能。
 	PrefixCon bool `json:"prefix_con" yaml:"prefix_con"`
@@ -73,7 +74,11 @@ type ModelConfig struct {
 	// MaxTurns 限制了单轮对话的最大交互次数，用于控制会话长度和成本。
 	MaxTurns int `json:"max_turns" yaml:"max_turns"`
 
+	// CostPer1MIn 是每百万输入 token 的费用（¥）。
+	CostPer1MIn float64 `json:"cost_per_1m_in" yaml:"cost_per_1m_in"`
 
+	// CostPer1MOut 是每百万输出 token 的费用（¥）。
+	CostPer1MOut float64 `json:"cost_per_1m_out" yaml:"cost_per_1m_out"`
 }
 
 // Config 将 ModelConfig 转换为 gochat.Config 格式，

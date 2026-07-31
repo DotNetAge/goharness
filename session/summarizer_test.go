@@ -41,22 +41,6 @@ func TestNewLLMSummarizer_WithSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestNewLLMSummarizer_WithMaxTokens(t *testing.T) {
-	model := config.ModelConfig{
-		Name:   "test-model",
-		APIKey: "test-key",
-	}
-
-	s := NewLLMSummarizer(model, WithMaxTokens(2048))
-	summarizer, ok := s.(*llmSummarizer)
-	if !ok {
-		t.Fatal("类型断言失败")
-	}
-	if summarizer.maxTokens != 2048 {
-		t.Errorf("maxTokens = %d, want %d", summarizer.maxTokens, 2048)
-	}
-}
-
 func TestNewLLMSummarizer_DefaultValues(t *testing.T) {
 	model := config.ModelConfig{
 		Name:   "test-model",
@@ -71,9 +55,6 @@ func TestNewLLMSummarizer_DefaultValues(t *testing.T) {
 	if summarizer.systemPrompt != defaultSystemPrompt {
 		t.Errorf("默认 systemPrompt 应为 defaultSystemPrompt，得到 %q", summarizer.systemPrompt)
 	}
-	if summarizer.maxTokens != 2048 {
-		t.Errorf("默认 maxTokens 应为 2048，得到 %d", summarizer.maxTokens)
-	}
 }
 
 // TestLLMSummarizer_WithModelResolver_DynamicSwitch 验证摘要器随模型切换更新。
@@ -82,10 +63,9 @@ func TestNewLLMSummarizer_DefaultValues(t *testing.T) {
 // resolveModel 必须返回 model B（而非固化的 model A）。
 func TestLLMSummarizer_WithModelResolver_DynamicSwitch(t *testing.T) {
 	initialModel := config.ModelConfig{
-		Name:      "model-a",
-		APIKey:    "key-a",
-		BaseURL:   "https://a.example.com/v1",
-		MaxTokens: 4096,
+		Name:    "model-a",
+		APIKey:  "key-a",
+		BaseURL: "https://a.example.com/v1",
 	}
 
 	// 模拟全局默认模型切换：current 指针被外部改写
@@ -95,27 +75,23 @@ func TestLLMSummarizer_WithModelResolver_DynamicSwitch(t *testing.T) {
 	})).(*llmSummarizer)
 
 	// 第一次解析：应返回 initialModel
-	m1, mt1 := s.resolveModel()
+	m1 := s.resolveModel()
 	if m1.Name != "model-a" {
 		t.Errorf("第一次 resolveModel: Name = %q, want %q", m1.Name, "model-a")
 	}
 	if m1.APIKey != "key-a" {
 		t.Errorf("第一次 resolveModel: APIKey = %q, want %q", m1.APIKey, "key-a")
 	}
-	if mt1 != 4096 {
-		t.Errorf("第一次 resolveModel: maxTokens = %d, want 4096", mt1)
-	}
 
-	// 模拟用户切换模型到 model-b（不同 APIKey/BaseURL/MaxTokens）
+	// 模拟用户切换模型到 model-b（不同 APIKey/BaseURL）
 	current = config.ModelConfig{
-		Name:      "model-b",
-		APIKey:    "key-b",
-		BaseURL:   "https://b.example.com/v1",
-		MaxTokens: 8192,
+		Name:    "model-b",
+		APIKey:  "key-b",
+		BaseURL: "https://b.example.com/v1",
 	}
 
 	// 第二次解析：必须返回 model-b，证明跟随切换
-	m2, mt2 := s.resolveModel()
+	m2 := s.resolveModel()
 	if m2.Name != "model-b" {
 		t.Errorf("第二次 resolveModel: Name = %q, want %q（未跟随模型切换）", m2.Name, "model-b")
 	}
@@ -125,18 +101,15 @@ func TestLLMSummarizer_WithModelResolver_DynamicSwitch(t *testing.T) {
 	if m2.BaseURL != "https://b.example.com/v1" {
 		t.Errorf("第二次 resolveModel: BaseURL = %q, want %q", m2.BaseURL, "https://b.example.com/v1")
 	}
-	if mt2 != 8192 {
-		t.Errorf("第二次 resolveModel: maxTokens = %d, want 8192（应跟随新模型 MaxTokens）", mt2)
-	}
 }
 
 // TestLLMSummarizer_WithModelResolver_FallbackWhenEmpty 验证回调返回空模型时
 // 回退到构造时传入的固定 model，保证 resolver 失效场景的健壮性。
 func TestLLMSummarizer_WithModelResolver_FallbackWhenEmpty(t *testing.T) {
 	fixedModel := config.ModelConfig{
-		Name:      "fixed-model",
-		APIKey:    "fixed-key",
-		MaxTokens: 2048,
+		Name:    "fixed-model",
+		APIKey:  "fixed-key",
+		BaseURL: "https://fixed.example.com/v1",
 	}
 
 	s := NewLLMSummarizer(fixedModel, WithModelResolver(func() config.ModelConfig {
@@ -144,44 +117,12 @@ func TestLLMSummarizer_WithModelResolver_FallbackWhenEmpty(t *testing.T) {
 		return config.ModelConfig{}
 	})).(*llmSummarizer)
 
-	m, mt := s.resolveModel()
+	m := s.resolveModel()
 	if m.Name != "fixed-model" {
 		t.Errorf("回调返回空时应回退到固定 model: Name = %q, want %q", m.Name, "fixed-model")
 	}
 	if m.APIKey != "fixed-key" {
 		t.Errorf("回调返回空时应回退到固定 model: APIKey = %q, want %q", m.APIKey, "fixed-key")
-	}
-	if mt != 2048 {
-		t.Errorf("回调返回空时 maxTokens = %d, want 2048", mt)
-	}
-}
-
-// TestLLMSummarizer_WithMaxTokens_OverrideNotAffectedByModelSwitch 验证
-// 显式 WithMaxTokens 覆盖后，maxTokens 不随模型切换变化（固定值优先）。
-func TestLLMSummarizer_WithMaxTokens_OverrideNotAffectedByModelSwitch(t *testing.T) {
-	current := config.ModelConfig{
-		Name:      "model-a",
-		APIKey:    "key-a",
-		MaxTokens: 4096,
-	}
-
-	s := NewLLMSummarizer(current, WithMaxTokens(1024), WithModelResolver(func() config.ModelConfig {
-		return current
-	})).(*llmSummarizer)
-
-	// 显式覆盖为 1024，不应被 model.MaxTokens 覆盖
-	if _, mt := s.resolveModel(); mt != 1024 {
-		t.Errorf("WithMaxTokens 显式覆盖后 maxTokens = %d, want 1024", mt)
-	}
-
-	// 切换模型，maxTokens 仍应保持 1024
-	current = config.ModelConfig{
-		Name:      "model-b",
-		APIKey:    "key-b",
-		MaxTokens: 8192,
-	}
-	if _, mt := s.resolveModel(); mt != 1024 {
-		t.Errorf("切换模型后 maxTokens = %d, want 1024（显式覆盖不应被改变）", mt)
 	}
 }
 

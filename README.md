@@ -108,7 +108,6 @@ func main() {
         Name:      "gpt-4o",
         APIKey:    "your-api-key",
         BaseURL:   "https://api.openai.com/v1",
-        MaxTokens: 16384,
     }
 
     // 一行创建
@@ -237,7 +236,7 @@ func main() {
 | Option                | 类型                               | 说明                                  |
 | --------------------- | ---------------------------------- | ------------------------------------- |
 | `WithConfig`          | `*core.AgentConfig`                | Agent 身份、领域、SystemPrompt        |
-| `WithModel`           | `*core.ModelConfig`                | LLM 后端、API Key、BaseURL、MaxTokens |
+| `WithModel`           | `*core.ModelConfig`                | LLM 后端、API Key、BaseURL          |
 | `WithMemory`          | `core.Memory`                      | 知识检索记忆体                        |
 | `WithSession`         | `(string, int64)`                  | 会话 ID 和 Token 预算                 |
 | `WithExtraTools`      | `...core.FuncTool`                 | 注入自定义工具                        |

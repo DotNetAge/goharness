@@ -165,9 +165,8 @@ func (m *ModelRegistry) Register(name string, cfg *ModelConfig) {
 	m.models[name] = cfg
 }
 
-// Save 将模型配置保存到内存注册表，并将完整的配置写入磁盘文件。
-// 该方法会触发 saveAll 操作，将当前注册表中的所有模型和提供商配置
-// 序列化为 YAML 格式后写回原始配置文件。
+// Save 将模型配置保存到内存注册表，并将完整配置写入 models.yml 磁盘文件。
+// Provider 配置由独立的 providers.yml 管理，不受此方法影响。
 //
 // 如果模型名称为空，返回错误。该方法是线程安全的。
 func (m *ModelRegistry) Save(cfg *ModelConfig) error {
@@ -185,14 +184,9 @@ func (m *ModelRegistry) Save(cfg *ModelConfig) error {
 	return m.saveAll()
 }
 
-// saveAll 将当前注册表中的所有模型和提供商配置序列化并写入磁盘文件。
+// saveAll 将当前注册表中的所有模型配置序列化并写入磁盘文件。
 // 这是 ModelRegistry 的内部方法，用于持久化配置变更。
-//
-// 写入流程：
-//  1. 收集所有非空的模型和提供商配置
-//  2. 构造 ModelsConfig 包装结构
-//  3. 序列化为 YAML 格式
-//  4. 写入 settingFile 指定的文件路径
+// 注意：Provider 配置由独立的 providers.yml 管理，不使用此方法。
 func (m *ModelRegistry) saveAll() error {
 	configs := make([]ModelConfig, 0, len(m.models))
 	for _, cfg := range m.models {
@@ -202,19 +196,8 @@ func (m *ModelRegistry) saveAll() error {
 		configs = append(configs, *cfg)
 	}
 
-	providersList := make([]ProviderConfig, 0, len(m.providers))
-	for _, p := range m.providers {
-		if p == nil {
-			continue
-		}
-		providersList = append(providersList, *p)
-	}
-
 	wrapper := ModelsConfig{
 		Models: configs,
-	}
-	if len(providersList) > 0 {
-		wrapper.Providers = providersList
 	}
 
 	data, err := yaml.Marshal(wrapper)

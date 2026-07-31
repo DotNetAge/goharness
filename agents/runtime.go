@@ -227,6 +227,8 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 // 包含文件操作（Grep、Glob、Read、Write、FileEdit、Ls）、执行工具（Bash、RunScript）、
 // 网络工具（WebSearch、WebFetch）、交互工具（AskUser）及任务管理工具。
 // 在 Windows 上额外注册 PowerShell 工具。
+// 当模型为本地部署（IsLocal=true）时，跳过 SubAgent 和 TeamXXX 等多 Agent 工具的注册，
+// 因为本地模型通常无法可靠地执行多 Agent 并行任务。
 func (rt *Runtime) registerDefaultTools() {
 	bundled := []struct {
 		name    string
@@ -248,26 +250,52 @@ func (rt *Runtime) registerDefaultTools() {
 		{"TaskList", func() tools.FuncTool { return tools.NewTaskListTool() }},
 		{"TaskGet", func() tools.FuncTool { return tools.NewTaskGetTool() }},
 		{"TaskUpdate", func() tools.FuncTool { return tools.NewTaskUpdateTool() }},
-		{"SubAgent", func() tools.FuncTool {
-			subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
-			subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
-				tc := tools.GetToolContext(ctx)
-				if tc == nil || tc.Session == nil {
-					return "", fmt.Errorf("上下文未包含会话")
-				}
-				sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
-				return sess.ID(), nil
-			})
-			return subAgentTool
-		}},
-		{"TeamCreate", func() tools.FuncTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }},
-		{"TeamDelete", func() tools.FuncTool { return tools.NewTeamDeleteTool() }},
-		{"TeamList", func() tools.FuncTool { return tools.NewTeamListTool() }},
-		{"TeamGetTasks", func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
 		{"Sleep", func() tools.FuncTool { return tools.NewSleepTool() }},
 		{"Skill", func() tools.FuncTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }},
 		{"ToolSelector", func() tools.FuncTool { return tools.NewToolSelectorTool(rt.toolReg) }},
 	}
+
+	// 本地模型不注册多 Agent 工具（SubAgent、TeamXXX）
+	// 因为本地模型通常无法可靠地执行多 Agent 并行任务
+	if !rt.model.IsLocal {
+		bundled = append(bundled,
+			struct {
+				name    string
+				factory func() tools.FuncTool
+			}{
+				name: "SubAgent",
+				factory: func() tools.FuncTool {
+					subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
+					subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
+						tc := tools.GetToolContext(ctx)
+						if tc == nil || tc.Session == nil {
+							return "", fmt.Errorf("上下文未包含会话")
+						}
+						sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
+						return sess.ID(), nil
+					})
+					return subAgentTool
+				},
+			},
+			struct {
+				name    string
+				factory func() tools.FuncTool
+			}{name: "TeamCreate", factory: func() tools.FuncTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }},
+			struct {
+				name    string
+				factory func() tools.FuncTool
+			}{name: "TeamDelete", factory: func() tools.FuncTool { return tools.NewTeamDeleteTool() }},
+			struct {
+				name    string
+				factory func() tools.FuncTool
+			}{name: "TeamList", factory: func() tools.FuncTool { return tools.NewTeamListTool() }},
+			struct {
+				name    string
+				factory func() tools.FuncTool
+			}{name: "TeamGetTasks", factory: func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
+		)
+	}
+
 	for _, b := range bundled {
 		if t := b.factory(); t != nil {
 			_ = rt.toolReg.Register(t)

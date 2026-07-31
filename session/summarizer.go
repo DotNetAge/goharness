@@ -24,19 +24,6 @@ func WithSystemPrompt(prompt string) SummarizerOption {
 	return func(s *llmSummarizer) { s.systemPrompt = prompt }
 }
 
-// WithMaxTokens 设置摘要输出的最大 token 数。
-// 默认值为 2048（多记忆片输出需要更多 token）。
-//
-// 注意：设置后 maxTokens 将固定为该值，不再随模型切换动态调整。
-// 如需让 maxTokens 跟随当前模型的 MaxTokens 字段动态变化，
-// 请勿调用此选项，改用 WithModelResolver 注入动态模型回调。
-func WithMaxTokens(n int) SummarizerOption {
-	return func(s *llmSummarizer) {
-		s.maxTokens = n
-		s.maxTokensOverride = true
-	}
-}
-
 // WithModelResolver 注入一个动态获取当前模型的回调函数。
 //
 // 这是为了修复「Summarizer 不随模型切换更新」的设计缺陷：
@@ -56,16 +43,10 @@ func WithModelResolver(fn func() config.ModelConfig) SummarizerOption {
 // 模型获取策略（优先级从高到低）：
 //  1. getModel 回调（动态，由 WithModelResolver 注入，跟随模型切换）
 //  2. model 字段（固定，构造时传入的快照，用于无回调的旧场景/测试）
-//
-// maxTokens 计算策略：
-//  1. 若通过 WithMaxTokens 显式覆盖（maxTokensOverride=true），使用固定值
-//  2. 否则每次摘要时从当前模型的 MaxTokens 推导（>0 用模型值，否则 2048）
 type llmSummarizer struct {
-	model             config.ModelConfig
-	getModel          func() config.ModelConfig
-	systemPrompt      string
-	maxTokens         int
-	maxTokensOverride bool
+	model        config.ModelConfig
+	getModel     func() config.ModelConfig
+	systemPrompt string
 }
 
 // defaultSystemPrompt — 最简角色设定。格式指令放在最后一条 user message。
@@ -117,22 +98,13 @@ const retryInstruction = `将以上全部的对话输出为 JSON 数组。每条
 
 // NewLLMSummarizer 创建一个新的 LLM 摘要器实例。
 //
-// maxTokens 初值从 model.MaxTokens 推导（>0 用模型值，否则 2048），
-// 可通过 WithMaxTokens 选项覆盖为固定值。
-//
 // 模型动态化：通过 WithModelResolver 注入回调后，每次摘要都会重新读取
-// 当前模型配置（APIKey/BaseURL/Name/MaxTokens），保证切换模型后摘要器
-// 立即生效。回调返回空 ModelConfig 时回退到本构造函数传入的固定 model。
+// 当前模型配置（APIKey/BaseURL/Name），保证切换模型后摘要器立即生效。
+// 回调返回空 ModelConfig 时回退到本构造函数传入的固定 model。
 func NewLLMSummarizer(model config.ModelConfig, opts ...SummarizerOption) Summarizer {
-	// 优先使用模型配置的 max_tokens，确保摘要输出不会被截断
-	maxTokens := 2048
-	if model.MaxTokens > 0 {
-		maxTokens = int(model.MaxTokens)
-	}
 	s := &llmSummarizer{
 		model:        model,
 		systemPrompt: defaultSystemPrompt,
-		maxTokens:    maxTokens,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -140,31 +112,20 @@ func NewLLMSummarizer(model config.ModelConfig, opts ...SummarizerOption) Summar
 	return s
 }
 
-// resolveModel 返回当前摘要应使用的模型配置与 maxTokens。
+// resolveModel 返回当前摘要应使用的模型配置。
 //
 // 模型来源优先级：getModel 回调 > 构造时传入的固定 model 字段。
-// maxTokens 优先级：WithMaxTokens 显式覆盖 > 当前模型的 MaxTokens > 2048。
 //
 // 这是「Summarizer 随模型切换更新」的核心：每次摘要调用都重新解析，
 // 不再使用构造时固化的快照。
-func (s *llmSummarizer) resolveModel() (config.ModelConfig, int) {
+func (s *llmSummarizer) resolveModel() config.ModelConfig {
 	m := s.model
 	if s.getModel != nil {
 		if resolved := s.getModel(); resolved.Name != "" {
 			m = resolved
 		}
 	}
-
-	maxTokens := s.maxTokens
-	if !s.maxTokensOverride {
-		// 未显式覆盖：从当前模型重新推导
-		if m.MaxTokens > 0 {
-			maxTokens = int(m.MaxTokens)
-		} else {
-			maxTokens = 2048
-		}
-	}
-	return m, maxTokens
+	return m
 }
 
 // Summarize 调用 LLM 生成多个结构化的 MemoryChunk。
@@ -193,7 +154,7 @@ func (s *llmSummarizer) Summarize(ctx context.Context, messages []Message) ([]me
 // 摘要指令放在最后一条 user message 以获得最高注意力权重，类似 OpenCode 的做法。
 //
 // 模型动态化：每次调用都通过 resolveModel() 读取当前模型配置，
-// 保证会话切换模型后摘要器立即使用新模型（APIKey/BaseURL/Name/MaxTokens 同步）。
+// 保证会话切换模型后摘要器立即使用新模型（APIKey/BaseURL/Name 同步）。
 func (s *llmSummarizer) trySummarize(ctx context.Context, messages []Message, systemPrompt, instruction string) ([]memory.MemoryChunk, error) {
 	condensed := s.formatMessages(messages)
 
@@ -203,8 +164,8 @@ func (s *llmSummarizer) trySummarize(ctx context.Context, messages []Message, sy
 		gochatcore.NewUserMessage(instruction),
 	}
 
-	// 动态解析当前模型与 maxTokens，跟随模型切换
-	model, maxTokens := s.resolveModel()
+	// 动态解析当前模型，跟随模型切换
+	model := s.resolveModel()
 
 	resp, err := gochat.Client().
 		Config(
@@ -214,7 +175,6 @@ func (s *llmSummarizer) trySummarize(ctx context.Context, messages []Message, sy
 		).
 		Messages(msgs...).
 		Model(model.Name).
-		MaxTokens(maxTokens).
 		Temperature(0.3).
 		WithContext(ctx).
 		GetResponse()

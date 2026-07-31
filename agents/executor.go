@@ -374,7 +374,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			Messages:          msgs,
 			Model:             rt.model.Name,
 			Temperature:       rt.model.Temperature,
-			MaxTokens:         rt.model.MaxTokens,
 			TopP:              rt.model.TopP,
 			TopK:              rt.model.TopK,
 			RepetitionPenalty: rt.model.RepetitionPenalty,

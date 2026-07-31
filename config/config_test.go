@@ -85,9 +85,6 @@ func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
 		if cfg.Name != "" {
 			t.Error("expected empty Name")
 		}
-		if cfg.MaxTokens != 0 {
-			t.Error("expected MaxTokens to be 0")
-		}
 		if cfg.ContextLength != 0 {
 			t.Error("expected ContextLength to be 0")
 		}
@@ -107,7 +104,6 @@ func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
 
 	t.Run("boundary values for numeric fields", func(t *testing.T) {
 		cfg := ModelConfig{
-			MaxTokens:         -1,
 			ContextLength:     0,
 			TopP:              0.0,
 			TopK:              0.0,
@@ -117,9 +113,6 @@ func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
 			MaxTurns:          -1,
 		}
 
-		if cfg.MaxTokens != -1 {
-			t.Error("MaxTokens should accept negative value")
-		}
 		if cfg.Temperature != 2.0 {
 			t.Error("Temperature should be 2.0")
 		}
@@ -175,7 +168,6 @@ func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
 			Provider:      "openai",
 			BaseURL:       "https://api.openai.com/v1",
 			APIKey:        "test-key",
-			MaxTokens:     8192,
 			ContextLength: 128000,
 			FuncCalling:   true,
 			Structuring:   true,

@@ -14,7 +14,6 @@ type LLMRequest struct {
 	Messages          []gochatcore.Message
 	Model             string
 	Temperature       float64
-	MaxTokens         int64
 	TopP              float64
 	TopK              float64
 	RepetitionPenalty float64
@@ -82,14 +81,6 @@ func (c *gochatLLMClient) Stream(ctx context.Context, req LLMRequest) (*gochatco
 		EnableThinking(true).
 		ParallelToolCalls(true).
 		ToolChoice(req.ToolChoice)
-
-	// MaxTokens == 0 表示未设置上限，让 ollama 用默认 num_predict=-1（生成到 EOS）。
-	// 不能无条件调用 MaxTokens(0)，否则 gochat 会发 num_predict:0 给 ollama，
-	// 导致模型立即停止生成（生成 0 个 token）。
-	// 云端 OpenAI 兼容 API 同样：max_tokens 留空表示不限，传 0 会被某些 API 拒绝。
-	if req.MaxTokens > 0 {
-		builder = builder.MaxTokens(int(req.MaxTokens))
-	}
 
 	if req.TopP > 0 {
 		builder = builder.TopP(req.TopP)
