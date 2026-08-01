@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +208,63 @@ func TestToolExecutor_Execute_ErrorPropagation(t *testing.T) {
 	})
 }
 
+// TestToolExecutor_ExtractsReadImages 验证执行 Read 工具返回 *ReadResult 时，
+// 图片数据（ReadResult.Images）被提取到 ToolExecutionResult.Images，
+// 而不会因 json.Marshal（Images 带 json:"-" 标签）被静默丢弃。
+func TestToolExecutor_ExtractsReadImages(t *testing.T) {
+	registry := NewDefaultToolRegistry()
+	imgTool := &mockExecutorTool{
+		name: "ReadImageTool",
+		result: &ReadResult{
+			Data: &ReadData{
+				Success: true, Path: "/tmp/a.png", Content: "图片摘要：512x300",
+			},
+			Images: []ImageContent{
+				{MediaType: "image/png", Base64Data: "aGVsbG8=", Width: 512, Height: 300, RawSize: 1000, CompressedSize: 8},
+			},
+		},
+	}
+	registry.Register(imgTool)
+
+	executor := NewToolExecutor(registry)
+	result, err := executor.Execute(context.Background(), "ReadImageTool", nil)
+	if err != nil {
+		t.Fatalf("Execute 失败: %v", err)
+	}
+	if result == nil {
+		t.Fatal("结果不应为 nil")
+	}
+	if len(result.Images) != 1 {
+		t.Fatalf("期望提取 1 张图片，得到 %d", len(result.Images))
+	}
+	if result.Images[0].MediaType != "image/png" || result.Images[0].Base64Data != "aGVsbG8=" {
+		t.Errorf("图片数据提取不正确: %+v", result.Images[0])
+	}
+	// 文本结果仍为正常 JSON 序列化；base64 图片数据不应混入文本
+	if !strings.Contains(result.Result, "图片摘要") {
+		t.Errorf("文本结果应包含摘要内容: %s", result.Result)
+	}
+	if strings.Contains(result.Result, "aGVsbG8=") {
+		t.Error("base64 图片数据不应混入文本结果")
+	}
+}
+
+// TestToolExecutor_NonReadResultNoImages 验证普通工具结果不携带图片数据。
+func TestToolExecutor_NonReadResultNoImages(t *testing.T) {
+	registry := NewDefaultToolRegistry()
+	plain := &mockExecutorTool{name: "PlainTool", result: "普通文本结果"}
+	registry.Register(plain)
+
+	executor := NewToolExecutor(registry)
+	result, err := executor.Execute(context.Background(), "PlainTool", nil)
+	if err != nil {
+		t.Fatalf("Execute 失败: %v", err)
+	}
+	if len(result.Images) != 0 {
+		t.Errorf("普通工具结果不应携带图片: %d", len(result.Images))
+	}
+}
+
 // TestToolExecutor_ResetCycle tests ResetCycle doesn't panic.
 func TestToolExecutor_ResetCycle(t *testing.T) {
 	registry := NewDefaultToolRegistry()
@@ -392,6 +451,42 @@ func TestExecutorOptionFunctions(t *testing.T) {
 		}
 		if cfg.eventEmitter == nil {
 			t.Error("组合选项中的 eventEmitter 设置失败")
+		}
+	})
+}
+
+// TestEnhanceError 验证执行器错误引导增强（enhanceError）：
+//  1. 已是引导格式的错误 → 原样透传，不做二次包装
+//  2. 文件不存在（os.ErrNotExist）→ 走 enhanceFileError 相似路径建议
+//  3. 其它错误 → 兜底引导（含「下一步我应该」，且保留 %w 链）
+func TestEnhanceError(t *testing.T) {
+	t.Run("引导格式错误透传", func(t *testing.T) {
+		guided := fmt.Errorf("%s", GuideMissingParam("TestTool", "key"))
+		got := enhanceError(guided, "TestTool", "")
+		if got.Error() != guided.Error() {
+			t.Errorf("已引导错误应原样透传，got=%v want=%v", got, guided)
+		}
+	})
+
+	t.Run("文件不存在走增强", func(t *testing.T) {
+		orig := &os.PathError{Op: "open", Path: "/nonexistent_dir_enhance/foo.txt", Err: os.ErrNotExist}
+		got := enhanceError(orig, "Read", "/nonexistent_dir_enhance/foo.txt")
+		if !strings.Contains(got.Error(), "下一步我应该") {
+			t.Errorf("ENOENT 应带引导建议，got=%v", got)
+		}
+		if !errors.Is(got, os.ErrNotExist) {
+			t.Errorf("应保留 os.ErrNotExist 错误链，got=%v", got)
+		}
+	})
+
+	t.Run("未知错误兜底零包装", func(t *testing.T) {
+		orig := errors.New("底层未知错误")
+		got := enhanceError(orig, "SomeTool", "")
+		if got != orig {
+			t.Errorf("未知错误应原样返回（不添加任何指引），got=%v want=%v", got, orig)
+		}
+		if strings.Contains(got.Error(), "下一步我应该") {
+			t.Errorf("兜底不应包含指引话术，got=%v", got)
 		}
 	})
 }

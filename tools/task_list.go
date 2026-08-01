@@ -44,7 +44,7 @@ func (t *TaskListTool) Info() *ToolInfo {
 func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskList 需要包含 SessionID 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TaskList", "包含 SessionID 的 ToolContext"))
 	}
 
 	rawStatusFilter, _ := GetParam(params, "status_filter")
@@ -54,7 +54,7 @@ func (t *TaskListTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	taskIDs, err := ListTasks(ctx, tc.Session.ID())
 	if err != nil {
-		return nil, fmt.Errorf("列出任务失败：%w", err)
+		return nil, err
 	}
 
 	if len(taskIDs) == 0 {

@@ -74,13 +74,13 @@ func validateReadPath(path string) error {
 	// 检查设备文件黑名单
 	for _, device := range deviceFileBlacklist {
 		if path == device {
-			return fmt.Errorf("读取被拒绝: %s 是设备文件，读取将导致进程挂起", path)
+			return fmt.Errorf("%s", GuideReadInvalidPath(path, "该路径是设备文件，读取会导致进程挂起或输出无意义内容"))
 		}
 	}
 
 	// 检查二进制扩展名
 	if hasBinaryExtension(path) {
-		return fmt.Errorf("读取被拒绝: %s 是二进制文件，不支持读取", path)
+		return fmt.Errorf("%s", GuideReadInvalidPath(path, "该文件是二进制文件，Read 不支持读取此格式"))
 	}
 
 	return nil

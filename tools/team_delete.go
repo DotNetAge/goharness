@@ -42,24 +42,24 @@ func (t *TeamDeleteTool) Execute(ctx context.Context, params map[string]any) (an
 	rawTeamName, _ := GetParam(params, "team_name")
 	teamName, _ := rawTeamName.(string)
 	if teamName == "" {
-		return nil, fmt.Errorf("team_name 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TeamDelete", "team_name"))
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TeamDelete 需要包含 SessionID 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TeamDelete", "包含 SessionID 的 ToolContext"))
 	}
 
 	team, err := GetTeam(ctx, tc.Session.ID(), teamName)
 	if err != nil {
-		return nil, fmt.Errorf("获取团队失败：%w", err)
+		return nil, err
 	}
 	if team == nil {
-		return nil, fmt.Errorf("团队 %q 未找到", teamName)
+		return nil, fmt.Errorf("%s", GuideNotFound("团队", teamName, "使用 TeamCreate 创建该团队，或用 TeamList 查看现有团队名称后重试"))
 	}
 
 	if err := DeleteTeam(ctx, tc.Session.ID(), teamName); err != nil {
-		return nil, fmt.Errorf("删除团队失败：%w", err)
+		return nil, err
 	}
 
 	return map[string]any{

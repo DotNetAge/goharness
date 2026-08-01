@@ -24,7 +24,7 @@ func TestBuildSystemPromptsStructure(t *testing.T) {
 	text := msgText(t, msgs[0])
 	assert.Contains(t, text, "## 搜索策略")
 	assert.Contains(t, text, "## 环境")
-	assert.Contains(t, text, "## 可用工具目录")
+	assert.NotContains(t, text, "## 可用工具目录")
 	assert.Contains(t, text, "## 沟通风格")
 }
 
@@ -48,6 +48,7 @@ func TestBuildSystemPromptsWithAgent(t *testing.T) {
 }
 
 // TestBuildSystemPromptsCompactPlaceholder 验证压缩占位符的开关逻辑。
+// 占位符仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入。
 func TestBuildSystemPromptsCompactPlaceholder(t *testing.T) {
 	rt := newTestRuntime(t)
 
@@ -55,19 +56,37 @@ func TestBuildSystemPromptsCompactPlaceholder(t *testing.T) {
 	currentCtx := int64(0)
 	sess := newTestSessionWithResolver(t, func() int64 { return currentCtx })
 
-	// ModelContextLength = 0 时（未注入/禁用压缩）按实现也会插入占位符
+	// ModelContextLength = 0 时（未注入/禁用压缩）不插入占位符
 	msgs := rt.buildSystemPrompts(sess.ID(), sess)
 	text := msgText(t, msgs[0])
-	assert.Contains(t, text, "## 压缩内容")
+	assert.NotContains(t, text, "## 压缩内容")
 
-	// ModelContextLength = 128K 时应插入压缩占位符
+	// ModelContextLength = 128K 时（≤128K，由 TryCompact 独占管理）不插入占位符
 	currentCtx = 128 * 1024
+	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	text = msgText(t, msgs[0])
+	assert.NotContains(t, text, "## 压缩内容")
+
+	// ModelContextLength = 200K 时（128K–250K 区间）应插入压缩占位符
+	currentCtx = 200 * 1024
 	msgs = rt.buildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.Contains(t, text, "## 压缩内容")
 
-	// ModelContextLength > 128K 时不应插入压缩占位符
+	// ModelContextLength = 250K 时（边界值，128K–250K 区间）应插入压缩占位符
+	currentCtx = 250 * 1024
+	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	text = msgText(t, msgs[0])
+	assert.Contains(t, text, "## 压缩内容")
+
+	// ModelContextLength = 256K 时（>250K，不启用 MicroCompact）不插入占位符
 	currentCtx = 256 * 1024
+	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	text = msgText(t, msgs[0])
+	assert.NotContains(t, text, "## 压缩内容")
+
+	// ModelContextLength = 1M 时（>250K，不启用 MicroCompact）不插入占位符
+	currentCtx = 1024 * 1024
 	msgs = rt.buildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.NotContains(t, text, "## 压缩内容")
@@ -145,6 +164,46 @@ func TestAssembleMessagesAssistantWithReasoning(t *testing.T) {
 	msgs := rt.assembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "thinking process", msgs[0].ReasoningContent)
+}
+
+// TestAssembleMessagesImageBlocks 验证携带图片的用户消息被组装为
+// 多模态消息（文本块 + 图片内容块），图片以 image_url 消息形式进入上下文。
+// 内容块类型使用 ContentTypeImage（而非 ContentTypeImageURL）：
+// gochat 的 ollama 客户端只识别 ContentTypeImage；OpenAI 转换端对两者都支持，
+// 统一使用 ContentTypeImage 可同时兼容两个提供商。
+func TestAssembleMessagesImageBlocks(t *testing.T) {
+	rt := newTestRuntime(t)
+	history := []session.Message{
+		{
+			Role: "user", Content: "请分析这张图",
+			Images: []session.ImageBlock{
+				{MediaType: "image/png", Base64Data: "aGVsbG8=", AltText: "512x300"},
+			},
+		},
+	}
+
+	msgs := rt.assembleMessages(nil, history, "")
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "user", msgs[0].Role)
+	require.Len(t, msgs[0].Content, 2)
+	assert.Equal(t, gochatcore.ContentTypeText, msgs[0].Content[0].Type)
+	assert.Equal(t, "请分析这张图", msgs[0].Content[0].Text)
+	assert.Equal(t, gochatcore.ContentTypeImage, msgs[0].Content[1].Type)
+	assert.Equal(t, "image/png", msgs[0].Content[1].MediaType)
+	assert.Equal(t, "aGVsbG8=", msgs[0].Content[1].Data)
+}
+
+// TestAssembleMessagesUserWithoutImages 验证普通用户消息仍为单文本块。
+func TestAssembleMessagesUserWithoutImages(t *testing.T) {
+	rt := newTestRuntime(t)
+	history := []session.Message{
+		{Role: "user", Content: "plain text"},
+	}
+
+	msgs := rt.assembleMessages(nil, history, "")
+	require.Len(t, msgs, 1)
+	require.Len(t, msgs[0].Content, 1)
+	assert.Equal(t, "plain text", msgText(t, msgs[0]))
 }
 
 // TestStripOrphanedToolCalls 验证孤立 tool_call 被正确过滤。

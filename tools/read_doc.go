@@ -54,7 +54,7 @@ func convertDocument(format string, r io.Reader) (*docResult, error) {
 	case "epub":
 		return epubToMarkdown(r)
 	}
-	return nil, fmt.Errorf("不支持的文档格式：%s", format)
+	return nil, fmt.Errorf("%s", GuideInvalidValue("Read", "filePath", format, "Read 仅支持 pdf/docx/xlsx/epub 等文档格式，可使用 Ls/Glob 确认文件类型后重试"))
 }
 
 // ---------------------------------------------------------------------------
@@ -64,12 +64,16 @@ func convertDocument(format string, r io.Reader) (*docResult, error) {
 func pdfToMarkdown(r io.Reader) (*docResult, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("读取 PDF 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("读取", "PDF 文档", err), err)
 	}
 
 	pdfReader, err := model.NewPdfReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("解析 PDF 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试解析 PDF 文档结构",
+			WithErrDetail("文档解析器在解析 PDF 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	// 提取元数据
@@ -87,7 +91,11 @@ func pdfToMarkdown(r io.Reader) (*docResult, error) {
 
 	pageCount, err := pdfReader.GetNumPages()
 	if err != nil {
-		return nil, fmt.Errorf("获取 PDF 页数失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试获取 PDF 文档的页数",
+			WithErrDetail("文档解析器在解析 PDF 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	var mdBuilder strings.Builder
@@ -124,12 +132,16 @@ func pdfToMarkdown(r io.Reader) (*docResult, error) {
 func epubToMarkdown(r io.Reader) (*docResult, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("读取 EPUB 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("读取", "EPUB 文档", err), err)
 	}
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, fmt.Errorf("解析 EPUB (zip) 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试解析 EPUB 文档（zip 容器）结构",
+			WithErrDetail("文档解析器在解析 EPUB 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	opfPath, err := findOPFPath(zr)
@@ -173,7 +185,11 @@ type manifestItem struct {
 func findOPFPath(zr *zip.Reader) (string, error) {
 	containerData, err := readZipFile(zr, "META-INF/container.xml")
 	if err != nil {
-		return "", fmt.Errorf("META-INF/container.xml not found: %w", err)
+		return "", fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试读取 EPUB 文档的 META-INF/container.xml",
+			WithErrDetail("文档解析器在解析 EPUB 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	clean := stripXMLNamespaces(containerData)
@@ -187,10 +203,18 @@ func findOPFPath(zr *zip.Reader) (string, error) {
 		} `xml:"rootfiles"`
 	}
 	if err := xml.Unmarshal(clean, &container); err != nil {
-		return "", fmt.Errorf("parse container.xml: %w", err)
+		return "", fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试解析 EPUB 文档的 container.xml 配置",
+			WithErrDetail("文档解析器在解析 EPUB 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 	if len(container.RootFiles.RootFile) == 0 {
-		return "", fmt.Errorf("invalid epub: no rootfile in container.xml")
+		return "", fmt.Errorf("%s", BuildGuide(
+			"尝试从 EPUB 文档的 container.xml 中定位 OPF 文件",
+			"container.xml 中缺少 rootfile 条目，EPUB 结构无效",
+			"确认文件未被损坏、扩展名与实际格式一致（EPUB 为 zip 容器，内含 META-INF/container.xml）；若仍失败，应告知用户文件无法解析",
+		))
 	}
 	return container.RootFiles.RootFile[0].FullPath, nil
 }
@@ -198,7 +222,11 @@ func findOPFPath(zr *zip.Reader) (string, error) {
 func parseOPF(zr *zip.Reader, opfPath string) (*opfMetadata, error) {
 	opfData, err := readZipFile(zr, opfPath)
 	if err != nil {
-		return nil, fmt.Errorf("OPF file %s not found: %w", opfPath, err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试读取 EPUB 文档的 OPF 文件 %q", opfPath),
+			WithErrDetail("文档解析器在解析 EPUB 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	clean := stripXMLNamespaces(opfData)
@@ -224,7 +252,11 @@ func parseOPF(zr *zip.Reader, opfPath string) (*opfMetadata, error) {
 	}
 
 	if err := xml.Unmarshal(clean, &opf); err != nil {
-		return nil, fmt.Errorf("parse OPF: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试解析 EPUB 文档的 OPF 文件 %q", opfPath),
+			WithErrDetail("文档解析器在解析 EPUB 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	meta := &opfMetadata{
@@ -329,7 +361,7 @@ func readZipFile(zr *zip.Reader, name string) ([]byte, error) {
 			return data, nil
 		}
 	}
-	return nil, fmt.Errorf("file not found: %s", name)
+	return nil, fmt.Errorf("%s", GuideNotFound("文件", name, "该文件是 EPUB 文档内部的结构文件，无法通过 Glob/Ls 在文件系统中定位；若文档内部缺少该文件，说明文档已损坏或不是有效的 EPUB，应确认文件未被损坏、扩展名与实际格式一致，若仍失败应告知用户文件无法解析"))
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +401,7 @@ func (n *xmlNode) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 type xmlNumbering struct {
 	XMLName     xml.Name `xml:"numbering"`
 	AbstractNum []struct {
-		AbstractNumID string     `xml:"abstractNumId,attr"`
+		AbstractNumID string      `xml:"abstractNumId,attr"`
 		Lvl           []xmlNumLvl `xml:"lvl"`
 	} `xml:"abstractNum"`
 	Num []struct {
@@ -381,8 +413,8 @@ type xmlNumbering struct {
 }
 
 type xmlNumLvl struct {
-	Ilvl   string `xml:"ilvl,attr"`
-	Start  struct {
+	Ilvl  string `xml:"ilvl,attr"`
+	Start struct {
 		Val string `xml:"val,attr"`
 	} `xml:"start"`
 	NumFmt struct {
@@ -415,12 +447,16 @@ func xmlEscape(s, set string) string {
 func docxToMarkdown(r io.Reader) (*docResult, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("读取 DOCX 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("读取", "DOCX 文档", err), err)
 	}
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, fmt.Errorf("解析 DOCX (zip) 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试解析 DOCX 文档（zip 容器）结构",
+			WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	var rels xmlRelationships
@@ -432,28 +468,52 @@ func docxToMarkdown(r io.Reader) (*docResult, error) {
 		case "word/_rels/document.xml.rels", "word/_rels/document2.xml.rels":
 			rc, err := f.Open()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+					fmt.Sprintf("尝试读取 DOCX 文档的 %q", f.Name),
+					WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+					"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+				), err)
 			}
 			b, err := io.ReadAll(rc)
 			rc.Close()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+					fmt.Sprintf("尝试读取 DOCX 文档的 %q", f.Name),
+					WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+					"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+				), err)
 			}
 			if err := xml.Unmarshal(b, &rels); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+					fmt.Sprintf("尝试解析 DOCX 文档的 %q", f.Name),
+					WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+					"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+				), err)
 			}
 		case "word/numbering.xml":
 			rc, err := f.Open()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+					fmt.Sprintf("尝试读取 DOCX 文档的 %q", f.Name),
+					WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+					"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+				), err)
 			}
 			b, err := io.ReadAll(rc)
 			rc.Close()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+					fmt.Sprintf("尝试读取 DOCX 文档的 %q", f.Name),
+					WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+					"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+				), err)
 			}
 			if err := xml.Unmarshal(b, &num); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+					fmt.Sprintf("尝试解析 DOCX 文档的 %q", f.Name),
+					WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+					"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+				), err)
 			}
 		case "word/document.xml", "word/document2.xml":
 			docFile = f
@@ -461,22 +521,38 @@ func docxToMarkdown(r io.Reader) (*docResult, error) {
 	}
 
 	if docFile == nil {
-		return nil, fmt.Errorf("invalid docx: word/document.xml not found")
+		return nil, fmt.Errorf("%s", BuildGuide(
+			"尝试解析 DOCX 文档内容",
+			"文档缺少 word/document.xml，DOCX 结构无效",
+			"确认文件未被损坏、扩展名与实际格式一致（DOCX 为 zip 容器，内含 word/document.xml）；若仍失败，应告知用户文件无法解析",
+		))
 	}
 
 	rc, err := docFile.Open()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试读取 DOCX 文档的 %q", docFile.Name),
+			WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 	b, err := io.ReadAll(rc)
 	rc.Close()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试读取 DOCX 文档的 %q", docFile.Name),
+			WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	var node xmlNode
 	if err := xml.Unmarshal(b, &node); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试解析 DOCX 文档的 %q", docFile.Name),
+			WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	var buf bytes.Buffer
@@ -486,7 +562,11 @@ func docxToMarkdown(r io.Reader) (*docResult, error) {
 		list: make(map[string]int),
 	}
 	if err := zf.walk(&node, &buf); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试解析 DOCX 文档的正文内容",
+			WithErrDetail("文档解析器在解析 DOCX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	return &docResult{content: buf.String()}, nil
@@ -748,12 +828,16 @@ func (zf *docxFile) walk(node *xmlNode, w io.Writer) error {
 func xlsxToMarkdown(r io.Reader) (*docResult, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("读取 XLSX 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("读取", "XLSX 文档", err), err)
 	}
 
 	xlFile, err := xlsx.OpenBinary(data)
 	if err != nil {
-		return nil, fmt.Errorf("解析 XLSX 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			"尝试解析 XLSX 文档结构",
+			WithErrDetail("文档解析器在解析 XLSX 文档时失败（文件可能已损坏或格式与扩展名不符）", err),
+			"确认文件未被损坏、扩展名与实际格式一致；若仍失败，应告知用户文件无法解析",
+		), err)
 	}
 
 	var mdBuilder strings.Builder
@@ -825,7 +909,7 @@ func xlsxEscapeCell(text string) string {
 // Shared text helpers
 // ---------------------------------------------------------------------------
 
-// textToMarkdown converts extracted plain text to a cleaner markdown format.
+// textToMarkdown 将提取的纯文本整理为更干净的 Markdown 格式。
 func textToMarkdown(text string) string {
 	lines := strings.Split(text, "\n")
 	var result strings.Builder

@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -102,9 +103,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	conversationID := session.NewRecordID()
 	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
 	defer func() {
-		if rt.toolActivationHook != nil {
-			rt.toolActivationHook.SetActiveToolSet(nil)
-		}
 		emit(events.ExecutionSummary, events.ExecutionSummaryData{
 			TotalIterations:   b.resultIterations,
 			TotalDuration:     b.resultDuration,
@@ -184,8 +182,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// 若超限则对 messages[cursor:] 全量摘要并清空（cursor = len(messages)）。
 	// 不在 Append 末尾或 exec 循环中调用，避免工具结果 append 中途触发清空
 	// 破坏 tool_call 配对。
-	// Budget 动态可调：只有 maxWindowSize > 0（即模型 ContextLength <= 128K）时
-	// 才会真正触发；超长上下文模型不设置 maxWindowSize，TryCompact 直接返回。
+	// 触发条件：windowTokens > 80% * ModelContextLength。对所有 ContextLength > 0
+	// 的模型生效（maxWindowSize = ModelContextLength()，由 modelContextResolver 动态返回）。
 	b.session.TryCompact(ctx)
 
 	// 从此刻开始计时，用于后续结果统计。
@@ -254,31 +252,27 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		b.question = ""
 	}
 
-	// 判断当前智能体是否配置了 SubAgent，用于条件性地包含核心工具。
-	hasSubAgent := false
-	if rt.agentReg != nil {
-		if cfg := rt.agentReg.Get(b.agentName); cfg != nil {
-			excluded := make(map[string]bool, len(cfg.ExcludeTools))
-			for _, name := range cfg.ExcludeTools {
-				excluded[name] = true
-			}
-			hasSubAgent = !excluded["SubAgent"]
-		}
-	}
-
-	// 创建本轮的 ActiveToolSet，并绑定到 ToolActivationHook。
-	activeToolSet := NewActiveToolSet(rt.toolReg, hasSubAgent)
-	if rt.toolActivationHook != nil {
-		rt.toolActivationHook.SetActiveToolSet(activeToolSet)
-	}
-	// Reset 会在开始时重置为核心 + 条件性工具。
-	activeToolSet.Reset()
+	// 使用全量工具定义：所有已注册工具一次性发送给 LLM，
+	// 不在迭代间改变工具集，以保持前缀缓存稳定。
+	// 应用当前 Agent 的 ExcludeTools 过滤，排除声明中不允许使用的工具。
+	excludeTools := rt.agentExcludeTools(b.agentName)
+	allToolDefs := buildAllToolDefinitions(rt.toolReg, excludeTools)
 
 	// 构建系统提示词段落（每轮之间静态不变）
 	systemSections := rt.buildSystemPrompts(sid, b.session)
 
 	var lastIteration int
 	var prevToolResults []hooks.ToolResult
+
+	// ── 重复错误引导状态 ──
+	// 本地小模型往往无法从工具错误反馈中自我纠正，容易陷入「反复用相同方式调用
+	// 同一工具并得到相同错误」的死循环。这里按工具名跟踪连续相同错误：
+	//   - dupCount: 连续相同错误计数（错误发生变化或工具成功时重置）
+	//   - lastErr:  该工具上一次的错误文本，用于判断是否「完全相同」
+	//   - guided:   是否已为该工具注入过引导话术（避免每轮重复注入同一段话术）
+	dupCount := make(map[string]int)
+	lastErr := make(map[string]string)
+	guided := make(map[string]bool)
 
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
@@ -298,9 +292,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			return total
 		}())
 
-		// 从当前 ActiveToolSet 构建工具定义。
-		// 不同轮次之间可能因 ToolSelector 或 Skill 激活新工具而发生变化。
-		toolDefs := activeToolSet.BuildDefinitions()
+		// 使用全量工具定义（所有工具一次性注册，保持前缀缓存稳定）
+		toolDefs := allToolDefs
 
 		// ── Loop Hooks BeforeLLM（带 panic 恢复）──
 		callInput := &hooks.CallInput{
@@ -339,10 +332,14 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			question = b.question
 		}
 
-		// MicroCompact（Dupdu）已禁用 —— 它修改上下文中间的 tool 消息内容，
-		// 会破坏从首次请求累积下来的 KV 缓存，导致修改点之后的所有 KV 失效
-		// 并重新计算。对于超长上下文模型，重算成本远大于保留"垃圾"的 attention
-		// 成本；对于短上下文模型，TryCompact 会清空当前窗口，已足够控制长度。
+		// MicroCompact（方案 A）：仅对 128K < ContextLength <= 250K 的模型启用。
+		// - ≤128K：由 TryCompact 独占管理（80% 触发全量摘要清空），不调用 MicroCompact
+		// - 128K–250K：MicroCompact 在 45% 触发局部压缩，仅压缩 [25%, 65%] 位置范围内的
+		//   工具消息，保留最近的 tool_call 配对；若窗口继续涨到 80%，TryCompact 全量清空
+		// - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
+		if ctxLen := b.session.ModelContextLength(); ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold {
+			b.session.TryMicroCompact()
+		}
 
 		// 重新读取窗口 —— Current() 返回 messages[cursor:] 的新副本。
 		window = b.session.Current()
@@ -383,15 +380,24 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			Timeout:           defaultLLMTimeout,
 		})
 		if err != nil {
-			logger.Error("LLM思想流失败", err, "session", sid, "iter", iter)
-			emit(events.LLMTimeout, events.LLMTimeoutData{
-				SessionID: sid,
-				Timeout:   defaultLLMTimeout,
-				Elapsed:   time.Since(start),
-				Error:     err.Error(),
-			})
-			b.resultErr = fmt.Errorf("LLM思想流失败: %w", err)
-			b.resultTerminationReason = "llm_error"
+			if errors.Is(err, context.Canceled) {
+				logger.Info("LLM思想流被用户取消", "session", sid, "iter", iter, "elapsed", time.Since(start))
+				emit(events.LLMCancelled, events.LLMCancelledData{
+					SessionID: sid,
+					Elapsed:   time.Since(start),
+				})
+				b.resultTerminationReason = "cancelled"
+			} else {
+				logger.Error("LLM思想流失败", err, "session", sid, "iter", iter)
+				emit(events.LLMTimeout, events.LLMTimeoutData{
+					SessionID: sid,
+					Timeout:   defaultLLMTimeout,
+					Elapsed:   time.Since(start),
+					Error:     err.Error(),
+				})
+				b.resultErr = fmt.Errorf("LLM思想流失败: %w", err)
+				b.resultTerminationReason = "llm_error"
+			}
 			setIterResult(iter)
 			return
 		}
@@ -429,14 +435,23 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		stream.Close()
 
 		if streamErr != nil {
-			emit(events.LLMTimeout, events.LLMTimeoutData{
-				SessionID: sid,
-				Timeout:   defaultLLMTimeout,
-				Elapsed:   time.Since(start),
-				Error:     streamErr.Error(),
-			})
-			b.resultErr = streamErr
-			b.resultTerminationReason = "llm_error"
+			if errors.Is(streamErr, context.Canceled) {
+				logger.Info("LLM思想流被用户取消", "session", sid, "iter", iter, "elapsed", time.Since(start))
+				emit(events.LLMCancelled, events.LLMCancelledData{
+					SessionID: sid,
+					Elapsed:   time.Since(start),
+				})
+				b.resultTerminationReason = "cancelled"
+			} else {
+				emit(events.LLMTimeout, events.LLMTimeoutData{
+					SessionID: sid,
+					Timeout:   defaultLLMTimeout,
+					Elapsed:   time.Since(start),
+					Error:     streamErr.Error(),
+				})
+				b.resultErr = streamErr
+				b.resultTerminationReason = "llm_error"
+			}
 			setIterResult(iter)
 			return
 		}
@@ -585,6 +600,37 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// 持久化工具结果（完整内容，不做截断）
 		for _, tr := range toolResults {
 			toolContent := formatToolResult(tr)
+
+			// ── 重复错误引导 ──
+			// 当同一工具连续出现 duplicateErrorThreshold 次完全相同的错误时，
+			// 在工具结果末尾追加引导话术，提示大模型更换工作方式（而非硬性熔断循环）。
+			// 引导话术注入的是动态追加的 tool 消息，不影响 system prompt 与
+			// tools 字段构成的前缀缓存。
+			// 注意：工具错误已含「下一步我应该」引导时（tools 层 Guide 体系），
+			// 不再叠加反思话术，避免同一消息出现两个「下一步我应该」块造成冗余；
+			// 仅对零包装的未知错误叠加反思引导，与 tools 层「兜底不给指引」互补。
+			if tr.Error != "" && !strings.Contains(tr.Error, "下一步我应该") {
+				if lastErr[tr.ToolName] == tr.Error {
+					dupCount[tr.ToolName]++
+				} else {
+					lastErr[tr.ToolName] = tr.Error
+					dupCount[tr.ToolName] = 1
+				}
+				if dupCount[tr.ToolName] >= duplicateErrorThreshold && !guided[tr.ToolName] {
+					guided[tr.ToolName] = true
+					guide := fmt.Sprintf(duplicateErrorGuideTemplate, dupCount[tr.ToolName], tr.ToolName)
+					toolContent += "\n\n" + guide
+					logger.Warn("检测到工具重复相同错误，已注入引导话术",
+						"session", sid, "tool", tr.ToolName, "iter", iter, "dup_count", dupCount[tr.ToolName])
+				}
+			} else {
+				// 工具成功执行，重置该工具的重复错误跟踪状态，
+				// 确保后续若再出现错误，重新从第 1 次开始计数。
+				delete(dupCount, tr.ToolName)
+				delete(lastErr, tr.ToolName)
+				delete(guided, tr.ToolName)
+			}
+
 			preview := toolContent
 			if len(preview) > 120 {
 				preview = preview[:120]
@@ -595,6 +641,22 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				ToolCallID: tr.ToolCallID,
 			}, "工具结果") {
 				return
+			}
+
+			// 图片消息：ImageHook 已把工具返回的图片转换为图片内容块。
+			// 图片以 image_url 消息（user 角色）进入上下文，紧随对应的工具结果之后，
+			// 而非混入工具结果的文本内容——tool 消息的 content 在 API 侧只能是字符串。
+			if len(tr.ImageBlocks) > 0 {
+				imgMsg := session.Message{
+					Role: "user", Timestamp: time.Now().Unix(),
+					Content: "以下是工具 " + tr.ToolName + " 读取到的图片内容（视觉消息），请结合图片进行分析：",
+					Images:  tr.ImageBlocks,
+				}
+				logger.Info("图片已作为视觉消息追加",
+					"session", sid, "tool", tr.ToolName, "images", len(tr.ImageBlocks))
+				if !appendAndAbort(iter, imgMsg, "图片消息") {
+					return
+				}
 			}
 		}
 
@@ -632,7 +694,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			})
 			b.resultTerminationReason = "ask_user_pending"
 			setIterResult(iter)
-			logger.Info("loop paused: AskUser tool invoked, waiting for user response")
+			logger.Info("思考暂停: 已调用 AskUser 工具，等待用户回答")
 			return
 		}
 	}
@@ -659,7 +721,46 @@ func formatToolResult(tr hooks.ToolResult) string {
 	if tr.Result != "" {
 		return tr.Result
 	}
-	return fmt.Sprintf("[%s] 返回结果: (空结果)", tr.ToolName)
+	// 空结果属于"不及预期"场景，同样采用第一人称引导，提示调整参数或换工具。
+	return fmt.Sprintf("[%s] 返回结果: (空结果)。我未能从该工具获得任何输出，下一步我应该考虑调整参数或改用其它工具来获取所需信息。", tr.ToolName)
+}
+
+// agentExcludeTools 返回指定 Agent 配置中声明要排除的工具集合。
+// 若 Agent 注册表不可用或未找到该 Agent，返回空集合（不排除任何工具）。
+func (rt *Runtime) agentExcludeTools(agentName string) map[string]bool {
+	excluded := make(map[string]bool)
+	if rt.agentReg == nil {
+		return excluded
+	}
+	if cfg := rt.agentReg.Get(agentName); cfg != nil {
+		for _, name := range cfg.ExcludeTools {
+			excluded[name] = true
+		}
+	}
+	return excluded
+}
+
+// buildAllToolDefinitions 从工具注册表构建工具定义，用于 LLM 请求的 tools 字段。
+// 所有工具一次性注册，不在迭代间改变工具集，以保持前缀缓存稳定。
+// exclude 为非空时，被排除的工具不会出现在 tools 字段中，LLM 将无法调用它们。
+func buildAllToolDefinitions(registry tools.ToolRegistry, exclude map[string]bool) []gochatcore.Tool {
+	allTools := registry.All()
+	if len(allTools) == 0 {
+		return nil
+	}
+	out := make([]gochatcore.Tool, 0, len(allTools))
+	for _, t := range allTools {
+		info := t.Info()
+		if exclude != nil && exclude[info.Name] {
+			continue
+		}
+		out = append(out, gochatcore.Tool{
+			Name:        info.Name,
+			Description: info.Description,
+			Parameters:  buildParamSchema(info.Parameters),
+		})
+	}
+	return out
 }
 
 // recordStreamUsage 从流式响应中提取 usage 并持久化到 TokenUsageStore。
@@ -951,7 +1052,7 @@ func (rt *Runtime) executeSingleTool(
 		}
 		if hr.Abort {
 			emit(events.PermissionDenied, hr.AbortReason)
-			return failedToolResult(inv.Name, inv.ID, "aborted: "+hr.AbortReason, start)
+			return failedToolResult(inv.Name, inv.ID, hr.AbortReason, start)
 		}
 		if hr.Error != nil {
 			emit(events.PermissionDenied, hr.Error.Error())
@@ -973,7 +1074,7 @@ func (rt *Runtime) executeSingleTool(
 	for _, h := range rt.toolHooks {
 		hr := h.After(&tr)
 		if hr.Abort {
-			tr = failedToolResult(inv.Name, inv.ID, "aborted: "+hr.AbortReason, start)
+			tr = failedToolResult(inv.Name, inv.ID, hr.AbortReason, start)
 			break
 		}
 		if hr.Error != nil {

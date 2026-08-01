@@ -35,8 +35,8 @@ func (t *GlobTool) Info() *ToolInfo {
 		Name:               "Glob",
 		MaxResultSizeChars: 30000,
 		Description:        "查找文件。当你需要通过文件名模式查找文件时使用此工具。",
-		Prompt: `快速文件模式匹配工具，适用于任何规模的代码库
-**用法**
+		Prompt: `快速文件模式匹配工具，适用于任何规模的文件查找任务。
+	**用法**
 - 支持 glob 模式，如 "**/*.js" 或 "src/**/*.ts"
 - 返回匹配的文件路径，按修改时间排序
 - 当你进行可能需要多轮 glob 和 grep 的开放式搜索时，使用 SubAgent 工具代替`,
@@ -60,7 +60,7 @@ func (t *GlobTool) Info() *ToolInfo {
 }
 
 func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	pattern, err := ValidateRequiredString(params, "pattern")
+	pattern, err := ValidateRequiredString("Glob", params, "pattern")
 	if err != nil {
 		return nil, err
 	}
@@ -72,22 +72,41 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		}
 	}
 
-	info, err := os.Stat(searchPath)
+	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
+	// 修复前 "~/projects" 会被 os.Stat 当作字面量目录，导致"搜索路径错误"。
+	var projectDir, sessionDir string
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		projectDir = tc.Session.ProjectDir()
+		sessionDir = tc.Session.SessionDir()
+	}
+	resolvedSearch, _ := ResolveTargetPath(searchPath, projectDir, sessionDir)
+
+	// Security check：防止 "../" 等相对路径上跳越出工作区。
+	// 修复前 Glob 缺少边界检查，"path: ../../" 会直接扫描工作区外的目录。
+	if err := ValidateFileSafety(resolvedSearch, projectDir); err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(resolvedSearch)
 	if err != nil {
-		return nil, fmt.Errorf("搜索路径错误：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("遍历", resolvedSearch, err), err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("搜索路径不是一个目录：%s", searchPath)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试在路径 %q 下查找文件，但它是文件而不是目录", resolvedSearch),
+			"搜索路径不是目录，Glob 只能遍历目录",
+			"path 参数应指向目录，使用 Ls 确认目录结构后重试",
+		))
 	}
 
 	matchPattern := normalizeGlobPattern(pattern)
 
 	var entries []fileEntry
-	walkErr := filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(resolvedSearch, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if path == searchPath {
+		if path == resolvedSearch {
 			return nil
 		}
 
@@ -115,7 +134,7 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil
 	})
 	if walkErr != nil {
-		return nil, fmt.Errorf("glob 失败：%w", walkErr)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("匹配文件模式", resolvedSearch, walkErr), walkErr)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {

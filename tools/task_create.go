@@ -38,17 +38,17 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	rawSubject, _ := GetParam(params, "subject")
 	subject, _ := rawSubject.(string)
 	if subject == "" {
-		return nil, fmt.Errorf("subject 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TaskCreate", "subject"))
 	}
 	rawDesc, _ := GetParam(params, "description")
 	description, _ := rawDesc.(string)
 	if description == "" {
-		return nil, fmt.Errorf("description 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TaskCreate", "description"))
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskCreate requires ToolContext with SessionID")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TaskCreate", "包含 SessionID 的 ToolContext"))
 	}
 
 	taskID := uuid.NewString()
@@ -71,7 +71,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	if err := CreateTask(ctx, tc.Session.ID(), task); err != nil {
-		return nil, fmt.Errorf("创建任务失败：%w", err)
+		return nil, err
 	}
 
 	return map[string]any{

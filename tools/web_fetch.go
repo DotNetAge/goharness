@@ -148,7 +148,7 @@ func (t *WebFetchTool) Info() *ToolInfo {
 //   - string: 格式化的页面内容
 //   - error: URL 无效、访问被拒绝或网络错误时返回错误
 func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	rawURL, err := ValidateRequiredString(params, "url")
+	rawURL, err := ValidateRequiredString("WebFetch", params, "url")
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +192,11 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但构造 HTTP 请求失败", rawURL),
+			WithErrDetail(fmt.Sprintf("URL %q 包含非法字符，无法构造 HTTP 请求", rawURL), err),
+			"先自查：URL 中是否包含未编码的非法字符（如空格、中文、控制字符）？确认 URL 与请求参数正确后再重试",
+		), err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8")
@@ -200,14 +204,30 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("获取失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但网络请求失败", rawURL),
+			WithErrDetail(fmt.Sprintf("向 %q 发起请求时网络连接失败", rawURL), err),
+			"确认网络可达（若目标站点需代理或当前网络受限，应换用其它工具或告知用户）",
+		), err)
 	}
 	defer resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("HTTP %d 获取 %s 失败：%s", resp.StatusCode, rawURL, strings.TrimSpace(string(body)))
+		cause := fmt.Sprintf("目标返回了 HTTP %d 状态码", resp.StatusCode)
+		switch {
+		case resp.StatusCode == http.StatusNotFound:
+			cause = "目标返回了 HTTP 404，该 URL 对应的资源不存在"
+		case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized:
+			cause = "目标返回了 HTTP 403/401，站点拒绝访问（可能触发了反爬限制或需要登录鉴权）"
+		case resp.StatusCode >= 500:
+			cause = fmt.Sprintf("目标返回了 HTTP %d，服务器异常或过载", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但目标返回了 HTTP %d 状态码", rawURL, resp.StatusCode),
+			cause,
+			"检查 URL 是否正确；若为 404 说明资源不存在，应修正 URL；若为 403/5xx 说明访问受限或服务异常，应稍后重试或告知用户，不要反复请求同一 URL",
+		))
 	}
 	if !isHTMLContentType(ct) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -216,7 +236,11 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但读取页面内容失败", rawURL),
+			WithErrDetail(fmt.Sprintf("读取 %q 的页面内容时传输中断或响应体异常", rawURL), err),
+			"页面可能在传输过程中中断，稍后重试或更换其他来源",
+		), err)
 	}
 
 	rawContent := htmlToMarkdown(string(body))
@@ -396,20 +420,36 @@ func parseCIDR(s string) *net.IPNet {
 func validateURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("无效的 URL：%w", err)
+		return fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但该 URL 无法解析", rawURL),
+			WithErrDetail(fmt.Sprintf("URL %q 格式无效（缺少协议或主机名）", rawURL), err),
+			"检查 URL 是否完整（如 https://example.com/path），修正后重试",
+		))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("不支持的 URL 协议：%s（仅允许 http/https）", parsed.Scheme)
+		return fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但协议不受支持", rawURL),
+			fmt.Sprintf("URL %q 的协议 %q 不受支持", rawURL, parsed.Scheme),
+			"WebFetch 仅支持 http 与 https 协议，改用这两种协议的 URL 后重试",
+		))
 	}
 
 	host := parsed.Hostname()
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		return fmt.Errorf("解析主机 %q 失败：%w", host, err)
+		return fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试获取 URL %q，但无法解析主机 %q", rawURL, host),
+			fmt.Sprintf("URL %q 的主机名 %q 无法解析（DNS 解析失败）", rawURL, host),
+			"确认域名拼写正确、当前网络可访问该域名（可在浏览器中验证），或改用其它可访问的 URL",
+		))
 	}
 	for _, ip := range ips {
 		if isPrivateIP(ip) {
-			return fmt.Errorf("访问被拒绝：URL 解析为私有/内部地址 %s", ip)
+			return fmt.Errorf("%s", BuildGuide(
+				fmt.Sprintf("尝试获取 URL %q，但访问被拒绝", rawURL),
+				fmt.Sprintf("URL %q 解析为私有或内部地址 %s（SSRF 风险）", rawURL, ip),
+				"确认 URL 指向公网可访问的资源，不要访问内网/私有 IP（如 127.0.0.1、10.x、192.168.x、169.254.x）",
+			))
 		}
 	}
 	return nil

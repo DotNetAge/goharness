@@ -20,8 +20,20 @@ import (
 //   - 结果数量限制防止上下文爆炸
 //
 // 安全级别：LevelSafe（安全），只读操作
+//
+// 授权语义：项目边界检查由 Grant()（PermissionRequired）负责；
+// 越界目录触发授权流程，白名单（AddWhiteList）或会话级白名单内放行。
 type LS struct {
-	info *ToolInfo // 工具元信息
+	info      *ToolInfo // 工具元信息
+	whitelist []string  // 允许列出的目录前缀（绕过项目边界检查）
+}
+
+// AddWhiteList 添加允许列出的目录前缀。
+// 当目标路径匹配任一白名单前缀时，Grant() 与 Execute() 会跳过项目边界检查，
+// 允许列出项目目录之外的目录。通常在工具初始化后、注册到 ToolRegistry 之前调用。
+func (l *LS) AddWhiteList(dirs ...string) *LS {
+	l.whitelist = append(l.whitelist, dirs...)
+	return l
 }
 
 // NewLsTool 创建一个 Ls 工具实例。
@@ -72,6 +84,46 @@ func (l *LS) Info() *ToolInfo {
 // 超过此数量的目录会被截断，防止上下文爆炸。
 const maxLsItems = 500
 
+// Grant implements tools.PermissionRequired。
+//
+// 与 Read / Edit / Bash 保持一致的授权语义：目标目录超出项目边界
+// （ValidateFileSafety 失败）时，先放行工具白名单（AddWhiteList）与会话级
+// 白名单（PermissionAllowSession 记忆）内的路径，其余越界目录触发授权流程。
+func (l *LS) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	raw, _ := GetParam(params, "path")
+	dirPath, _ := raw.(string)
+	if dirPath == "" {
+		return true, ""
+	}
+
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil {
+		return true, ""
+	}
+
+	resolved, _ := ResolveTargetPath(dirPath, tc.Session.ProjectDir(), tc.Session.SessionDir())
+	if resolved == "" {
+		return true, ""
+	}
+
+	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+		for _, dir := range l.whitelist {
+			if pathWithinScope(dir, resolved) {
+				return true, ""
+			}
+		}
+		if tc.SessionWhitelist != nil {
+			for _, allowed := range tc.SessionWhitelist.Ls {
+				if pathWithinScope(allowed, resolved) {
+					return true, ""
+				}
+			}
+		}
+		return false, GuideLsOutsideWorkspace(dirPath, resolved, err)
+	}
+	return true, ""
+}
+
 // Execute 执行目录列表操作。
 //
 // 处理流程：
@@ -90,9 +142,6 @@ const maxLsItems = 500
 //   - map[string]any: 包含 success, path, total_items, items 等字段
 //   - error: 路径不存在或不是目录时返回错误
 func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
-	// Get ToolContext for directory awareness (Design-time safety)
-	tc := GetToolContext(ctx)
-
 	// Get directory path (defaults to current directory)
 	dirPath := "."
 	if rawPath, found := GetParam(params, "path"); found {
@@ -101,22 +150,33 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 		}
 	}
 
-	// Security check
-	if err := ValidateFileSafety(dirPath, tc.Session.ProjectDir()); err != nil {
+	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
+	// 修复前 "~/workspaces" 直接传给 os.Stat 会被当作字面量目录，导致"目录不存在"。
+	var projectDir, sessionDir string
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		projectDir = tc.Session.ProjectDir()
+		sessionDir = tc.Session.SessionDir()
+	}
+	resolvedPath, _ := ResolveTargetPath(dirPath, projectDir, sessionDir)
+
+	// 安全校验：敏感文件硬性拦截。
+	// 项目边界检查已由 Grant()（PermissionRequired）完成；授权（Allow / AllowSession）
+	// 或白名单路径在此不再重复校验边界，否则授权后执行会被再次拦截。
+	if err := checkSensitiveFiles(resolvedPath); err != nil {
 		return nil, err
 	}
 
 	// Check if path exists
-	info, err := os.Stat(dirPath)
+	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("目录不存在：%s", dirPath)
+			return nil, fmt.Errorf("%s", GuideLsDirNotFound(resolvedPath))
 		}
-		return nil, fmt.Errorf("获取目录状态失败：%w", err)
+		return nil, fmt.Errorf("%s", GuideLsStatFailed(resolvedPath, err))
 	}
 
 	if !info.IsDir() {
-		return nil, fmt.Errorf("路径不是一个目录：%s", dirPath)
+		return nil, fmt.Errorf("%s", GuideLsNotDirectory(resolvedPath))
 	}
 
 	// Get parameters
@@ -135,9 +195,9 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	}
 
 	// Read directory contents
-	entries, err := os.ReadDir(dirPath)
+	entries, err := os.ReadDir(resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取目录失败：%w", err)
+		return nil, fmt.Errorf("%s", GuideLsReadFailed(resolvedPath, err))
 	}
 
 	// Build result
@@ -170,7 +230,7 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 
 		// If recursive mode and entry is a directory, list its children
 		if recursive && entry.IsDir() {
-			subDir := filepath.Join(dirPath, entry.Name())
+			subDir := filepath.Join(resolvedPath, entry.Name())
 			subEntries, err := os.ReadDir(subDir)
 			if err == nil {
 				children := make([]map[string]any, 0)
@@ -202,9 +262,9 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 
 	return map[string]any{
 		"success":     true,
-		"path":        dirPath,
+		"path":        resolvedPath,
 		"total_items": len(items),
 		"items":       items,
-		"message":     fmt.Sprintf("在 '%s' 中列出了 %d 个项目", dirPath, len(items)),
+		"message":     fmt.Sprintf("在 '%s' 中列出了 %d 个项目", resolvedPath, len(items)),
 	}, nil
 }

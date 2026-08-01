@@ -8,18 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/store"
-	"github.com/DotNetAge/goharness/tools/filestate"
 )
 
 // Read 实现了文件读取工具。
 // 支持从本地文件系统读取文件内容，具有以下特性：
 //   - 分页读取：通过 offset 和 limit 参数读取指定行范围
 //   - 文件大小限制：防止读取过大的文件
-//   - Token 预算控制：根据 token 限制截断输出
+//   - 输出预算控制：根据输出字符数限制，超限返回错误并引导分页读取
 //   - 多格式支持：文本文件、图片、PDF、DOCX、XLSX、EPUB 等
 //   - 去重缓存：避免重复 I/O（见过度设计审计 #6：简化至全量 TTL 缓存）
 //   - ENOENT 兜底：简化的 CWD 前缀建议（见过度设计审计 #7）
@@ -34,7 +32,7 @@ type Read struct {
 }
 
 // AddWhiteList 添加允许读取的目录前缀。
-// 当目标路径匹配任一白名单前缀时，Execute() 会跳过 ValidateFileSafety 检查，
+// 当目标路径匹配任一白名单前缀时，Grant() 与 Execute() 会跳过项目边界检查，
 // 允许读取项目目录之外的文件。通常在工具初始化后、注册到 ToolRegistry 之前调用。
 func (r *Read) AddWhiteList(dirs ...string) *Read {
 	r.whitelist = append(r.whitelist, dirs...)
@@ -52,7 +50,7 @@ func NewReadTool() *Read {
 // NewReadToolWithLimits 创建一个使用自定义限制的文件读取工具。
 //
 // 参数：
-//   - limits: 文件读取限制配置（大小、行数、token 等）
+//   - limits: 文件读取限制配置（大小、行数、输出字符预算等）
 //
 // 返回：
 //   - *Read: 配置好的 Read 工具实例
@@ -69,8 +67,8 @@ func NewReadToolWithLimits(limits FileReadingLimits) *Read {
 - 使用 offset/limit 读取特定范围，默认从开头读取最多 500 行。
 
 **文档文件（.pdf, .docx, .xlsx, .epub）**
-- 自动转换为 Markdown 格式返回。
-- offset/limit 参数不适用（全文转换）。
+- 自动转换为 Markdown 后按纯文本处理，支持 offset/limit 分页精读。
+- 超过输出字符预算时返回错误，并提示改用 offset/limit 分页读取后续部分。
 - 结果中会包含 format、title、author、pages 等元数据字段。
 
 **图片文件（.png, .jpg, .gif, .bmp, .webp, .svg）**
@@ -110,6 +108,79 @@ func (r *Read) Info() *ToolInfo {
 	return r.info
 }
 
+// Limits 返回当前文件读取限制配置。
+// 供增强版工具（如 mindx 的 ReadPro）读取 MaxSizeBytes 阈值，
+// 判断何时需要对大文件启用知识库分块树预览。
+func (r *Read) Limits() FileReadingLimits {
+	return r.limits
+}
+
+// SetImageReading 启用或禁用图片文件读取。
+// 仅当模型支持视觉理解（ModelConfig.Visioning 为 true）时应启用；
+// 否则图片读取生成的 base64 数据对不支持视觉的模型没有意义，
+// 且会白白占用上下文空间。
+func (r *Read) SetImageReading(enabled bool) {
+	r.limits.EnableImageReading = enabled
+}
+
+// CheckSafety 执行与 Execute 前置校验一致的安全预检：
+//   - validateReadPath：设备文件黑名单、二进制扩展名拦截
+//   - checkSensitiveFiles：敏感文件硬性拦截
+//
+// 项目边界检查由 Grant()（PermissionRequired）负责，Execute 侧不再重复校验，
+// 避免授权（PermissionAllow / AllowSession）或白名单放行后执行被再次拦截。
+// 供增强版工具（如 mindx 的 ReadPro）在自行实现大文件读取分支时复用。
+func (r *Read) CheckSafety(resolvedPath string) error {
+	if err := validateReadPath(resolvedPath); err != nil {
+		return err
+	}
+	return checkSensitiveFiles(resolvedPath)
+}
+
+// Grant implements tools.PermissionRequired。
+//
+// 与 Edit / Bash 保持一致的授权语义：目标路径超出项目边界（ValidateFileSafety 失败）
+// 时，先放行工具白名单（AddWhiteList）与会话级白名单（PermissionAllowSession 记忆）
+// 内的路径，其余越界读取触发授权流程（返回 granted=false，运行时挂起思考循环等待
+// 用户通过 PermissionAllow / PermissionAllowSession / PermissionDeny 魔法词回应）。
+//
+// 敏感文件（.env / .ssh 等）虽是硬性错误，但为了与 Edit 保持一致，
+// 同样经 Grant 表达原因，Execute 侧仍会以 checkSensitiveFiles 硬性拦截。
+func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	raw, _ := GetParam(params, "filePath")
+	filePath, _ := raw.(string)
+	if filePath == "" {
+		return true, ""
+	}
+
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil {
+		return true, ""
+	}
+
+	resolved, _ := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
+	if resolved == "" {
+		return true, ""
+	}
+
+	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+		for _, dir := range r.whitelist {
+			if pathWithinScope(dir, resolved) {
+				return true, ""
+			}
+		}
+		if tc.SessionWhitelist != nil {
+			for _, allowed := range tc.SessionWhitelist.Read {
+				if pathWithinScope(allowed, resolved) {
+					return true, ""
+				}
+			}
+		}
+		return false, GuideReadOutsideWorkspace(filePath, resolved, err)
+	}
+	return true, ""
+}
+
 // Execute 执行文件读取操作。
 //
 // 处理流程（严格遵循 DESIGN.md 数据流图）：
@@ -120,9 +191,9 @@ func (r *Read) Info() *ToolInfo {
 //	    ├── 空文件？     → SuggestionEmptyFile
 //	    ├── 目录？       → SuggestionIsDirectory
 //	    ├── 文件过大？   → SuggestionFileTooLarge
-//	    ├── 文档格式     → convertDocument
-//	    ├── 图片格式     → readImageWithHook
-//	    └── 文本文件     → readFileInRange + DedupCache
+//	    ├── 文档格式     → convertDocument → buildTextResult（统一文本处理）
+//	    ├── 图片格式     → compressAndEncodeImage（内联压缩）
+//	    └── 文本文件     → buildTextResult（分页 + DedupCache + 输出预算）
 //
 // 参数：
 //   - ctx: 上下文（包含 ToolContext）
@@ -132,7 +203,7 @@ func (r *Read) Info() *ToolInfo {
 //   - *ReadResult: 结构化的读取结果
 //   - error: 参数错误、安全校验失败、或文件系统错误
 func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) {
-	path, err := ValidateRequiredString(params, "filePath")
+	path, err := ValidateRequiredString("Read", params, "filePath")
 	if err != nil {
 		return nil, err
 	}
@@ -160,28 +231,17 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 				Success:    false,
 				Path:       resolvedPath,
 				Scope:      string(scope),
-				Note:       "文件不存在：" + resolvedPath + "（此前已确认）",
+				Note:       GuideReadFileNotFound(resolvedPath) + "\n（此前已确认）",
 				Suggestion: SuggestionFileNotFound,
 			},
 		}, nil
 	}
 
-	// 安全校验：白名单或项目边界检查
-	whitelisted := false
-	for _, dir := range r.whitelist {
-		if strings.HasPrefix(resolvedPath, dir) {
-			whitelisted = true
-			break
-		}
-	}
-	if whitelisted {
-		if err := checkSensitiveFiles(resolvedPath); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := ValidateFileSafety(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return nil, err
-		}
+	// 安全校验：敏感文件硬性拦截。
+	// 项目边界检查已由 Grant()（PermissionRequired）完成；授权（Allow / AllowSession）
+	// 或白名单路径在此不再重复校验边界，否则授权后执行会被再次拦截。
+	if err := checkSensitiveFiles(resolvedPath); err != nil {
+		return nil, err
 	}
 
 	// Pre-read: stat 检查
@@ -215,7 +275,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 					Path:       resolvedPath,
 					Scope:      string(scope),
 					SizeBytes:  info.Size(),
-					Note:       "无读取权限：" + resolvedPath + "。请检查文件权限或使用 shell 命令读取。",
+					Note:       GuideReadPermissionDenied(resolvedPath),
 					Suggestion: SuggestionPermissionDenied,
 				},
 			}, nil
@@ -230,7 +290,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 				Success:    false,
 				Path:       resolvedPath,
 				Scope:      string(scope),
-				Note:       "路径是一个目录，不是文件：" + resolvedPath,
+				Note:       GuideReadIsDirectory(resolvedPath),
 				Suggestion: SuggestionIsDirectory,
 			},
 		}, nil
@@ -246,7 +306,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 				SizeBytes:  0,
 				Content:    "",
 				Suggestion: SuggestionEmptyFile,
-				Note:       "文件为空，无内容可读取",
+				Note:       GuideReadEmptyFile(resolvedPath),
 			},
 		}, nil
 	}
@@ -259,19 +319,21 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 				Path:      resolvedPath,
 				Scope:     string(scope),
 				SizeBytes: info.Size(),
-				Note: fmt.Sprintf(
-					"文件太大（%.2f KB），最大允许 %d KB。使用 offset 和 limit 参数读取特定部分，或先使用 grep/glob 定位相关部分。",
-					float64(info.Size())/1024, r.limits.MaxSizeBytes/1024),
+				Note: GuideReadFileTooLarge(
+					resolvedPath,
+					float64(info.Size())/1024,
+					r.limits.MaxSizeBytes/1024,
+				),
 				Suggestion: SuggestionFileTooLarge,
 			},
 		}, nil
 	}
 
-	// 检测文档格式（PDF/DOCX/XLSX/EPUB），直接转换为 Markdown 返回
+	// 检测文档格式（PDF/DOCX/XLSX/EPUB），转换为 Markdown 后按纯文本统一处理
 	if format := detectDocFormat(resolvedPath); format != "" {
 		f, err := store.OS.Open(cleanPath)
 		if err != nil {
-			return nil, fmt.Errorf("无法打开文件: %w", err)
+			return nil, fmt.Errorf("%s", GuideReadIO(resolvedPath, err))
 		}
 		defer f.Close()
 
@@ -280,28 +342,23 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 			return nil, err
 		}
 
-		return &ReadResult{
-			Data: &ReadData{
-				Success:    true,
-				Path:       resolvedPath,
-				Scope:      string(scope),
-				SizeBytes:  info.Size(),
-				Content:    doc.content,
-				Format:     format,
-				Title:      doc.title,
-				Author:     doc.author,
-				Pages:      doc.pages,
-				Note:       fmt.Sprintf("已将 %s 文件转换为 Markdown 格式", strings.ToUpper(format)),
-				Suggestion: SuggestionDocConverted,
-			},
-		}, nil
+		// 文档转换结果与文本文件一样走 buildTextResult 统一处理：
+		// 支持 offset/limit 分页精读，超过输出字符预算时返回错误，
+		// 不为每种格式单独实现限制逻辑。禁用 DedupCache 与 filestate，
+		// 避免转换结果与文件原始状态混淆。
+		return r.buildTextResult(resolvedPath, cleanPath, []byte(doc.content), info.Size(), scope, params, false, &docMeta{
+			format: format,
+			title:  doc.title,
+			author: doc.author,
+			pages:  doc.pages,
+		})
 	}
 
 	// 图片文件读取（受 EnableImageReading 控制，内联处理，不写入 DedupCache）
 	if r.limits.EnableImageReading && isImageFile(resolvedPath) {
 		data, err := store.ReadFileFromFS(store.OS, resolvedPath)
 		if err != nil {
-			return nil, fmt.Errorf("无法读取文件: %w", err)
+			return nil, fmt.Errorf("%s", GuideReadIO(resolvedPath, err))
 		}
 
 		// 内联图片处理（见过度设计审计 #8：直接调用 compressAndEncodeImage，不再走 Hook）
@@ -322,169 +379,11 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		}, nil
 	}
 
-	// 文本文件读取
+	// 文本文件读取（与文档转换共用 buildTextResult 统一处理：offset/limit 分页、
+	// 输出字符预算检查、DedupCache 与 filestate 状态跟踪）
 	data, err := store.ReadFileFromFS(store.OS, resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("无法读取文件: %w", err)
+		return nil, fmt.Errorf("%s", GuideReadIO(resolvedPath, err))
 	}
-
-	// 获取分页参数
-	startLine := 1
-	if rawOffset, found := GetParam(params, "offset"); found {
-		if offset, ok := ToFloat64(rawOffset); ok && offset > 0 {
-			startLine = int(offset)
-		}
-	}
-	maxLines := r.limits.DefaultLines
-	if rawLimit, found := GetParam(params, "limit"); found {
-		if limit, ok := ToFloat64(rawLimit); ok && limit > 0 {
-			maxLines = int(limit)
-		}
-	}
-
-	// B. DedupCache 检查
-	cacheKey := dedupCacheKey(resolvedPath, startLine, maxLines)
-	if cached, ok := getReadFileState(cacheKey); ok {
-		statInfo, statErr := fs.Stat(store.OS, cleanPath)
-		if statErr == nil {
-			s, ok := statInfo.(fs.FileInfo)
-			if ok {
-				currentMtimeMs := s.ModTime().UnixMilli()
-				if cached.MtimeMs == currentMtimeMs && cached.LineCount >= maxLines {
-					return &ReadResult{
-						Data: &ReadData{
-							Success:    true,
-							Path:       resolvedPath,
-							Scope:      string(scope),
-							SizeBytes:  info.Size(),
-							Content:    "文件自上次读取后未发生变化。本对话中之前 Read 工具的结果仍然有效，请引用此前的结果。",
-							Suggestion: SuggestionContentUnchanged,
-							Note:       "文件未变化。引用之前的结果。",
-						},
-					}, nil
-				}
-			}
-		}
-	}
-
-	// E. 动态默认行数（当未指定 limit 且 DynamicDefaultLines 启用时）
-	if _, hasLimit := GetParam(params, "limit"); !hasLimit && r.limits.DynamicDefaultLines {
-		preTotalLines := len(strings.Split(string(data), "\n"))
-		maxLines = dynamicDefaultLines(preTotalLines, r.limits.DefaultLines)
-	}
-
-	endLine := startLine + maxLines - 1
-
-	// 按行分割并选择范围
-	allLines := strings.Split(string(data), "\n")
-	totalLines := len(allLines)
-
-	var content strings.Builder
-	lineNum := 0
-	linesRead := 0
-	for i, line := range allLines {
-		lineNum = i + 1
-		if lineNum < startLine {
-			continue
-		}
-		if lineNum > endLine {
-			break
-		}
-		content.WriteString(fmt.Sprintf("%d\t%s\n", lineNum, line))
-		linesRead++
-	}
-
-	// E2. 两级 Token 估算（第二级按比例截断，无需 tokenizer）
-	tokenTruncated := false
-	outputChars := content.Len()
-	estimatedTokens := outputChars / 3
-	if r.limits.MaxTokens > 0 && estimatedTokens > r.limits.MaxTokens {
-		// 第二级：按比例截断
-		ratio := float64(r.limits.MaxTokens) / float64(estimatedTokens)
-		if ratio < 1.0 && linesRead > 0 {
-			keepLines := int(float64(linesRead) * ratio)
-			if keepLines < 1 {
-				keepLines = 1
-			}
-			truncationNote := fmt.Sprintf(
-				"\n[... 内容被截断：超过 %d 个 token 的预算。"+
-					" 剩余行：%d-%d，共 %d 行。"+
-					" 使用 offset 和 limit 缩小范围。...]\n",
-				r.limits.MaxTokens, startLine+keepLines, totalLines, totalLines)
-			content.Reset()
-			for i := 0; i < keepLines && i < linesRead; i++ {
-				content.WriteString(fmt.Sprintf("%d\t%s\n", startLine+i, allLines[startLine-1+i]))
-			}
-			content.WriteString(truncationNote)
-			tokenTruncated = true
-		}
-	}
-
-	// B. 写入 DedupCache
-	state := &ReadFileState{
-		FilePath:  resolvedPath,
-		Offset:    startLine,
-		Limit:     linesRead,
-		Content:   content.String(),
-		LineCount: linesRead,
-		SizeBytes: info.Size(),
-	}
-	if s, err := fs.Stat(store.OS, cleanPath); err == nil {
-		if fi, ok := s.(fs.FileInfo); ok {
-			state.MtimeMs = fi.ModTime().UnixMilli()
-		}
-	}
-	setReadFileState(cacheKey, state)
-
-	// 构建结果
-	hasRemainingLines := linesRead >= maxLines && lineNum < totalLines
-	noteParts := ""
-	var suggestion string
-	if tokenTruncated {
-		noteParts = fmt.Sprintf("在 %d 个 token 处截断。剩余行 %d-%d。使用更小的 offset/limit。",
-			r.limits.MaxTokens, endLine+1, totalLines)
-		suggestion = SuggestionTruncatedByToken
-	} else if hasRemainingLines {
-		noteParts = fmt.Sprintf("在偏移量 %d 处有更多可用内容（行 %d-%d，共 %d 行）。",
-			endLine+1, endLine+1, totalLines, totalLines)
-		suggestion = SuggestionHasMoreLines
-	} else {
-		suggestion = SuggestionReadComplete
-	}
-
-	nextOffset := 0
-	if hasRemainingLines || tokenTruncated {
-		if tokenTruncated && !hasRemainingLines {
-			nextOffset = startLine
-		} else {
-			nextOffset = endLine + 1
-		}
-	}
-
-	// G. filestate: 记录读取状态（供 Edit/Write 做 staleness 检测）
-	filestate.SetStale(resolvedPath, time.Now(), data)
-
-	return &ReadResult{
-		Data: &ReadData{
-			Success:    true,
-			Path:       resolvedPath,
-			Scope:      string(scope),
-			SizeBytes:  info.Size(),
-			LinesRead:  linesRead,
-			TotalLines: totalLines,
-			StartLine:  startLine,
-			Content:    content.String(),
-			HasMore:    hasRemainingLines || tokenTruncated,
-			NextOffset: nextOffset,
-			Truncated:  tokenTruncated,
-			TruncatedAt: func() int {
-				if tokenTruncated {
-					return r.limits.MaxTokens
-				}
-				return 0
-			}(),
-			Suggestion: suggestion,
-			Note:       noteParts,
-		},
-	}, nil
+	return r.buildTextResult(resolvedPath, cleanPath, data, info.Size(), scope, params, true, nil)
 }

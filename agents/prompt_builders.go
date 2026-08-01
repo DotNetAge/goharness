@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/DotNetAge/goharness/skill"
-	"github.com/DotNetAge/goharness/tools"
 )
 
 // ── Identity ────────────────────────────────────────────────────────────────
@@ -138,50 +137,4 @@ func buildEnvironmentInfo(params EnvsParams) string {
 		projectDir,
 		params.SessionDir,
 		directoryGuidance)
-}
-
-// ── Tool Catalog ────────────────────────────────────────────────────────────
-
-// buildToolCatalog generates the Tool Catalog section for System Prompt.
-// Lists every registered tool as "name - description" so the LLM knows what
-// tools are available and can request them via ToolSelector.
-//
-// This section is informational only — tool schemas are NOT loaded at this point.
-// The LLM must call ToolSelector to activate specific tools.
-func buildToolCatalog(registry tools.ToolRegistry) string {
-	allTools := registry.All()
-	if len(allTools) == 0 {
-		return ""
-	}
-
-	// Exclude core meta-tools that are always loaded and should not appear
-	// in the catalog (ToolSelector, Skill, AskUser).
-	exclude := map[string]bool{
-		"ToolSelector":   true,
-		"Skill":          true,
-		"AskUser":        true,
-		"SubAgent":       true,
-		"CollectResults": true,
-	}
-
-	var buf strings.Builder
-	buf.WriteString("## 可用工具目录\n")
-	buf.WriteString("以下工具可用但尚未加载。")
-	buf.WriteString("要使用其中任何工具，请使用其确切名称调用 ToolSelector。")
-	buf.WriteString("你可以一次选择多个工具以减少往返次数。\n\n")
-
-	listed := 0
-	for _, t := range allTools {
-		info := t.Info()
-		if exclude[info.Name] {
-			continue
-		}
-		buf.WriteString(fmt.Sprintf("- %s: %s\n", info.Name, info.Description))
-		listed++
-	}
-
-	if listed == 0 {
-		return ""
-	}
-	return buf.String()
 }

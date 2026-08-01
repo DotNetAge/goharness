@@ -18,7 +18,7 @@ func TestValidateRequired(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateRequired(tt.params, tt.key)
+			err := ValidateRequired("TestTool", tt.params, tt.key)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateRequired() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -42,7 +42,7 @@ func TestValidateRequiredString(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ValidateRequiredString(tt.params, tt.key)
+			got, err := ValidateRequiredString("TestTool", tt.params, tt.key)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateRequiredString() error = %v, wantErr %v", err, tt.wantErr)
 				return

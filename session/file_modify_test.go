@@ -146,22 +146,31 @@ func TestTrackModify_EventFired(t *testing.T) {
 	}
 }
 
-func TestTrackModify_EventNotFiredForNewFile(t *testing.T) {
+// TestTrackModify_EventFiredForNewFile 验证新文件（无备份）也会触发事件，
+// 以便前端能够显示「新增文件」的 DiffView；此时 BackupPath 应为空。
+func TestTrackModify_EventFiredForNewFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	newFilePath := filepath.Join(tmpDir, "no_event.txt")
+	newFilePath := filepath.Join(tmpDir, "new_file.txt")
 
 	s := newTestSessionWithModify()
 	s.projectDir = tmpDir
 
 	eventFired := false
+	var receivedEvent FileModifyEvent
 	s.SetFileModifyHandler(func(ev FileModifyEvent) {
 		eventFired = true
+		receivedEvent = ev
 	})
 
-	s.TrackModify(newFilePath)
+	if err := s.TrackModify(newFilePath); err != nil {
+		t.Fatal(err)
+	}
 
-	if eventFired {
-		t.Error("新文件（无备份）不应触发事件")
+	if !eventFired {
+		t.Error("新文件（无备份）也应触发事件，以便前端显示新增文件 DiffView")
+	}
+	if receivedEvent.BackupPath != "" {
+		t.Errorf("新文件没有备份，BackupPath 应为空，got %q", receivedEvent.BackupPath)
 	}
 }
 

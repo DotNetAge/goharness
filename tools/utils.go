@@ -9,16 +9,16 @@ import (
 )
 
 // ValidateRequired checks that a required parameter exists in the params map.
-// It returns an error if the key is not present.
+// It returns a guided error (带工具名）if the key is not present.
 //
 // Example:
 //
-//	if err := ValidateRequired(params, "path"); err != nil {
+//	if err := ValidateRequired("Read", params, "path"); err != nil {
 //	    return nil, err
 //	}
-func ValidateRequired(params map[string]any, key string) error {
+func ValidateRequired(toolName string, params map[string]any, key string) error {
 	if _, ok := GetParam(params, key); !ok {
-		return fmt.Errorf("缺少必需参数: %s", key)
+		return fmt.Errorf("%s", GuideMissingParam(toolName, key))
 	}
 	return nil
 }
@@ -33,16 +33,17 @@ func ValidateRequired(params map[string]any, key string) error {
 // Returns:
 //   - The string value if valid
 //   - An error describing what validation failed
-func ValidateRequiredString(params map[string]any, key string) (string, error) {
-	if err := ValidateRequired(params, key); err != nil {
+func ValidateRequiredString(toolName string, params map[string]any, key string) (string, error) {
+	if err := ValidateRequired(toolName, params, key); err != nil {
 		return "", err
 	}
 
-	str, ok := GetParam(params, key)
+	raw, _ := GetParam(params, key)
+	str, ok := raw.(string)
 	if !ok {
-		return "", fmt.Errorf("invalid type for parameter '%s': expected string", key)
+		return "", fmt.Errorf("%s", GuideWrongParamType(toolName, key, "string", raw))
 	}
-	return str.(string), nil
+	return str, nil
 }
 
 // ValidateFileSafety verifies file access safety using path anchoring with TOCTOU protection.
@@ -146,12 +147,11 @@ func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) err
 
 	sep := string(filepath.Separator)
 	if !strings.HasPrefix(realPath, realProjectDir+sep) {
-		return fmt.Errorf(
-			"访问被拒绝: 路径 %q 解析为 %q，位于工作区 %q 之外",
-			originalPath,
-			realPath,
-			realProjectDir,
-		)
+		return fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试访问路径 %q（解析为 %q），它位于工作区 %q 之外", originalPath, realPath, realProjectDir),
+			"目标不在当前工作区边界内，属于越权操作；根目录等外部路径只有在获得用户同意后才能访问",
+			"检查路径是否为工作区内的相对路径或绝对路径；若确实需要访问工作区之外的路径，先通过授权（PermissionAllow / PermissionAllowSession）获得用户同意后再执行",
+		))
 	}
 
 	return nil
@@ -173,10 +173,18 @@ func checkSensitiveFiles(realPath string) error {
 	}
 
 	if sensitiveFiles[baseName] {
-		return fmt.Errorf("access to %s is restricted for security reasons", baseName)
+		return fmt.Errorf("%s", GuideSensitiveFile(realPath))
 	}
 
 	return nil
+}
+
+// CheckSensitiveFiles 检查路径是否为敏感文件（.env / .ssh 密钥等）。
+// 返回错误表示命中敏感文件列表，该检查是硬性安全边界，授权不可覆盖。
+// 供同工具族的增强版工具（如 mindx 的 ReadPro / LSPro）在自定义执行分支中复用，
+// 与 Edit / Read 的 Execute 保持一致。
+func CheckSensitiveFiles(path string) error {
+	return checkSensitiveFiles(path)
 }
 
 // SafeOpenFile opens a file with TOCTOU protection by validating the path after opening.
@@ -292,11 +300,11 @@ func resolveAndValidateForCreation(path string, projectDir string) (string, erro
 	if realParent != "" {
 		if !strings.HasPrefix(realParent, realProjectDir+string(filepath.Separator)) &&
 			realParent != realProjectDir {
-			return "", fmt.Errorf(
-				"访问被拒绝: 父目录 %q 位于工作区 %q 之外",
-				parentDir,
-				realProjectDir,
-			)
+			return "", fmt.Errorf("%s", BuildGuide(
+				fmt.Sprintf("尝试访问位于工作区之外的路径（父目录 %q）", parentDir),
+				fmt.Sprintf("目标路径的父目录 %q 位于工作区 %q 之外，属于越权操作", parentDir, realProjectDir),
+				"先自查：我传入的路径是否意图访问工作区之外的资源？工作区之外的路径只有在获得用户同意后才能访问（可使用 PermissionAllow / PermissionAllowSession 授权，或用 PermissionDeny 拒绝）；若路径有误，应改用工作区内的路径",
+			))
 		}
 	}
 
@@ -358,6 +366,16 @@ func TruncateString(s string, maxLen int) string {
 		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+// pathWithinScope 判断 child 是否位于 parent 范围内（含边界分隔符）。
+// 用于白名单路径匹配，避免前缀误匹配（例：parent=/tmp/foo 时，
+// /tmp/foobar 不在范围内，/tmp/foo/bar 在范围内）；两者相等也视为在范围内。
+func pathWithinScope(parent, child string) bool {
+	if parent == child {
+		return true
+	}
+	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
 
 // ToFloat64 converts a numeric value of any common numeric type to float64.
@@ -442,6 +460,19 @@ const sessionPathPrefix = "session:"
 func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath string, scope PathScope) {
 	if inputPath == "" {
 		return "", PathScopeProject
+	}
+
+	// 展开 ~ / ~/ 前缀（shell 语义），使工具可接受 home 目录相对路径。
+	// 修复前 "~/workspaces" 会被 filepath.Join(projectDir, "~/workspaces")
+	// 错误拼接为 "<projectDir>/~/workspaces"。
+	if inputPath == "~" || strings.HasPrefix(inputPath, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if inputPath == "~" {
+				inputPath = home
+			} else {
+				inputPath = filepath.Join(home, inputPath[2:])
+			}
+		}
 	}
 
 	if filepath.IsAbs(inputPath) {

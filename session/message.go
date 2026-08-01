@@ -16,6 +16,15 @@ type CompactedMeta struct {
 	TokenCount int64  `json:"token_count"` // 压缩时的 token 估算
 }
 
+// ImageBlock 是嵌入消息中的图片内容块。
+// 图片以 image_url 消息的形式进入上下文（而非混入工具结果的文本内容）：
+// 发送前会拼接为 data:<media_type>;base64,<data> 的 data URI。
+type ImageBlock struct {
+	MediaType  string `json:"media_type" yaml:"media_type"`     // MIME 类型，如 image/png、image/jpeg
+	Base64Data string `json:"base64_data" yaml:"base64_data"`   // base64 编码的图片数据
+	AltText    string `json:"alt_text,omitempty" yaml:"alt_text,omitempty"` // 图片说明（如尺寸、来源）
+}
+
 // Message 表示对话中的单条消息。
 // 与 OpenAI 聊天完成格式兼容：
 //   - role: "system" | "user" | "assistant" | "tool"
@@ -29,6 +38,7 @@ type Message struct {
 	Content          string      `json:"content" yaml:"content"`
 	Compacted        string      `json:"compacted,omitempty" yaml:"compacted,omitempty"`                 // JSON(CompactedMeta)，非空 → 内容已归档
 	ReasoningContent string      `json:"reasoning_content,omitempty" yaml:"reasoning_content,omitempty"` // 思考流（DeepSeek-R1 等）
+	Images           []ImageBlock `json:"images,omitempty" yaml:"images,omitempty"`                     // 图片内容块（以 image_url 消息进入上下文）
 	Timestamp        int64       `json:"timestamp" yaml:"timestamp"`
 	ToolCallID       string      `json:"tool_call_id,omitempty" yaml:"tool_call_id,omitempty"` // 用于 role="tool" 消息
 	ToolCalls        []ToolCall  `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`     // 用于 role="assistant" 消息

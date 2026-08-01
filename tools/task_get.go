@@ -43,20 +43,20 @@ func (t *TaskGetTool) Execute(ctx context.Context, params map[string]any) (any, 
 	rawTaskID, _ := GetParam(params, "task_id")
 	taskID, _ := rawTaskID.(string)
 	if taskID == "" {
-		return nil, fmt.Errorf("task_id is required")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TaskGet", "task_id"))
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskGet 需要包含 SessionID 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TaskGet", "包含 SessionID 的 ToolContext"))
 	}
 
 	task, err := GetTask(ctx, tc.Session.ID(), taskID)
 	if err != nil {
-		return nil, fmt.Errorf("获取任务失败：%w", err)
+		return nil, err
 	}
 	if task == nil {
-		return nil, fmt.Errorf("任务 %q 未找到", taskID)
+		return nil, fmt.Errorf("%s", GuideNotFound("任务", taskID, "使用 TaskCreate 创建该任务，或用 TaskList 查看现有任务 ID 后重试"))
 	}
 
 	result := map[string]any{

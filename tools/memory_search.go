@@ -57,14 +57,14 @@ func (t *MemorySearch) Info() *ToolInfo {
 }
 
 func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any, error) {
-	query, err := ValidateRequiredString(params, "query")
+	query, err := ValidateRequiredString("MemorySearch", params, "query")
 	if err != nil {
 		return nil, err
 	}
 
 	query = strings.TrimSpace(query)
 	if len(query) < 2 {
-		return nil, fmt.Errorf("查询必须至少为 2 个字符")
+		return nil, fmt.Errorf("%s", GuideInvalidValue("MemorySearch", "query", query, "提供至少 2 个字符的具体关键词（可使用组合词或英文关键词）后重试"))
 	}
 
 	limit := 5

@@ -75,6 +75,9 @@ func buildToolResult(inv hooks.ToolCallInvocation, execResult *tools.ToolExecuti
 	} else if execResult != nil {
 		tr.Result = execResult.Result
 		tr.Metadata = execResult.Metadata
+		// 透传工具返回的图片数据，供 ToolHook.After（ImageHook）提取后
+		// 以 image_url 消息的形式进入上下文。
+		tr.Images = execResult.Images
 		tr.Duration = execResult.Duration
 		tr.Success = execResult.Error == nil
 		if execResult.Error != nil {

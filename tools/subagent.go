@@ -108,7 +108,7 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		agentName, _ = rawAgentName.(string)
 	}
 	if agentName == "" {
-		return nil, fmt.Errorf("agent_name 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("SubAgent", "agent_name"))
 	}
 	rawTask, ok := GetParam(params, "task")
 	task := ""
@@ -116,17 +116,17 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		task, _ = rawTask.(string)
 	}
 	if task == "" {
-		return nil, fmt.Errorf("task 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("SubAgent", "task"))
 	}
 
 	logger := getLogger(ctx)
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.EmitEvent == nil {
-		return nil, fmt.Errorf("子代理工具需要包含 EventBus 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("SubAgent", "包含 EventBus 的 ToolContext"))
 	}
 	if t.spawn == nil {
-		return nil, fmt.Errorf("子代理工具：SpawnFunc 未配置")
+		return nil, fmt.Errorf("%s", GuideMissingContext("SubAgent", "SpawnFunc（子代理创建函数）"))
 	}
 
 	logger.Info("spawning sub-agent",
@@ -141,7 +141,7 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	if t.ensureSession != nil {
 		sid, err := t.ensureSession(ctx, agentName)
 		if err != nil {
-			return nil, fmt.Errorf("获取子代理 session 失败：%w", err)
+			return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide("获取子代理 session 时失败", WithErrDetail("子代理 session 的创建或持久化失败", err), "先自查：我传入的子代理名称是否符合命名要求？若配置无误仍失败，应告知用户检查会话持久化配置"), err)
 		}
 		sessionID = sid
 		logger.Info("sub-agent session ensured",

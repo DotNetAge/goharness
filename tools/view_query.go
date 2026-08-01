@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,23 +54,23 @@ func NewViewQueryTool(baseURL string) FuncTool {
 
 // viewQueryRequest 视图查询请求体（与 mindstore Web API 一一对应）。
 type viewQueryRequest struct {
-	Label    string                 `json:"label,omitempty"`
-	Category string                 `json:"category,omitempty"`
-	Fields   []string               `json:"fields,omitempty"`
-	Where    *viewWhereRequest      `json:"where,omitempty"`
-	OrderBy  []viewOrderRequest     `json:"order_by,omitempty"`
-	Page     int                    `json:"page,omitempty"`
-	Size     int                    `json:"size,omitempty"`
-	Path     string                 `json:"path,omitempty"`
-	WithTotal *bool                 `json:"with_total,omitempty"`
+	Label     string             `json:"label,omitempty"`
+	Category  string             `json:"category,omitempty"`
+	Fields    []string           `json:"fields,omitempty"`
+	Where     *viewWhereRequest  `json:"where,omitempty"`
+	OrderBy   []viewOrderRequest `json:"order_by,omitempty"`
+	Page      int                `json:"page,omitempty"`
+	Size      int                `json:"size,omitempty"`
+	Path      string             `json:"path,omitempty"`
+	WithTotal *bool              `json:"with_total,omitempty"`
 }
 
 // viewWhereRequest 过滤条件请求体。
 type viewWhereRequest struct {
-	Equals   map[string]any             `json:"equals,omitempty"`
-	In       map[string][]any           `json:"in,omitempty"`
+	Equals   map[string]any              `json:"equals,omitempty"`
+	In       map[string][]any            `json:"in,omitempty"`
 	Range    map[string]viewRangeRequest `json:"range,omitempty"`
-	Contains map[string]string          `json:"contains,omitempty"`
+	Contains map[string]string           `json:"contains,omitempty"`
 }
 
 // viewRangeRequest 范围请求体。
@@ -128,8 +129,8 @@ func (t *ViewQueryTool) Info() *ToolInfo {
 **性能说明**
 - 视图查询走图数据库标签索引，O(N) 顺序扫，无 Embedding 成本
 - 适合精确列举场景；不适合"语义相似的实体"搜索（请用 search 工具）`,
-		Tags:       []string{"knowledge", "view", "query", "list", "schema"},
-		IsReadOnly: true,
+		Tags:          []string{"knowledge", "view", "query", "list", "schema"},
+		IsReadOnly:    true,
 		SecurityLevel: events.LevelSafe,
 		Parameters: []Parameter{
 			{
@@ -195,7 +196,7 @@ func (t *ViewQueryTool) Info() *ToolInfo {
 //
 // 返回：与 mindstore Web API 一致的 {code, message?, data} JSON。
 func (t *ViewQueryTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	action, err := ValidateRequiredString(params, "action")
+	action, err := ValidateRequiredString("ViewQuery", params, "action")
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +205,7 @@ func (t *ViewQueryTool) Execute(ctx context.Context, params map[string]any) (any
 	case "list_labels":
 		return t.callHTTP(ctx, http.MethodGet, "/api/view/labels", nil)
 	case "describe":
-		label, err := ValidateRequiredString(params, "label")
+		label, err := ValidateRequiredString("ViewQuery", params, "label")
 		if err != nil {
 			return nil, err
 		}
@@ -219,13 +220,13 @@ func (t *ViewQueryTool) Execute(ctx context.Context, params map[string]any) (any
 	case "query":
 		return t.executeQuery(ctx, params)
 	default:
-		return nil, fmt.Errorf("不支持的 action: %q（应为 list_labels / describe / query）", action)
+		return nil, fmt.Errorf("%s", GuideInvalidValue("ViewQuery", "action", action, "先自查：action 只支持 list_labels / describe / query 三者之一，对照工具参数定义确认拼写后重新调用"))
 	}
 }
 
 // executeQuery 构造并执行 action=query 的请求。
 func (t *ViewQueryTool) executeQuery(ctx context.Context, params map[string]any) (any, error) {
-	label, err := ValidateRequiredString(params, "label")
+	label, err := ValidateRequiredString("ViewQuery", params, "label")
 	if err != nil {
 		return nil, err
 	}
@@ -339,14 +340,22 @@ func (t *ViewQueryTool) callHTTP(ctx context.Context, method, path string, body 
 	if body != nil {
 		buf, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("序列化请求体失败: %w", err)
+			return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+				"调用 ViewQuery 构造查询请求体",
+				WithErrDetail("构造 mindstore API 请求时失败", err),
+				"检查 action/label 等参数是否符合 ViewQuery 工具定义后重试",
+			), err)
 		}
 		bodyReader = bytes.NewReader(buf)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, t.BaseURL+path, bodyReader)
 	if err != nil {
-		return nil, fmt.Errorf("构造请求失败: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("调用 mindstore API（%s %s）时构造请求失败", method, path),
+			WithErrDetail("构造 mindstore API 请求时失败", err),
+			"检查 action/label 等参数是否符合 ViewQuery 工具定义后重试",
+		), err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -355,23 +364,39 @@ func (t *ViewQueryTool) callHTTP(ctx context.Context, method, path string, body 
 
 	resp, err := t.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("调用 mindstore API 失败: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("调用 mindstore API（%s %s）失败", method, path),
+			WithErrDetail("无法连接 mindstore 服务", err),
+			"先确认 mindstore 服务已启动、端口与地址配置正确；若服务不可达，应告知用户",
+		), err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("调用 mindstore API（%s %s）后读取响应失败", method, path),
+			WithErrDetail("读取 mindstore 响应失败", err),
+			"先确认 mindstore 服务已启动、端口与地址配置正确；若服务不可达，应告知用户",
+		), err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("mindstore API 返回 HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("调用 mindstore API（%s %s），但服务返回 HTTP %d", method, path, resp.StatusCode),
+			WithErrDetail(fmt.Sprintf("mindstore 服务返回 HTTP %d 状态码", resp.StatusCode), errors.New(strings.TrimSpace(string(respBody)))),
+			"先确认 mindstore 服务已启动、端口与地址配置正确；若服务不可达，应告知用户",
+		))
 	}
 
 	// mindstore 响应统一是 {code, message, hint?, data} 结构，原样返回
 	var out any
 	if err := json.Unmarshal(respBody, &out); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w（原始: %s）", err, string(respBody))
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("调用 mindstore API（%s %s）并解析响应", method, path),
+			WithErrDetail("解析 mindstore 响应失败", err),
+			"检查请求参数是否正确（如 label 是否存在），修正后重试",
+		), err)
 	}
 	return out, nil
 }

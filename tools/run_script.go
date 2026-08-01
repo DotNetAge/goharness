@@ -147,22 +147,34 @@ func (e *platformScriptExecutor) Execute(ctx context.Context, skillRoot, scriptP
 
 	absSkillRoot, err := filepath.Abs(skillRoot)
 	if err != nil {
-		return nil, fmt.Errorf("解析技能根路径失败: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试解析技能根目录路径 %q", skillRoot),
+			WithErrDetail("无法解析技能根目录路径（通常是当前工作目录不可访问）", err),
+			fmt.Sprintf("先自查：技能根目录 %q 是否真实存在且可访问？若确认无误仍失败，应停止无意义的重试并告知用户", skillRoot),
+		), err)
 	}
 
 	absScript, err := filepath.Abs(scriptPath)
 	if err != nil {
-		return nil, fmt.Errorf("解析脚本路径失败: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试解析脚本路径 %q", scriptPath),
+			WithErrDetail("无法解析脚本路径（通常是当前工作目录不可访问）", err),
+			fmt.Sprintf("先自查：脚本路径 %q 是否真实存在且可访问？若确认无误仍失败，应停止无意义的重试并告知用户", scriptPath),
+		), err)
 	}
 
 	cleanScript := filepath.Clean(absScript)
 	if !strings.HasPrefix(cleanScript, absSkillRoot+string(filepath.Separator)) &&
 		cleanScript != absSkillRoot {
-		return nil, fmt.Errorf("脚本路径 %q 不在技能根目录下（路径遍历被阻止）", scriptPath)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试执行脚本 %q", scriptPath),
+			fmt.Sprintf("脚本路径解析为 %q，越出了技能根目录 %q 的范围（存在路径遍历风险）", cleanScript, absSkillRoot),
+			fmt.Sprintf("将脚本放置到技能根目录 %s 之内，或修正脚本路径使其位于该目录范围内", absSkillRoot),
+		))
 	}
 
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("脚本不存在： %s", scriptPath)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("定位脚本", scriptPath, err), err)
 	}
 
 	ext := strings.ToLower(filepath.Ext(scriptPath))
@@ -217,7 +229,7 @@ func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, s
 	e.mu.Unlock()
 
 	if err := vm.ensureVenv(ctx); err != nil {
-		return nil, fmt.Errorf("设置Python环境失败： %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建 Python 虚拟环境", vm.venvPath, err), err)
 	}
 
 	pythonBin := filepath.Join(vm.venvPath, "bin", "python")
@@ -275,7 +287,11 @@ func (e *platformScriptExecutor) executeShell(ctx context.Context, skillRoot, sc
 func (e *platformScriptExecutor) executeRuby(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	rubyBin := "ruby"
 	if _, err := exec.LookPath("ruby"); err != nil {
-		return nil, fmt.Errorf("Ruby解释器不在系统 PATH 中： %v", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试用 Ruby 解释器执行脚本 %q", scriptPath),
+			"目标解释器 ruby 未安装或不在系统 PATH 中",
+			"先确认系统中是否安装了 ruby（可用 Bash 执行 which ruby 或 ruby -v 确认）；若未安装，应告知用户，或改用 Bash 直接执行脚本命令",
+		), err)
 	}
 
 	absScript, _ := filepath.Abs(scriptPath)
@@ -289,7 +305,11 @@ func (e *platformScriptExecutor) executeRuby(ctx context.Context, skillRoot, scr
 func (e *platformScriptExecutor) executeNode(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	nodeBin := "node"
 	if _, err := exec.LookPath("node"); err != nil {
-		return nil, fmt.Errorf("Node解释器不在系统 PATH 中： %v", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试用 Node.js 解释器执行脚本 %q", scriptPath),
+			"目标解释器 node 未安装或不在系统 PATH 中",
+			"先确认系统中是否安装了 node（可用 Bash 执行 which node 或 node -v 确认）；若未安装，应告知用户，或改用 Bash 直接执行脚本命令",
+		), err)
 	}
 
 	absScript, _ := filepath.Abs(scriptPath)
@@ -374,7 +394,7 @@ func runScriptCommand(cmd *exec.Cmd) (*scriptResult, error) {
 			Duration: duration,
 		}, nil
 	} else if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s", GuideToolFailure("RunScript", err))
 	}
 
 	return &scriptResult{
@@ -422,7 +442,7 @@ func (m *venvManager) ensureVenv(ctx context.Context) error {
 	// Recreate venv if it was deleted or never created.
 	if !dirExists(m.venvPath) {
 		if err := m.createVenv(); err != nil {
-			return fmt.Errorf("创建Python虚拟环境失败： %w", err)
+			return fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建 Python 虚拟环境", m.venvPath, err), err)
 		}
 	}
 
@@ -438,7 +458,7 @@ func (m *venvManager) ensureVenv(ctx context.Context) error {
 	}
 
 	if err := m.installRequirements(ctx, reqFile); err != nil {
-		return fmt.Errorf("安装Python依赖失败： %w", err)
+		return fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建 Python 虚拟环境", m.venvPath, err), err)
 	}
 	m.reqHash = currentHash
 	return nil
@@ -452,8 +472,8 @@ func (m *venvManager) createVenv() error {
 
 	cmd := exec.Command(pythonCmd, "-m", "venv", m.venvPath)
 	cmd.Dir = m.skillRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("创建Python虚拟环境失败： (%s): %w", out, err)
+	if _, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建 Python 虚拟环境", m.venvPath, err), err)
 	}
 	return nil
 }
@@ -466,8 +486,8 @@ func (m *venvManager) installRequirements(ctx context.Context, reqFile string) e
 
 	cmd := exec.CommandContext(ctx, pipBin, "install", "-r", reqFile)
 	cmd.Dir = m.skillRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("安装Python依赖失败： (%s): %w", out, err)
+	if _, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建 Python 虚拟环境", m.venvPath, err), err)
 	}
 	return nil
 }
@@ -612,7 +632,12 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 	if workingDir == "" {
 		workingDir = "."
 	}
-	workingDir = filepath.Clean(workingDir)
+	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
+	var projectDir string
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		projectDir = tc.Session.ProjectDir()
+	}
+	workingDir, _ = ResolveTargetPath(workingDir, projectDir, "")
 
 	_, scriptPath := parseCommand(command, workingDir)
 	if scriptPath == "" {
@@ -647,15 +672,12 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 	// Before prompting, check the session whitelist.
 	if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
 		for _, allowed := range tc.SessionWhitelist.RunScript {
-			if strings.HasPrefix(cleanScript, allowed) {
+			if pathWithinScope(allowed, cleanScript) {
 				return true, ""
 			}
 		}
 	}
-	return false, fmt.Sprintf(
-		"RunScript 想要执行 %q，这在工作目录 %q 之外。请确认这是有意的。",
-		cleanScript, absWork,
-	)
+	return false, GuideRunScriptOutsideWorkspace(cleanScript, absWork)
 }
 
 func (t *RunScript) Info() *ToolInfo {
@@ -665,11 +687,11 @@ func (t *RunScript) Info() *ToolInfo {
 func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, error) {
 	rawCmd, ok := GetParam(params, "command")
 	if !ok {
-		return nil, fmt.Errorf("缺少必需参数：command")
+		return nil, fmt.Errorf("%s", GuideMissingParam("RunScript", "command"))
 	}
 	command, ok := rawCmd.(string)
 	if !ok || strings.TrimSpace(command) == "" {
-		return nil, fmt.Errorf("缺少必需参数：command")
+		return nil, fmt.Errorf("%s", GuideMissingParam("RunScript", "command"))
 	}
 
 	logger := getLogger(ctx)
@@ -679,11 +701,20 @@ func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, er
 	if workingDir == "" {
 		workingDir = "."
 	}
-	workingDir = filepath.Clean(workingDir)
+	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
+	var projectDir string
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		projectDir = tc.Session.ProjectDir()
+	}
+	workingDir, _ = ResolveTargetPath(workingDir, projectDir, "")
 
 	language, scriptPath := parseCommand(command, workingDir)
 	if scriptPath == "" {
-		return nil, fmt.Errorf("无法从命令中提取脚本路径：%q", command)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试从命令 %q 中提取脚本路径，但未能解析出有效路径", command),
+			"命令中不包含可识别的脚本路径（如 scripts/foo.py），或路径解析失败",
+			"按技能指令中的规定重新编写命令，确保包含有效的脚本路径（如 'python scripts/foo.py'），再重试",
+		))
 	}
 
 	logger.Info("executing script",

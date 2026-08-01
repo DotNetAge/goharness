@@ -32,7 +32,7 @@ type FileModifyHandler func(FileModifyEvent)
 //   - 如果文件已在 modifyFiles 中，跳过（不重复备份）
 //   - 如果文件存在且未被追踪过，将其备份到 Session 的 Backup 目录
 //   - 将文件路径加入 modifyFiles 数组
-//   - 发出事件（仅首次追踪且有备份时）
+//   - 发出事件（首次追踪时；新文件也会触发，此时 backupPath 为空）
 //
 // 参数：
 //   - filePath: 即将被修改的文件的绝对路径

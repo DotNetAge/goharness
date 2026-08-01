@@ -32,20 +32,20 @@ func (t *TeamGetTasksTool) Execute(ctx context.Context, params map[string]any) (
 	rawTeamName, _ := GetParam(params, "team_name")
 	teamName, _ := rawTeamName.(string)
 	if teamName == "" {
-		return nil, fmt.Errorf("team_name 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TeamGetTasks", "team_name"))
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TeamGetTasks 需要包含 SessionID 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TeamGetTasks", "包含 SessionID 的 ToolContext"))
 	}
 
 	team, err := GetTeam(ctx, tc.Session.ID(), teamName)
 	if err != nil {
-		return nil, fmt.Errorf("获取团队失败：%w", err)
+		return nil, err
 	}
 	if team == nil {
-		return nil, fmt.Errorf("团队 %q 未找到", teamName)
+		return nil, fmt.Errorf("%s", GuideNotFound("团队", teamName, "使用 TeamCreate 创建该团队，或用 TeamList 查看现有团队名称后重试"))
 	}
 
 	var tasks []map[string]any

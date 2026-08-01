@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SessionWhitelist 定义了会话级别的工具白名单。
@@ -14,6 +15,8 @@ type SessionWhitelist struct {
 	Write     []string `json:"write,omitempty"`
 	Edit      []string `json:"edit,omitempty"`
 	RunScript []string `json:"run_script,omitempty"`
+	Read      []string `json:"read,omitempty"`
+	Ls        []string `json:"ls,omitempty"`
 }
 
 // whitelistFileName is the JSON file name stored in each session directory.
@@ -66,7 +69,7 @@ func (s *Session) Whitelist() *SessionWhitelist {
 // and persists the updated whitelist to {SessionDir()}/session-wl.json.
 //
 // Parameters:
-//   - toolName: one of "bash", "write", "edit", "run_script"
+//   - toolName: one of "bash", "write", "edit", "run_script", "read", "ls"
 //   - entry:    the value to add (base command name for bash; file/script path for others)
 //
 // Returns an error if the tool name is unrecognised, or if persistence fails.
@@ -82,7 +85,7 @@ func (s *Session) AddToWhitelist(toolName, entry string) error {
 
 	// Select the slice for this tool name.
 	var target *[]string
-	switch toolName {
+	switch strings.ToLower(toolName) {
 	case "bash":
 		target = &s.whitelist.Bash
 	case "write":
@@ -91,6 +94,10 @@ func (s *Session) AddToWhitelist(toolName, entry string) error {
 		target = &s.whitelist.Edit
 	case "run_script":
 		target = &s.whitelist.RunScript
+	case "read":
+		target = &s.whitelist.Read
+	case "ls":
+		target = &s.whitelist.Ls
 	default:
 		return fmt.Errorf("会话白名单中存在未知的工具 %q", toolName)
 	}

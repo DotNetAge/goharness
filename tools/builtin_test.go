@@ -181,6 +181,112 @@ func TestLS(t *testing.T) {
 	})
 }
 
+// newGrantCtx 构造带会话白名单的 ToolContext，用于 Grant 授权语义测试。
+func newGrantCtx(t *testing.T, projectDir string) context.Context {
+	t.Helper()
+	store := newMockSessionStore()
+	sess, err := session.New("test-agent", "", projectDir, store, logging.NewNopLogger())
+	if err != nil {
+		t.Fatalf("创建会话失败: %v", err)
+	}
+	return WithToolContext(context.Background(), &ToolContext{
+		Session:          sess,
+		SessionWhitelist: sess.Whitelist(),
+	})
+}
+
+// TestLS_Grant 验证 Ls 的授权语义（PermissionRequired，与 Read/Edit/Bash 一致）：
+//   - 工作区内目录 → 直接放行
+//   - 越界目录 → 触发授权（granted=false，原因说明越界）
+//   - 工具白名单（AddWhiteList）内越界目录 → 放行
+//   - 会话级白名单（PermissionAllowSession 记忆）内越界目录 → 放行
+func TestLS_Grant(t *testing.T) {
+	projectDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	ls := NewLsTool().(*LS)
+
+	// 工作区内 → 放行
+	granted, _ := ls.Grant(newGrantCtx(t, projectDir), map[string]any{"path": projectDir})
+	if !granted {
+		t.Error("工作区内目录应放行（granted=true）")
+	}
+
+	// 越界 → 触发授权
+	granted, reason := ls.Grant(newGrantCtx(t, projectDir), map[string]any{"path": outsideDir})
+	if granted {
+		t.Error("越界目录应触发授权（granted=false）")
+	}
+	if !strings.Contains(reason, "工作区之外") {
+		t.Errorf("授权原因应说明越界，实际=%q", reason)
+	}
+
+	// 工具白名单内越界 → 放行
+	whitelistedLS := NewLsTool().(*LS)
+	whitelistedLS.AddWhiteList(outsideDir)
+	if granted, _ = whitelistedLS.Grant(newGrantCtx(t, projectDir), map[string]any{"path": outsideDir}); !granted {
+		t.Error("工具白名单内的越界目录应放行（granted=true）")
+	}
+
+	// 会话级白名单内越界 → 放行
+	sessionCtx := newGrantCtx(t, projectDir)
+	tc := GetToolContext(sessionCtx)
+	if err := tc.Session.AddToWhitelist("ls", outsideDir); err != nil {
+		t.Fatalf("添加会话白名单失败: %v", err)
+	}
+	if granted, _ = ls.Grant(sessionCtx, map[string]any{"path": outsideDir}); !granted {
+		t.Error("会话白名单内的越界目录应放行（granted=true）")
+	}
+}
+
+// TestRead_Grant 验证 Read 的授权语义（PermissionRequired，与 Edit/Bash 一致）：
+//   - 工作区内文件 → 直接放行
+//   - 越界文件 → 触发授权（granted=false，原因说明越界）
+//   - 工具白名单（AddWhiteList）内越界文件 → 放行
+//   - 会话级白名单（PermissionAllowSession 记忆）内越界文件 → 放行
+func TestRead_Grant(t *testing.T) {
+	projectDir := t.TempDir()
+	inWorkspace := filepath.Join(projectDir, "a.txt")
+	os.WriteFile(inWorkspace, []byte("x"), 0644)
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "b.txt")
+	os.WriteFile(outsideFile, []byte("y"), 0644)
+
+	read := NewReadTool()
+
+	// 工作区内 → 放行
+	granted, _ := read.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": inWorkspace})
+	if !granted {
+		t.Error("工作区内文件应放行（granted=true）")
+	}
+
+	// 越界 → 触发授权
+	granted, reason := read.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": outsideFile})
+	if granted {
+		t.Error("越界文件应触发授权（granted=false）")
+	}
+	if !strings.Contains(reason, "工作区之外") {
+		t.Errorf("授权原因应说明越界，实际=%q", reason)
+	}
+
+	// 工具白名单内越界 → 放行
+	whitelistedRead := NewReadTool()
+	whitelistedRead.AddWhiteList(outsideDir)
+	if granted, _ = whitelistedRead.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": outsideFile}); !granted {
+		t.Error("工具白名单内的越界文件应放行（granted=true）")
+	}
+
+	// 会话级白名单内越界 → 放行
+	sessionCtx := newGrantCtx(t, projectDir)
+	tc := GetToolContext(sessionCtx)
+	if err := tc.Session.AddToWhitelist("read", outsideDir); err != nil {
+		t.Fatalf("添加会话白名单失败: %v", err)
+	}
+	if granted, _ = read.Grant(sessionCtx, map[string]any{"filePath": outsideFile}); !granted {
+		t.Error("会话白名单内的越界文件应放行（granted=true）")
+	}
+}
+
 func TestGlob(t *testing.T) {
 	glob := NewGlobTool()
 
@@ -386,19 +492,19 @@ func TestWrite(t *testing.T) {
 
 func TestValidateFunctions(t *testing.T) {
 	t.Run("validateRequired", func(t *testing.T) {
-		err := ValidateRequired(map[string]any{"key": "value"}, "key")
+		err := ValidateRequired("TestTool", map[string]any{"key": "value"}, "key")
 		if err != nil {
 			t.Error("Expected no error for existing key")
 		}
 
-		err = ValidateRequired(map[string]any{}, "missing")
+		err = ValidateRequired("TestTool", map[string]any{}, "missing")
 		if err == nil {
 			t.Error("Expected error for missing key")
 		}
 	})
 
 	t.Run("validateRequiredString", func(t *testing.T) {
-		val, err := ValidateRequiredString(map[string]any{"key": "value"}, "key")
+		val, err := ValidateRequiredString("TestTool", map[string]any{"key": "value"}, "key")
 		if err != nil {
 			t.Errorf("Expected no error, got %v", err)
 		}
@@ -406,12 +512,12 @@ func TestValidateFunctions(t *testing.T) {
 			t.Errorf("Expected 'value', got %q", val)
 		}
 
-		_, err = ValidateRequiredString(map[string]any{"key": 123}, "key")
+		_, err = ValidateRequiredString("TestTool", map[string]any{"key": 123}, "key")
 		if err == nil {
 			t.Error("Expected error for non-string value")
 		}
 
-		_, err = ValidateRequiredString(map[string]any{}, "missing")
+		_, err = ValidateRequiredString("TestTool", map[string]any{}, "missing")
 		if err == nil {
 			t.Error("Expected error for missing key")
 		}
@@ -468,11 +574,14 @@ func TestBash_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("超长命令（超过 100000 字符）", func(t *testing.T) {
-		longCmd := strings.Repeat("a", 100001)
+	t.Run("超长命令（超过 16000 字符）", func(t *testing.T) {
+		longCmd := strings.Repeat("a", 16001)
 		_, err := bash.Execute(context.Background(), map[string]any{"command": longCmd})
 		if err == nil {
 			t.Error("超长命令应返回错误")
+		}
+		if !strings.Contains(err.Error(), "16001") || !strings.Contains(err.Error(), "Write") {
+			t.Errorf("超长命令错误应包含长度与 Write 工具指引，实际: %v", err)
 		}
 	})
 
@@ -512,8 +621,18 @@ func TestBash_EdgeCases(t *testing.T) {
 		}
 		resultMap := result.(map[string]any)
 		stdout := resultMap["stdout"].(string)
-		if len(stdout) > maxBashOutputSize+100 {
+		// 截断后还会追加截断提示（约 250 字符），故阈值放宽
+		if len(stdout) > maxBashOutputSize+500 {
 			t.Errorf("stdout 应被截断，但得到 %d 字符", len(stdout))
+		}
+		if resultMap["stdout_truncated"] != true {
+			t.Error("stdout_truncated 应标记为 true")
+		}
+		if !strings.Contains(stdout, "输出被截断") || !strings.Contains(stdout, "head") {
+			t.Error("截断提示应包含输出总量与缩小范围的指引")
+		}
+		if resultMap["stderr_truncated"] != false {
+			t.Error("stderr_truncated 应为 false")
 		}
 	})
 }

@@ -135,7 +135,7 @@ func TestViewQueryInvalidAction(t *testing.T) {
 	if err == nil {
 		t.Fatal("应返回错误")
 	}
-	if !strings.Contains(err.Error(), "不支持的 action") {
+	if !strings.Contains(err.Error(), "下一步我应该") || !strings.Contains(err.Error(), "只支持 list_labels") {
 		t.Errorf("错误信息不符: %v", err)
 	}
 }

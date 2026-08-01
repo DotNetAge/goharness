@@ -69,21 +69,21 @@ func TestValidateFileSafety_PathTraversal(t *testing.T) {
 			path:        filepath.Join(tmpDir, "..", filepath.Base(otherDir), "secret.txt"),
 			projectDir:  tmpDir,
 			wantErr:     true,
-			errContains: "outside the workspace",
+			errContains: "越权操作",
 		},
 		{
 			name:        "absolute path outside project",
 			path:        "/etc/passwd",
 			projectDir:  tmpDir,
 			wantErr:     true,
-			errContains: "outside the workspace",
+			errContains: "越权操作",
 		},
 		{
 			name:        "symlink escape attempt",
 			path:        filepath.Join(tmpDir, "link_to_etc"),
 			projectDir:  tmpDir,
 			wantErr:     true,
-			errContains: "outside the workspace",
+			errContains: "越权操作",
 		},
 	}
 
@@ -128,7 +128,7 @@ func TestValidateFileSafety_SensitiveFiles(t *testing.T) {
 			if err == nil {
 				t.Errorf("ValidateFileSafety() should block access to %s", filename)
 			}
-			if err != nil && !containsString(err.Error(), "restricted for security reasons") {
+			if err != nil && !containsString(err.Error(), "敏感文件") {
 				t.Errorf("ValidateFileSafety() error should mention security restriction, got: %v", err)
 			}
 		})
@@ -136,6 +136,10 @@ func TestValidateFileSafety_SensitiveFiles(t *testing.T) {
 }
 
 func TestResolveTargetPath_Comprehensive(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("无法获取用户主目录: %v", err)
+	}
 	testCases := []struct {
 		name        string
 		inputPath   string
@@ -183,6 +187,54 @@ func TestResolveTargetPath_Comprehensive(t *testing.T) {
 			sessionDir:  "/sessions/abc",
 			wantAbsPath: "/project/src/main.go",
 			wantScope:   PathScopeProject,
+		},
+		{
+			name:        "dot-slash prefix normalized against project dir",
+			inputPath:   "./src/main.go",
+			projectDir:  "/project",
+			sessionDir:  "/sessions/abc",
+			wantAbsPath: "/project/src/main.go",
+			wantScope:   PathScopeProject,
+		},
+		{
+			name:        "bare dot resolves to project dir",
+			inputPath:   ".",
+			projectDir:  "/project",
+			sessionDir:  "/sessions/abc",
+			wantAbsPath: "/project",
+			wantScope:   PathScopeProject,
+		},
+		{
+			name:        "dot-dot climbs above project dir textually",
+			inputPath:   "../outside.txt",
+			projectDir:  "/project",
+			sessionDir:  "/sessions/abc",
+			wantAbsPath: "/outside.txt",
+			wantScope:   PathScopeProject,
+		},
+		{
+			name:        "double dot-dot climbs further",
+			inputPath:   "../../etc/passwd",
+			projectDir:  "/project",
+			sessionDir:  "/sessions/abc",
+			wantAbsPath: "/etc/passwd",
+			wantScope:   PathScopeProject,
+		},
+		{
+			name:        "tilde expands to home dir",
+			inputPath:   "~/workspaces",
+			projectDir:  "/project",
+			sessionDir:  "/sessions/abc",
+			wantAbsPath: filepath.Join(home, "workspaces"),
+			wantScope:   "",
+		},
+		{
+			name:        "bare tilde expands to home dir",
+			inputPath:   "~",
+			projectDir:  "/project",
+			sessionDir:  "/sessions/abc",
+			wantAbsPath: home,
+			wantScope:   "",
 		},
 	}
 

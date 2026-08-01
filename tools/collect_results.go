@@ -55,16 +55,16 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	tc := GetToolContext(ctx)
 	logger := getLogger(ctx)
 	if tc == nil || tc.Session == nil || tc.SessionStore == nil {
-		return nil, fmt.Errorf("collect_results 工具需要包含 Session 和 SessionStore 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("CollectResults", "包含 Session 和 SessionStore 的 ToolContext"))
 	}
 
 	rawIDsVal, found := GetParam(params, "session_ids")
 	if !found {
-		return nil, fmt.Errorf("session_ids 必须是字符串数组")
+		return nil, fmt.Errorf("%s", GuideMissingParam("CollectResults", "session_ids"))
 	}
 	rawIDs, ok := rawIDsVal.([]any)
 	if !ok {
-		return nil, fmt.Errorf("session_ids 必须是字符串数组")
+		return nil, fmt.Errorf("%s", GuideWrongParamType("CollectResults", "session_ids", "array", rawIDsVal))
 	}
 
 	sessionIDs := make([]string, 0, len(rawIDs))
@@ -104,7 +104,7 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 
 	out, err := json.Marshal(jsonResults)
 	if err != nil {
-		return nil, fmt.Errorf("序列化收集结果失败：%w", err)
+		return nil, fmt.Errorf("%s: %w", BuildGuide("序列化收集结果时失败", WithErrDetail("结果数据包含无法序列化的内容（如非法值或循环引用）", err), "检查收集到的子代理结果数据，剔除无法序列化的字段后重试"), err)
 	}
 	return string(out), nil
 }

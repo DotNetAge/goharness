@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/DotNetAge/goharness/tools/filestate"
@@ -50,7 +51,12 @@ func (t *EditTool) Info() *ToolInfo {
 - old_string 必须精确匹配文件中的内容。工具会自动处理花引号和末尾换行差异。
 - 使用 replace_all=true 在文件所有位置更改字符串。
 - 使用 limit=N 仅替换前 N 次出现。
-- 使用 old_string="" + 空文件来创建新文件。非空文件使用 Write 工具。`,
+- 使用 old_string="" + 空文件来创建新文件。非空文件使用 Write 工具。
+
+**减少重复调用**
+- 同一文件的多个段落修改可连续多次调用本工具，无需在每次调用之间重复 Read：
+  首次 Read 的结果持续有效，除非工具明确提示文件已被外部修改。
+- 若相同文本需替换多处，优先使用 replace_all 或 limit=N 一次完成，不要逐处调用。`,
 		Tags: []string{"file", "edit", "code", "replace", "modification"},
 		Parameters: []Parameter{
 			{
@@ -107,28 +113,25 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
 		for _, dir := range t.whitelist {
-			if strings.HasPrefix(resolved, dir) {
+			if pathWithinScope(dir, resolved) {
 				return true, ""
 			}
 		}
 		if tc.SessionWhitelist != nil {
 			for _, allowed := range tc.SessionWhitelist.Edit {
-				if strings.HasPrefix(resolved, allowed) {
+				if pathWithinScope(allowed, resolved) {
 					return true, ""
 				}
 			}
 		}
-		return false, fmt.Sprintf(
-			"编辑 %q 解析为 %q，这在工作区之外。\n%s",
-			filePath, resolved, err.Error(),
-		)
+		return false, GuideEditOutsideWorkspace(filePath, resolved, err)
 	}
 	return true, ""
 }
 
 // Execute 执行文件编辑操作。
 func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	filePath, err := ValidateRequiredString(params, "file_path")
+	filePath, err := ValidateRequiredString("Edit", params, "file_path")
 	if err != nil {
 		return nil, err
 	}
@@ -149,12 +152,12 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil, err
 	}
 
-	oldStr, err := ValidateRequiredString(params, "old_string")
+	oldStr, err := ValidateRequiredString("Edit", params, "old_string")
 	if err != nil {
 		return nil, err
 	}
 
-	newStr, err := ValidateRequiredString(params, "new_string")
+	newStr, err := ValidateRequiredString("Edit", params, "new_string")
 	if err != nil {
 		return nil, err
 	}
@@ -175,31 +178,30 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		if os.IsNotExist(statErr) {
 			if oldStr == "" {
 				// ENOENT + old_string="" → 简单拒绝（审计 C2 简化）
-				return nil, fmt.Errorf(
-					"文件 %s 不存在。如需创建文件请使用 Write 工具。",
-					resolvedPath,
-				)
+				return nil, fmt.Errorf("%s", BuildGuide(
+					fmt.Sprintf("尝试编辑文件 %q，但该文件不存在", resolvedPath),
+					"目标文件在文件系统中不存在（ENOENT）",
+					"如需创建新文件请使用 Write 工具；若文件确实存在，先用 Glob 或 Ls 核对路径拼写",
+				))
 			}
 			// ENOENT + old_string!="" → CWD 前缀建议
-			return nil, fmt.Errorf(
-				"路径 %s 在当前工作区内不存在。"+
-					"请检查路径是否拼写正确。"+
-					"您可以使用 Glob 或 ls 工具查找文件。"+
-					"如果文件未被创建，使用 Write 工具创建它。",
-				resolvedPath,
-			)
+			return nil, fmt.Errorf("%s", BuildGuide(
+				fmt.Sprintf("尝试编辑文件 %q，但该文件在当前工作区内不存在", resolvedPath),
+				"目标文件在文件系统中不存在（ENOENT），可能是路径拼写有误或文件尚未创建",
+				"先自查：路径是否拼写正确、文件是否已创建？可用 Glob 或 Ls 工具定位正确的文件路径；若文件尚未创建，改用 Write 工具创建它",
+			))
 		}
-		return nil, fmt.Errorf("无法访问文件 %s: %w", resolvedPath, err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("访问", resolvedPath, statErr), statErr)
 	}
 
 	// 存在但为空 + old_string="" → 创建模式
 	if info.Size() == 0 && oldStr == "" {
 		dir := filepath.Dir(resolvedPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, fmt.Errorf("创建目录失败: %w", err)
+			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建父目录", dir, err), err)
 		}
 		if err := os.WriteFile(resolvedPath, []byte(newStr), 0644); err != nil {
-			return nil, fmt.Errorf("写入文件失败: %w", err)
+			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 		}
 		// 写入后清除 StaleState 和 NegativeCache
 		filestate.DeleteStale(resolvedPath)
@@ -215,11 +217,11 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	// 存在且非空 + old_string="" → 拒绝
 	if oldStr == "" {
-		return nil, fmt.Errorf(
-			"old_string 为空，但文件 %s 已有内容。"+
-				"请明确指定要替换的内容。使用 Write 工具可完全覆盖文件。",
-			resolvedPath,
-		)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试编辑文件 %q，但 old_string 为空而文件已有内容", resolvedPath),
+			"old_string 为空，但文件非空，无法确定要替换的内容",
+			"请明确指定要替换的内容；使用 Write 工具可完全覆盖文件",
+		))
 	}
 
 	// C. Staleness 自动检测
@@ -230,27 +232,32 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 	// 读取文件内容
 	content, err := os.ReadFile(resolvedPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("读取", resolvedPath, err), err)
 	}
 	fileContent := string(content)
 
 	// B. 容错匹配
 	actualOld, found := findEditMatch(fileContent, oldStr)
 	if !found {
-		return nil, fmt.Errorf("old_string 在文件中未找到。请确保 old_string 与文件中的内容完全相同。")
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试在文件 %q 中查找 old_string %q 以执行替换", resolvedPath, oldStr),
+			"文件中不存在该文本，可能是内容、空格或缩进不完全一致",
+			"先用 Read 工具确认文件当前内容，确保 old_string 与文件内容完全一致（含空格、缩进）后重试",
+		))
 	}
 
 	// 检查替换模式
 	totalMatches := strings.Count(fileContent, actualOld)
 	if !replaceAll && limit <= 0 && totalMatches > 1 {
-		return nil, fmt.Errorf(
-			"old_string 在文件中出现了 %d 次。使用 replace_all=true 或 limit=N 替换多次出现",
-			totalMatches,
-		)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试编辑文件 %q，但 old_string 在文件中出现了 %d 次", resolvedPath, totalMatches),
+			"old_string 在文件中多次出现，单次替换无法确定要替换哪一处",
+			"使用 replace_all=true 或 limit=N 替换多次出现",
+		))
 	}
 
 	if limit < -1 {
-		return nil, fmt.Errorf("limit 必须为 -1（全部）、0（默认 1）或正数")
+		return nil, fmt.Errorf("%s", GuideInvalidValue("Edit", "limit", limit, "limit 只接受 -1、0 或正整数"))
 	}
 
 	// 执行替换
@@ -283,16 +290,17 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 	// 确保目录存在
 	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("创建目录失败: %w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建父目录", dir, err), err)
 	}
 
 	// 写入文件
 	if err := os.WriteFile(resolvedPath, []byte(updatedContent), 0644); err != nil {
-		return nil, fmt.Errorf("写入文件 %s 失败: %w", resolvedPath, err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 	}
 
-	// 清除 StaleState，确保后续操作是"未读"状态
-	filestate.DeleteStale(resolvedPath)
+	// 写入后重新记录 StaleState（基于刚写入的内容），
+	// 使同一文件的连续多次编辑无需反复 Read（与 write.go 模式一致）
+	filestate.SetStale(resolvedPath, time.Now(), []byte(updatedContent))
 	invalidateNegativeCache(resolvedPath)
 
 	logger.Info("file edited",

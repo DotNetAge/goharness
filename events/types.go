@@ -52,6 +52,10 @@ const (
 	// LLMTimeout signals the LLM call (Think phase) exceeded its time limit.
 	LLMTimeout ReactEventType = "llm_timeout"
 
+	// LLMCancelled 表示 LLM 调用被用户取消。
+	// 与 LLMTimeout（真实超时）不同，这是用户主动发起的中断。
+	LLMCancelled ReactEventType = "llm_cancelled"
+
 	// CycleEnd signals one complete Think-Act cycle has ended.
 	CycleEnd ReactEventType = "cycle_end"
 

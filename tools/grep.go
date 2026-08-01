@@ -72,13 +72,20 @@ func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, err
 	outputMode, _ := rawOutputMode.(string)
 
 	if pattern == "" {
-		return nil, fmt.Errorf("pattern 是必需的")
+		return nil, fmt.Errorf("%s", GuideMissingParam("Grep", "pattern"))
+	}
+
+	// 搜索根固定为项目目录（Grep 工具面向项目内全文搜索）。
+	// 修复前搜索根是进程 CWD 的 "."，与 Agent 所在项目目录无关，导致搜索不到内容。
+	searchRoot := "."
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil && tc.Session.ProjectDir() != "" {
+		searchRoot = tc.Session.ProjectDir()
 	}
 
 	if isRgAvailable() {
-		return t.executeWithRg(ctx, pattern, include, outputMode)
+		return t.executeWithRg(ctx, pattern, include, outputMode, searchRoot)
 	}
-	return t.executeNative(ctx, pattern, include, outputMode)
+	return t.executeNative(ctx, pattern, include, outputMode, searchRoot)
 }
 
 func isRgAvailable() bool {
@@ -86,7 +93,7 @@ func isRgAvailable() bool {
 	return err == nil
 }
 
-func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMode string) (any, error) {
+func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMode, searchRoot string) (any, error) {
 	args := []string{"--no-heading", "--color", "never", "--smart-case"}
 	switch outputMode {
 	case "files_with_matches":
@@ -99,7 +106,7 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 	if include != "" {
 		args = append(args, "-g", include)
 	}
-	args = append(args, pattern, ".")
+	args = append(args, pattern, searchRoot)
 
 	grepCtx, grepCancel := context.WithTimeout(ctx, grepDefaultTimeout)
 	defer grepCancel()
@@ -109,7 +116,11 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return "未找到匹配项。", nil
 		}
-		return nil, fmt.Errorf("grep 失败：%s", string(output))
+		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+			fmt.Sprintf("尝试用 ripgrep 在 %q 中搜索模式 %q", searchRoot, pattern),
+			WithErrDetail(fmt.Sprintf("rg 执行失败，其输出为：%s", strings.TrimSpace(string(output))), err),
+			"先自查：我传入的 pattern（正则表达式）与 include（文件过滤模式）是否符合 Grep 工具的参数定义（参数名称、类型、取值范围）？若确认无误仍失败，应停止无意义的重试，基于已有信息作答或询问用户",
+		), err)
 	}
 
 	lines := strings.Split(string(output), "\n")
@@ -128,16 +139,20 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 	return resultStr, nil
 }
 
-func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMode string) (any, error) {
+func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMode, searchRoot string) (any, error) {
 	re, err := regexp.Compile("(?i)" + pattern)
 	if err != nil {
 		re, err = regexp.Compile(pattern)
 		if err != nil {
-			return nil, fmt.Errorf("无效的正则表达式模式：%w", err)
+			return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+				"尝试编译正则表达式时失败",
+				WithErrDetail(fmt.Sprintf("正则模式 %q 语法无效", pattern), err),
+				"检查正则语法（括号是否配对、特殊字符是否正确转义），用 Grep 工具参数说明中的示例（如 \"log.*Error\"、\"function\\s+\\w+\"）修正后重试",
+			), err)
 		}
 	}
 
-	searchDir := "."
+	searchDir := searchRoot
 	var results []string
 	totalMatchCount := 0
 
@@ -161,11 +176,10 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 			}
 		}
 
+		// 以搜索根为基准展示相对路径，保持输出简洁
 		relPath := path
-		if strings.HasPrefix(path, "./") {
-			relPath = path
-		} else if path != "." {
-			relPath = "." + string(filepath.Separator) + path
+		if rel, relErr := filepath.Rel(searchRoot, path); relErr == nil {
+			relPath = rel
 		}
 
 		file, openErr := os.Open(path)
@@ -206,7 +220,7 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 	}
 
 	if err := filepath.WalkDir(searchDir, walkFn); err != nil {
-		return nil, fmt.Errorf("grep 失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("遍历", searchRoot, err), err)
 	}
 
 	if totalMatchCount == 0 {

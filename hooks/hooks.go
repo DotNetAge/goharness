@@ -8,6 +8,7 @@ import (
 
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/session"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 // Hook priority constants define the execution order of hooks.
@@ -92,6 +93,13 @@ type ToolResult struct {
 	Error      string        `json:"error,omitempty"`
 	Duration   time.Duration `json:"duration_ns"`
 	Success    bool          `json:"success"`
+	// Images 是工具返回的原始图片数据（如 Read 读取的图片文件）。
+	// 由 executor 从工具执行结果中提取，与文本结果分离传递。
+	Images []tools.ImageContent `json:"images,omitempty"`
+	// ImageBlocks 是 ImageHook 将 Images 转换后的图片内容块。
+	// executor 持久化工具结果时，若该字段非空，则以 image_url 消息追加进入上下文，
+	// 而非混入工具结果的文本内容。
+	ImageBlocks []session.ImageBlock `json:"image_blocks,omitempty"`
 }
 
 // CallInput contains the input data for an LLM call.

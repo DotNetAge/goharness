@@ -59,17 +59,17 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	rawTeamName, _ := GetParam(params, "team_name")
 	teamName, _ := rawTeamName.(string)
 	if teamName == "" {
-		return nil, fmt.Errorf("team_name 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TeamCreate", "team_name"))
 	}
 	rawDescription, _ := GetParam(params, "description")
 	description, _ := rawDescription.(string)
 	if description == "" {
-		return nil, fmt.Errorf("description 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TeamCreate", "description"))
 	}
 	rawLeader, _ := GetParam(params, "leader")
 	leader, _ := rawLeader.(string)
 	if leader == "" {
-		return nil, fmt.Errorf("leader 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TeamCreate", "leader"))
 	}
 
 	var members []string
@@ -82,12 +82,12 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		}
 	}
 	if len(members) == 0 {
-		return nil, fmt.Errorf("members 不能为空且必须至少包含一个代理")
+		return nil, fmt.Errorf("%s", GuideInvalidValue("TeamCreate", "members", rawMembersVal, "在 members 数组中至少传入一个代理名称，可先使用 Ls/TeamList 等确认可用代理"))
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TeamCreate 需要包含 SessionID 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TeamCreate", "包含 SessionID 的 ToolContext"))
 	}
 
 	team := &Team{
@@ -98,7 +98,7 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	if err := CreateTeam(ctx, tc.Session.ID(), team); err != nil {
-		return nil, fmt.Errorf("创建团队失败：%w", err)
+		return nil, err
 	}
 
 	var taskIDs []string

@@ -152,6 +152,110 @@ func TestExecSingleToolCallThenAnswer(t *testing.T) {
 	}
 }
 
+// TestExecDuplicateErrorGuide 验证同一工具连续出现完全相同错误时，
+// 达到阈值后会在工具结果中注入引导话术，且后续模型给出答案后正常结束。
+func TestExecDuplicateErrorGuide(t *testing.T) {
+	t.Parallel()
+	flaky := newFakeTool("flaky_tool", nil)
+	flaky.execute = func(_ context.Context, _ map[string]any) (any, error) {
+		return nil, errors.New("参数错误: 无法解析 path")
+	}
+	rt := newTestRuntimeWithTools(t, []tools.FuncTool{flaky})
+	sess := newTestSession(t)
+
+	// 10 秒超时保护，防止循环异常导致测试挂起。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt.llmClient = newMockLLMClient(
+		toolCallStream("call_1", "flaky_tool", `{"value":"x"}`, "tool_calls"),
+		toolCallStream("call_2", "flaky_tool", `{"value":"x"}`, "tool_calls"),
+		responseStream("我换一种方式完成任务", "stop"),
+	)
+
+	result, err := rt.Ask("test-agent", "请执行任务", sess).
+		WithContext(ctx).
+		Run()
+	if err != nil {
+		t.Fatalf("期望无错误，得到: %v", err)
+	}
+	if result.TerminationReason != "completed" {
+		t.Fatalf("期望终止原因 completed，得到: %s", result.TerminationReason)
+	}
+	if flaky.invokeCount != 2 {
+		t.Fatalf("期望工具被调用 2 次，得到: %d", flaky.invokeCount)
+	}
+
+	msgs := sess.Current()
+	// 消息顺序：user, assistant(tc), tool, assistant(tc), tool, assistant(answer)
+	if len(msgs) != 6 {
+		t.Fatalf("期望会话中有 6 条消息，得到: %d", len(msgs))
+	}
+	firstTool := msgs[2]
+	secondTool := msgs[4]
+	if firstTool.Role != "tool" || secondTool.Role != "tool" {
+		t.Fatalf("期望第 3、5 条消息为 tool，得到: %s / %s", firstTool.Role, secondTool.Role)
+	}
+	if strings.Contains(firstTool.Content, "连续 2 次") {
+		t.Fatal("第一次工具结果不应包含引导话术")
+	}
+	if !strings.Contains(secondTool.Content, "连续 2 次") {
+		t.Fatalf("第二次工具结果应包含引导话术，得到: %s", secondTool.Content)
+	}
+	if !strings.Contains(secondTool.Content, "我这样做的目的是什么") {
+		t.Fatalf("引导话术应采用第一人称自我反思格式，得到: %s", secondTool.Content)
+	}
+	if !strings.Contains(secondTool.Content, "是否还有其它方法") {
+		t.Fatalf("引导话术应引导思考替代方案，得到: %s", secondTool.Content)
+	}
+}
+
+// TestExecDuplicateErrorGuideResetsOnSuccess 验证工具成功执行会重置重复错误计数，
+// 失败与成功交替出现时永不触发引导话术注入。
+func TestExecDuplicateErrorGuideResetsOnSuccess(t *testing.T) {
+	t.Parallel()
+	flaky := newFakeTool("flaky_tool", nil)
+	flaky.execute = func(_ context.Context, _ map[string]any) (any, error) {
+		if flaky.invokeCount%2 == 1 {
+			return nil, errors.New("参数错误: 无法解析 path")
+		}
+		return "成功结果", nil
+	}
+	rt := newTestRuntimeWithTools(t, []tools.FuncTool{flaky})
+	sess := newTestSession(t)
+
+	// 10 秒超时保护，防止循环异常导致测试挂起。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt.llmClient = newMockLLMClient(
+		toolCallStream("call_1", "flaky_tool", `{"value":"x"}`, "tool_calls"),
+		toolCallStream("call_2", "flaky_tool", `{"value":"x"}`, "tool_calls"),
+		toolCallStream("call_3", "flaky_tool", `{"value":"x"}`, "tool_calls"),
+		toolCallStream("call_4", "flaky_tool", `{"value":"x"}`, "tool_calls"),
+		responseStream("任务完成", "stop"),
+	)
+
+	result, err := rt.Ask("test-agent", "请执行任务", sess).
+		WithContext(ctx).
+		Run()
+	if err != nil {
+		t.Fatalf("期望无错误，得到: %v", err)
+	}
+	if result.TerminationReason != "completed" {
+		t.Fatalf("期望终止原因 completed，得到: %s", result.TerminationReason)
+	}
+	if flaky.invokeCount != 4 {
+		t.Fatalf("期望工具被调用 4 次，得到: %d", flaky.invokeCount)
+	}
+
+	for i, m := range sess.Current() {
+		if m.Role == "tool" && strings.Contains(m.Content, "连续 2 次") {
+			t.Fatalf("工具成功与失败交替时不应注入引导话术，第 %d 条消息: %s", i, m.Content)
+		}
+	}
+}
+
 // TestExecPermissionPending 验证 Grant 拒绝时循环暂停，魔法词 Allow 后恢复执行。
 func TestExecPermissionPending(t *testing.T) {
 	t.Parallel()
@@ -497,3 +601,99 @@ func (h *abortHook) AfterLLM(_ string, _ int, _ *hooks.LLMResponse, _ []hooks.To
 }
 
 func (h *abortHook) Abort(_, _ string) {}
+
+// imageReadTool 构造一个返回图片数据的 fakeTool（模拟 Read 读取图片文件）。
+// 返回值携带 ReadResult.Images，与真实 Read 的图片分支行为一致。
+func imageReadTool() *fakeTool {
+	read := newFakeTool("Read", nil)
+	read.execute = func(_ context.Context, _ map[string]any) (any, error) {
+		return &tools.ReadResult{
+			Data: &tools.ReadData{
+				Success: true, Path: "/tmp/a.png", Content: "图片摘要：512x300",
+			},
+			Images: []tools.ImageContent{
+				{MediaType: "image/png", Base64Data: "aGVsbG8=", Width: 512, Height: 300},
+			},
+		}, nil
+	}
+	return read
+}
+
+// TestExecReadImageAppendsImageMessage 验证图片读取的完整 Hook 链路：
+// Read 返回图片 → executor 提取 Images → ImageHook 转换为图片块 →
+// 以 user 角色图片消息（image_url 视觉消息）追加进上下文，
+// 而非混入工具结果的文本内容。
+func TestExecReadImageAppendsImageMessage(t *testing.T) {
+	t.Parallel()
+	rt := newTestRuntimeWithTools(t, []tools.FuncTool{imageReadTool()},
+		WithModel(config.ModelConfig{Name: "m", Provider: "mock", Visioning: true}))
+	sess := newTestSession(t)
+
+	// 10 秒超时保护，防止循环异常导致测试挂起。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt.llmClient = newMockLLMClient(
+		toolCallStream("call_1", "Read", `{"filePath":"/tmp/a.png"}`, "tool_calls"),
+		responseStream("图片已分析", "stop"),
+	)
+
+	_, err := rt.Ask("test-agent", "分析图片", sess).WithContext(ctx).Run()
+	if err != nil {
+		t.Fatalf("期望无错误，得到: %v", err)
+	}
+
+	msgs := sess.Current()
+	// 消息顺序：user, assistant(tc), tool, user(图片消息), assistant(answer)
+	if len(msgs) != 5 {
+		t.Fatalf("期望 5 条消息（含图片消息），得到: %d", len(msgs))
+	}
+	imgMsg := msgs[3]
+	if imgMsg.Role != "user" {
+		t.Fatalf("第 4 条消息应为 user（图片消息），得到: %s", imgMsg.Role)
+	}
+	if len(imgMsg.Images) != 1 {
+		t.Fatalf("期望图片消息携带 1 个图片块，得到: %d", len(imgMsg.Images))
+	}
+	if imgMsg.Images[0].MediaType != "image/png" || imgMsg.Images[0].Base64Data != "aGVsbG8=" {
+		t.Errorf("图片块内容不正确: %+v", imgMsg.Images[0])
+	}
+	// 工具结果文本中不应出现 base64 图片数据
+	if strings.Contains(msgs[2].Content, "aGVsbG8=") {
+		t.Error("base64 图片数据不应混入工具结果文本")
+	}
+}
+
+// TestExecReadImageNonVisionNoImageMessage 验证非视觉模型（Visioning=false）
+// 不会产生图片消息：ImageHook 未注册，图片数据不会进入上下文。
+func TestExecReadImageNonVisionNoImageMessage(t *testing.T) {
+	t.Parallel()
+	rt := newTestRuntimeWithTools(t, []tools.FuncTool{imageReadTool()},
+		WithModel(config.ModelConfig{Name: "m", Provider: "mock"}))
+	sess := newTestSession(t)
+
+	// 10 秒超时保护，防止循环异常导致测试挂起。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt.llmClient = newMockLLMClient(
+		toolCallStream("call_1", "Read", `{"filePath":"/tmp/a.png"}`, "tool_calls"),
+		responseStream("完成", "stop"),
+	)
+
+	_, err := rt.Ask("test-agent", "分析图片", sess).WithContext(ctx).Run()
+	if err != nil {
+		t.Fatalf("期望无错误，得到: %v", err)
+	}
+
+	msgs := sess.Current()
+	// 消息顺序：user, assistant(tc), tool, assistant(answer) —— 无图片消息
+	if len(msgs) != 4 {
+		t.Fatalf("期望 4 条消息（无图片消息），得到: %d", len(msgs))
+	}
+	for i, m := range msgs {
+		if len(m.Images) > 0 {
+			t.Errorf("非视觉模型不应产生图片消息，第 %d 条: %+v", i, m.Images)
+		}
+	}
+}

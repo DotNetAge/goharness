@@ -174,11 +174,6 @@ func base64Encode(data []byte) string {
 	return string(encoded)
 }
 
-// isImageContentLarge 判断图片内容是否超过阈值（用于截断提示）。
-func isImageContentLarge(ic ImageContent) bool {
-	return len(ic.Base64Data) > 100 * 1024 // 100KB
-}
-
 // fmtImageSummary 格式化图片摘要信息。
 func fmtImageSummary(ic ImageContent, path string) string {
 	if ic.Width > 0 && ic.Height > 0 {

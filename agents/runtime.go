@@ -74,6 +74,22 @@ const (
 
 	// defaultLLMTimeout 是单次大语言模型调用的默认超时。
 	defaultLLMTimeout = 4 * time.Minute
+
+	// duplicateErrorThreshold 是同一工具连续出现完全相同的错误时，
+	// 触发「引导话术注入」的阈值。达到阈值后，我们不会硬性熔断循环，
+	// 而是在工具结果中追加一段引导话术，提示大模型更换工作方式。
+	duplicateErrorThreshold = 2
+
+	// duplicateErrorGuideTemplate 是重复错误引导话术的模板。
+	// %s 会被替换为工具名，%d 为连续相同错误的次数。
+	// 采用第一人称自我反思格式，引导模型停下来思考目的与替代方案，
+	// 而不是机械地继续用相同方式重试（见用户要求 3）。
+	duplicateErrorGuideTemplate = "我连续 %d 次以完全相同的方式调用 %s 但均失败。\n" +
+		"原因：当前做法无效，继续重复执行同样的指令只会浪费资源，也无法完成任务。\n" +
+		"下一步我应该：\n" +
+		"1. 停下来反思——我这样做的目的是什么？距离任务目标还差什么？\n" +
+		"2. 思考是否还有其它方法可以更加有效地完成任务（更换参数、路径、工具或拆解步骤）；\n" +
+		"3. 若确实无法通过该工具完成，应基于已有信息直接作答或询问用户，避免无意义的重试。"
 )
 
 // Runtime 承载运行思考循环所需的基础设施和注册表。
@@ -152,10 +168,6 @@ type Runtime struct {
 	// 通过 WithSearchStrategy 设置。
 	searchStrategyBuilder func() string
 
-	// toolActivationHook 保存已注册 ToolActivationHook 的引用。
-	// exec 在每次 Ask 开始时通过 SetActiveToolSet 绑定本轮的 ActiveToolSet。
-	toolActivationHook *ToolActivationHook
-
 	// llmClient 负责与大语言模型交互。
 	// 默认为基于 gochat 的实现；可通过 WithLLMClient 注入 mock 或其他提供商实现。
 	llmClient LLMClient
@@ -222,6 +234,18 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	return r
 }
 
+// toolFactory 描述一个工具注册项：名称 + 构造函数。
+type toolFactory struct {
+	name    string
+	factory func() tools.FuncTool
+}
+
+// toolOf 将返回具体工具类型的构造函数包装为统一的 FuncTool 工厂，
+// 避免重复书写结构体字面量与类型断言。
+func toolOf[T tools.FuncTool](name string, new func() T) toolFactory {
+	return toolFactory{name: name, factory: func() tools.FuncTool { return new() }}
+}
+
 // registerDefaultTools 将所有内置工具注册到工具注册表。
 // 由 NewRuntime 在初始化期间自动调用。
 // 包含文件操作（Grep、Glob、Read、Write、FileEdit、Ls）、执行工具（Bash、RunScript）、
@@ -230,69 +254,57 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 // 当模型为本地部署（IsLocal=true）时，跳过 SubAgent 和 TeamXXX 等多 Agent 工具的注册，
 // 因为本地模型通常无法可靠地执行多 Agent 并行任务。
 func (rt *Runtime) registerDefaultTools() {
-	bundled := []struct {
-		name    string
-		factory func() tools.FuncTool
-	}{
-		{"Grep", func() tools.FuncTool { return tools.NewGrepTool() }},
-		{"Glob", func() tools.FuncTool { return tools.NewGlobTool() }},
-		{"Read", func() tools.FuncTool { return tools.NewReadTool() }},
-		{"Write", func() tools.FuncTool { return tools.NewWriteTool() }},
-		{"Edit", func() tools.FuncTool { return tools.NewEditTool() }},
-		{"Bash", func() tools.FuncTool { return tools.NewBashTool() }},
-		{"RunScript", func() tools.FuncTool { return tools.NewRunScriptTool() }},
-		{"WebSearch", func() tools.FuncTool { return tools.NewWebSearchTool() }},
-		{"WebFetch", func() tools.FuncTool { return tools.NewWebFetchTool() }},
-		{"AskUser", func() tools.FuncTool { return tools.NewAskUserTool() }},
-		{"Ls", func() tools.FuncTool { return tools.NewLsTool() }},
-		{"CollectResults", func() tools.FuncTool { return tools.NewCollectResultsTool() }},
-		{"TaskCreate", func() tools.FuncTool { return tools.NewTaskCreateTool() }},
-		{"TaskList", func() tools.FuncTool { return tools.NewTaskListTool() }},
-		{"TaskGet", func() tools.FuncTool { return tools.NewTaskGetTool() }},
-		{"TaskUpdate", func() tools.FuncTool { return tools.NewTaskUpdateTool() }},
-		{"Sleep", func() tools.FuncTool { return tools.NewSleepTool() }},
-		{"Skill", func() tools.FuncTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }},
-		{"ToolSelector", func() tools.FuncTool { return tools.NewToolSelectorTool(rt.toolReg) }},
+	// 图片读取仅对支持视觉理解的模型（Visioning=true）生效：
+	// 图片读取会返回 base64 数据，对不支持视觉的模型没有意义且浪费上下文。
+	readLimits := tools.DefaultFileReadingLimits()
+	if rt.model.Visioning {
+		readLimits.EnableImageReading = true
 	}
 
-	// 本地模型不注册多 Agent 工具（SubAgent、TeamXXX）
+	bundled := []toolFactory{
+		toolOf("Grep", tools.NewGrepTool),
+		toolOf("Glob", tools.NewGlobTool),
+		toolOf("Read", func() *tools.Read { return tools.NewReadToolWithLimits(readLimits) }),
+		toolOf("Write", tools.NewWriteTool),
+		toolOf("Edit", tools.NewEditTool),
+		toolOf("Bash", tools.NewBashTool),
+		toolOf("RunScript", tools.NewRunScriptTool),
+		toolOf("WebSearch", tools.NewWebSearchTool),
+		toolOf("WebFetch", tools.NewWebFetchTool),
+		toolOf("AskUser", tools.NewAskUserTool),
+		toolOf("Ls", tools.NewLsTool),
+	}
+
+	// 本地模型不注册多 Agent / 任务管理类工具：
+	// 1. SubAgent 与 CollectResults 是配对的——不注册 SubAgent 就不注册 CollectResults
+	// 2. Task 系列（TaskCreate/TaskList/TaskGet/TaskUpdate）依赖多 Agent 协作
+	// 3. Sleep/Skill 与任务编排相关，本地模型场景一并排除
 	// 因为本地模型通常无法可靠地执行多 Agent 并行任务
 	if !rt.model.IsLocal {
 		bundled = append(bundled,
-			struct {
-				name    string
-				factory func() tools.FuncTool
-			}{
-				name: "SubAgent",
-				factory: func() tools.FuncTool {
-					subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
-					subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
-						tc := tools.GetToolContext(ctx)
-						if tc == nil || tc.Session == nil {
-							return "", fmt.Errorf("上下文未包含会话")
-						}
-						sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
-						return sess.ID(), nil
-					})
-					return subAgentTool
-				},
-			},
-			struct {
-				name    string
-				factory func() tools.FuncTool
-			}{name: "TeamCreate", factory: func() tools.FuncTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }},
-			struct {
-				name    string
-				factory func() tools.FuncTool
-			}{name: "TeamDelete", factory: func() tools.FuncTool { return tools.NewTeamDeleteTool() }},
-			struct {
-				name    string
-				factory func() tools.FuncTool
-			}{name: "TeamList", factory: func() tools.FuncTool { return tools.NewTeamListTool() }},
-			struct {
-				name    string
-				factory func() tools.FuncTool
-			}{name: "TeamGetTasks", factory: func() tools.FuncTool { return tools.NewTeamGetTasksTool() }},
+			toolOf("CollectResults", tools.NewCollectResultsTool),
+			toolOf("TaskCreate", tools.NewTaskCreateTool),
+			toolOf("TaskList", tools.NewTaskListTool),
+			toolOf("TaskGet", tools.NewTaskGetTool),
+			toolOf("TaskUpdate", tools.NewTaskUpdateTool),
+			toolOf("Sleep", tools.NewSleepTool),
+			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }),
+			toolOf("SubAgent", func() *tools.SubAgentTool {
+				subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
+				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
+					tc := tools.GetToolContext(ctx)
+					if tc == nil || tc.Session == nil {
+						return "", fmt.Errorf("上下文未包含会话")
+					}
+					sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
+					return sess.ID(), nil
+				})
+				return subAgentTool
+			}),
+			toolOf("TeamCreate", func() *tools.TeamCreateTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }),
+			toolOf("TeamDelete", tools.NewTeamDeleteTool),
+			toolOf("TeamList", tools.NewTeamListTool),
+			toolOf("TeamGetTasks", tools.NewTeamGetTasksTool),
 		)
 	}
 
@@ -328,11 +340,7 @@ func (rt *Runtime) registerDefaultHooks() {
 		rt.loopHooks = append([]hooks.LoopHook{hook}, rt.loopHooks...)
 	}
 
-	// 注册 ToolActivationHook（优先级 20，较早运行），以便 ToolSelector 或 Skill
-	// 返回结果时更新 ActiveToolSet。
-	rt.toolActivationHook = NewToolActivationHook(rt.logger)
-	rt.toolHooks = append(rt.toolHooks, rt.toolActivationHook)
-
+	// 注册默认工具钩子
 	defaultHooks := action.Defaults(nil, rt.skillReg, rt.logger, rt.fileModifyTracker)
 
 	// 捕获 FileModifyHook 引用，以便通过 WithFileModifyTracker 延迟绑定。
@@ -345,6 +353,14 @@ func (rt *Runtime) registerDefaultHooks() {
 	}
 
 	rt.toolHooks = append(rt.toolHooks, defaultHooks...)
+
+	// 图片提取 Hook：仅对支持视觉理解的模型（Visioning=true）注册。
+	// 图片读取开关（EnableImageReading）控制 Read 是否返回图片数据；
+	// 本 Hook 负责把图片转换为 image_url 消息注入上下文。二者配合，
+	// 非视觉模型既不读取图片也不注入图片，避免浪费上下文。
+	if rt.model.Visioning {
+		rt.toolHooks = append(rt.toolHooks, action.NewImageHook(rt.logger))
+	}
 }
 
 // Ask 创建用于启动与智能体对话的 AskBuilder。

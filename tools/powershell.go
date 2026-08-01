@@ -77,11 +77,11 @@ func (t *PowerShellTool) Info() *ToolInfo {
 func (t *PowerShellTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	rawCmd, found := GetParam(params, "command")
 	if !found {
-		return nil, fmt.Errorf("command 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("PowerShell", "command"))
 	}
 	cmdStr, ok := rawCmd.(string)
 	if !ok || cmdStr == "" {
-		return nil, fmt.Errorf("command 不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("PowerShell", "command"))
 	}
 
 	return t.runPowerShellCommand(ctx, cmdStr)
@@ -140,8 +140,8 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		exitCode := exitErr.ExitCode()
 
-		stdoutStr = truncateOutput(stdoutStr, t.maxOutput)
-		stderrStr = truncateOutput(stderrStr, t.maxOutput)
+		stdoutStr, _ = truncateOutput(stdoutStr, t.maxOutput)
+		stderrStr, _ = truncateOutput(stderrStr, t.maxOutput)
 
 		stderrStr = applyPowerShellCommandSemantics(exitCode, stderrStr)
 
@@ -155,12 +155,13 @@ func (t *PowerShellTool) runPowerShellCommand(ctx context.Context, command strin
 			Duration: duration,
 		}, nil
 	} else if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s", GuideToolFailure("PowerShell", err))
 	}
 
+	stdoutStr, _ = truncateOutput(stdoutStr, t.maxOutput)
 	return &PowerShellResult{
 		ExitCode: 0,
-		Stdout:   truncateOutput(stdoutStr, t.maxOutput),
+		Stdout:   stdoutStr,
 		Stderr:   stderrStr,
 		Duration: duration,
 	}, nil

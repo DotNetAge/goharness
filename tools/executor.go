@@ -70,7 +70,11 @@ func (e *implToolExecutor) ResetCycle() {}
 func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[string]any) (*ToolExecutionResult, error) {
 	tool, ok := e.cfg.registry.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("未找到工具 %q", name)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("调用工具 %q，但该工具未注册", name),
+			"工具名称不在已注册工具列表中（可能拼写错误或未在当前会话启用）",
+			"先自查：我传入的工具名称是否拼写正确、是否为当前可用的工具？可对照已注册工具列表核对后重新调用",
+		))
 	}
 
 	toolInfo := tool.Info()
@@ -119,8 +123,19 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	}
 
 	if err != nil {
-		enhanced := enhanceFileError(err, extractPath(params))
+		enhanced := enhanceError(err, name, extractPath(params))
 		return &ToolExecutionResult{ToolName: name, Duration: duration, Error: enhanced}, nil
+	}
+
+	// 提取工具返回的图片数据（如 Read 读取的图片文件）。
+	// 必须在 JSON 序列化之前完成：ReadResult.Images 带 json:"-" 标签，
+	// 一旦走 json.Marshal 图片就会被静默丢弃，导致 Hook 层拿不到图片。
+	ter := &ToolExecutionResult{
+		Duration: duration,
+		ToolName: name,
+	}
+	if rr, isRead := result.(*ReadResult); isRead {
+		ter.Images = rr.Images
 	}
 
 	str, ok := result.(string)
@@ -135,34 +150,67 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 
 	str = e.processResult(name, str, toolInfo)
 
-	return &ToolExecutionResult{
-		Result:   str,
-		Duration: duration,
-		ToolName: name,
-	}, nil
+	ter.Result = str
+	return ter, nil
+}
+
+// enhanceError 对工具执行错误做引导增强。
+//
+// 处理原则（可预知 → 精确引导；不可预知 → 零包装兜底）：
+//  1. 错误已是引导格式（含「下一步我应该」标记）→ 原样返回，不做二次包装
+//  2. 文件不存在（os.ErrNotExist）→ 复用 enhanceFileError 的相似路径建议
+//  3. 其它（未知）错误 → 直接返回原始错误，不给任何指引。
+//     兜底场景无法预知解决方案，添加「请重试」式话术只会诱导（尤其是
+//     小模型）陷入反复重试的死循环，因此原样返回是更安全的选择。
+//
+// 参数：
+//   - err: 原始错误
+//   - toolName: 工具名称（保留参数，供未来需要时使用）
+//   - path: 尝试访问的文件路径（可能为空）
+//
+// 返回：
+//   - error: 原始错误或引导格式的错误信息
+func enhanceError(err error, toolName, path string) error {
+	if err == nil {
+		return nil
+	}
+	// 已是引导格式的错误直接透传，避免二次包装破坏精确引导。
+	if strings.Contains(err.Error(), "下一步我应该") {
+		return err
+	}
+	if path != "" && errors.Is(err, os.ErrNotExist) {
+		return enhanceFileError(err, path)
+	}
+	// 超出预知范围的兜底：直接返回原始错误，不做任何包装、不给指引。
+	// 原因：未知错误无法预知解决方案，任何「请重试」式话术都会诱导
+	// （尤其是小模型）陷入反复重试的死循环；工具名已由执行结果携带，
+	// 因此原样返回是更安全的选择。
+	return err
 }
 
 // enhanceFileError 增强文件相关错误信息。
-// 当错误是 os.ErrNotExist（文件不存在）时，会在错误消息中添加相似路径建议，
-// 帮助用户快速定位可能的正确路径。
+// 当错误是 os.ErrNotExist（文件不存在）时，将错误改写为第一人称引导格式，
+// 并在存在相似路径时附加候选建议，帮助模型快速定位可能的正确路径。
 //
 // 参数：
 //   - err: 原始错误
 //   - path: 尝试访问的文件路径
 //
 // 返回：
-//   - error: 增强后的错误信息（可能包含路径建议）
+//   - error: 引导格式的错误信息（可能包含相似路径建议）
 func enhanceFileError(err error, path string) error {
 	if path == "" || !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// 复用 GuideReadFileNotFound 的引导文案（单一文案来源，避免双套内容漂移）。
 	dir := filepath.Dir(path)
 	suggestions := findSimilarPaths(dir, filepath.Base(path))
+	guide := GuideReadFileNotFound(path)
 	if len(suggestions) == 0 {
-		return fmt.Errorf("%w\n未找到文件: %s", err, path)
+		return fmt.Errorf("%s（原始错误：%w）", guide, err)
 	}
-	return fmt.Errorf("%w\n未找到文件: %s\n\n您是不是要找以下其中一个?\n%s",
-		err, path, strings.Join(suggestions, "\n"))
+	return fmt.Errorf("%s（原始错误：%w）\n\n您是不是要找以下其中一个?\n%s",
+		guide, err, strings.Join(suggestions, "\n"))
 }
 
 // extractPath 从参数映射中提取文件路径。

@@ -69,7 +69,7 @@ func isCriticalEvent(eventType ReactEventType) bool {
 		ThinkingDelta, ContentDelta, ThinkingDone,
 		ToolExecStart, ToolExecEnd, ToolUseDelta,
 		FinalAnswer, TaskSummary,
-		Error, MaxTurnsReached, LLMTimeout,
+		Error, MaxTurnsReached, LLMTimeout, LLMCancelled,
 		SubtaskSpawned, SubtaskCompleted:
 		return true
 	}

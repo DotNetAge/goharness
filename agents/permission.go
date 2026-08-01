@@ -16,7 +16,7 @@ import (
 )
 
 // securityLevelString 将 events.SecurityLevel 转换为稳定、可读的字符串
-//（"safe" / "sensitive" / "high_risk"），便于存储在 session.PendingPermission 上。
+// （"safe" / "sensitive" / "high_risk"），便于存储在 session.PendingPermission 上。
 // 字符串形式比原始 int 更利于人工审计。
 func securityLevelString(level events.SecurityLevel) string {
 	switch level {
@@ -162,7 +162,7 @@ func (rt *Runtime) resolvePermissionMagicWord(
 // 返回要存储的条目（例如 bash 的基础命令名、write/edit 的解析后文件路径、
 // run_script 的脚本路径），如果无法推导出有意义条目则返回 ""（此时不做白名单处理）。
 func (rt *Runtime) buildWhitelistEntry(pending *session.PendingPermission, sess *session.Session) string {
-	switch pending.ToolName {
+	switch strings.ToLower(pending.ToolName) {
 	case "bash":
 		cmd, _ := pending.Arguments["command"].(string)
 		if cmd == "" {
@@ -173,19 +173,42 @@ func (rt *Runtime) buildWhitelistEntry(pending *session.PendingPermission, sess 
 			return ""
 		}
 		return parts[0]
-	case "write", "edit":
-		path, _ := pending.Arguments["filePath"].(string)
-		if path == "" {
+	case "write", "edit", "read":
+		// 兼容两种 schema 键：Write/Read 用 filePath，Edit 用 file_path。
+		// GetParam 的变体生成是 snake_case→camelCase 单向的，无法从 filePath
+		// 反向推导出 file_path，故需显式检查两个键。
+		rawPath, ok := tools.GetParam(pending.Arguments, "filePath")
+		if !ok {
+			rawPath, ok = tools.GetParam(pending.Arguments, "file_path")
+		}
+		path, _ := rawPath.(string)
+		if !ok || path == "" {
+			return ""
+		}
+		resolved, _ := tools.ResolveTargetPath(path, sess.ProjectDir(), sess.SessionDir())
+		return resolved
+	case "ls":
+		rawPath, ok := tools.GetParam(pending.Arguments, "path")
+		path, _ := rawPath.(string)
+		if !ok || path == "" {
 			return ""
 		}
 		resolved, _ := tools.ResolveTargetPath(path, sess.ProjectDir(), sess.SessionDir())
 		return resolved
 	case "run_script":
-		cmd, _ := pending.Arguments["command"].(string)
-		if cmd == "" {
+		rawCmd, ok := tools.GetParam(pending.Arguments, "command")
+		cmd, _ := rawCmd.(string)
+		if !ok || cmd == "" {
 			return ""
 		}
-		workingDir, _ := pending.Arguments["working_dir"].(string)
+		rawWD, _ := tools.GetParam(pending.Arguments, "working_dir")
+		workingDir, _ := rawWD.(string)
+		if workingDir == "" {
+			workingDir = "."
+		}
+		// 与 RunScript.Grant 一致：基于项目目录将工作目录解析为绝对路径，
+		// 否则相对 working_dir 下白名单条目永不命中绝对路径前缀匹配。
+		workingDir, _ = tools.ResolveTargetPath(workingDir, sess.ProjectDir(), sess.SessionDir())
 		if workingDir == "" {
 			workingDir = "."
 		}
@@ -202,7 +225,11 @@ func (rt *Runtime) buildWhitelistEntry(pending *session.PendingPermission, sess 
 		if !filepath.IsAbs(scriptCandidate) {
 			scriptCandidate = filepath.Join(workingDir, scriptCandidate)
 		}
-		return filepath.Clean(scriptCandidate)
+		absScript, err := filepath.Abs(scriptCandidate)
+		if err != nil {
+			return ""
+		}
+		return filepath.Clean(absScript)
 	default:
 		return ""
 	}
@@ -229,34 +256,82 @@ func (rt *Runtime) executePendingAndAppend(
 		ToolName: pending.ToolName,
 		Params:   pending.Arguments,
 	})
-	execResult, execErr := toolExec.Execute(execCtx, pending.ToolName, pending.Arguments)
-	duration := time.Since(start)
 
-	var content string
-	if execErr != nil {
-		content = fmt.Sprintf("[%s] 错误: %s", pending.ToolName, execErr.Error())
-	} else if execResult != nil {
-		if execResult.Error != nil {
-			content = fmt.Sprintf("[%s] 错误: %s", pending.ToolName, execResult.Error.Error())
-		} else if execResult.Result != "" {
-			content = execResult.Result
-		} else {
-			content = fmt.Sprintf("[%s] 返回: (空结果)", pending.ToolName)
-		}
-	} else {
-		content = fmt.Sprintf("[%s] 返回: (无结果)", pending.ToolName)
+	tr := hooks.ToolResult{
+		ToolName:   pending.ToolName,
+		ToolCallID: pending.ToolCallID,
+		Duration:   time.Since(start),
 	}
+	beforeProduced := false
+
+	// ToolHook.Before 链（与正常执行路径 executeSingleTool 一致）。
+	// 授权后真正执行的工具同样必须经过 Before 链——例如 FileModifyHook 在
+	// Write/Edit 执行前进行文件备份与修改追踪，若跳过会导致备份被静默遗漏。
+	for _, h := range rt.toolHooks {
+		hr := h.Before(b.session.ID(), pending.ToolName, pending.Arguments)
+		if hr.SkipWithResult != nil {
+			tr = *hr.SkipWithResult
+			tr.ToolCallID = pending.ToolCallID
+			tr.Duration = time.Since(start)
+			beforeProduced = true
+			break
+		}
+		if hr.Abort {
+			tr = failedToolResult(pending.ToolName, pending.ToolCallID, hr.AbortReason, start)
+			beforeProduced = true
+			break
+		}
+		if hr.Error != nil {
+			tr = failedToolResult(pending.ToolName, pending.ToolCallID, hr.Error.Error(), start)
+			beforeProduced = true
+			break
+		}
+	}
+
+	if !beforeProduced {
+		execResult, execErr := toolExec.Execute(execCtx, pending.ToolName, pending.Arguments)
+		tr.Duration = time.Since(start)
+		if execErr != nil {
+			tr.Error = execErr.Error()
+			tr.Success = false
+		} else if execResult != nil {
+			tr.Result = execResult.Result
+			tr.Images = execResult.Images
+			tr.Success = execResult.Error == nil
+			if execResult.Error != nil {
+				tr.Error = execResult.Error.Error()
+			}
+		}
+
+		// ToolHook.After 链（与正常执行路径 executeSingleTool 一致）。
+		// 授权后真正执行的工具同样可能返回图片（例如白名单外文件的图片读取），
+		// 必须经 ImageHook 转换为 ImageBlocks，否则图片会在授权路径上被静默丢弃。
+		for _, h := range rt.toolHooks {
+			hr := h.After(&tr)
+			if hr.Abort {
+				tr = failedToolResult(pending.ToolName, pending.ToolCallID, hr.AbortReason, start)
+				break
+			}
+			if hr.Error != nil {
+				tr = failedToolResult(pending.ToolName, pending.ToolCallID, hr.Error.Error(), start)
+				break
+			}
+		}
+	}
+
+	// 与正常执行路径共用 formatToolResult，保证错误前缀、空结果引导等文案完全一致。
+	content := formatToolResult(tr)
 	logger.Info("工具执行结果 (Allow)",
 		"tool", pending.ToolName,
 		"tool_call_id", pending.ToolCallID,
-		"duration_ms", duration.Milliseconds(),
+		"duration_ms", tr.Duration.Milliseconds(),
 		"session", b.session.ID(),
 	)
 	emit(events.ToolExecEnd, events.ToolExecEndData{
 		ToolName:   pending.ToolName,
 		ToolCallID: pending.ToolCallID,
-		Duration:   duration,
-		Success:    execErr == nil,
+		Duration:   tr.Duration,
+		Success:    tr.Success,
 		Result:     content,
 	})
 
@@ -269,21 +344,67 @@ func (rt *Runtime) executePendingAndAppend(
 		b.resultErr = fmt.Errorf("追加授权工具结果失败: %w", err)
 		b.resultTerminationReason = "error"
 	}
+
+	// 图片消息：ImageHook 已把工具返回的图片转换为图片内容块。
+	// 与正常执行路径一致，图片以 image_url 消息（user 角色）进入上下文，
+	// 紧随对应的工具结果之后，而非混入工具结果的文本内容。
+	if len(tr.ImageBlocks) > 0 {
+		imgMsg := session.Message{
+			Role: "user", Timestamp: time.Now().Unix(),
+			Content: "以下是工具 " + pending.ToolName + " 读取到的图片内容（视觉消息），请结合图片进行分析：",
+			Images:  tr.ImageBlocks,
+		}
+		if err := b.session.Append(ctx, imgMsg); err != nil {
+			logger.Error("追加授权工具图片消息失败", err, "session", b.session.ID(), "tool_call_id", pending.ToolCallID)
+			emit(events.Error, fmt.Sprintf("追加授权工具图片消息失败: %v", err))
+			b.resultErr = fmt.Errorf("追加授权工具图片消息失败: %w", err)
+			b.resultTerminationReason = "error"
+			return
+		}
+		logger.Info("图片已作为视觉消息追加（授权路径）",
+			"session", b.session.ID(), "tool", pending.ToolName, "images", len(tr.ImageBlocks))
+	}
 }
 
-// appendDeniedResult 合成一个"权限被拒绝"的工具结果，并连同原始 tool_call_id
-// 一起追加到会话。大模型永远只看到这条结果，而看不到"用户拒绝"的中间状态，
-// 因此它可以自行调整方案（换一条路、询问用户等）。
+// cleanDeniedReason 清理授权被拒时给模型的授权原因：
+// 剥离魔法词使用说明（用户已明确拒绝，无需再提示授权方式）与越权说明，
+// 仅保留"为什么需要授权"的核心描述（如越界路径），并截断超长部分，
+// 避免重复陈述、泄露授权方式浪费 Token。
+func cleanDeniedReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if i := strings.Index(reason, "（可用 Permission"); i >= 0 {
+		reason = reason[:i]
+	}
+	if i := strings.Index(reason, "。这是越权操作"); i >= 0 {
+		reason = reason[:i]
+	}
+	if i := strings.Index(reason, "\n"); i >= 0 {
+		reason = reason[:i]
+	}
+	reason = strings.TrimSpace(reason)
+	return tools.TruncateString(reason, 120)
+}
+
+// appendDeniedResult 合成一个引导式的"权限被拒绝"工具结果，并连同原始 tool_call_id
+// 一起追加到会话。大模型永远只看到这条结果，而看不到"用户拒绝"的中间状态。
+// 文案采用第一人称引导格式（我做了什么 → 原因 → 下一步我应该怎么做）：
+// 用户明确表示不允许授权，模型应据此调整执行思路（换路径/换工具），
+// 而不是继续尝试被拒的方式。
 func (rt *Runtime) appendDeniedResult(
 	ctx context.Context,
 	b *AskBuilder,
 	pending *session.PendingPermission,
 ) {
-	reason := pending.Reason
+	reason := cleanDeniedReason(pending.Reason)
 	if reason == "" {
-		reason = "用户拒绝"
+		reason = "未给出具体原因"
 	}
-	content := fmt.Sprintf("权限被拒绝：%s", reason)
+	content := fmt.Sprintf(
+		"我尝试执行需要授权的操作（工具 %s，原因：%s），但用户明确表示不允许授权。\n"+
+			"原因：该操作被用户拒绝。\n"+
+			"下一步我应该：考虑其它的执行路径或工具来完成此工作，而不是继续尝试该方式。",
+		pending.ToolName, reason,
+	)
 	if err := b.session.Append(ctx, session.Message{
 		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 		ToolCallID: pending.ToolCallID,

@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"strings"
+
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
@@ -37,6 +39,18 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 		h.Logger.Debug("MemoryThoughtHook: skipped (memory nil or agent empty)",
 			"session_id", sessionID, "memory_nil", h.memory == nil, "agent", input.AgentName)
 		return hooks.HookResult{}
+	}
+
+	// 先检查 system prompt 是否已注入过记忆内容，避免重复查询和注入
+	if len(input.SystemPromptSections) > 0 {
+		last := &input.SystemPromptSections[len(input.SystemPromptSections)-1]
+		for _, block := range last.Content {
+			if strings.HasPrefix(block.Text, "## 对话记忆") {
+				h.Logger.Debug("MemoryThoughtHook: memory already injected, skipping",
+					"session_id", sessionID, "agent", input.AgentName)
+				return hooks.HookResult{}
+			}
+		}
 	}
 
 	// 通过类型断言检查是否支持 RetrieveLatest（时间倒序，不依赖向量检索）
@@ -99,16 +113,9 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	if len(input.SystemPromptSections) > 0 {
 		last := &input.SystemPromptSections[len(input.SystemPromptSections)-1]
 		memText := "## 对话记忆\n\n" + content
-		if len(last.Content) > 0 {
-			last.Content = append(last.Content, gochatcore.ContentBlock{Type: "text", Text: memText})
-		} else {
-			last.Content = []gochatcore.ContentBlock{{Type: "text", Text: memText}}
-		}
+		last.Content = append(last.Content, gochatcore.ContentBlock{Type: "text", Text: memText})
 		h.Logger.Info("MemoryThoughtHook: injected memory into system prompt",
 			"session_id", sessionID, "agent", input.AgentName, "records", len(records), "mem_bytes", len(memText))
-	} else {
-		h.Logger.Debug("MemoryThoughtHook: SystemPromptSections is empty, cannot inject memory",
-			"session_id", sessionID, "agent", input.AgentName)
 	}
 	return hooks.HookResult{}
 }

@@ -89,21 +89,18 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
 		for _, dir := range w.whitelist {
-			if strings.HasPrefix(resolved, dir) {
+			if pathWithinScope(dir, resolved) {
 				return true, ""
 			}
 		}
 		if tc.SessionWhitelist != nil {
 			for _, allowed := range tc.SessionWhitelist.Write {
-				if strings.HasPrefix(resolved, allowed) {
+				if pathWithinScope(allowed, resolved) {
 					return true, ""
 				}
 			}
 		}
-		return false, fmt.Sprintf(
-			"写入 %q 解析为 %q，这在工作区之外。\n%s",
-			filePath, resolved, err.Error(),
-		)
+		return false, GuideWriteOutsideWorkspace(filePath, resolved, err)
 	}
 	return true, ""
 }
@@ -147,12 +144,12 @@ func (w *Write) Info() *ToolInfo {
 //   - *WriteResult: 结构化的写入结果（见 content_types.go）
 //   - error: 参数错误、路径验证失败、读前检查失败或 I/O 错误
 func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error) {
-	filePath, err := ValidateRequiredString(params, "filePath")
+	filePath, err := ValidateRequiredString("Write", params, "filePath")
 	if err != nil {
 		return nil, err
 	}
 
-	content, err := ValidateRequiredString(params, "content")
+	content, err := ValidateRequiredString("Write", params, "content")
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +174,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 	// 确保父目录存在
 	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("创建目录失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建父目录", dir, err), err)
 	}
 
 	// 判断写入模式
@@ -216,17 +213,17 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		// 写入（追加）
 		file, openErr := os.OpenFile(resolvedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if openErr != nil {
-			return nil, fmt.Errorf("打开文件以追加失败：%w", openErr)
+			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("打开文件以追加内容", resolvedPath, openErr), openErr)
 		}
 		bytesWritten, writeErr := file.WriteString(content)
 		file.Close()
 		if writeErr != nil {
-			return nil, fmt.Errorf("写入内容失败：%w", writeErr)
+			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("向文件追加内容", resolvedPath, writeErr), writeErr)
 		}
 
 		info, statErr := os.Stat(resolvedPath)
 		if statErr != nil {
-			return nil, fmt.Errorf("获取文件状态失败：%w", statErr)
+			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("获取文件状态", resolvedPath, statErr), statErr)
 		}
 
 		logger.Info("file appended",
@@ -275,12 +272,12 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 			"path", resolvedPath,
 		)
 	} else {
-		return nil, fmt.Errorf("无法访问文件 %s: %w", resolvedPath, statErr)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("访问", resolvedPath, statErr), statErr)
 	}
 
 	// 执行写入
 	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
-		return nil, fmt.Errorf("写入文件失败：%w", err)
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 	}
 
 	// 写入后清除 StaleState（保证后续操作重新读取）

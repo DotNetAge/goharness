@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -26,8 +25,15 @@ var (
 const defaultBashTimeoutMs = 30000
 
 // maxBashOutputSize 是 Bash 输出的最大字符数（stdout 和 stderr 分别计算）。
-// 超过此限制的输出会被截断，防止上下文爆炸。
+// 超过此限制的输出会被截断，并在结果中标记截断状态与缩小输出的指引，
+// 避免无节制的输出进入上下文。
 const maxBashOutputSize = 30000
+
+// maxBashCommandLength 是 Bash 命令的最大字符数。
+// 正常命令（含复杂管道与脚本）极少超过 16K 字符；超过此长度的命令
+// 极大概率是通过 cat heredoc、echo 重定向等方式写入文件内容，
+// 此类操作应使用 Write / Edit 工具完成，因此直接拒绝并引导。
+const maxBashCommandLength = 16000
 
 // BashTool 实现了 Shell 命令执行工具。
 // 提供安全的命令执行环境，具有以下安全特性：
@@ -110,7 +116,13 @@ func (t *BashTool) Info() *ToolInfo {
 
 - 如果命令将创建新目录或文件，先用 Ls 验证父目录存在。
 - 始终用双引号引用包含空格的文件路径。
-- 使用 working_dir 在特定目录中运行命令。`,
+- 使用 working_dir 在特定目录中运行命令。
+
+**输出限制**：stdout 和 stderr 各最多 30000 字符，超出部分会被截断，并在结果中标明（stdout_truncated / stderr_truncated）。
+如需查看完整输出或预期输出较大，请主动用管道缩小范围，例如 <cmd | head -n 100>、<cmd | tail -n 100>、
+<cmd | grep 关键词>、<cmd | jq .[0:10]>，或将输出重定向到文件后使用 Read 工具分页读取。
+
+**命令限制**：单个命令最长 16000 字符，超长命令会被拒绝。写入或修改文件请使用 Write / Edit 工具（不要用 cat heredoc 或 echo 重定向绕过），复杂逻辑请将命令拆分后分步执行。`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: events.LevelHighRisk,
 		Parameters: []Parameter{
@@ -140,7 +152,7 @@ func (t *BashTool) Info() *ToolInfo {
 //
 // 执行流程：
 //  1. 验证命令参数（必须为非空字符串）
-//  2. 检查命令长度限制（最大 100000 字符）
+//  2. 检查命令长度限制（最大 16000 字符）
 //  3. 危险命令检测（阻止破坏性操作）
 //  4. 白名单检查（如果启用）
 //  5. 解析超时参数（默认 30 秒，最小 1 秒，最大 5 分钟）
@@ -255,33 +267,37 @@ func GetParam(params map[string]any, key string) (any, bool) {
 func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	rawCommand, ok := GetParam(params, "command")
 	if !ok {
-		return nil, fmt.Errorf("缺少 command 参数")
+		return nil, fmt.Errorf("%s", GuideMissingParam("Bash", "command"))
 	}
 	command, ok := rawCommand.(string)
 	if !ok {
-		return nil, fmt.Errorf("command 参数必须是字符串类型")
+		return nil, fmt.Errorf("%s", GuideWrongParamType("Bash", "command", "string", rawCommand))
 	}
 
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return nil, fmt.Errorf("缺少 command 参数")
+		return nil, fmt.Errorf("%s", GuideMissingParam("Bash", "command"))
 	}
 
 	logger := getLogger(ctx)
 	sessionID := ExtractSessionID(ctx)
 
-	if len(command) > 100000 {
-		logger.Warn("command 长度超过 100K 字符，拒绝执行",
+	if len(command) > maxBashCommandLength {
+		logger.Warn("command 长度超过限制，拒绝执行",
 			"length", len(command),
-			"max", 100000,
+			"max", maxBashCommandLength,
 		)
-		return nil, fmt.Errorf("command 长度超过 100K 字符，拒绝执行")
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试执行长度为 %d 字符的命令，超过 %d 字符的上限", len(command), maxBashCommandLength),
+			"命令过长，极大概率是通过 cat heredoc、echo 重定向等方式写入文件内容，此类操作应使用专用工具完成",
+			"如需写入文件内容请使用 Write 工具，修改文件请使用 Edit 工具（不要用 cat heredoc 或 echo 重定向绕过）；如需执行复杂逻辑，请将命令拆分后分步执行",
+		))
 	}
 
 	if blocked := detectDangerousCommand(command); blocked != "" {
 		return map[string]any{
 			"stdout":      "",
-			"stderr":      fmt.Sprintf("BLOCKED: %s", blocked),
+			"stderr":      fmt.Sprintf("已阻止：%s", blocked),
 			"exit_code":   126,
 			"interrupted": false,
 			"success":     false,
@@ -336,7 +352,13 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 		}
 	}
 	if wd != "" {
-		cmd.Dir = filepath.Clean(wd)
+		// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
+		// 修复前 "~/workspaces" 直接 filepath.Clean 不会展开 ~，导致目录不存在。
+		var projectDir string
+		if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+			projectDir = tc.Session.ProjectDir()
+		}
+		cmd.Dir, _ = ResolveTargetPath(wd, projectDir, "")
 	} else {
 		// 默认以 ProjectDir 为工作目录
 		if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
@@ -374,16 +396,25 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 			result["exit_code"] = exitError.ExitCode()
 		} else if timeoutCtx.Err() == context.DeadlineExceeded {
 			result["interrupted"] = true
-			stderrStr += "\n命令执行超时。"
-			result["stderr"] = stderrStr
+			// 统一写入 stderrStr 变量，避免后续截断覆盖。
+			stderrStr += "\n命令执行超时。请考虑缩短命令执行时间（缩小处理范围或使用更精确的命令），或将长任务放入后台执行。"
 		} else {
-			result["stderr"] = stderrStr + "\n" + err.Error()
+			// 统一写入 stderrStr 变量，避免后续截断覆盖 err.Error()。
+			stderrStr += "\n" + BuildGuide(
+				fmt.Sprintf("尝试执行命令 %q，但命令未能启动", command),
+				WithErrDetail("命令无法启动（解释器/可执行文件不存在或不可执行）", err),
+				"确认命令引用的可执行文件存在且可执行（可用 which 验证），或检查命令路径是否拼写正确",
+			)
 			result["exit_code"] = -1
 		}
 	}
 
-	result["stdout"] = truncateOutput(stdoutStr, maxBashOutputSize)
-	result["stderr"] = truncateOutput(stderrStr, maxBashOutputSize)
+	var stdoutTruncated, stderrTruncated bool
+	result["stdout"], stdoutTruncated = truncateOutput(stdoutStr, maxBashOutputSize)
+	result["stderr"], stderrTruncated = truncateOutput(stderrStr, maxBashOutputSize)
+	// 结构化标记截断状态，供 LLM 判断输出是否完整。
+	result["stdout_truncated"] = stdoutTruncated
+	result["stderr_truncated"] = stderrTruncated
 
 	success := result["exit_code"] == 0
 	result["success"] = success
@@ -477,7 +508,8 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 }
 
 // truncateOutput 截断字符串到指定字符数（按 rune 计算）。
-// 如果字符串超过限制，会在末尾附加截断提示信息。
+// 如果字符串超过限制，会保留前 maxRunes 个字符，并在末尾追加
+// 包含输出总量与缩小输出范围的指引信息。
 //
 // 参数：
 //   - s: 原始字符串
@@ -485,12 +517,19 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 //
 // 返回：
 //   - string: 截断后的字符串（如果未超限则返回原字符串）
-func truncateOutput(s string, maxRunes int) string {
+//   - bool: 是否发生了截断
+func truncateOutput(s string, maxRunes int) (string, bool) {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
-		return s
+		return s, false
 	}
-	return string(runes[:maxRunes]) + "\n... [输出因大小限制被截断] ..."
+	shown := string(runes[:maxRunes])
+	hint := fmt.Sprintf(
+		"\n... [输出被截断：共 %d 个字符，仅显示前 %d 个字符。"+
+			"请使用管道缩小输出范围后重试（如 | head -n 100、| tail -n 100、| grep '关键词'），"+
+			"或将输出重定向到文件后使用 Read 工具分页读取。] ...",
+		len(runes), maxRunes)
+	return shown + hint, true
 }
 
 // truncateForLog 截断字符串用于安全日志记录。

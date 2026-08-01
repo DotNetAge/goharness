@@ -67,7 +67,7 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 	rawName, _ := GetParam(params, "name")
 	name, ok := rawName.(string)
 	if !ok || name == "" {
-		return nil, fmt.Errorf("技能名称不能为空")
+		return nil, fmt.Errorf("%s", GuideMissingParam("Skill", "name"))
 	}
 
 	// 去重检查：已加载过则返回简短提示
@@ -82,7 +82,7 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 
 	skill, err := t.lookup(name)
 	if err != nil {
-		return nil, fmt.Errorf("技能 %q 未找到：%w", name, err)
+		return nil, fmt.Errorf("%s", GuideNotFound("技能", name, "检查技能名称拼写，从可用能力列表中选取正确的技能名称后重新调用；若该技能确实不存在，应告知用户"))
 	}
 
 	result := map[string]any{
@@ -92,7 +92,7 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 		"loaded":     true,
 	}
 
-	// Include allowed_tools so ToolActivationHook can auto-activate them.
+	// Include allowed_tools for post-skill tool activation.
 	if skill.AllowedTools != "" {
 		result["allowed_tools"] = strings.Fields(skill.AllowedTools)
 	}

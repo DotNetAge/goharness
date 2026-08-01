@@ -253,9 +253,9 @@ func TestIsImageFile(t *testing.T) {
 		{"/path/image.gif", true},
 		{"/path/image.bmp", true},
 		{"/path/image.webp", true},
-		{"/path/image.PNG", true},   // 大小写不敏感
+		{"/path/image.PNG", true}, // 大小写不敏感
 		{"/path/image.JPG", true},
-		{"/path/image.svg", false},  // SVG 通过 isSVGFile 检查
+		{"/path/image.svg", false}, // SVG 通过 isSVGFile 检查
 		{"/path/file.go", false},
 		{"/path/file.txt", false},
 	}
@@ -311,9 +311,9 @@ func TestDefaultQuality(t *testing.T) {
 		size     int64
 		expected int
 	}{
-		{500 * 1024, 90},        // < 1MB → 90
-		{2 * 1024 * 1024, 85},   // 1-5MB → 85
-		{10 * 1024 * 1024, 70},  // > 5MB → 70
+		{500 * 1024, 90},       // < 1MB → 90
+		{2 * 1024 * 1024, 85},  // 1-5MB → 85
+		{10 * 1024 * 1024, 70}, // > 5MB → 70
 	}
 	for _, tt := range tests {
 		got := defaultQuality(tt.size)
@@ -322,8 +322,6 @@ func TestDefaultQuality(t *testing.T) {
 		}
 	}
 }
-
-
 
 // ============================================================
 // read_limits_test.go — 配置优先级链
@@ -360,18 +358,17 @@ func TestDynamicDefaultLines(t *testing.T) {
 func TestSuggestionConstants(t *testing.T) {
 	// 验证常量不为空
 	constants := map[string]string{
-		"SuggestionReadComplete":      SuggestionReadComplete,
-		"SuggestionHasMoreLines":      SuggestionHasMoreLines,
-		"SuggestionTruncatedByToken":  SuggestionTruncatedByToken,
-		"SuggestionFileTooLarge":      SuggestionFileTooLarge,
-		"SuggestionContentUnchanged":  SuggestionContentUnchanged,
-		"SuggestionDocConverted":      SuggestionDocConverted,
-		"SuggestionImageRead":         SuggestionImageRead,
-		"SuggestionImageFailed":       SuggestionImageFailed,
-		"SuggestionEmptyFile":         SuggestionEmptyFile,
-		"SuggestionPermissionDenied":  SuggestionPermissionDenied,
-		"SuggestionIsDirectory":       SuggestionIsDirectory,
-		"SuggestionFileNotFound":      SuggestionFileNotFound,
+		"SuggestionReadComplete":     SuggestionReadComplete,
+		"SuggestionHasMoreLines":     SuggestionHasMoreLines,
+		"SuggestionFileTooLarge":     SuggestionFileTooLarge,
+		"SuggestionContentUnchanged": SuggestionContentUnchanged,
+		"SuggestionDocConverted":     SuggestionDocConverted,
+		"SuggestionImageRead":        SuggestionImageRead,
+		"SuggestionImageFailed":      SuggestionImageFailed,
+		"SuggestionEmptyFile":        SuggestionEmptyFile,
+		"SuggestionPermissionDenied": SuggestionPermissionDenied,
+		"SuggestionIsDirectory":      SuggestionIsDirectory,
+		"SuggestionFileNotFound":     SuggestionFileNotFound,
 	}
 	for name, val := range constants {
 		if val == "" {
@@ -492,9 +489,9 @@ func TestRead_NegativeCache(t *testing.T) {
 
 func TestRead_HasMoreLines(t *testing.T) {
 	read, dir := tempReadTool(t, &FileReadingLimits{
-		MaxSizeBytes: 256 * 1024,
-		MaxTokens:    25000,
-		DefaultLines: 10,
+		MaxSizeBytes:   256 * 1024,
+		MaxOutputChars: 75000,
+		DefaultLines:   10,
 	})
 	file := filepath.Join(dir, "multiline.txt")
 	lines := make([]string, 100)
@@ -564,35 +561,38 @@ func TestRead_SuggestionReadComplete(t *testing.T) {
 	}
 }
 
-func TestRead_TokenTruncation(t *testing.T) {
+func TestRead_OverBudget_ReturnsError(t *testing.T) {
 	read, dir := tempReadTool(t, &FileReadingLimits{
-		MaxSizeBytes: 10 * 1024 * 1024, // 10MB
-		MaxTokens:    100,               // 非常低的 token 预算
-		DefaultLines: 5000,
+		MaxSizeBytes:   10 * 1024 * 1024, // 10MB
+		MaxOutputChars: 300,              // 极低字符预算
+		DefaultLines:   5000,
 	})
 	file := filepath.Join(dir, "large.txt")
-	// 生成足够大的内容以触发 Token 截断
+	// 生成足够大的内容以触发输出预算检查
 	var builder strings.Builder
 	for i := 0; i < 5000; i++ {
-		builder.WriteString(fmt.Sprintf("this is a very long line of text that will help trigger the token truncation mechanism %d\n", i))
+		builder.WriteString(fmt.Sprintf("this is a very long line of text that will help trigger the output budget check %d\n", i))
 	}
 	os.WriteFile(file, []byte(builder.String()), 0644)
 
-	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+	if err == nil {
+		t.Fatal("超过输出预算应返回错误")
 	}
-	rr := resultI.(*ReadResult)
-	if rr.Data.Suggestion != SuggestionTruncatedByToken {
-		t.Errorf("expected Suggestion=%q, got %q", SuggestionTruncatedByToken, rr.Data.Suggestion)
+	// 错误信息应引导使用 offset/limit 分页精读，并包含文件总行数
+	if !strings.Contains(err.Error(), "offset") || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("错误信息应引导使用 offset/limit，实际=%v", err)
+	}
+	if !strings.Contains(err.Error(), "5000") {
+		t.Errorf("错误信息应包含文件总行数，实际=%v", err)
 	}
 }
 
 func TestRead_FileTooLarge(t *testing.T) {
 	read, dir := tempReadTool(t, &FileReadingLimits{
-		MaxSizeBytes: 100, // 最大 100 字节
-		MaxTokens:    25000,
-		DefaultLines: 500,
+		MaxSizeBytes:   100, // 最大 100 字节
+		MaxOutputChars: 75000,
+		DefaultLines:   500,
 	})
 	file := filepath.Join(dir, "big.txt")
 	// 创建超过限制的文件

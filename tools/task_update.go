@@ -42,20 +42,20 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	rawTaskID, _ := GetParam(params, "task_id")
 	taskID, _ := rawTaskID.(string)
 	if taskID == "" {
-		return nil, fmt.Errorf("task_id is required")
+		return nil, fmt.Errorf("%s", GuideMissingParam("TaskUpdate", "task_id"))
 	}
 
 	tc := GetToolContext(ctx)
 	if tc == nil || tc.Session == nil || tc.Session.ID() == "" {
-		return nil, fmt.Errorf("TaskUpdate 需要包含 SessionID 的 ToolContext")
+		return nil, fmt.Errorf("%s", GuideMissingContext("TaskUpdate", "包含 SessionID 的 ToolContext"))
 	}
 
 	task, err := GetTask(ctx, tc.Session.ID(), taskID)
 	if err != nil {
-		return nil, fmt.Errorf("获取任务失败：%w", err)
+		return nil, err
 	}
 	if task == nil {
-		return nil, fmt.Errorf("任务 %q 未找到", taskID)
+		return nil, fmt.Errorf("%s", GuideNotFound("任务", taskID, "使用 TaskCreate 创建该任务，或用 TaskList 查看现有任务 ID 后重试"))
 	}
 
 	updated := false
@@ -106,7 +106,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		newStatus := TaskStatus(statusStr)
 		if newStatus != task.Status {
 			if !ValidTaskTransition(task.Status, newStatus) {
-				return nil, fmt.Errorf("invalid status transition: %s → %s", task.Status, newStatus)
+				return nil, fmt.Errorf("%s", GuideInvalidValue("TaskUpdate", "status", statusStr, "检查任务当前状态，使用合法的状态流转（pending → in_progress → completed / cancelled）后重试"))
 			}
 			task.Status = newStatus
 			updated = true
@@ -119,7 +119,11 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		for _, raw := range rawBlocks {
 			if blockID, ok := raw.(string); ok && blockID != "" {
 				if canReach(ctx, tc.Session.ID(), blockID, taskID) {
-					return nil, fmt.Errorf("添加阻塞 %q 将创建循环依赖", blockID)
+					return nil, fmt.Errorf("%s", BuildGuide(
+						fmt.Sprintf("尝试为任务 %q 添加阻塞任务 %q", taskID, blockID),
+						fmt.Sprintf("该操作会形成循环依赖：%q 已直接或间接依赖 %q，任务将永远无法完成", blockID, taskID),
+						"不要添加会形成循环的依赖关系；检查现有 blocks/blocked_by，调整依赖方向后重试",
+					))
 				}
 				if !slices.Contains(task.Blocks, blockID) {
 					task.Blocks = append(task.Blocks, blockID)
@@ -145,7 +149,11 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		for _, raw := range rawBlockedBy {
 			if depID, ok := raw.(string); ok && depID != "" {
 				if canReach(ctx, tc.Session.ID(), taskID, depID) {
-					return nil, fmt.Errorf("添加被阻塞 %q 将创建循环依赖", depID)
+					return nil, fmt.Errorf("%s", BuildGuide(
+						fmt.Sprintf("尝试为任务 %q 添加被阻塞任务 %q", taskID, depID),
+						fmt.Sprintf("该操作会形成循环依赖：%q 已直接或间接阻塞 %q，任务将永远无法完成", depID, taskID),
+						"不要添加会形成循环的依赖关系；检查现有 blocks/blocked_by，调整依赖方向后重试",
+					))
 				}
 				if !slices.Contains(task.BlockedBy, depID) {
 					task.BlockedBy = append(task.BlockedBy, depID)
@@ -173,7 +181,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 	}
 
 	if err := UpdateTask(ctx, tc.Session.ID(), task); err != nil {
-		return nil, fmt.Errorf("更新任务失败：%w", err)
+		return nil, err
 	}
 
 	result := map[string]any{

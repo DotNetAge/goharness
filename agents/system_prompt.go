@@ -8,9 +8,17 @@ import (
 	"github.com/DotNetAge/goharness/skill"
 )
 
-// defaultCompactWindowThreshold 是启用压缩内容占位符的默认窗口阈值（128K）。
-// 仅当模型上下文长度 <= 128K（即 maxWindowSize > 0）时才插入该占位符。
+// defaultCompactWindowThreshold 是 MicroCompact 启用区间的下界（128K）。
+// 低于此值的模型由 TryCompact 独占管理（80% 触发全量摘要清空），
+// 不需要 MicroCompact 的局部压缩。
 const defaultCompactWindowThreshold = 128 * 1024
+
+// microCompactMaxContextThreshold 是 MicroCompact 启用区间的上界（250K）。
+// 仅当 128K < ModelContextLength <= 250K 时调用 TryMicroCompact：
+//   - ≤128K：TryCompact 独占管理，无需 MicroCompact
+//   - 128K–250K：MicroCompact（45% 触发局部压缩）先于 TryCompact（80% 触发全量清空）执行
+//   - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
+const microCompactMaxContextThreshold = 250 * 1024
 
 // buildSystemPrompts 根据 Runtime 的注册表和会话状态构造系统提示词。
 // 它替代了旧 Reactor 中的 Prompt 结构体。
@@ -26,9 +34,8 @@ const defaultCompactWindowThreshold = 128 * 1024
 //  3. 行为规则 — 默认规则 + 自定义规则
 //  4. 搜索优先级 — 本地搜索与网络搜索的优先级说明
 //  5. 环境信息 — 会话 ID、工作目录等
-//  6. 工具目录 — 信息性描述；工具必须通过 ToolSelector 显式激活
-//  7. 压缩内容占位符 — 仅在 maxWindowSize > 0（ContextLength <= 128K）时插入
-//  8. 输出效率 — 简洁输出相关指令
+//  6. 压缩内容占位符 — 仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入
+//  7. 输出效率 — 简洁输出相关指令
 //
 // 最终合并为单条 system 消息，以集中大模型对系统规则的注意力。
 func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
@@ -87,17 +94,14 @@ func (rt *Runtime) buildSystemPrompts(sessionID string, s *session.Session) []go
 		ProjectDir: s.ProjectDir(),
 	}))
 
-	// 6. 工具目录（仅信息性展示）
-	sections = append(sections, buildToolCatalog(rt.toolReg))
-
-	// 7. 压缩内容占位符：仅在 MicroCompact 启用时插入。
-	//    ModelContextLength > 0 意味着模型 ContextLength <= 128K；
-	//    超长上下文模型不设置 ModelContextLength，不会插入该占位符。
-	if s.ModelContextLength() <= defaultCompactWindowThreshold {
+	// 6. 压缩内容占位符：仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入。
+	//    该占位符向 LLM 解释 [已压缩] 标记的格式和规则，
+	//    必须与 executor.go 中的 TryMicroCompact 调用保持同步。
+	if ctxLen := s.ModelContextLength(); ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold {
 		sections = append(sections, buildCompressedContent())
 	}
 
-	// 8. 输出效率
+	// 7. 输出效率
 	sections = append(sections, buildOutputEfficiency())
 
 	return []gochatcore.Message{gochatcore.NewSystemMessage(strings.Join(sections, "\n\n"))}
@@ -153,7 +157,26 @@ func (rt *Runtime) assembleMessages(systemSections []gochatcore.Message, history
 		case "system":
 			msgs = append(msgs, gochatcore.NewSystemMessage(m.Content))
 		case "user":
-			msgs = append(msgs, gochatcore.NewUserMessage(m.Content))
+			// 携带图片的用户消息 → 组装为多模态消息（文本 + image_url 内容块）。
+			// 图片以 image_url 形式进入上下文，与文本内容分离。
+			if len(m.Images) > 0 {
+				msg := gochatcore.Message{Role: "user"}
+				if m.Content != "" {
+					msg.Content = append(msg.Content, gochatcore.ContentBlock{
+						Type: gochatcore.ContentTypeText, Text: m.Content,
+					})
+				}
+				for _, img := range m.Images {
+					msg.Content = append(msg.Content, gochatcore.ContentBlock{
+						Type:      gochatcore.ContentTypeImage,
+						MediaType: img.MediaType,
+						Data:      img.Base64Data,
+					})
+				}
+				msgs = append(msgs, msg)
+			} else {
+				msgs = append(msgs, gochatcore.NewUserMessage(m.Content))
+			}
 		case "assistant":
 			msg := gochatcore.NewTextMessage("assistant", m.Content)
 			msg.ReasoningContent = m.ReasoningContent

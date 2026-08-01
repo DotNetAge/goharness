@@ -84,7 +84,7 @@ func (t *AskUser) Info() *ToolInfo {
 func (t *AskUser) Execute(ctx context.Context, params map[string]any) (any, error) {
 	question, ok := params["question"].(string)
 	if !ok || question == "" {
-		return nil, fmt.Errorf("缺少必需参数：question")
+		return nil, fmt.Errorf("%s", GuideMissingParam("AskUser", "question"))
 	}
 
 	return fmt.Sprintf(`已向用户提问："%s"。等待他们的回复...`, question), nil

@@ -433,12 +433,12 @@ collectLoop:
 }
 
 func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	query, err := ValidateRequiredString(params, "query")
+	query, err := ValidateRequiredString("WebSearch", params, "query")
 	if err != nil {
 		return nil, err
 	}
 	if len(query) < 2 {
-		return nil, fmt.Errorf("查询必须至少为 2 个字符")
+		return nil, fmt.Errorf("%s", GuideInvalidValue("WebSearch", "query", query, "提供至少 2 个字符的具体关键词（可使用组合词或英文关键词）后重试"))
 	}
 
 	maxResults := 5
@@ -521,10 +521,9 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 	}
 
-	if maxResults > 0 && len(allResults) > maxResults {
-		allResults = allResults[:maxResults]
-	}
-
+	// 注意：最终结果不做 maxResults 截断——条数限制已由每次关键词搜索
+	// （searchAllAdapters）分别应用。最终结果是所有关键词搜索结果的合并去重，
+	// 每个关键词最多贡献 maxResults 条，多关键词能够获得更全面的召回。
 	results := allResults
 
 	if len(results) == 0 {
@@ -533,10 +532,21 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 			for f := range failedAdapterSet {
 				failedList = append(failedList, f)
 			}
-			return nil, fmt.Errorf("搜索超时（查询：%q）。失败的适配器：[%s]。请稍后重试。",
-				query, strings.Join(failedList, ", "))
+			failedNote := "无"
+			if len(failedList) > 0 {
+				failedNote = "[" + strings.Join(failedList, ", ") + "]"
+			}
+			return nil, fmt.Errorf("%s", BuildGuide(
+				fmt.Sprintf("搜索查询 %q，但 8 秒内未获得任何结果（失败的适配器：%s）", query, failedNote),
+				fmt.Sprintf("搜索超时（查询：%q）", query),
+				"缩短查询词或更换关键词后重试；若持续超时，说明当前搜索源不可达，应告知用户",
+			))
 		}
-		return nil, fmt.Errorf("未找到查询的结果：%q。请尝试简化您的查询。", query)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("搜索查询 %q，但未找到任何搜索结果", query),
+			"没有搜索引擎返回与查询匹配的结果",
+			"更换关键词或使用更通用的表述重新搜索；若多次尝试仍无结果，基于已有信息直接作答",
+		))
 	}
 
 	var adapterNote string
