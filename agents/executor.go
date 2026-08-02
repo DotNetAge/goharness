@@ -241,11 +241,15 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	// 将用户消息追加到会话（仅当它不是被消费的魔法词时）。
 	if !magicHandled {
+		// 用同一个 ts 构造消息和事件，避免两次 time.Now() 跨秒不一致。
+		ts := time.Now().Unix()
 		if !appendAndAbort(-1, session.Message{
-			Role: "user", Content: b.question, Timestamp: time.Now().Unix(),
+			Role: "user", Content: b.question, Timestamp: ts,
 		}, "用户消息") {
 			return
 		}
+		// 通知前端：user 消息已持久化，回传 Timestamp 用于实时回收本轮。
+		emit(events.UserMessageSaved, events.UserMessageSavedData{Timestamp: ts})
 	}
 	// 如果魔法词已被消费，清空 b.question，避免下方循环将其作为普通用户消息重新注入 LLM 调用。
 	if magicHandled {
@@ -360,7 +364,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			}
 			if len(sysTexts) > 0 {
 				rt.logger.Debug("===== SYSTEM PROMPT =====",
-					"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n---\n"))
+					"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n\n---\n\n"))
 			}
 		}
 

@@ -49,36 +49,74 @@ type llmSummarizer struct {
 	systemPrompt string
 }
 
-// defaultSystemPrompt — 最简角色设定。格式指令放在最后一条 user message。
-const defaultSystemPrompt = `你是记录员。将以下对话浓缩为要点式摘要 JSON 数组。不要推测缺失细节。`
+// defaultSystemPrompt — 角色与核心原则设定，明确"信息密度优先于简洁"的压缩倾向，
+// 抵消 LLM 在摘要任务中常见的过度简化倾向。格式指令放在最后一条 user message。
+const defaultSystemPrompt = `你是会话上下文压缩器。任务是把多轮对话浓缩为结构化摘要 JSON 数组，供后续对话作为唯一上下文使用。
+
+核心原则：信息密度优先于简洁。遗漏关键细节会导致后续对话失忆，过度简化比略微冗余更有害。
+保留对话的"决策脉络"：不仅记结论，还要记理由、约束、待办，让后续对话能无缝继续。`
 
 // summarizeInstruction — 放在最后一条 user message，居于注意力峰值位置。
-const summarizeInstruction = `将上面对话浓缩为 JSON 数组格式的要点式摘要。
+// 采用 title/summary/content 三段式：字段名即字段职责，消除旧版 summary 字段名
+// 与"标题"职责的语义冲突，让 LLM 输出更有结构导向性。
+// 关键设计：用高信息密度的示例重建 LLM 的输出长度锚点，配合正向"必须保留"清单，
+// 抵消示例过短导致的过度简化倾向。
+const summarizeInstruction = `将上面对话浓缩为 JSON 数组格式的结构化摘要。每个主题一条，相关决策可合并为同一条。
 
 输出格式：
 [
   {
-    "summary": "标题（≤20字，概括主题，用于检索召回）",
-    "content": "要点式摘要",
+    "title": "主题标题（名词性短语，≤15字，用于检索召回）",
+    "summary": "核心结论（一两句话，概括这条记忆的最终结论和最关键理由）",
+    "content": "详细要点，用 - 分条列举，保留决策、理由、关键实体、待办",
     "tags": ["3-5个从内容提取的关键词，小写短横线分隔"],
-    "timestamp": "最重要事件的 ISO 8601 时间（例如 2026-07-02T14:30:45Z）"
+    "timestamp": "本主题最重要事件的 ISO 8601 时间（如 2026-07-02T14:30:45Z）"
   }
 ]
 
-content 要点式摘要（保留关键细节、路径、技术术语、重要资源）
+三段式字段职责（严格区分，字段名即职责，不可混淆）：
+- title：极短导航标题，名词性短语，不要写成完整句子
+  正确："Redis 迁移 Cluster" / 错误："讨论了 Redis 的迁移问题"
+- summary：一两句话核心结论，让读者快速判断这条记忆讲什么、结论是什么。包含"做了什么决定" + 最关键理由
+  正确："决定从 Redis 单点迁移到 Cluster，因单点无法支撑 50K QPS"
+- content：详细要点，分条列举。title 和 summary 是 content 的索引与概括，content 是完整细节
+
+content 字段要求（决定压缩质量的关键）：
+- 用 "- " 前缀分条，每条一个完整信息单元，用 \n 分隔
+- 每条必须是有信息增量的完整陈述，不要写"讨论了 X"这种无内容的话
+- 多个相关决策可合并到同一条 content，但不要跨主题合并
+- 长度不限，但每条都要有信息增量，不要为凑长度重复
+- 路径、标识符、配置项必须原样复制，不得缩写、省略、改写大小写
+
+必须保留：
+- 用户的核心意图和最终目标
+- 已确定的决策及其理由（为什么选 X 而非 Y）
+- 文件路径：必须原样复制完整绝对路径，禁止简化为文件名、禁止省略前缀、禁止改为相对路径（如 /Users/ray/.../semantic.go 不可写成 semantic.go 或 indexer/semantic.go）；函数名、API 名、配置项、版本号、数值参数同样原样保留
+- 报错信息及对应的解决方案
+- 明确的待办事项、未决问题、阻塞点
+- 重要的约束、规约、边界条件
+- 时间节点、截止日期、依赖关系
+
+必须省略：
+- 问候、寒暄、确认词（"好的"、"明白了"）
+- 失败的中间尝试（除非失败原因本身有参考价值）
+- 被否决且不会重用的方案细节
+- 重复出现的相同信息
 
 示例：
 [
   {
-    "summary": "Redis 迁移",
-    "content": "迁移到 Cluster 已确认",
-    "tags": ["redis-migration"],
+    "title": "Redis 迁移 Cluster",
+    "summary": "决定从 Redis 单点迁移到 Cluster 模式，Q3 完成，因单点已无法支撑 50K QPS。",
+    "content": "- 决策：从 Redis 单点迁移到 Cluster，Q3 完成\n- 理由：单点已无法支撑 50K QPS，Cluster 可水平扩展\n- 关键路径：/etc/redis/redis-cluster.conf\n- 阻塞点：lettuce 客户端需升级到 6.x 才支持 Cluster\n- 待办：迁移方案需 DBA 评审后实施",
+    "tags": ["redis", "cluster-migration", "lettuce"],
     "timestamp": "2026-07-02T14:30:45Z"
   },
   {
-    "summary": "前端构建改造",
-    "content": "构建工具切 Vite",
-    "tags": ["vite"],
+    "title": "前端构建切 Vite",
+    "summary": "构建工具从 Webpack 5 切换到 Vite 5，解决冷启动慢问题，CI 脚本待同步调整。",
+    "content": "- 决策：构建工具从 Webpack 5 切换到 Vite 5\n- 理由：Webpack 冷启动 90s，Vite 仅 2s，开发体验显著提升\n- 配置：vite.config.ts 保留原有 alias 配置\n- 兼容性：需保留 @vitejs/plugin-vue 5.x\n- 待办：CI 流水线 build 脚本需同步调整",
+    "tags": ["vite", "webpack-migration", "frontend-build"],
     "timestamp": "2026-07-03T09:15:00Z"
   }
 ]
@@ -86,15 +124,32 @@ content 要点式摘要（保留关键细节、路径、技术术语、重要资
 规则：
 - 只输出原始 JSON 数组，无其他文本
 - 禁止对话体、问句、问候、情绪、表情符号
-- 只记已确认事实，不含未决选项
-- 跳过问候、确认词。矛盾只记最终方案
-- 保留实体名（文件名、函数名、技术术语）
+- 单主题只输出一条；多主题拆成多条
+- title 是名词短语，summary 是结论句，content 是分条细节，三者不可混淆或互相替代
+- 矛盾讨论只保留最终方案及其理由，省略被否决方案的细节
+- 待决问题独立成条并以"待办："标注，不要省略
 - tags 从 content 提取
-- 无实质信息时返回 []
-- 多主题拆成多条，单主题只输出一条`
+- 无任何实质信息时返回 []`
 
 // retryInstruction — 重试时使用的精简指令，同样放在最后一条 user message。
-const retryInstruction = `将以上全部的对话输出为 JSON 数组。每条格式：{"summary":"标题","content":"要点","tags":["标签"],"timestamp":"ISO 8601"}。只输出 JSON 数组，无其他文本。无实质信息时返回 []。`
+// 即使精简也保留三段式结构与核心约束（决策/理由/路径/待办），避免重试时退化为过度简化。
+const retryInstruction = `将以上全部对话输出为 JSON 数组，每个主题一条。
+每条格式：{"title":"主题标题(≤15字名词短语)","summary":"核心结论(一两句话)","content":"- 要点1\n- 要点2(保留决策、理由、文件路径、待办)","tags":["标签"],"timestamp":"ISO 8601"}。
+title 是名词短语，summary 是结论句，content 用 - 分条列举且必须保留：决策结论、理由、关键路径/函数名/参数、报错及解决方案、待办事项。
+只输出 JSON 数组，无其他文本。无实质信息时返回 []。`
+
+// summarizeTimeout 摘要请求的最大等待时长。
+//
+// 注意：gochat 的 WithTimeout(0) 会被 NewClient 当作"未设置"替换成默认 30 秒，
+// 而摘要请求携带的对话上下文可能达 10 万级 token，本地小模型（如 ollama）
+// 首响应可能远超 30 秒，导致压缩被 Client.Timeout 打断、cursor 不移动的"假压缩"。
+// 因此必须显式传入足够长的超时。
+const summarizeTimeout = 10 * time.Minute
+
+// summarizeMaxRetries 摘要请求允许的 gochat 内层重试次数。
+// 摘要请求本身耗时数分钟，内层重试会叠加指数退避成数十分钟无谓等待，
+// 故关闭内层重试，仅保留 Summarize 外层基于精简指令的一次重试。
+const summarizeMaxRetries = 0
 
 // NewLLMSummarizer 创建一个新的 LLM 摘要器实例。
 //
@@ -171,7 +226,8 @@ func (s *llmSummarizer) trySummarize(ctx context.Context, messages []Message, sy
 		Config(
 			gochat.WithAPIKey(model.APIKey),
 			gochat.WithBaseURL(model.BaseURL),
-			gochat.WithTimeout(0), // 使用 context 控制超时
+			gochat.WithTimeout(summarizeTimeout),
+			gochat.WithMaxRetries(summarizeMaxRetries),
 		).
 		Messages(msgs...).
 		Model(model.Name).
@@ -253,10 +309,12 @@ func truncateStr(s string, maxLen int) string {
 	return s[:maxLen] + " ...(truncated)"
 }
 
-// rawChunk 是 parseResponse 解析 LLM 输出 JSON 时使用的中间结构体。
+// rawChunk 是 parseResponse 解析 LLM 输出 JSON 时使用的中间结构体，采用三段式。
+// Title/Summary/Content 三段各司其职：Title 是导航标题、Summary 是核心结论、Content 是分条细节。
 // Timestamp 是字符串（LLM 输出 ISO 8601），需在 parseResponse 中解析为 time.Time。
 // 如果 LLM 不填或解析失败，MemoryChunk.Timestamp 保持零值，由调用方（session.generateSummary）fallback。
 type rawChunk struct {
+	Title     string   `json:"title,omitempty"`
 	Summary   string   `json:"summary"`
 	Content   string   `json:"content"`
 	Tags      []string `json:"tags"`
@@ -361,7 +419,7 @@ func sanitizeJSON(text string) string {
 	return invalidJSONEscapeRe.ReplaceAllString(text, "$1")
 }
 
-// buildChunkFromRaw 将 LLM 输出的 rawChunk 转为 MemoryChunk。
+// buildChunkFromRaw 将 LLM 输出的 rawChunk 转为 MemoryChunk，映射三段式 Title/Summary/Content。
 // Timestamp 解析 LLM 提供的 ISO 8601 字符串；解析失败保持零值，由上层 fallback。
 func buildChunkFromRaw(rc rawChunk) memory.MemoryChunk {
 	tags := rc.Tags
@@ -369,6 +427,7 @@ func buildChunkFromRaw(rc rawChunk) memory.MemoryChunk {
 		tags = []string{}
 	}
 	chunk := memory.MemoryChunk{
+		Title:   rc.Title,
 		Summary: rc.Summary,
 		Content: rc.Content,
 		Tags:    tags,
@@ -391,11 +450,13 @@ func (s *llmSummarizer) formatMessages(messages []Message) string {
 		}
 		switch m.Role {
 		case "user":
-			buf.WriteString(tsPrefix + "[用户]\n")
+			buf.WriteString(tsPrefix)
+			buf.WriteString("[用户]\n")
 			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
 		case "assistant":
-			buf.WriteString(tsPrefix + "[助手]\n")
+			buf.WriteString(tsPrefix)
+			buf.WriteString("[助手]\n")
 			buf.WriteString(m.Content)
 			if len(m.ToolCalls) > 0 {
 				buf.WriteString("\n[工具调用]")
@@ -405,7 +466,8 @@ func (s *llmSummarizer) formatMessages(messages []Message) string {
 			}
 			buf.WriteString("\n\n")
 		case "tool":
-			buf.WriteString(fmt.Sprintf(tsPrefix+"[工具结果: %s]\n", m.ToolCallID))
+			buf.WriteString(tsPrefix)
+			fmt.Fprintf(&buf, "[工具结果: %s]\n", m.ToolCallID)
 			// 截断过长的工具结果
 			if len(m.Content) > 2000 {
 				buf.WriteString(m.Content[:2000])
@@ -415,11 +477,13 @@ func (s *llmSummarizer) formatMessages(messages []Message) string {
 			}
 			buf.WriteString("\n\n")
 		case "system":
-			buf.WriteString(tsPrefix + "[系统]\n")
+			buf.WriteString(tsPrefix)
+			buf.WriteString("[系统]\n")
 			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
 		default:
-			buf.WriteString(fmt.Sprintf(tsPrefix+"[%s]\n", m.Role))
+			buf.WriteString(tsPrefix)
+			fmt.Fprintf(&buf, "[%s]\n", m.Role)
 			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
 		}

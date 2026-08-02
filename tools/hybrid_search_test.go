@@ -2,6 +2,8 @@ package tools
 
 import (
 	"testing"
+
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // ============================================================
@@ -9,9 +11,9 @@ import (
 // ============================================================
 
 func TestWebSearchTool_HybridAdaptersRegistered(t *testing.T) {
-	tool := NewWebSearchTool().(*WebSearchTool)
-	if len(tool.adapters) != 2 {
-		t.Errorf("expected 2 adapters in hybrid mode, got %d", len(tool.adapters))
+	tool := NewWebSearchTool(logging.NewNopLogger()).(*WebSearchTool)
+	if len(tool.adapters) != 5 {
+		t.Errorf("expected 5 adapters in hybrid mode, got %d", len(tool.adapters))
 	}
 
 	names := make(map[string]bool)
@@ -19,7 +21,8 @@ func TestWebSearchTool_HybridAdaptersRegistered(t *testing.T) {
 		names[adapter.Name()] = true
 	}
 
-	expectedNames := []string{"sogou", "weixin"}
+	// 搜狗系（搜狗+微信）+ 独立风控兜底（必应+360+头条）
+	expectedNames := []string{"sogou", "weixin", "bing", "360", "toutiao"}
 	for _, name := range expectedNames {
 		if !names[name] {
 			t.Errorf("missing adapter: %s", name)

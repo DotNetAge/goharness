@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/sandbox"
 )
 
 // ---------------------------------------------------------------------------
@@ -633,8 +634,9 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 		workingDir = "."
 	}
 	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
+	tc := GetToolContext(ctx)
 	var projectDir string
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+	if tc != nil && tc.Session != nil {
 		projectDir = tc.Session.ProjectDir()
 	}
 	workingDir, _ = ResolveTargetPath(workingDir, projectDir, "")
@@ -659,6 +661,35 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 	}
 	absWork = filepath.Clean(absWork)
 
+	// 沙箱启用时，由沙箱统一做文件安全决策（边界为 workingDir）
+	if tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			dec := sb.CheckFile(cleanScript, absWork)
+			switch dec.Decision {
+			case sandbox.DecisionAllow:
+				return true, ""
+			case sandbox.DecisionDeny:
+				return false, dec.Reason
+			case sandbox.DecisionAskUser:
+				if tc.SessionWhitelist != nil {
+					for _, allowed := range tc.SessionWhitelist.RunScript {
+						if pathWithinScope(allowed, cleanScript) {
+							return true, ""
+						}
+					}
+				}
+				return false, dec.Reason
+			}
+		}
+	}
+
+	// 脚本不存在或无法访问时跳过授权：
+	// ENOTDIR、EACCES 等场景脚本同样不可能正常执行，
+	// 授权后 Execute 同样会失败，直接放行让 Execute 报错，避免浪费一轮用户交互。
+	if _, statErr := os.Stat(cleanScript); statErr != nil {
+		return true, ""
+	}
+
 	// Inside the working dir? Fine.
 	if cleanScript == absWork ||
 		strings.HasPrefix(cleanScript, absWork+string(filepath.Separator)) {
@@ -670,7 +701,7 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 	// out-of-tree script.
 	//
 	// Before prompting, check the session whitelist.
-	if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
+	if tc != nil && tc.SessionWhitelist != nil {
 		for _, allowed := range tc.SessionWhitelist.RunScript {
 			if pathWithinScope(allowed, cleanScript) {
 				return true, ""
@@ -715,6 +746,21 @@ func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, er
 			"命令中不包含可识别的脚本路径（如 scripts/foo.py），或路径解析失败",
 			"按技能指令中的规定重新编写命令，确保包含有效的脚本路径（如 'python scripts/foo.py'），再重试",
 		))
+	}
+
+	// Execute 阶段强制安全检查（防 TOCTOU）：Grant 后脚本可能被替换为符号链接指向敏感文件。
+	// 沙箱启用时由 EnforceFile 统一检查（含符号链接解析）；沙箱未启用时跳过（Grant 已用旧逻辑检查）。
+	// 边界为 workingDir（与 Grant 阶段 absWork 一致）。
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			absScript, err := filepath.Abs(scriptPath)
+			if err == nil {
+				cleanScript := filepath.Clean(absScript)
+				if err := sb.EnforceFile(cleanScript, workingDir); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 
 	logger.Info("executing script",

@@ -228,6 +228,19 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 	})
 }
 
+// OnUserMessageSaved registers a handler fired right after a real user message
+// is appended to the session (magic words are not appended and thus don't
+// trigger it). The handler receives the backend message Timestamp, which the
+// frontend stores as backendTimestamp to enable session.delete_round on the
+// just-sent round — even before the session is reloaded.
+func (b *AskBuilder) OnUserMessageSaved(fn func(data events.UserMessageSavedData)) *AskBuilder {
+	return b.on(events.UserMessageSaved, func(d any) {
+		if v, ok := d.(events.UserMessageSavedData); ok {
+			fn(v)
+		}
+	})
+}
+
 // OnTokenUsageRecorded registers a handler for per-LLM-call token usage updates.
 // This fires after each individual LLM API call's tokens are persisted to the
 // TokenUsageStore. Use this for real-time token usage tracking in the UI.

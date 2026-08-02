@@ -2,19 +2,20 @@ package tools
 
 import (
 	"context"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/DotNetAge/goharness/logging"
 )
 
 type WeixinAdapter struct {
-	client *http.Client
+	client *stealthClient
 }
 
-func NewWeixinAdapter() *WeixinAdapter {
+func NewWeixinAdapter(logger logging.Logger) *WeixinAdapter {
 	return &WeixinAdapter{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: newSearchStealthClient(logger, 10*time.Second),
 	}
 }
 
@@ -27,23 +28,21 @@ func (a *WeixinAdapter) Search(ctx context.Context, query string, opts SearchOpt
 	params.Set("ie", "utf8")
 
 	reqURL := "https://weixin.sogou.com/weixin?" + params.Encode()
-	md, err := fetchAndExtract(ctx, a.client, reqURL, map[string]string{"Referer": "https://weixin.sogou.com/"})
+	body, err := fetchBody(ctx, a.client, reqURL, map[string]string{"Referer": "https://weixin.sogou.com/"})
 	if err != nil {
 		return nil, err
 	}
 
-	results := extractSearchResultsFromMarkdown(md, opts.MaxResults)
-	for i := range results {
-		results[i].URL = resolveWeixinURL(results[i].URL)
-	}
-	// Drop unresolved sogou.com redirect URLs
+	results := extractResultsWithGoquery(body, "div.vrwrap h3 a, div.txt-box h3 a", "href", "https://weixin.sogou.com", resolveWeixinURL, opts.MaxResults)
+
+	// 过滤掉未解析的 sogou.com 重定向链接
 	filtered := make([]SearchResult, 0, len(results))
 	for _, r := range results {
 		if strings.HasPrefix(r.URL, "http") && !strings.Contains(r.URL, "sogou.com") {
 			filtered = append(filtered, r)
 		}
 	}
-	return filterResults(filtered, opts), nil
+	return filtered, nil
 }
 
 func resolveWeixinURL(href string) string {

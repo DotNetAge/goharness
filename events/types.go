@@ -121,6 +121,16 @@ const (
 	//
 	// Data: PermissionPendingData
 	PermissionPending ReactEventType = "permission_pending"
+
+	// UserMessageSaved signals that a user message has been appended to the
+	// session and persisted. Emitted right after the user message is appended
+	// (only for real user messages — magic words are not appended, so they
+	// don't trigger this event). Carries the backend message Timestamp so the
+	// frontend can store it as backendTimestamp and use it for
+	// session.delete_round.
+	//
+	// Data: UserMessageSavedData
+	UserMessageSaved ReactEventType = "user_message_saved"
 )
 
 // MaxTurnsReachedData contains details about a max-turns event.
@@ -155,4 +165,13 @@ type FileConfirmData struct {
 type FileRollbackData struct {
 	// FilePaths are the files that were restored from backup.
 	FilePaths []string `json:"file_paths"`
+}
+
+// UserMessageSavedData carries the backend Timestamp of the just-appended user
+// message. The frontend stores this as metadata.backendTimestamp so the
+// "undo this round" button can call session.delete_round with this id.
+type UserMessageSavedData struct {
+	// Timestamp is the backend message id (Message.Timestamp), used by
+	// session.delete_round to locate and delete the entire round.
+	Timestamp int64 `json:"timestamp"`
 }

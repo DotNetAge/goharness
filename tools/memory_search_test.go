@@ -121,7 +121,7 @@ func TestMemorySearch_Execute_Success(t *testing.T) {
 		"limit": float64(10),
 	}
 
-	result, err := tool.Execute(context.Background(), params)
+	result, err := tool.Execute(ctxWithLogger(), params)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestMemorySearch_Execute_EmptyResult(t *testing.T) {
 		"query": "nonexistent topic that has no memories",
 	}
 
-	result, err := tool.Execute(context.Background(), params)
+	result, err := tool.Execute(ctxWithLogger(), params)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestMemorySearch_Execute_Error(t *testing.T) {
 	}
 
 	// 实现中当所有 token 都失败时，返回"未找到"而不是错误
-	result, err := tool.Execute(context.Background(), params)
+	result, err := tool.Execute(ctxWithLogger(), params)
 	if err != nil {
 		t.Fatalf("Execute() should not return error, got: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestMemorySearch_Execute_MissingQuery(t *testing.T) {
 
 	params := map[string]any{}
 
-	_, err := tool.Execute(context.Background(), params)
+	_, err := tool.Execute(ctxWithLogger(), params)
 	if err == nil {
 		t.Fatal("Execute() should return error when query is missing")
 	}
@@ -211,7 +211,7 @@ func TestMemorySearch_Execute_ShortQuery(t *testing.T) {
 		"query": "x",
 	}
 
-	_, err := tool.Execute(context.Background(), params)
+	_, err := tool.Execute(ctxWithLogger(), params)
 	if err == nil {
 		t.Fatal("Execute() should return error for short query")
 	}
@@ -236,7 +236,7 @@ func TestMemorySearch_Execute_WithTypesFilter(t *testing.T) {
 		"types": []any{"longterm"},
 	}
 
-	result, err := tool.Execute(context.Background(), params)
+	result, err := tool.Execute(ctxWithLogger(), params)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestMemorySearch_LimitValidation(t *testing.T) {
 		"limit": float64(100),
 	}
 
-	result, err := tool.Execute(context.Background(), params)
+	result, err := tool.Execute(ctxWithLogger(), params)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}

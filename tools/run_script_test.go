@@ -124,7 +124,7 @@ func TestRunScript_ExecuteWithMockExecutor(t *testing.T) {
 		},
 	}
 
-	result, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"command":     "python scripts/test.py",
 		"working_dir": "/tmp/skill",
 	})
@@ -150,7 +150,7 @@ func TestRunScript_ExecuteWithMockExecutor(t *testing.T) {
 func TestRunScript_MissingCommand(t *testing.T) {
 	tool := NewRunScriptTool()
 
-	_, err := tool.Execute(context.Background(), map[string]any{})
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{})
 	if err == nil {
 		t.Error("expected error for missing command parameter")
 	}
@@ -159,7 +159,7 @@ func TestRunScript_MissingCommand(t *testing.T) {
 func TestRunScript_EmptyCommand(t *testing.T) {
 	tool := NewRunScriptTool()
 
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"command": "   ",
 	})
 	if err == nil {

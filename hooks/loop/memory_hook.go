@@ -36,7 +36,7 @@ func (h *MemoryThoughtHook) Priority() int { return 50 }
 // 未实现则跳过（保持兼容性）。
 func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
 	if h.memory == nil || input.AgentName == "" {
-		h.Logger.Debug("MemoryThoughtHook: skipped (memory nil or agent empty)",
+		h.Logger.Debug("MemoryThoughtHook: 跳过，记忆存储为空或 AgentName 为空",
 			"session_id", sessionID, "memory_nil", h.memory == nil, "agent", input.AgentName)
 		return hooks.HookResult{}
 	}
@@ -45,8 +45,8 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	if len(input.SystemPromptSections) > 0 {
 		last := &input.SystemPromptSections[len(input.SystemPromptSections)-1]
 		for _, block := range last.Content {
-			if strings.HasPrefix(block.Text, "## 对话记忆") {
-				h.Logger.Debug("MemoryThoughtHook: memory already injected, skipping",
+			if strings.Contains(block.Text, "## 历史对话摘要") {
+				h.Logger.Debug("MemoryThoughtHook: 已注入记忆，跳过",
 					"session_id", sessionID, "agent", input.AgentName)
 				return hooks.HookResult{}
 			}
@@ -56,7 +56,7 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	// 通过类型断言检查是否支持 RetrieveLatest（时间倒序，不依赖向量检索）
 	latestRetriever, ok := h.memory.(memory.LatestRetriever)
 	if !ok {
-		h.Logger.Debug("MemoryThoughtHook: memory does not implement LatestRetriever, skipping",
+		h.Logger.Debug("MemoryThoughtHook: 记忆存储不支持 LatestRetriever 接口",
 			"session_id", sessionID, "agent", input.AgentName)
 		return hooks.HookResult{}
 	}
@@ -64,33 +64,33 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	const latestLimit = 20
 	records, err := latestRetriever.RetrieveLatest(nil, input.AgentName, input.ProjectDir, latestLimit)
 	if err != nil {
-		h.Logger.Debug("MemoryThoughtHook: RetrieveLatest failed",
+		h.Logger.Debug("MemoryThoughtHook: RetrieveLatest 失败",
 			"session_id", sessionID, "agent", input.AgentName, "project", input.ProjectDir, "error", err)
 		return hooks.HookResult{}
 	}
 	if len(records) == 0 && sessionID != "" {
 		// Fallback: agent+project 过滤空结果时按 sessionID 捞回
 		if sessionRetriever, ok := h.memory.(memory.SessionRetriever); ok {
-			h.Logger.Debug("MemoryThoughtHook: falling back to RetrieveBySession",
+			h.Logger.Debug("MemoryThoughtHook: 回退到 RetrieveBySession 接口",
 				"session_id", sessionID, "agent", input.AgentName)
 			records, err = sessionRetriever.RetrieveBySession(nil, sessionID, latestLimit)
 			if err != nil {
-				h.Logger.Debug("MemoryThoughtHook: RetrieveBySession failed",
+				h.Logger.Debug("MemoryThoughtHook: RetrieveBySession 失败",
 					"session_id", sessionID, "error", err)
 				return hooks.HookResult{}
 			}
 			if len(records) > 0 {
-				h.Logger.Info("MemoryThoughtHook: retrieved memory records via session fallback",
+				h.Logger.Info("MemoryThoughtHook: 从会话回退获取记忆记录",
 					"session_id", sessionID, "count", len(records))
 			}
 		}
 	}
 	if len(records) == 0 {
-		h.Logger.Debug("MemoryThoughtHook: no memory records found",
+		h.Logger.Debug("MemoryThoughtHook: 未找到记忆记录",
 			"session_id", sessionID, "agent", input.AgentName, "project", input.ProjectDir)
 		return hooks.HookResult{}
 	}
-	h.Logger.Info("MemoryThoughtHook: retrieved memory records",
+	h.Logger.Info("MemoryThoughtHook: 获取到记忆记录",
 		"session_id", sessionID, "agent", input.AgentName, "project", input.ProjectDir, "count", len(records))
 
 	// memmache.md: "将记忆条目按时间顺序由旧至新插入至摘要缓冲区"
@@ -102,19 +102,19 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 
 	content := memory.FormatMemoryRecords(reversed)
 	if content == "" {
-		h.Logger.Debug("MemoryThoughtHook: formatted content is empty",
+		h.Logger.Debug("MemoryThoughtHook: 格式化后的记忆内容为空",
 			"session_id", sessionID, "agent", input.AgentName)
 		return hooks.HookResult{}
 	}
-	h.Logger.Debug("MemoryThoughtHook: formatted memory content",
+	h.Logger.Debug("MemoryThoughtHook: 格式化后的记忆内容长度",
 		"session_id", sessionID, "agent", input.AgentName, "content_len", len(content))
 
 	// 拼到最后一条 system message 的内容末尾（不新增第二条 system message）
 	if len(input.SystemPromptSections) > 0 {
 		last := &input.SystemPromptSections[len(input.SystemPromptSections)-1]
-		memText := "## 对话记忆\n\n" + content
+		memText := "\n\n## 历史对话摘要\n\n以下为与用户过往对话的决策记录，作为延续上下文使用；\n\n" + content
 		last.Content = append(last.Content, gochatcore.ContentBlock{Type: "text", Text: memText})
-		h.Logger.Info("MemoryThoughtHook: injected memory into system prompt",
+		h.Logger.Info("MemoryThoughtHook: 已将记忆注入系统指令",
 			"session_id", sessionID, "agent", input.AgentName, "records", len(records), "mem_bytes", len(memText))
 	}
 	return hooks.HookResult{}

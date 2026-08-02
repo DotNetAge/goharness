@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/store"
 )
 
@@ -163,6 +164,41 @@ func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) 
 		return true, ""
 	}
 
+	// 沙箱启用时，由沙箱统一做文件安全决策
+	if sb := tc.Session.Sandbox(); sb != nil {
+		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+		switch dec.Decision {
+		case sandbox.DecisionAllow:
+			return true, ""
+		case sandbox.DecisionDeny:
+			return false, dec.Reason
+		case sandbox.DecisionAskUser:
+			// 越界访问，检查白名单
+			for _, dir := range r.whitelist {
+				if pathWithinScope(dir, resolved) {
+					return true, ""
+				}
+			}
+			if tc.SessionWhitelist != nil {
+				for _, allowed := range tc.SessionWhitelist.Read {
+					if pathWithinScope(allowed, resolved) {
+						return true, ""
+					}
+				}
+			}
+			return false, dec.Reason
+		}
+	}
+
+	// 文件不存在或无法访问时跳过授权：
+	// - ENOENT：文件确实不存在
+	// - ENOTDIR：路径中间段是文件而非目录（文件不可能存在）
+	// - EACCES：无权限 stat 父目录（授权后 Execute 同样会失败）
+	// 对这些情况请求授权没有意义，直接放行让 Execute 报错，避免浪费一轮用户交互。
+	if _, statErr := os.Stat(resolved); statErr != nil {
+		return true, ""
+	}
+
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
 		for _, dir := range r.whitelist {
 			if pathWithinScope(dir, resolved) {
@@ -220,6 +256,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	)
 
 	// A. 零 I/O 前置校验（设备文件黑名单、二进制扩展名）
+	// 沙箱启用时设备文件由沙箱 EnforceFile 接管，但二进制扩展名检查保留（功能保护非安全决策）。
 	if err = validateReadPath(resolvedPath); err != nil {
 		return nil, err
 	}
@@ -238,9 +275,13 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 	}
 
 	// 安全校验：敏感文件硬性拦截。
-	// 项目边界检查已由 Grant()（PermissionRequired）完成；授权（Allow / AllowSession）
-	// 或白名单路径在此不再重复校验边界，否则授权后执行会被再次拦截。
-	if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// 沙箱启用时由 EnforceFile 统一做强制检查（含符号链接解析，防 TOCTOU）；
+	// 沙箱未启用时走旧的 checkSensitiveFiles。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return nil, err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
 		return nil, err
 	}
 

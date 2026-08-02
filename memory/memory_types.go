@@ -23,6 +23,7 @@ const (
 // the knowledge base (graph) storage.
 type MemoryChunk struct {
 	ID         string    `json:"id"`
+	Title      string    `json:"title,omitempty"`
 	Summary    string    `json:"summary"`
 	Content    string    `json:"content"`
 	AgentName  string    `json:"agent_name"`
@@ -97,20 +98,39 @@ func FormatMemoryRecords(chunks []MemoryChunk) string {
 			sb.WriteString(c.Timestamp.Format("2006-01-02 15:04"))
 		}
 		sb.WriteString("] ")
-		// 标题
-		// if c.Summary != "" {
-		// 	sb.WriteString(c.Summary)
-		// }
-		// sb.WriteString(" - ")
+		// 标题：优先 Title（三段式导航标题），回退 Summary（旧数据兼容）
+		if c.Title != "" {
+			sb.WriteString(c.Title)
+		}
+
 		// 内容
 		content := strings.TrimSpace(c.Content)
+		listMode := false
 		if content != "" {
-			// 取第一行作为摘要，替换换行为空格
-			lines := strings.SplitN(content, "\n", 2)
-			sb.WriteString(strings.TrimSpace(lines[0]))
+			if isMarkdownList(content) {
+				// Markdown 有序/无序列表：逐行作为子列表缩进两个空格
+				listMode = true
+				sb.WriteString("\n")
+				for _, line := range strings.Split(content, "\n") {
+					if line = strings.TrimSpace(line); line == "" {
+						continue
+					}
+					sb.WriteString("  ")
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
+			} else {
+				// 普通文本：在内容前加 " - " 直接输出，多行续行缩进对齐
+				sb.WriteString(" - ")
+				sb.WriteString(strings.ReplaceAll(content, "\n", "\n  "))
+			}
 		}
 		// 标签
 		if len(c.Tags) > 0 {
+			if listMode {
+				// 列表模式：标签作为独立缩进行，与子列表项对齐
+				sb.WriteString("  ")
+			}
 			sb.WriteString(" 。标签:[")
 			for i, tag := range c.Tags {
 				if i > 0 {
@@ -123,4 +143,39 @@ func FormatMemoryRecords(chunks []MemoryChunk) string {
 		sb.WriteString("\n")
 	}
 	return strings.TrimSpace(sb.String())
+}
+
+// isMarkdownList 判断内容是否为 Markdown 有序/无序列表：
+// 所有非空行均须为列表项（无序：-/*/+ 开头；有序：数字后跟 . 或 )）。
+func isMarkdownList(content string) bool {
+	lines := strings.Split(content, "\n")
+	nonEmpty := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		nonEmpty++
+		if !isMarkdownListLine(line) {
+			return false
+		}
+	}
+	return nonEmpty > 0
+}
+
+// isMarkdownListLine 判断单行是否为 Markdown 列表项。
+func isMarkdownListLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	switch trimmed[0] {
+	case '-', '*', '+':
+		return true
+	}
+	// 有序列表：数字后跟 "." 或 ")"
+	i := 0
+	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
+		i++
+	}
+	return i > 0 && i < len(trimmed) && (trimmed[i] == '.' || trimmed[i] == ')')
 }

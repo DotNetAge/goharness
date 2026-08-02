@@ -5,79 +5,78 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
-	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
 	md "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/PuerkitoBio/goquery"
 )
 
-var uaPool = []string{
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-	"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
-	"Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
+// newSearchStealthClient 创建搜索用的隐蔽客户端。
+// logger 必须由调用方（适配器 → WebSearchTool → Runtime）注入，禁止内部创建日志
+// （项目硬性约束）。运行时请求日志另由 stealthClient.requestLogger 从 ctx 取
+// ToolContext.Logger；此 logger 仅用于构造期告警与 tls-client debug。
+func newSearchStealthClient(logger logging.Logger, timeout time.Duration) *stealthClient {
+	// NewStealthClient 仅在 logger==nil 时返回 error；logger 由 Runtime → WebSearchTool →
+	// 适配器逐级注入，此处必非 nil，故 c 必非 nil、err 必 nil。不构建 NopLogger 兜底——
+	// 那是废日志，违背「禁止内部创建日志」约束；契约违反应让 NewStealthClient 自然暴露，
+	// 而非用废日志掩盖成黑箱。
+	c, _ := NewStealthClient(logger, WithTimeout(timeout))
+	return c
 }
 
-var uaMu sync.Mutex
-
-func randomUA() string {
-	uaMu.Lock()
-	defer uaMu.Unlock()
-	return uaPool[rand.Intn(len(uaPool))]
-}
-
-var mdLinkRe = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-
-func extractSearchResultsFromMarkdown(md string, maxResults int) []SearchResult {
+// extractResultsWithGoquery 用 CSS 选择器从原始 HTML 提取搜索结果。
+// 相比手搓 markdown 正则，goquery 保留了 class/属性等结构信息，能精准定位
+// 各引擎的主结果块，避免把侧边栏/导航垃圾当结果。
+//   - selector: 结果标题链接的 CSS 选择器（如必应 "li.b_algo h2 a"）
+//   - urlAttr: 从 a 标签的哪个属性取 URL（"href" 或 "data-mdurl"）
+//   - base: 相对 URL 的补全基准（如 "https://www.sogou.com"）
+//   - resolveURL: 解析重定向链接的函数（如搜狗/微信的 /link?url=），无重定向传 nil
+func extractResultsWithGoquery(html, selector, urlAttr, base string, resolveURL func(string) string, maxResults int) []SearchResult {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil
+	}
 	var results []SearchResult
 	seen := make(map[string]bool)
-
-	lines := strings.Split(md, "\n")
-
-	for i := 0; i < len(lines) && len(results) < maxResults; i++ {
-		line := lines[i]
-
-		if !strings.HasPrefix(line, "#") {
-			continue
+	doc.Find(selector).Each(func(_ int, s *goquery.Selection) {
+		if len(results) >= maxResults {
+			return
 		}
-
-		m := mdLinkRe.FindStringSubmatch(line)
-		if len(m) < 3 {
-			continue
+		// goquery 的 Text() 已自动剥离 <em>/<strong> 等标签，标题天然干净
+		title := strings.TrimSpace(s.Text())
+		rawURL, ok := s.Attr(urlAttr)
+		if !ok || rawURL == "" || title == "" {
+			return
 		}
-		title := strings.TrimSpace(m[1])
-		rawURL := strings.TrimSpace(m[2])
-		if title == "" || rawURL == "" || seen[rawURL] {
-			continue
+		finalURL := rawURL
+		if resolveURL != nil {
+			if u := resolveURL(rawURL); u != "" {
+				finalURL = u
+			}
 		}
-		seen[rawURL] = true
-
-		cleanTitle := stripMarkdownEmphasis(title)
-
-		snippet := extractSnippet(lines, i+1)
-
-		if !isResultQualityOK(cleanTitle, snippet, rawURL) {
-			continue
+		// 相对 URL 补全（resolveURL 未处理的兜底）
+		if strings.HasPrefix(finalURL, "/") {
+			finalURL = base + finalURL
 		}
-
+		if !strings.HasPrefix(finalURL, "http://") && !strings.HasPrefix(finalURL, "https://") {
+			return
+		}
+		if seen[finalURL] {
+			return
+		}
+		seen[finalURL] = true
+		if !isResultQualityOK(title, "", finalURL) {
+			return
+		}
 		results = append(results, SearchResult{
-			Title:   cleanTitle,
-			URL:     rawURL,
-			Snippet: snippet,
+			Title: title,
+			URL:   finalURL,
 		})
-	}
-
+	})
 	return results
 }
 
@@ -94,33 +93,6 @@ func isResultQualityOK(title, snippet, rawURL string) bool {
 		}
 	}
 	return true
-}
-
-func stripMarkdownEmphasis(s string) string {
-	s = strings.ReplaceAll(s, "_", "")
-	s = strings.ReplaceAll(s, "*", "")
-	s = strings.ReplaceAll(s, "`", "")
-	return s
-}
-
-func extractSnippet(lines []string, start int) string {
-	var parts []string
-	for j := start; j < len(lines) && len(parts) < 3; j++ {
-		l := strings.TrimSpace(lines[j])
-		if l == "" {
-			continue
-		}
-		if strings.HasPrefix(l, "#") {
-			break
-		}
-		if mdLinkRe.MatchString(l) || strings.Contains(l, "![") {
-			continue
-		}
-		parts = append(parts, l)
-	}
-	joined := strings.Join(parts, " ")
-	joined = stripMarkdownEmphasis(joined)
-	return strings.TrimSpace(joined)
 }
 
 // --- WebSearch Tool (Claude-style adapter pattern) ---
@@ -146,9 +118,7 @@ type SearchAdapter interface {
 
 // SearchOptions 配置搜索行为。
 type SearchOptions struct {
-	MaxResults     int      // 最大返回结果数量
-	AllowedDomains []string // 允许的域名白名单
-	BlockedDomains []string // 屏蔽的域名黑名单
+	MaxResults int // 最大返回结果数量
 }
 
 // searchCacheTTL is the lifetime of cached search results (2 days).
@@ -166,19 +136,34 @@ type cachedSearch struct {
 var mdConverter = md.NewConverter("", true, nil)
 
 // Each adapter is responsible for building the request URL and resolving result URLs.
-func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, extraHeaders map[string]string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("创建请求失败：%w", err)
-	}
-	req.Header.Set("User-Agent", randomUA())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	for k, v := range extraHeaders {
-		req.Header.Set(k, v)
+
+// fetchBody 发起搜索请求并返回原始 HTML body。
+// 通过 stealthClient 统一处理 TLS 指纹伪装、浏览器指纹头注入、cookiejar 会话、
+// 重试退避；沙箱 SSRF 预检在此保留（拨号层防护由 stealthClient 的 ssrfDialContext 提供）。
+// 供需要原始 HTML 的适配器使用（如 360 适配器需提取 data-mdurl 里的真实 URL）。
+func fetchBody(ctx context.Context, client *stealthClient, reqURL string, extraHeaders map[string]string) (string, error) {
+	// 沙箱启用时，用 CheckURL 做 SSRF 预检（含 DNS 解析与网段检查）。
+	// 搜索引擎 URL 是固定域名（如 https://www.sogou.com/web?...），解析到公网 IP 时 CheckURL 放行；
+	// 若沙箱策略禁止了该搜索引擎的网段则拒绝。沙箱未启用时跳过，由旧逻辑兜底。
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			dec := sb.CheckURL(reqURL)
+			if dec.Decision == sandbox.DecisionDeny {
+				return "", fmt.Errorf("%s", dec.Reason)
+			}
+		}
 	}
 
-	resp, err := client.Do(req)
+	headers := make(map[string][]string, len(extraHeaders))
+	for k, v := range extraHeaders {
+		headers[k] = []string{v}
+	}
+	resp, err := client.Do(ctx, StealthRequest{
+		Method:          "GET",
+		URL:             reqURL,
+		Headers:         headers,
+		FollowRedirects: true,
+	})
 	if err != nil {
 		return "", fmt.Errorf("搜索请求失败：%w", err)
 	}
@@ -188,61 +173,7 @@ func fetchAndExtract(ctx context.Context, client *http.Client, reqURL string, ex
 	if err != nil {
 		return "", fmt.Errorf("读取响应失败：%w", err)
 	}
-
-	md, err := mdConverter.ConvertString(string(body))
-	if err != nil || len(md) == 0 {
-		return "", fmt.Errorf("HTML 转换为 Markdown 失败：%w", err)
-	}
-	return md, nil
-}
-
-func filterResults(results []SearchResult, opts SearchOptions) []SearchResult {
-	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
-		results = results[:opts.MaxResults]
-	}
-
-	filtered := make([]SearchResult, 0, len(results))
-	for _, r := range results {
-		u, err := url.Parse(r.URL)
-		if err != nil {
-			// Allow relative paths like /link?url=..., skip truly broken URLs like ://invalid
-			if strings.HasPrefix(r.URL, "/") || strings.HasPrefix(r.URL, "./") {
-				filtered = append(filtered, r)
-			}
-			continue
-		}
-		if !u.IsAbs() {
-			// Relative path (no scheme) — bypass hostname-based domain filtering
-			filtered = append(filtered, r)
-			continue
-		}
-		// Check blocked domains
-		blocked := false
-		for _, d := range opts.BlockedDomains {
-			if strings.HasSuffix(u.Hostname(), d) {
-				blocked = true
-				break
-			}
-		}
-		if blocked {
-			continue
-		}
-		// Check allowed domains (if specified)
-		if len(opts.AllowedDomains) > 0 {
-			allowed := false
-			for _, d := range opts.AllowedDomains {
-				if strings.HasSuffix(u.Hostname(), d) {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
-		}
-		filtered = append(filtered, r)
-	}
-	return filtered
+	return string(body), nil
 }
 
 // --- WebSearchTool ---
@@ -273,11 +204,14 @@ type WebSearchTool struct {
 //
 // 返回：
 //   - FuncTool: 配置好的 WebSearchTool 实例
-func NewWebSearchTool() FuncTool {
+func NewWebSearchTool(logger logging.Logger) FuncTool {
 	t := &WebSearchTool{}
 	t.adapters = []SearchAdapter{
-		NewSogouAdapter(),
-		NewWeixinAdapter(),
+		NewSogouAdapter(logger),
+		NewWeixinAdapter(logger),
+		NewBingAdapter(logger),
+		NewSo360Adapter(logger),
+		NewToutiaoAdapter(logger), // 头条独立于搜狗系风控，结果丰富，作为重要兜底引擎
 	}
 	return t
 }
@@ -307,7 +241,7 @@ func (t *WebSearchTool) Info() *ToolInfo {
 - 这是强制性的 - 永远不要在回复中跳过包含来源
 
 使用说明：
-- 支持域名过滤以包含或阻止特定网站
+- 多个关键词用逗号分隔（如 "Go 语言,Redis"），单个主题直接用自然语句
 - 重要：在搜索查询中使用正确的年份`,
 		IsReadOnly: true,
 		Parameters: []Parameter{
@@ -320,19 +254,7 @@ func (t *WebSearchTool) Info() *ToolInfo {
 			{
 				Name:        "max_results",
 				Type:        "integer",
-				Description: "要返回的最大结果数（默认：5，最大：20）。提前退出阈值 - 一旦收集到足够的结果，将立即返回较快引擎的结果，而无需等待较慢的引擎。",
-				Required:    false,
-			},
-			{
-				Name:        "allowed_domains",
-				Type:        "array",
-				Description: "将结果限制在这些域名（例如，[\"github.com\", \"docs.python.org\"]）。",
-				Required:    false,
-			},
-			{
-				Name:        "blocked_domains",
-				Type:        "array",
-				Description: "排除这些域名的结果。",
+				Description: "要返回的最大结果数（默认：10，最大：20）。提前退出阈值 - 一旦收集到足够的结果，将立即返回较快引擎的结果，而无需等待较慢的引擎。",
 				Required:    false,
 			},
 		},
@@ -441,7 +363,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		return nil, fmt.Errorf("%s", GuideInvalidValue("WebSearch", "query", query, "提供至少 2 个字符的具体关键词（可使用组合词或英文关键词）后重试"))
 	}
 
-	maxResults := 5
+	maxResults := 10
 	if raw, found := GetParam(params, "max_results"); found {
 		if v, ok := ToFloat64(raw); ok && v > 0 {
 			maxResults = int(v)
@@ -451,28 +373,8 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 	}
 
-	var allowedDomains, blockedDomains []string
-	if raw, found := GetParam(params, "allowed_domains"); found {
-		if rawSlice, ok := raw.([]any); ok {
-			for _, v := range rawSlice {
-				if s, ok := v.(string); ok {
-					allowedDomains = append(allowedDomains, s)
-				}
-			}
-		}
-	}
-	if raw, found := GetParam(params, "blocked_domains"); found {
-		if rawSlice, ok := raw.([]any); ok {
-			for _, v := range rawSlice {
-				if s, ok := v.(string); ok {
-					blockedDomains = append(blockedDomains, s)
-				}
-			}
-		}
-	}
-
 	// Check KVStore cache (2-day TTL) — 使用原始查询做缓存键
-	cacheKey := query + "|" + strings.Join(allowedDomains, ",") + "|" + strings.Join(blockedDomains, ",")
+	cacheKey := query
 	kvs := GetToolContext(ctx).KVStore
 	if kvs != nil {
 		if data, err := kvs.Get(ctx, cacheSessionID, cacheKey); err == nil && len(data) > 0 {
@@ -488,19 +390,20 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 
 	logger := getLogger(ctx)
 
+	// 每引擎每关键词最多贡献 5 条。配合提前退出阈值（默认 10）：
+	//   - 2 个稳定引擎即可凑够 10 条（5×2=10），应对搜狗/微信被风控的场景
+	//   - 3 引擎全成功时 5×3=15 取前 10，多引擎多样性自然保障
 	hybridOpts := SearchOptions{
-		MaxResults:     3,
-		AllowedDomains: allowedDomains,
-		BlockedDomains: blockedDomains,
+		MaxResults: 5,
 	}
 
-	// 将查询按空白符拆分为多个关键词，分别检索后合并去重。
-	// LLM 倾向于输入空格分隔的关键词而非自然语句（如 "redis 迁移 配置"），
-	// 多次查询能召回更全面的结果。
+	// 将查询按逗号拆分为多个关键词，分别检索后合并去重。
+	// 逗号是显式分隔符，避免误拆 "Go 语言" 这类中英文混排的自然空格。
+	// LLM 用逗号分隔多主题（如 "redis,迁移方案"），自然语句不拆分。
 	tokens := splitQueryTokens(query)
 	logger.Info("[WebSearch]开始搜索",
 		"query", query,
-		"tokens", tokens,
+		"tokens", fmt.Sprintf("%q", tokens),
 		"max_results", maxResults,
 	)
 
@@ -557,7 +460,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 		adapterNote = fmt.Sprintf("\n\n[搜索状态] 部分引擎失败：%s", strings.Join(failedList, ", "))
 	} else {
-		adapterNote = fmt.Sprintf("\n\n[搜索状态] 所有引擎均成功。")
+		adapterNote = "\n\n[搜索状态] 所有引擎均成功。"
 	}
 
 	// Cache results in KVStore (2-day TTL) — 以原始查询为键
@@ -743,6 +646,12 @@ func formatSearchResults(query string, results []SearchResult) string {
 				sourceLabel = "搜狗"
 			case "weixin":
 				sourceLabel = "微信"
+			case "bing":
+				sourceLabel = "必应"
+			case "360":
+				sourceLabel = "360"
+			case "toutiao":
+				sourceLabel = "头条"
 			}
 			sb.WriteString(fmt.Sprintf("- **来源**：%s\n", sourceLabel))
 		}
@@ -777,12 +686,11 @@ func truncateStr(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// getLogger extracts Logger from ToolContext or returns default slog-based logger.
-// This enables dependency injection while maintaining backward compatibility.
+// getLogger 从 ToolContext 取系统注入的 Logger。
+// 生产环境下 ToolContext.Logger 必然非空：rt.logger 默认非 nil（runtime.go:220），
+// 经 executor.go:44/220/91 注入到 ToolContext.Logger。故此处不再用 DefaultLogger 兜底——
+// 那是内部创建日志，违背「禁止内部创建日志」约束，也属多余（ToolContext.Logger 必然非空）。
+// 裸调用（无 ToolContext）属用法错误，应让 nil 暴露而非掩盖。
 func getLogger(ctx context.Context) logging.Logger {
-	tc := GetToolContext(ctx)
-	if tc != nil && tc.Logger != nil {
-		return tc.Logger
-	}
-	return logging.DefaultLogger()
+	return GetToolContext(ctx).Logger
 }

@@ -1,5 +1,7 @@
 package session
 
+import "github.com/DotNetAge/goharness/sandbox"
+
 // SessionConfig is a functional option for configuring Session instances.
 // This pattern allows for flexible, readable configuration without breaking changes
 // when new options are added.
@@ -48,6 +50,16 @@ func WithSummarizer(ss Summarizer) SessionConfig {
 // 回调未注入或返回 0 时禁用自动压缩。
 func WithModelContextResolver(fn func() int64) SessionConfig {
 	return func(s *Session) { s.modelContextResolver = fn }
+}
+
+// WithSandbox 注入会话级逻辑沙箱。
+// 沙箱为工具提供统一的文件/网络/命令安全决策。
+// 传入 nil 等同于不调用（沙箱未启用，工具回退到各自的安全检查）。
+//
+// 沙箱实例应为已通过 sandbox.NewSandbox 构造的 *sandbox.Sandbox。
+// 策略热更新通过 sb.UpdatePolicy() 进行，无需重建会话。
+func WithSandbox(sb *sandbox.Sandbox) SessionConfig {
+	return func(s *Session) { s.sandbox = sb }
 }
 
 // WithCompactionHandler sets a callback function that is invoked after each

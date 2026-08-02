@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -242,6 +243,11 @@ type Session struct {
 	// 首次访问时从 {SessionDir()}/session-wl.json 懒加载。
 	whitelist   *SessionWhitelist
 	whitelistMu sync.Mutex
+
+	// sandbox 是会话级逻辑沙箱，提供统一的文件/网络/命令安全决策。
+	// 为 nil 时表示未启用沙箱，工具回退到各自的安全检查逻辑（向后兼容）。
+	// 通过 WithSandbox Option 注入。
+	sandbox *sandbox.Sandbox
 }
 
 // ID 返回此会话的唯一标识符。
@@ -252,6 +258,10 @@ func (s *Session) AgentName() string { return s.agentName }
 
 // ProjectDir 返回与此会话关联的工作目录。
 func (s *Session) ProjectDir() string { return s.projectDir }
+
+// Sandbox 返回会话级逻辑沙箱实例。
+// 返回 nil 表示未启用沙箱，调用方应回退到各自的安全检查逻辑。
+func (s *Session) Sandbox() *sandbox.Sandbox { return s.sandbox }
 
 // Sponsor 返回创建/发起此会话的智能体名称。
 // 对于用户发起的会话返回空字符串。

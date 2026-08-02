@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -26,7 +25,7 @@ func TestViewQueryListLabels(t *testing.T) {
 		t.Fatal("NewViewQueryTool 返回 nil")
 	}
 
-	result, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"action": "list_labels",
 	})
 	if err != nil {
@@ -57,7 +56,7 @@ func TestViewQueryDescribe(t *testing.T) {
 	defer srv.Close()
 
 	tool := NewViewQueryTool(srv.URL).(*ViewQueryTool)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"action": "describe",
 		"label":  "Person",
 	})
@@ -86,7 +85,7 @@ func TestViewQueryQuery(t *testing.T) {
 	defer srv.Close()
 
 	tool := NewViewQueryTool(srv.URL).(*ViewQueryTool)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"action": "query",
 		"label":  "Person",
 		"page":   1,
@@ -129,7 +128,7 @@ func TestViewQueryQuery(t *testing.T) {
 // TestViewQueryInvalidAction 验证非法 action 报错。
 func TestViewQueryInvalidAction(t *testing.T) {
 	tool := NewViewQueryTool("http://127.0.0.1:1").(*ViewQueryTool)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"action": "drop",
 	})
 	if err == nil {
@@ -143,7 +142,7 @@ func TestViewQueryInvalidAction(t *testing.T) {
 // TestViewQueryMissingAction 验证缺失 action 报错。
 func TestViewQueryMissingAction(t *testing.T) {
 	tool := NewViewQueryTool("http://127.0.0.1:1").(*ViewQueryTool)
-	_, err := tool.Execute(context.Background(), map[string]any{})
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{})
 	if err == nil {
 		t.Fatal("应返回错误")
 	}
@@ -203,7 +202,7 @@ func TestViewQueryRangeWhere(t *testing.T) {
 	defer srv.Close()
 
 	tool := NewViewQueryTool(srv.URL).(*ViewQueryTool)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"action": "query",
 		"label":  "Trade",
 		"where": map[string]any{
@@ -242,7 +241,7 @@ func TestViewQueryInWhere(t *testing.T) {
 	defer srv.Close()
 
 	tool := NewViewQueryTool(srv.URL).(*ViewQueryTool)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"action": "query",
 		"label":  "Person",
 		"where": map[string]any{

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // ============================================================
@@ -14,7 +16,7 @@ import (
 // ============================================================
 
 func TestWebFetchTool_Info(t *testing.T) {
-	tool := NewWebFetchTool()
+	tool := NewWebFetchTool(logging.NewNopLogger())
 	info := tool.Info()
 	if info.Name != "WebFetch" {
 		t.Errorf("Name = %q, want %q", info.Name, "WebFetch")
@@ -28,10 +30,10 @@ func TestWebFetchTool_Real_ExampleCom(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 15*time.Second)
 	defer cancel()
 
-	tool := NewWebFetchTool()
+	tool := NewWebFetchTool(logging.NewNopLogger())
 	result, err := tool.Execute(ctx, map[string]any{
 		"url": "https://example.com",
 	})
@@ -58,10 +60,10 @@ func TestWebFetchTool_Real_HttpbinHTML(t *testing.T) {
 	if !httpbinIsReachable(t) {
 		t.Skip("httpbin.org is not reachable (may be rate-limited)")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 15*time.Second)
 	defer cancel()
 
-	tool := NewWebFetchTool()
+	tool := NewWebFetchTool(logging.NewNopLogger())
 	result, err := tool.Execute(ctx, map[string]any{
 		"url":    "https://httpbin.org/html",
 		"prompt": "Extract the main heading and first paragraph",
@@ -81,7 +83,7 @@ func TestWebFetchTool_Real_HttpbinHTML(t *testing.T) {
 
 func httpbinIsReachable(t *testing.T) bool {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/get", nil)
 	if err != nil {
@@ -99,10 +101,10 @@ func TestWebFetchTool_Real_StatusCode404(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 15*time.Second)
 	defer cancel()
 
-	tool := NewWebFetchTool()
+	tool := NewWebFetchTool(logging.NewNopLogger())
 	_, err := tool.Execute(ctx, map[string]any{"url": "https://httpbin.org/status/404"})
 	if err != nil {
 		t.Logf("404 page returned error (acceptable): %v", err)
@@ -115,10 +117,10 @@ func TestWebFetchTool_URLNormalization(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 15*time.Second)
 	defer cancel()
 
-	tool := NewWebFetchTool()
+	tool := NewWebFetchTool(logging.NewNopLogger())
 
 	tests := []struct {
 		name string
@@ -147,7 +149,7 @@ func TestWebFetchTool_URLNormalization(t *testing.T) {
 // ============================================================
 
 func TestWebFetchTool_SSRF_Protection(t *testing.T) {
-	tool := NewWebFetchTool()
+	tool := NewWebFetchTool(logging.NewNopLogger())
 	badURLs := []string{
 		"http://127.0.0.1/",
 		"http://localhost/",
@@ -156,7 +158,7 @@ func TestWebFetchTool_SSRF_Protection(t *testing.T) {
 		"ftp://example.com/",
 	}
 	for _, url := range badURLs {
-		_, err := tool.Execute(context.Background(), map[string]any{"url": url})
+		_, err := tool.Execute(ctxWithLogger(), map[string]any{"url": url})
 		if err == nil {
 			t.Errorf("SSRF should block %q", url)
 		}
@@ -178,8 +180,8 @@ func TestWebFetchTool_SSRF_PrivateIPs_TableDriven(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tool := NewWebFetchTool()
-			_, err := tool.Execute(context.Background(), map[string]any{"url": tt.url})
+			tool := NewWebFetchTool(logging.NewNopLogger())
+			_, err := tool.Execute(ctxWithLogger(), map[string]any{"url": tt.url})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Execute() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -285,10 +287,10 @@ func TestWebFetchTool_CacheBehavior(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
 	defer cancel()
 
-	tool := NewWebFetchTool().(*WebFetchTool)
+	tool := NewWebFetchTool(logging.NewNopLogger()).(*WebFetchTool)
 
 	result1, err := tool.Execute(ctx, map[string]any{"url": "https://example.com"})
 	if err != nil {
@@ -312,8 +314,8 @@ func TestWebFetchTool_CacheBehavior(t *testing.T) {
 }
 
 func TestWebFetchTool_MissingURL(t *testing.T) {
-	tool := NewWebFetchTool()
-	_, err := tool.Execute(context.Background(), nil)
+	tool := NewWebFetchTool(logging.NewNopLogger())
+	_, err := tool.Execute(ctxWithLogger(), nil)
 	if err == nil {
 		t.Error("expected error for missing url parameter")
 	}

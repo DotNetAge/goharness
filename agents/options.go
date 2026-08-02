@@ -6,6 +6,7 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
 	"github.com/DotNetAge/goharness/rule"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
 	"github.com/DotNetAge/goharness/store"
@@ -104,4 +105,23 @@ func WithSearchStrategy(builder func() string) RuntimeConfig {
 // 注入的客户端将替代默认的 gochat 实现，便于单元测试 mock 或多提供商切换。
 func WithLLMClient(client LLMClient) RuntimeConfig {
 	return func(r *Runtime) { r.llmClient = client }
+}
+
+// WithSandbox 注入会话级逻辑沙箱。
+//
+// 沙箱启用后，所有文件访问工具（Read/Edit/Write/Ls/Glob/RunScript/Grep）、
+// 命令执行工具（Bash）和网络工具（WebFetch/WebSearch/SogouSearch/WeixinSearch）
+// 均由沙箱统一做安全决策（Grant 阶段 Allow/Deny/AskUser，Execute 阶段 Enforce）。
+//
+// 沙箱实例会自动注入到 Runtime 创建的所有子 Agent 会话中。
+// 主会话由调用方创建，需通过 rt.Sandbox() 获取沙箱实例并手动注入：
+//
+//	sb := sandbox.NewSandbox(policy, logger)
+//	rt := agents.NewRuntime(agents.WithSandbox(sb))
+//	// 主会话创建时注入：
+//	sess, _ := session.New(..., session.WithSandbox(rt.Sandbox()))
+//
+// 沙箱未设置（nil）时，所有工具回退到旧逻辑（detectDangerousCommand 等）。
+func WithSandbox(sb *sandbox.Sandbox) RuntimeConfig {
+	return func(r *Runtime) { r.sandbox = sb }
 }

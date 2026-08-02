@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/DotNetAge/goharness/sandbox"
 )
 
 const grepDefaultTimeout = 30 * time.Second
@@ -110,6 +112,19 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 
 	grepCtx, grepCancel := context.WithTimeout(ctx, grepDefaultTimeout)
 	defer grepCancel()
+
+	// 沙箱启用时，用 CheckCommand 做强制检查（防 rg 被策略禁用或命令被注入危险模式）。
+	// rg 在默认白名单内，正常情况下 CheckCommand 返回 Allow；策略禁用时返回 Deny 或 AskUser。
+	// Grep 没有 Grant 方法（不弹窗），Execute 阶段 AskUser 视为拒绝（与 Bash enforceWithSandbox 语义一致）。
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			dec := sb.CheckCommand("rg " + strings.Join(args, " "))
+			if dec.Decision == sandbox.DecisionDeny || dec.Decision == sandbox.DecisionAskUser {
+				return nil, fmt.Errorf("%s", dec.Reason)
+			}
+		}
+	}
+
 	cmd := exec.CommandContext(grepCtx, "rg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -180,6 +195,16 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 		relPath := path
 		if rel, relErr := filepath.Rel(searchRoot, path); relErr == nil {
 			relPath = rel
+		}
+
+		// 沙箱启用时，用 EnforceFile 检查文件（防符号链接越界，如 .hidden → /etc/passwd）。
+		// 搜索根固定为 ProjectDir，正常文件均在边界内；符号链接越界时 EnforceFile 拒绝，跳过此文件。
+		if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+			if sb := tc.Session.Sandbox(); sb != nil {
+				if err := sb.EnforceFile(path, searchRoot); err != nil {
+					return nil
+				}
+			}
 		}
 
 		file, openErr := os.Open(path)

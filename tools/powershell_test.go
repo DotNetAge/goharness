@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -55,12 +54,12 @@ func TestNewPowerShellTool(t *testing.T) {
 func TestPowerShellTool_Execute_EmptyCommand(t *testing.T) {
 	tool := NewPowerShellTool()
 
-	_, err := tool.Execute(context.Background(), map[string]any{})
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{})
 	if err == nil {
 		t.Error("expected error for empty command, got nil")
 	}
 
-	_, err = tool.Execute(context.Background(), map[string]any{"command": ""})
+	_, err = tool.Execute(ctxWithLogger(), map[string]any{"command": ""})
 	if err == nil {
 		t.Error("expected error for empty command, got nil")
 	}

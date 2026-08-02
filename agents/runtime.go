@@ -61,6 +61,7 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
 	"github.com/DotNetAge/goharness/rule"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
 	"github.com/DotNetAge/goharness/store"
@@ -171,6 +172,11 @@ type Runtime struct {
 	// llmClient 负责与大语言模型交互。
 	// 默认为基于 gochat 的实现；可通过 WithLLMClient 注入 mock 或其他提供商实现。
 	llmClient LLMClient
+
+	// sandbox 是会话级逻辑沙箱实例。
+	// 通过 WithSandbox 注入；为 nil 时所有工具回退到旧安全逻辑。
+	// 自动注入到 Runtime 创建的所有子 Agent 会话；主会话由调用方通过 rt.Sandbox() 获取并注入。
+	sandbox *sandbox.Sandbox
 }
 
 // RunResult 保存单次 Ask 调用的执行结果，
@@ -269,8 +275,8 @@ func (rt *Runtime) registerDefaultTools() {
 		toolOf("Edit", tools.NewEditTool),
 		toolOf("Bash", tools.NewBashTool),
 		toolOf("RunScript", tools.NewRunScriptTool),
-		toolOf("WebSearch", tools.NewWebSearchTool),
-		toolOf("WebFetch", tools.NewWebFetchTool),
+		toolOf("WebSearch", func() tools.FuncTool { return tools.NewWebSearchTool(rt.logger) }),
+		toolOf("WebFetch", func() tools.FuncTool { return tools.NewWebFetchTool(rt.logger) }),
 		toolOf("AskUser", tools.NewAskUserTool),
 		toolOf("Ls", tools.NewLsTool),
 	}
@@ -394,6 +400,15 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 // 日志器用于运行时中的调试、信息、警告和错误消息。
 // 默认实现将 JSON 格式日志输出到标准输出。
 func (rt *Runtime) Logger() logging.Logger { return rt.logger }
+
+// Sandbox 返回 Runtime 持有的会话级逻辑沙箱实例。
+// 返回 nil 表示沙箱未启用，所有工具回退到旧安全逻辑。
+// 调用方在创建主会话时应通过此方法获取沙箱并注入：
+//
+//	sess, _ := session.New(..., session.WithSandbox(rt.Sandbox()))
+//
+// 子 Agent 会话由 Runtime 自动注入，无需调用方处理。
+func (rt *Runtime) Sandbox() *sandbox.Sandbox { return rt.sandbox }
 
 // ToolRegistry 返回 Runtime 的工具注册表，其中包含所有已注册工具。
 // 工具注册表管理大语言模型在执行期间可调用的可用工具。

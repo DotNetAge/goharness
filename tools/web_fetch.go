@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
 )
 
 // webFetchCacheTTL 是 WebFetch 缓存的生存时间。
@@ -41,54 +44,21 @@ type cachedFetch struct {
 //   - 非 HTML 内容的原样返回
 //   - 输出截断至 50000 字符
 type WebFetchTool struct {
-	client   *http.Client // HTTP 客户端（带 SSRF 防护）
-	memCache sync.Map     // 内存缓存（进程内）
+	client   *stealthClient // 隐蔽客户端（TLS 指纹伪装 + SSRF 防护 + 重试退避）
+	memCache sync.Map       // 内存缓存（进程内）
 }
 
 // NewWebFetchTool 创建一个 WebFetchTool 实例。
-// 配置了 SSRF 防护的 HTTP 客户端，阻止访问内网地址。
-//
-// 安全措施：
-//   - DNS 解析后检查 IP 是否为私有地址
-//   - 重定向时验证目标 URL
-//   - 15 秒连接超时，30 秒总超时
+// 通过 NewStealthClient 统一处理 TLS 指纹伪装、cookiejar 会话、重试退避与 SSRF 防护，
+// 替代旧实现的手搓 *http.Client + DialContext。SSRF 双层防护保留：
+//   - 沙箱 CheckURL 预检（Execute 内，含 DNS 解析与网段检查）
+//   - 拨号层 ssrfDialContext（stealthClient 内，复用 isPrivateIP，防 DNS rebinding）
 //
 // 返回：
 //   - FuncTool: 配置好的 WebFetchTool 实例
-func NewWebFetchTool() FuncTool {
-	dialer := &net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	return &WebFetchTool{
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					host, _, err := net.SplitHostPort(addr)
-					if err != nil {
-						return nil, err
-					}
-					ips, err := net.LookupIP(host)
-					if err != nil {
-						return nil, fmt.Errorf("解析主机 %q 失败：%w", host, err)
-					}
-					for _, ip := range ips {
-						if isPrivateIP(ip) {
-							return nil, fmt.Errorf("访问被拒绝：URL 解析为私有/内部地址 %s", ip)
-						}
-					}
-					return dialer.DialContext(ctx, network, addr)
-				},
-			},
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return fmt.Errorf("重定向次数过多")
-				}
-				return validateURL(req.URL.String())
-			},
-		},
-	}
+func NewWebFetchTool(logger logging.Logger) FuncTool {
+	c, _ := NewStealthClient(logger)
+	return &WebFetchTool{client: c}
 }
 
 // Info 返回 WebFetch 工具的元信息。
@@ -165,7 +135,21 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		rawURL = "https://" + rawURL
 	}
 
-	if err := validateURL(rawURL); err != nil {
+	// URL 安全校验：沙箱启用时由 CheckURL 统一决策（含 DNS 解析与 SSRF 网段检查）；
+	// 沙箱未启用时回退到旧逻辑（validateURL + isPrivateIP）。
+	// 注意：沙箱 CheckURL 与旧逻辑的网段列表等价（见 sandbox.DefaultDeniedSubnets），
+	// 但沙箱支持 NetworkAllowSubnets 显式放行特定内网服务。
+	// 沙箱 CheckURL 通过后，拨号层 DialContext 拦截器仍会做强制检查（防 DNS rebinding）。
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			dec := sb.CheckURL(rawURL)
+			if dec.Decision == sandbox.DecisionDeny {
+				return nil, fmt.Errorf("%s", dec.Reason)
+			}
+		} else if err := validateURL(rawURL); err != nil {
+			return nil, err
+		}
+	} else if err := validateURL(rawURL); err != nil {
 		return nil, err
 	}
 
@@ -190,19 +174,11 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
-			fmt.Sprintf("尝试获取 URL %q，但构造 HTTP 请求失败", rawURL),
-			WithErrDetail(fmt.Sprintf("URL %q 包含非法字符，无法构造 HTTP 请求", rawURL), err),
-			"先自查：URL 中是否包含未编码的非法字符（如空格、中文、控制字符）？确认 URL 与请求参数正确后再重试",
-		), err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-
-	resp, err := t.client.Do(req)
+	resp, err := t.client.Do(ctx, StealthRequest{
+		Method:          "GET",
+		URL:             rawURL,
+		FollowRedirects: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
 			fmt.Sprintf("尝试获取 URL %q，但网络请求失败", rawURL),
@@ -212,7 +188,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 	defer resp.Body.Close()
 
-	ct := resp.Header.Get("Content-Type")
+	ct := resp.Header("Content-Type")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		cause := fmt.Sprintf("目标返回了 HTTP %d 状态码", resp.StatusCode)
 		switch {
@@ -396,6 +372,9 @@ func isPrivateIP(ip net.IP) bool {
 		{parseCIDR("172.16.0.0/12")},
 		{parseCIDR("192.168.0.0/16")},
 		{parseCIDR("169.254.0.0/16")},
+		{parseCIDR("100.64.0.0/10")}, // CGNAT（含阿里云元数据 100.100.100.200）
+		{parseCIDR("192.0.0.0/24")},  // IETF 协议分配
+		{parseCIDR("198.18.0.0/15")}, // 基准测试网络
 		{parseCIDR("::1/128")},
 		{parseCIDR("fc00::/7")},
 		{parseCIDR("fe80::/10")},

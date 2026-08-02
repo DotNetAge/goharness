@@ -182,17 +182,17 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) ([]me
 	// 剔除末尾未配对的 tool_call/tool_result，避免 LLM API 校验拒绝
 	messages = sanitizeMessagesForLLM(messages)
 	if len(messages) == 0 {
-		s.logInfo("generateSummary: all messages stripped by LLM sanitization", "session_id", s.id)
+		s.logInfo("generateSummary: 未生成有效摘要，所有消息都被剔除后为空", "session_id", s.id)
 		return nil, nil
 	}
 
 	chunks, err := s.summarizer.Summarize(ctx, messages)
 	if err != nil {
-		s.logError("generateSummary: Summarize failed", err, "session_id", s.id)
+		s.logError("generateSummary: 生成摘要失败，摘要器返回错误", err, "session_id", s.id)
 		return nil, err
 	}
 	if len(chunks) == 0 {
-		s.logInfo("generateSummary: Summarize returned empty chunks (no substantive content)", "session_id", s.id)
+		s.logInfo("generateSummary: 未生成有效摘要，摘要器返回的分块为空", "session_id", s.id)
 		return nil, nil
 	}
 
@@ -224,13 +224,12 @@ func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChun
 		return nil
 	}
 	if s.mem == nil {
-		err := fmt.Errorf("persistSummary: memory store is nil, cannot persist summary chunks")
-		s.logError("persistSummary: memory store not configured", err, "session_id", s.id)
+		err := fmt.Errorf("persistSummary: 未配置记忆存储，无法持久化摘要分块")
 		return err
 	}
 
 	if err := s.mem.StoreChunks(ctx, s.id, chunks); err != nil {
-		s.logError("persistSummary: StoreChunks failed", err, "session_id", s.id)
+		s.logError("persistSummary: 无法持久化摘要分块", err, "session_id", s.id)
 		return err
 	}
 	return nil
@@ -255,36 +254,36 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 	slidCount := 0
 	summaryFailed := false
 	if s.summarizer != nil && len(state.activeMessages) > 0 {
-		s.logInfo(operation+": generating summary", "session_id", s.id,
+		s.logInfo(operation+": 开始生成摘要", "session_id", s.id,
 			"active_messages", len(state.activeMessages))
 		chunks, err := s.generateSummary(ctx, state.activeMessages)
 		if err != nil {
-			s.logError(operation+": summary generation FAILED, will not compact", err, "session_id", s.id)
+			s.logError(operation+": 生成摘要失败，将不压缩", err, "session_id", s.id)
 			summaryFailed = true
 		} else if len(chunks) == 0 {
 			// generateSummary 返回 nil,nil 时（LLM 判定无实质信息 / sanitize 全剥离），
 			// 不做 cursor 移动以免丢消息历史但不留记忆。
-			s.logInfo(operation+": summary empty (no substantive content), skipped compaction", "session_id", s.id)
+			s.logInfo(operation+": 生成摘要为空，跳过压缩", "session_id", s.id)
 			summaryFailed = true
 		} else {
-			s.logInfo(operation+": summary generated", "session_id", s.id, "chunks", len(chunks))
+			s.logInfo(operation+": 生成摘要成功，开始持久化", "session_id", s.id, "chunks", len(chunks))
 			if err := s.persistSummary(ctx, chunks); err != nil {
-				s.logError(operation+": persist summary FAILED, will not compact", err, "session_id", s.id)
+				s.logError(operation+": 无法持久化摘要分块", err, "session_id", s.id)
 				summaryFailed = true
 			} else {
-				s.logInfo(operation+": summary persisted", "session_id", s.id)
+				s.logInfo(operation+": 摘要持久化成功", "session_id", s.id)
 			}
 		}
 	} else if s.summarizer == nil {
-		s.logInfo(operation+": no summarizer configured, skipping summary generation", "session_id", s.id)
+		s.logInfo(operation+": 未配置摘要器，跳过摘要生成", "session_id", s.id)
 	}
 
 	if !summaryFailed {
 		// 移动 cursor 到末尾（清空当前窗口，不删除历史消息）
 		slidCount = s.executeFullCompaction(ctx)
-		s.logInfo(operation+": cursor moved", "session_id", s.id, "slid_count", slidCount)
+		s.logInfo(operation+": 摘要持久化成功，游标移动到末尾", "session_id", s.id, "slid_count", slidCount)
 	} else {
-		s.logInfo(operation+": skipped cursor movement due to summarization failure", "session_id", s.id)
+		s.logInfo(operation+": 摘要持久化失败，跳过游标移动", "session_id", s.id)
 	}
 
 	// 触发 compact done handler
@@ -322,19 +321,19 @@ func (s *Session) TryCompact(ctx context.Context) {
 
 	if !state.needsCompaction() {
 		if state.maxWindowSize <= 0 {
-			s.logInfo("TryCompact: skipped (maxWindowSize=0, compaction disabled)", "session_id", s.id)
+			s.logInfo("TryCompact: 未配置最大窗口大小，跳过压缩", "session_id", s.id)
 		} else if len(state.activeMessages) == 0 {
-			s.logInfo("TryCompact: skipped (active window is empty)", "session_id", s.id)
+			s.logInfo("TryCompact: 活跃窗口为空，跳过压缩", "session_id", s.id)
 		} else {
 			threshold := int64(float64(state.maxWindowSize) * 0.8)
-			s.logInfo("TryCompact: skipped (windowTokens <= threshold)", "session_id", s.id,
+			s.logInfo("TryCompact: 当前窗口 tokens 未超过 80% * 最大窗口大小，跳过压缩", "session_id", s.id,
 				"window_tokens", state.windowTokens,
 				"threshold", threshold)
 		}
 		return
 	}
 
-	s.logInfo("TryCompact: triggered (windowTokens > 80% of maxWindowSize)", "session_id", s.id,
+	s.logInfo("TryCompact: 当前窗口 tokens 超过 80% * 最大窗口大小，触发压缩", "session_id", s.id,
 		"window_tokens", state.windowTokens,
 		"max_window_size", state.maxWindowSize)
 
@@ -354,19 +353,19 @@ func (s *Session) ForceCompact(ctx context.Context) {
 		"active_messages", len(state.activeMessages))
 
 	if len(state.activeMessages) == 0 {
-		s.logInfo("ForceCompact: skipped (active window is empty)", "session_id", s.id)
+		s.logInfo("ForceCompact: 活跃窗口为空，跳过压缩", "session_id", s.id)
 		return
 	}
 
 	const forceCompactThreshold int64 = 100_000
 	if state.windowTokens <= forceCompactThreshold {
-		s.logInfo("ForceCompact: skipped (windowTokens <= threshold)", "session_id", s.id,
+		s.logInfo("ForceCompact: 当前窗口 tokens 未超过 100K，跳过压缩", "session_id", s.id,
 			"window_tokens", state.windowTokens,
 			"threshold", forceCompactThreshold)
 		return
 	}
 
-	s.logInfo("ForceCompact: triggered (windowTokens > threshold)", "session_id", s.id,
+	s.logInfo("ForceCompact: 当前窗口 tokens 超过 100K，触发压缩", "session_id", s.id,
 		"window_tokens", state.windowTokens,
 		"threshold", forceCompactThreshold)
 

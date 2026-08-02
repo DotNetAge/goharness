@@ -102,15 +102,15 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		baseOpts = append(baseOpts, memory.WithProjectDir(projectDir))
 	}
 
-	// 将查询按空白符拆分为多个关键词，分别检索后合并去重。
-	// LLM 倾向于输入空格分隔的关键词而非自然语句（如 "redis 迁移 配置"），
+	// 将查询按逗号拆分为多个关键词，分别检索后合并去重。
+	// LLM 用逗号显式分隔多主题（如 "redis,迁移方案"），自然语句不拆分。
 	// 多次查询比单次全文检索能召回更全面的结果。
 	tokens := splitQueryTokens(query)
 
 	logger := getLogger(ctx)
 	logger.Info("[MemorySearch]记忆搜索",
 		"query", truncateStr(query, 100),
-		"tokens", tokens,
+		"tokens", fmt.Sprintf("%q", tokens),
 		"limit", limit,
 	)
 
@@ -148,23 +148,28 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 	return result, nil
 }
 
-// splitQueryTokens 将查询拆分为多个关键词。
-// 如果查询本身是自然语句（含空格但长度 > 50），视为完整查询不拆分。
-// 否则按空白符拆分为多个关键词，过滤掉过短的词。
+// splitQueryTokens 将查询按逗号拆分为多个关键词。
+// 逗号是显式分隔符，不会与中英文混排的自然空格冲突——
+// 例如 "Go 语言"、"Redis 配置" 里的空格是自然分隔，不应拆分。
+// 同时支持英文逗号 "," 和中文逗号 "，"。查询不含逗号时视为整句，原样返回。
 func splitQueryTokens(query string) []string {
 	// 长文本视为自然语句，不拆分
 	if len(query) > 50 {
 		return []string{query}
 	}
 
-	parts := strings.Fields(query)
+	// 按中英文逗号拆分
+	parts := strings.FieldsFunc(query, func(r rune) bool {
+		return r == ',' || r == '，'
+	})
 	if len(parts) <= 1 {
 		return []string{query}
 	}
 
-	// 过滤掉过短的词（<=1 字符）
+	// 过滤掉过短的词（<=1 字符）和首尾空白
 	tokens := make([]string, 0, len(parts))
 	for _, p := range parts {
+		p = strings.TrimSpace(p)
 		if len(p) >= 2 {
 			tokens = append(tokens, p)
 		}

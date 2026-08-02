@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/sandbox"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -294,32 +295,11 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 		))
 	}
 
-	if blocked := detectDangerousCommand(command); blocked != "" {
-		return map[string]any{
-			"stdout":      "",
-			"stderr":      fmt.Sprintf("已阻止：%s", blocked),
-			"exit_code":   126,
-			"interrupted": false,
-			"success":     false,
-			"error":       blocked,
-		}, nil
-	}
-
-	if t.whitelistEnabled {
-		if allowed, failedCmd := t.isCommandWhitelisted(command); !allowed {
-			blockedCmd := failedCmd
-			if blockedCmd == "" {
-				blockedCmd = "unknown"
-			}
-			return map[string]any{
-				"stdout":      "",
-				"stderr":      fmt.Sprintf("已阻止：命令 %q 不在白名单中。允许的命令：%s", blockedCmd, t.whitelistDisplay()),
-				"exit_code":   126,
-				"interrupted": false,
-				"success":     false,
-				"error":       fmt.Sprintf("命令不在白名单中：%s", blockedCmd),
-			}, nil
-		}
+	// 安全强制检查：Grant 被绕过（如 PermissionAllow）时仍拦截危险命令与越权访问。
+	// 沙箱启用时由沙箱统一检查（危险模式 + 白名单 + 网络命令 URL 预检）；
+	// 沙箱未启用时走旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
+	if blocked, ok := t.enforceCommand(ctx, command); ok {
+		return blocked, nil
 	}
 
 	timeoutMs := defaultBashTimeoutMs
@@ -439,18 +419,21 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 }
 
 // Grant implements tools.PermissionRequired. It pre-checks the shell command
-// for any "ask the user" signals BEFORE Execute runs:
+// for any "ask the user" signals BEFORE Execute runs.
 //
-//  1. Hard-coded dangerous patterns (rm -rf /, fork bombs, curl|sh, etc.)
-//     → refuse; user override is NOT possible via Grant, but the dangerous
-//     list is just a safety net. Execute() also blocks these independently
-//     (so they cannot be reached even if Grant is bypassed).
-//  2. Whitelist: if whitelistEnabled, the base command must be in the
-//     (default or custom) whitelist. Anything outside the whitelist is
-//     "ask the user" — the user is the source of truth, not a regex list.
+// 沙箱启用时由沙箱统一做命令安全决策（CheckCommand + 网络命令 URL 预检）；
+// 沙箱未启用时回退旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
 //
-// Anything that passes both checks is "obviously safe enough to just run"
-// and Grant returns granted=true. The runtime will then proceed to Execute.
+// 决策流程（沙箱启用）：
+//  1. CheckCommand 危险模式检测 → Deny（硬性拒绝，授权不可覆盖）
+//  2. CheckCommand 白名单检测 → 不在白名单则 AskUser
+//  3. CheckCommand 网络命令 URL 预检 → NeedURLCheck=true 时对每个 URL 调用 CheckURL
+//  4. AskUser 时检查会话级白名单（PermissionAllowSession 记忆）
+//
+// 注意：沙箱的 extractBaseCommand 只取首个命令，而旧逻辑用 AST 解析所有子命令。
+// 为保留对子命令（如 "git status && rm -rf /"）的白名单检查能力，沙箱启用时
+// 仍调用 isCommandWhitelisted 做 AskUser 决策的细化（仅当工具配置了 customWhitelist
+// 或沙箱策略 AllowedDirs 为空时生效）。
 func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	rawCommand, ok := GetParam(params, "command")
 	command := ""
@@ -464,6 +447,14 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 		return true, ""
 	}
 
+	// 沙箱启用时，由沙箱统一做命令安全决策
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			return t.grantWithSandbox(ctx, sb, command)
+		}
+	}
+
+	// 沙箱未启用，走旧逻辑
 	if blocked := detectDangerousCommand(command); blocked != "" {
 		return false, fmt.Sprintf("Bash 命令被安全过滤器阻止：%s", blocked)
 	}
@@ -505,6 +496,173 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	}
 
 	return true, ""
+}
+
+// grantWithSandbox 在沙箱启用时做命令安全决策。
+//
+// 决策流程：
+//  1. CheckCommand 返回 Deny（危险模式）→ 直接拒绝
+//  2. CheckCommand 返回 AskUser（不在白名单）→ 检查会话级白名单；命中则继续 URL 预检，否则触发授权
+//  3. CheckCommand 返回 Allow + NeedURLCheck（网络命令）→ 对每个 URL 调用 CheckURL
+//  4. CheckCommand 返回 Allow → 放行
+//
+// 会话级白名单命中时仍需做 URL 预检，避免用户放行 curl 后 SSRF 被绕过。
+func (t *BashTool) grantWithSandbox(ctx context.Context, sb *sandbox.Sandbox, command string) (bool, string) {
+	dec := sb.CheckCommand(command)
+
+	switch dec.Decision {
+	case sandbox.DecisionDeny:
+		return false, dec.Reason
+
+	case sandbox.DecisionAskUser:
+		// 检查会话级白名单（用户之前选择"记住本次会话"的授权）
+		inSession := false
+		if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
+			cmds := extractCommands(command)
+			allInSession := true
+			for _, cmd := range cmds {
+				found := false
+				for _, allowed := range tc.SessionWhitelist.Bash {
+					if cmd == allowed {
+						found = true
+						break
+					}
+				}
+				if !found {
+					allInSession = false
+					break
+				}
+			}
+			if allInSession && len(cmds) > 0 {
+				inSession = true
+			}
+		}
+		if !inSession {
+			return false, dec.Reason
+		}
+		// 会话白名单命中，继续做 URL 预检（若有）
+		// 命中会话白名单时 dec.NeedURLCheck 不会为 true（CheckCommand 仅在 Allow 时返回 NeedURLCheck），
+		// 但网络命令仍需预检，这里主动提取 URL 检查。
+		if reason := t.enforceNetworkURLs(sb, command); reason != "" {
+			return false, reason
+		}
+		return true, ""
+
+	case sandbox.DecisionAllow:
+		// 网络命令 URL 预检
+		if dec.NeedURLCheck {
+			if reason := t.checkURLs(sb, dec.URLs); reason != "" {
+				return false, reason
+			}
+		}
+		return true, ""
+	}
+
+	return true, ""
+}
+
+// checkURLs 对 CheckCommand 提取的 URL 列表逐个做 CheckURL 预检。
+// 返回非空字符串表示被拒原因，空字符串表示全部通过。
+func (t *BashTool) checkURLs(sb *sandbox.Sandbox, urls []string) string {
+	for _, u := range urls {
+		dec := sb.CheckURL(u)
+		if dec.Decision == sandbox.DecisionDeny {
+			return dec.Reason
+		}
+	}
+	return ""
+}
+
+// enforceNetworkURLs 主动从命令中提取 URL 并做 CheckURL 预检。
+// 用于会话白名单命中后仍需 SSRF 防护的场景。
+func (t *BashTool) enforceNetworkURLs(sb *sandbox.Sandbox, command string) string {
+	urls := sandbox.ExtractURLsFromCommand(command)
+	if len(urls) == 0 {
+		return ""
+	}
+	return t.checkURLs(sb, urls)
+}
+
+// enforceCommand 是 Execute 阶段的强制安全检查。
+//
+// 返回值：
+//   - result: 被拦截时返回阻塞结果 map（exit_code=126），未拦截时为 nil
+//   - blocked: true 表示命令被拦截（调用方应返回 result），false 表示放行
+//
+// 沙箱启用时由沙箱统一检查（危险模式 + 白名单 + 网络命令 URL 预检），
+// AskUser 在 Execute 阶段视为 Deny（与 Glob 的 CheckFileAllowOrDeny 语义一致）。
+// 沙箱未启用时走旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
+func (t *BashTool) enforceCommand(ctx context.Context, command string) (map[string]any, bool) {
+	// 沙箱启用时由沙箱统一检查
+	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			if reason := t.enforceWithSandbox(sb, command); reason != "" {
+				return map[string]any{
+					"stdout":      "",
+					"stderr":      fmt.Sprintf("已阻止：%s", reason),
+					"exit_code":   126,
+					"interrupted": false,
+					"success":     false,
+					"error":       reason,
+				}, true
+			}
+			return nil, false
+		}
+	}
+
+	// 沙箱未启用，走旧逻辑
+	if blocked := detectDangerousCommand(command); blocked != "" {
+		return map[string]any{
+			"stdout":      "",
+			"stderr":      fmt.Sprintf("已阻止：%s", blocked),
+			"exit_code":   126,
+			"interrupted": false,
+			"success":     false,
+			"error":       blocked,
+		}, true
+	}
+	if t.whitelistEnabled {
+		if allowed, failedCmd := t.isCommandWhitelisted(command); !allowed {
+			blockedCmd := failedCmd
+			if blockedCmd == "" {
+				blockedCmd = "unknown"
+			}
+			return map[string]any{
+				"stdout":      "",
+				"stderr":      fmt.Sprintf("已阻止：命令 %q 不在白名单中。允许的命令：%s", blockedCmd, t.whitelistDisplay()),
+				"exit_code":   126,
+				"interrupted": false,
+				"success":     false,
+				"error":       fmt.Sprintf("命令不在白名单中：%s", blockedCmd),
+			}, true
+		}
+	}
+	return nil, false
+}
+
+// enforceWithSandbox 是沙箱启用时的强制检查（简化决策路径：Allow/Deny，不返回 AskUser）。
+// 返回非空字符串表示被拒原因，空字符串表示放行。
+func (t *BashTool) enforceWithSandbox(sb *sandbox.Sandbox, command string) string {
+	dec := sb.CheckCommand(command)
+	switch dec.Decision {
+	case sandbox.DecisionDeny:
+		return dec.Reason
+	case sandbox.DecisionAskUser:
+		// Execute 阶段不弹窗，AskUser 视为 Deny
+		return dec.Reason
+	case sandbox.DecisionAllow:
+		if dec.NeedURLCheck {
+			if reason := t.checkURLs(sb, dec.URLs); reason != "" {
+				return reason
+			}
+		}
+		// 主动提取 URL 做 SSRF 预检（覆盖会话白名单放行的网络命令）
+		if reason := t.enforceNetworkURLs(sb, command); reason != "" {
+			return reason
+		}
+		return ""
+	}
+	return ""
 }
 
 // truncateOutput 截断字符串到指定字符数（按 rune 计算）。

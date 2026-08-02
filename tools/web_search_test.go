@@ -2,10 +2,11 @@ package tools
 
 import (
 	"context"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // ============================================================
@@ -71,98 +72,8 @@ func TestHtmlToText_WhitespaceNormalization(t *testing.T) {
 	}
 }
 
-// ============================================================
-// filterResults — Domain Filtering
-// ============================================================
-
-func TestFilterResults_MaxResults(t *testing.T) {
-	results := []SearchResult{
-		{Title: "A", URL: "https://a.com/1"},
-		{Title: "B", URL: "https://b.com/2"},
-		{Title: "C", URL: "https://c.com/3"},
-	}
-	filtered := filterResults(results, SearchOptions{MaxResults: 2})
-	if len(filtered) != 2 {
-		t.Errorf("MaxResults=2 should limit to 2, got %d", len(filtered))
-	}
-}
-
-func TestFilterResults_AllowedDomains(t *testing.T) {
-	results := []SearchResult{
-		{Title: "GitHub", URL: "https://github.com/repo"},
-		{Title: "Docs", URL: "https://docs.python.org/guide"},
-		{Title: "Other", URL: "https://other.com/page"},
-	}
-	filtered := filterResults(results, SearchOptions{
-		AllowedDomains: []string{"github.com", "docs.python.org"},
-	})
-	if len(filtered) != 2 {
-		t.Errorf("allowed domains should keep 2 results, got %d", len(filtered))
-	}
-	for _, r := range filtered {
-		u, _ := url.Parse(r.URL)
-		if u.Hostname() != "github.com" && u.Hostname() != "docs.python.org" {
-			t.Errorf("unexpected domain in filtered: %s", u.Hostname())
-		}
-	}
-}
-
-func TestFilterResults_BlockedDomains(t *testing.T) {
-	results := []SearchResult{
-		{Title: "Good", URL: "https://good.com/a"},
-		{Title: "Ad", URL: "https://ads.example.com/bad"},
-		{Title: "Spam", URL: "https://spam.com/tracking"},
-	}
-	filtered := filterResults(results, SearchOptions{
-		BlockedDomains: []string{"ads.example.com", "spam.com"},
-	})
-	if len(filtered) != 1 {
-		t.Errorf("blocked domains should remove 2, keep 1, got %d", len(filtered))
-	}
-	if filtered[0].URL != "https://good.com/a" {
-		t.Errorf("remaining result should be good.com, got: %s", filtered[0].URL)
-	}
-}
-
-func TestFilterResults_CombinedFilters(t *testing.T) {
-	results := []SearchResult{
-		{Title: "Keep", URL: "https://keep.github.io/page"},
-		{Title: "BlockMe", URL: "https://block.github.io/bad"},
-		{Title: "Outside", URL: "https://outside.com/x"},
-	}
-	filtered := filterResults(results, SearchOptions{
-		AllowedDomains: []string{"github.io"},
-		BlockedDomains: []string{"block.github.io"},
-		MaxResults:     10,
-	})
-	if len(filtered) != 1 {
-		t.Errorf("combined filters should keep 1 result, got %d", len(filtered))
-	}
-	if filtered[0].Title != "Keep" {
-		t.Errorf("should keep only 'Keep', got: %s", filtered[0].Title)
-	}
-}
-
-func TestFilterResults_EmptyInput(t *testing.T) {
-	filtered := filterResults(nil, SearchOptions{})
-	if len(filtered) != 0 {
-		t.Errorf("nil input should return empty, got %d", len(filtered))
-	}
-}
-
-func TestFilterResults_InvalidURLSkipped(t *testing.T) {
-	results := []SearchResult{
-		{Title: "Valid", URL: "https://valid.com"},
-		{Title: "Bad", URL: "://invalid-url"},
-	}
-	filtered := filterResults(results, SearchOptions{})
-	if len(filtered) != 1 {
-		t.Errorf("invalid URLs should be skipped, got %d", len(filtered))
-	}
-}
-
 func TestWebSearchTool_Info(t *testing.T) {
-	tool := NewWebSearchTool()
+	tool := NewWebSearchTool(logging.NewNopLogger())
 	info := tool.Info()
 	if info.Name != "WebSearch" {
 		t.Errorf("Name = %q, want %q", info.Name, "WebSearch")
@@ -176,16 +87,16 @@ func TestWebSearchTool_Info(t *testing.T) {
 }
 
 func TestWebSearchTool_MissingQuery(t *testing.T) {
-	tool := NewWebSearchTool()
-	_, err := tool.Execute(context.Background(), nil)
+	tool := NewWebSearchTool(logging.NewNopLogger())
+	_, err := tool.Execute(ctxWithLogger(), nil)
 	if err == nil {
 		t.Error("expected error for missing query parameter")
 	}
 }
 
 func TestWebSearchTool_TooShortQuery(t *testing.T) {
-	tool := NewWebSearchTool()
-	_, err := tool.Execute(context.Background(), map[string]any{
+	tool := NewWebSearchTool(logging.NewNopLogger())
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"query": "x",
 	})
 	if err == nil {
@@ -198,10 +109,10 @@ func TestWebSearchTool_CacheBehavior(t *testing.T) {
 		t.Skip("skipping real network test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
 	defer cancel()
 
-	tool := NewWebSearchTool().(*WebSearchTool)
+	tool := NewWebSearchTool(logging.NewNopLogger()).(*WebSearchTool)
 
 	result1, err := tool.Execute(ctx, map[string]any{
 		"query": "cache test unique query",
@@ -223,18 +134,6 @@ func TestWebSearchTool_CacheBehavior(t *testing.T) {
 		return // exact cache hit
 	}
 	t.Logf("cache results differ (acceptable for dynamic content): len1=%d, len2=%d", len(s1), len(s2))
-}
-
-func TestWebSearchTool_MaxResultsClamped(t *testing.T) {
-	results := []SearchResult{
-		{Title: "1", URL: "https://a.com"}, {Title: "2", URL: "https://b.com"},
-		{Title: "3", URL: "https://c.com"}, {Title: "4", URL: "https://d.com"},
-		{Title: "5", URL: "https://e.com"},
-	}
-	filtered := filterResults(results, SearchOptions{MaxResults: 999})
-	if len(filtered) > 20 {
-		t.Errorf("filterResults should clamp MaxResults to 20 internally, got %d", len(filtered))
-	}
 }
 
 // ============================================================
@@ -283,139 +182,8 @@ func TestFormatSearchResults_Empty(t *testing.T) {
 // SearchResult JSON Marshaling
 // ============================================================
 
-// ============================================================
-// extractSearchResultsFromMarkdown — Markdown Search Parser
-// ============================================================
-
-func TestExtractSearchResults_MarkdownLinkInH3(t *testing.T) {
-	md := `一些导航内容
-
-### [2026年Agentic AI趋势](http://www.baidu.com/link?url=abc)
-
-这是描述文本
-
-### [另一个结果](https://example.com/page)
-
-另一个描述
-更多详情`
-
-	results := extractSearchResultsFromMarkdown(md, 10)
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	if results[0].Title != "2026年Agentic AI趋势" {
-		t.Errorf("Title[0] = %q", results[0].Title)
-	}
-	if !strings.Contains(results[0].URL, "baidu.com/link") {
-		t.Errorf("URL[0] = %q", results[0].URL)
-	}
-	if results[1].Title != "另一个结果" {
-		t.Errorf("Title[1] = %q", results[1].Title)
-	}
-}
-
-func TestExtractSearchResults_StripsMarkdownEmphasis(t *testing.T) {
-	md := `### [_2026_ 年 *Agentic* AI趋势](http://example.com)`
-	results := extractSearchResultsFromMarkdown(md, 5)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Title != "2026 年 Agentic AI趋势" {
-		t.Errorf("Title should strip emphasis markers, got: %q", results[0].Title)
-	}
-}
-
-func TestExtractSearchResults_HandlesMultipleHeadingLevels(t *testing.T) {
-	md := `## [H2 Title](http://h2.com)
-some text
-# [H1 Title](http://h1.com)
-other text
-#### [H4 Title](http://h4.com)
-more text`
-	results := extractSearchResultsFromMarkdown(md, 10)
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
-	}
-}
-
-func TestExtractSearchResults_DeduplicatesByURL(t *testing.T) {
-	md := `### [First](http://same.com/page)
-desc
-### [Second](http://same.com/page)
-other desc`
-	results := extractSearchResultsFromMarkdown(md, 5)
-	if len(results) != 1 {
-		t.Errorf("expected 1 deduplicated result, got %d", len(results))
-	}
-}
-
-func TestExtractSearchResults_ExtractsSnippet(t *testing.T) {
-	md := `### [Title](http://example.com)
-
-这是摘要文本
-包含多行内容`
-
-	results := extractSearchResultsFromMarkdown(md, 5)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Snippet == "" {
-		t.Error("snippet should not be empty")
-	}
-	if !strings.Contains(results[0].Snippet, "摘要文本") {
-		t.Errorf("snippet should contain extracted text, got: %q", results[0].Snippet)
-	}
-}
-
-func TestExtractSearchResults_EmptyInput(t *testing.T) {
-	results := extractSearchResultsFromMarkdown("", 10)
-	if len(results) != 0 {
-		t.Errorf("empty input should return 0 results, got %d", len(results))
-	}
-	results = extractSearchResultsFromMarkdown("   ", 10)
-	if len(results) != 0 {
-		t.Errorf("whitespace input should return 0 results, got %d", len(results))
-	}
-}
-
-func TestExtractSearchResults_NoHeadingShowsNoResults(t *testing.T) {
-	md := `这只是普通文本链接 [title](http://example.com) 但没有标题`
-	results := extractSearchResultsFromMarkdown(md, 5)
-	if len(results) != 0 {
-		t.Errorf("links without heading prefix should be skipped, got %d", len(results))
-	}
-}
-
-func TestExtractSearchResults_RespectsMaxResults(t *testing.T) {
-	md := `### [Result A](http://example-a.com)
-### [Result B](http://example-b.com)
-### [Result C](http://example-c.com)
-### [Result D](http://example-d.com)`
-	results := extractSearchResultsFromMarkdown(md, 2)
-	if len(results) != 2 {
-		t.Errorf("maxResults=2 should return 2, got %d", len(results))
-	}
-}
-
-func TestRandomUA_ReturnsNonEmpty(t *testing.T) {
-	ua := randomUA()
-	if ua == "" {
-		t.Error("randomUA() should not return empty")
-	}
-	if !strings.Contains(ua, "Mozilla") {
-		t.Errorf("UA should contain Mozilla, got: %s", ua)
-	}
-}
-
-func TestRandomUA_Varies(t *testing.T) {
-	seen := make(map[string]bool)
-	for i := 0; i < 20; i++ {
-		seen[randomUA()] = true
-	}
-	if len(seen) < 2 {
-		t.Error("randomUA() should produce at least 2 different values over 20 calls")
-	}
-}
+// 注：旧的 randomUA 单测已移除——randomUA 在隐蔽客户端重构中被删除，
+// UA/profile 配对机制（pickUAProfile）的单测见 stealth_client_test.go。
 
 func TestSearchResult_JSONMarshal(t *testing.T) {
 	r := SearchResult{
@@ -431,4 +199,227 @@ func TestSearchResult_JSONMarshal(t *testing.T) {
 	if !strings.Contains(s, `"title"`) || !strings.Contains(s, `"url"`) {
 		t.Errorf("JSON should contain title and url fields, got: %s", s)
 	}
+}
+
+// ============================================================
+// 真实搜索诊断测试（需要网络，-short 模式跳过）
+// 用于定位"完全搜不到结果"问题发生在哪一层：适配器 / 完整流程。
+// ============================================================
+
+// TestWebSearch_RealSogou 直接调用搜狗适配器，绕过 Execute 的缓存与多 token 逻辑。
+func TestWebSearch_RealSogou(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	defer cancel()
+
+	adapter := NewSogouAdapter(logging.NewNopLogger())
+	results, err := adapter.Search(ctx, "Go 语言", SearchOptions{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("搜狗适配器搜索失败：%v", err)
+	}
+	t.Logf("搜狗返回 %d 条结果", len(results))
+	for i, r := range results {
+		t.Logf("  [%d] %s\n      %s", i+1, r.Title, r.URL)
+	}
+	if len(results) == 0 {
+		t.Logf("搜狗适配器返回 0 条结果——可能被风控（环境问题，非代码缺陷）")
+	}
+}
+
+// TestWebSearch_RealWeixin 直接调用微信适配器。
+func TestWebSearch_RealWeixin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	defer cancel()
+
+	adapter := NewWeixinAdapter(logging.NewNopLogger())
+	results, err := adapter.Search(ctx, "Go 语言", SearchOptions{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("微信适配器搜索失败：%v", err)
+	}
+	t.Logf("微信返回 %d 条结果", len(results))
+	for i, r := range results {
+		t.Logf("  [%d] %s\n      %s", i+1, r.Title, r.URL)
+	}
+	if len(results) == 0 {
+		t.Logf("微信适配器返回 0 条结果——/link?url= 加密重定向未解析或被风控（环境问题）")
+	}
+}
+
+// TestWebSearch_RealFullExecute 走完整 Execute 流程（多 token 拆分 + 多引擎合并 + 去重）。
+func TestWebSearch_RealFullExecute(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 40*time.Second)
+	defer cancel()
+
+	tool := NewWebSearchTool(logging.NewNopLogger())
+	out, err := tool.Execute(ctx, map[string]any{
+		"query": "Go 语言",
+	})
+	if err != nil {
+		t.Fatalf("WebSearchTool.Execute 失败：%v", err)
+	}
+	s := out.(string)
+	t.Logf("完整 Execute 返回（长度 %d）：\n%s", len(s), s)
+}
+
+// TestWebSearch_RealBing 直接调用必应中国适配器。
+func TestWebSearch_RealBing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	defer cancel()
+
+	adapter := NewBingAdapter(logging.NewNopLogger())
+	results, err := adapter.Search(ctx, "Go 语言", SearchOptions{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("必应适配器搜索失败：%v", err)
+	}
+	t.Logf("必应返回 %d 条结果", len(results))
+	for i, r := range results {
+		t.Logf("  [%d] %s\n      %s", i+1, r.Title, r.URL)
+	}
+	if len(results) == 0 {
+		t.Logf("必应适配器返回 0 条结果——cn.bing.com 可能被风控（环境问题，非代码缺陷）")
+	}
+}
+
+// TestWebSearch_Real360 直接调用 360 搜索适配器，验证 data-mdurl 提取是否生效。
+func TestWebSearch_Real360(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	defer cancel()
+
+	adapter := NewSo360Adapter(logging.NewNopLogger())
+	results, err := adapter.Search(ctx, "Go 语言", SearchOptions{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("360 适配器搜索失败：%v", err)
+	}
+	t.Logf("360 返回 %d 条结果", len(results))
+	for i, r := range results {
+		t.Logf("  [%d] %s\n      %s", i+1, r.Title, r.URL)
+	}
+	if len(results) == 0 {
+		t.Logf("360 适配器返回 0 条结果——可能被风控（环境问题，非代码缺陷；单独运行该测试可验证）")
+	}
+	// 验证 data-mdurl 提取生效：URL 不应再是 so.com/link 重定向
+	for i, r := range results {
+		if strings.Contains(r.URL, "so.com/link") {
+			t.Errorf("结果[%d] URL 仍是 360 重定向链接，data-mdurl 提取未生效：%s", i+1, r.URL)
+		}
+	}
+}
+
+// TestWebSearch_RealToutiao 直接调用头条搜索适配器，验证 /search/jump?url= 解析是否生效。
+func TestWebSearch_RealToutiao(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	defer cancel()
+
+	adapter := NewToutiaoAdapter(logging.NewNopLogger())
+	results, err := adapter.Search(ctx, "Go 语言", SearchOptions{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("头条适配器搜索失败：%v", err)
+	}
+	t.Logf("头条返回 %d 条结果", len(results))
+	for i, r := range results {
+		t.Logf("  [%d] %s\n      %s", i+1, r.Title, r.URL)
+	}
+	if len(results) == 0 {
+		t.Logf("头条适配器返回 0 条结果——so.toutiao.com 可能被风控（环境问题，非代码缺陷）")
+	}
+	// 验证 /search/jump?url= 解析生效：URL 不应再是 so.toutiao.com/search/jump 重定向
+	for i, r := range results {
+		if strings.Contains(r.URL, "so.toutiao.com/search/jump") {
+			t.Errorf("结果[%d] URL 仍是头条跳转链接，url 参数解析未生效：%s", i+1, r.URL)
+		}
+	}
+}
+
+// ============================================================
+// splitQueryTokens — 逗号拆分
+// ============================================================
+
+func TestSplitQueryTokens_NoComma_NaturalSentence(t *testing.T) {
+	// 无逗号的自然语句不拆分——这是核心修复：空格不再触发拆分
+	cases := []string{"Go 语言", "redis 迁移 配置", "OpenAI"}
+	for _, q := range cases {
+		got := splitQueryTokens(q)
+		if len(got) != 1 || got[0] != q {
+			t.Errorf("无逗号查询 %q 应原样返回，got %q", q, got)
+		}
+	}
+}
+
+func TestSplitQueryTokens_EnglishComma(t *testing.T) {
+	got := splitQueryTokens("Go 语言,Redis")
+	want := []string{"Go 语言", "Redis"}
+	if !equalStringSlices(got, want) {
+		t.Errorf("英文逗号拆分：got %q, want %q", got, want)
+	}
+}
+
+func TestSplitQueryTokens_ChineseComma(t *testing.T) {
+	got := splitQueryTokens("Go 语言，Redis")
+	want := []string{"Go 语言", "Redis"}
+	if !equalStringSlices(got, want) {
+		t.Errorf("中文逗号拆分：got %q, want %q", got, want)
+	}
+}
+
+func TestSplitQueryTokens_MixedComma_WithSpaces(t *testing.T) {
+	// 混合中英文逗号 + 首尾空格，应正确拆分并 TrimSpace
+	got := splitQueryTokens("Go 语言, Redis 配置， Python")
+	want := []string{"Go 语言", "Redis 配置", "Python"}
+	if !equalStringSlices(got, want) {
+		t.Errorf("混合逗号+空格：got %q, want %q", got, want)
+	}
+}
+
+func TestSplitQueryTokens_FiltersShortTokens(t *testing.T) {
+	// "a"（<=1 字符）被过滤，"Go" 保留
+	got := splitQueryTokens("a,Go")
+	want := []string{"Go"}
+	if !equalStringSlices(got, want) {
+		t.Errorf("短词过滤：got %q, want %q", got, want)
+	}
+}
+
+func TestSplitQueryTokens_LongQuery_NotSplit(t *testing.T) {
+	// >50 字节的长查询即使含逗号也不拆分（视为自然语句）
+	long := strings.Repeat("Go 语言,", 10)
+	got := splitQueryTokens(long)
+	if len(got) != 1 || got[0] != long {
+		t.Errorf("长查询不应拆分：got %q", got)
+	}
+}
+
+func TestSplitQueryTokens_Empty(t *testing.T) {
+	got := splitQueryTokens("")
+	if len(got) != 1 || got[0] != "" {
+		t.Errorf("空查询应返回 [\"\"]，got %q", got)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -38,7 +38,7 @@ func TestAskUser_Info(t *testing.T) {
 func TestAskUser_ExecuteWithoutAnswers(t *testing.T) {
 	tool := NewAskUserTool()
 
-	result, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"question": "What is your name?",
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestAskUser_ExecuteWithoutAnswers(t *testing.T) {
 func TestAskUser_ExecuteWithAnswers(t *testing.T) {
 	tool := NewAskUserTool()
 
-	result, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"question": "What is your name?",
 		"answers": map[string]any{
 			"What is your name?": "Alice",
@@ -87,7 +87,7 @@ func TestAskUser_ExecuteWithAnswers(t *testing.T) {
 func TestAskUser_MissingParam(t *testing.T) {
 	tool := NewAskUserTool()
 
-	_, err := tool.Execute(context.Background(), map[string]any{})
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{})
 	if err == nil {
 		t.Error("expected error for missing question parameter")
 	}
@@ -96,7 +96,7 @@ func TestAskUser_MissingParam(t *testing.T) {
 func TestAskUser_EmptyQuestion(t *testing.T) {
 	tool := NewAskUserTool()
 
-	_, err := tool.Execute(context.Background(), map[string]any{
+	_, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"question": "",
 	})
 	if err == nil {
@@ -110,7 +110,7 @@ func TestAskUser_ExecuteIsNonBlocking(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		tool.Execute(context.Background(), map[string]any{"question": "test"})
+		tool.Execute(ctxWithLogger(), map[string]any{"question": "test"})
 	}()
 
 	select {
@@ -123,7 +123,7 @@ func TestAskUser_ExecuteIsNonBlocking(t *testing.T) {
 func TestAskUser_NoInteractionRequest(t *testing.T) {
 	tool := NewAskUserTool()
 
-	result, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(ctxWithLogger(), map[string]any{
 		"question": "test?",
 	})
 	if err != nil {

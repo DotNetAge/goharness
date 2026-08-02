@@ -250,7 +250,7 @@ func TestFuncTool_Interface(t *testing.T) {
 			},
 		}
 
-		result, err := tool.Execute(context.Background(), map[string]any{"key": "value"})
+		result, err := tool.Execute(ctxWithLogger(), map[string]any{"key": "value"})
 		if err != nil {
 			t.Fatalf("Execute 返回错误: %v", err)
 		}
@@ -268,7 +268,7 @@ func TestFuncTool_Interface(t *testing.T) {
 			},
 		}
 
-		result, err := tool.Execute(context.Background(), nil)
+		result, err := tool.Execute(ctxWithLogger(), nil)
 		if err == nil {
 			t.Fatal("应返回错误")
 		}

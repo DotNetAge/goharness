@@ -34,13 +34,23 @@ func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor str
 		return s
 	}
 
-	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger)
+	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger, rt.sessionOpts()...)
 	if err != nil {
 		rt.logger.Error("创建子智能体会话失败", err, "agent", agentName, "project", projectDir)
 		return nil
 	}
 	rt.subAgentSessionCache[key] = s
 	return s
+}
+
+// sessionOpts 返回 Runtime 应注入到所有子会话的 SessionConfig 列表。
+// 当前仅注入沙箱（若已配置）；未来可扩展其他自动注入项。
+// 返回 nil 时 session.New 使用默认配置，不影响现有行为。
+func (rt *Runtime) sessionOpts() []session.SessionConfig {
+	if rt.sandbox == nil {
+		return nil
+	}
+	return []session.SessionConfig{session.WithSandbox(rt.sandbox)}
 }
 
 // spawnSubAgent 是创建并运行子智能体的 SpawnFunc 实现。

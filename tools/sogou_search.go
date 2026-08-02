@@ -2,20 +2,21 @@ package tools
 
 import (
 	"context"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/DotNetAge/goharness/logging"
 )
 
 type SogouAdapter struct {
-	client *http.Client
+	client *stealthClient
 }
 
-func NewSogouAdapter() *SogouAdapter {
+func NewSogouAdapter(logger logging.Logger) *SogouAdapter {
 	return &SogouAdapter{
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: newSearchStealthClient(logger, 15*time.Second),
 	}
 }
 
@@ -32,29 +33,26 @@ func (a *SogouAdapter) Search(ctx context.Context, query string, opts SearchOpti
 	params.Set("num", strconv.Itoa(num))
 
 	reqURL := "https://www.sogou.com/web?" + params.Encode()
-	md, err := fetchAndExtract(ctx, a.client, reqURL, nil)
+	body, err := fetchBody(ctx, a.client, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	results := extractSearchResultsFromMarkdown(md, opts.MaxResults)
-	for i := range results {
-		if resolved := resolveSogouURL(results[i].URL, reqURL); resolved != "" {
-			results[i].URL = resolved
-		}
-	}
+	results := extractResultsWithGoquery(body, "div.vrwrap h3.vr-title a, h3.vr-title a", "href", "https://www.sogou.com", func(h string) string {
+		return resolveSogouURL(ctx, a.client, h, reqURL)
+	}, opts.MaxResults)
 
-	// Drop results whose URLs are still unresolved Sogou redirects
+	// 过滤掉未解析的 sogou.com 重定向链接
 	filtered := make([]SearchResult, 0, len(results))
 	for _, r := range results {
 		if strings.HasPrefix(r.URL, "http") && !strings.Contains(r.URL, "sogou.com") {
 			filtered = append(filtered, r)
 		}
 	}
-	return filterResults(filtered, opts), nil
+	return filtered, nil
 }
 
-func resolveSogouURL(href string, searchURL string) string {
+func resolveSogouURL(ctx context.Context, client *stealthClient, href, searchURL string) string {
 	if href == "" {
 		return ""
 	}
@@ -73,7 +71,7 @@ func resolveSogouURL(href string, searchURL string) string {
 	// 3) Relative Sogou redirect — need JS redirect resolution
 	if strings.HasPrefix(href, "/link?") {
 		fullURL := "https://www.sogou.com" + href
-		if target := resolveSogouJSRedirect(fullURL, searchURL); target != "" {
+		if target := resolveSogouJSRedirect(ctx, client, fullURL, searchURL); target != "" {
 			return target
 		}
 		// Fall back to absolute URL (may work if WebFetch follows JS redirect)
@@ -83,35 +81,27 @@ func resolveSogouURL(href string, searchURL string) string {
 	return ""
 }
 
-// resolveSogouJSRedirect fetches a Sogou redirect page and extracts the
-// target URL from window.location.replace("...").
-func resolveSogouJSRedirect(redirectURL, referer string) string {
-	client := &http.Client{
-		Timeout: 8 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // don't follow redirects
-		},
-	}
-	req, err := http.NewRequest("GET", redirectURL, nil)
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("Referer", referer)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-
-	resp, err := client.Do(req)
+// resolveSogouJSRedirect 通过隐蔽客户端获取搜狗重定向页，提取 window.location.replace 中的目标 URL。
+// 不跟随重定向（FollowRedirects:false），因为搜狗返回 200 + JS 重定向而非 HTTP 302。
+// 修复原实现用裸 client + 硬编码截断 UA 的指纹不一致 bug——现统一走 stealthClient，
+// 与主搜索请求共享 TLS 指纹、cookiejar 与浏览器指纹头。
+func resolveSogouJSRedirect(ctx context.Context, client *stealthClient, redirectURL, referer string) string {
+	resp, err := client.Do(ctx, StealthRequest{
+		Method:          "GET",
+		URL:             redirectURL,
+		Headers:         map[string][]string{"Referer": {referer}},
+		FollowRedirects: false,
+	})
 	if err != nil {
 		return ""
 	}
 	defer resp.Body.Close()
 
-	// Sogou returns 200 with JS redirect: window.location.replace("https://real-url")
+	// 搜狗返回 200 + JS 重定向：window.location.replace("https://real-url")
 	body := make([]byte, 4096)
 	n, _ := resp.Body.Read(body)
 	content := string(body[:n])
 
-	// Extract target URL from JS redirect
 	const prefix = `window.location.replace("`
 	start := strings.Index(content, prefix)
 	if start < 0 {

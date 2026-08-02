@@ -24,7 +24,17 @@ func testCtx(t *testing.T) context.Context {
 	}
 	return WithToolContext(context.Background(), &ToolContext{
 		Session:   sess,
+		Logger:    logging.NewNopLogger(),
 		EmitEvent: func(e events.ReactEvent) {},
+	})
+}
+
+// ctxWithLogger 返回带 NopLogger 的 ToolContext ctx，用于不依赖 Session 的工具测试。
+// 项目约束：ToolContext.Logger 必然非空（生产由 Runtime 注入）；测试须遵守同一契约，
+// 不靠 getLogger 的 DefaultLogger 兜底（已删除）。
+func ctxWithLogger() context.Context {
+	return WithToolContext(context.Background(), &ToolContext{
+		Logger: logging.NewNopLogger(),
 	})
 }
 
@@ -42,7 +52,7 @@ func TestGrep(t *testing.T) {
 	grep := NewGrepTool()
 
 	// Test searching for a pattern in the current file
-	result, err := grep.Execute(context.Background(), map[string]any{"pattern": "TestGrep", "path": "./builtin_test.go"})
+	result, err := grep.Execute(ctxWithLogger(), map[string]any{"pattern": "TestGrep", "path": "./builtin_test.go"})
 	if err != nil {
 		t.Errorf("Expected no error for grep, got %v", err)
 	}
@@ -55,7 +65,7 @@ func TestBash(t *testing.T) {
 	bash := NewBashToolUnrestricted()
 
 	t.Run("basic command execution", func(t *testing.T) {
-		result, err := bash.Execute(context.Background(), map[string]any{"command": "echo hello"})
+		result, err := bash.Execute(ctxWithLogger(), map[string]any{"command": "echo hello"})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -66,14 +76,14 @@ func TestBash(t *testing.T) {
 	})
 
 	t.Run("missing command parameter", func(t *testing.T) {
-		_, err := bash.Execute(context.Background(), map[string]any{})
+		_, err := bash.Execute(ctxWithLogger(), map[string]any{})
 		if err == nil {
 			t.Error("Expected error for missing command")
 		}
 	})
 
 	t.Run("command with error", func(t *testing.T) {
-		result, err := bash.Execute(context.Background(), map[string]any{"command": "ls /nonexistent_dir_123"})
+		result, err := bash.Execute(ctxWithLogger(), map[string]any{"command": "ls /nonexistent_dir_123"})
 		if err != nil {
 			t.Fatalf("Expected no error (error in result), got %v", err)
 		}
@@ -100,7 +110,7 @@ func TestBash(t *testing.T) {
 	})
 
 	t.Run("working_dir parameter", func(t *testing.T) {
-		result, err := bash.Execute(context.Background(), map[string]any{
+		result, err := bash.Execute(ctxWithLogger(), map[string]any{
 			"command":     "pwd",
 			"working_dir": "/tmp",
 		})
@@ -291,7 +301,7 @@ func TestGlob(t *testing.T) {
 	glob := NewGlobTool()
 
 	t.Run("find go files", func(t *testing.T) {
-		result, err := glob.Execute(context.Background(), map[string]any{"pattern": "*.go", "path": "."})
+		result, err := glob.Execute(ctxWithLogger(), map[string]any{"pattern": "*.go", "path": "."})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -305,21 +315,21 @@ func TestGlob(t *testing.T) {
 	})
 
 	t.Run("missing pattern", func(t *testing.T) {
-		_, err := glob.Execute(context.Background(), map[string]any{"path": "."})
+		_, err := glob.Execute(ctxWithLogger(), map[string]any{"path": "."})
 		if err == nil {
 			t.Error("Expected error for missing pattern")
 		}
 	})
 
 	t.Run("non-existent search path", func(t *testing.T) {
-		_, err := glob.Execute(context.Background(), map[string]any{"pattern": "*.go", "path": "/nonexistent_dir_12345"})
+		_, err := glob.Execute(ctxWithLogger(), map[string]any{"pattern": "*.go", "path": "/nonexistent_dir_12345"})
 		if err == nil {
 			t.Error("Expected error for non-existent path")
 		}
 	})
 
 	t.Run("search path is not a directory", func(t *testing.T) {
-		_, err := glob.Execute(context.Background(), map[string]any{"pattern": "*.go", "path": "builtin_test.go"})
+		_, err := glob.Execute(ctxWithLogger(), map[string]any{"pattern": "*.go", "path": "builtin_test.go"})
 		if err == nil {
 			t.Error("Expected error when path is not a directory")
 		}
@@ -561,14 +571,14 @@ func TestBash_EdgeCases(t *testing.T) {
 	bash := NewBashToolUnrestricted()
 
 	t.Run("空命令字符串", func(t *testing.T) {
-		_, err := bash.Execute(context.Background(), map[string]any{"command": ""})
+		_, err := bash.Execute(ctxWithLogger(), map[string]any{"command": ""})
 		if err == nil {
 			t.Error("空命令应返回错误")
 		}
 	})
 
 	t.Run("纯空白命令", func(t *testing.T) {
-		_, err := bash.Execute(context.Background(), map[string]any{"command": "   \t  "})
+		_, err := bash.Execute(ctxWithLogger(), map[string]any{"command": "   \t  "})
 		if err == nil {
 			t.Error("纯空白命令应返回错误")
 		}
@@ -576,7 +586,7 @@ func TestBash_EdgeCases(t *testing.T) {
 
 	t.Run("超长命令（超过 16000 字符）", func(t *testing.T) {
 		longCmd := strings.Repeat("a", 16001)
-		_, err := bash.Execute(context.Background(), map[string]any{"command": longCmd})
+		_, err := bash.Execute(ctxWithLogger(), map[string]any{"command": longCmd})
 		if err == nil {
 			t.Error("超长命令应返回错误")
 		}
@@ -586,7 +596,7 @@ func TestBash_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("timeout 参数 - 最小值限制", func(t *testing.T) {
-		result, err := bash.Execute(context.Background(), map[string]any{
+		result, err := bash.Execute(ctxWithLogger(), map[string]any{
 			"command": "echo test",
 			"timeout": float64(100), // 小于最小值 1000
 		})
@@ -600,7 +610,7 @@ func TestBash_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("timeout 参数 - 最大值限制", func(t *testing.T) {
-		result, err := bash.Execute(context.Background(), map[string]any{
+		result, err := bash.Execute(ctxWithLogger(), map[string]any{
 			"command": "echo test",
 			"timeout": float64(999999), // 超过最大值 300000
 		})
@@ -615,7 +625,7 @@ func TestBash_EdgeCases(t *testing.T) {
 
 	t.Run("输出截断 - 大 stdout", func(t *testing.T) {
 		cmd := fmt.Sprintf("python3 -c \"print('x' * %d)\"", maxBashOutputSize*2)
-		result, err := bash.Execute(context.Background(), map[string]any{"command": cmd})
+		result, err := bash.Execute(ctxWithLogger(), map[string]any{"command": cmd})
 		if err != nil {
 			t.Skipf("跳过: python3 可能不可用: %v", err)
 		}
@@ -795,7 +805,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 	grep := NewGrepTool()
 
 	t.Run("无匹配结果", func(t *testing.T) {
-		result, err := grep.Execute(context.Background(), map[string]any{
+		result, err := grep.Execute(ctxWithLogger(), map[string]any{
 			"pattern": "ZZZ_NONEXISTENT_PATTERN_ZZZ",
 			"path":    ".",
 		})
@@ -809,7 +819,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("特殊正则表达式字符", func(t *testing.T) {
-		result, err := grep.Execute(context.Background(), map[string]any{
+		result, err := grep.Execute(ctxWithLogger(), map[string]any{
 			"pattern": `func\s+\w+\(`,
 			"path":    "*.go",
 		})
@@ -822,7 +832,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("files_with_matches 输出模式", func(t *testing.T) {
-		result, err := grep.Execute(context.Background(), map[string]any{
+		result, err := grep.Execute(ctxWithLogger(), map[string]any{
 			"pattern":     "package tools",
 			"output_mode": "files_with_matches",
 			"path":        ".",

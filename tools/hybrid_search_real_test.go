@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DotNetAge/goharness/logging"
 )
 
 // TestHybridSearch_RealKeyword tests the hybrid search with a real keyword
@@ -13,10 +15,10 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 		t.Skip("skipping real network test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 60*time.Second)
 	defer cancel()
 
-	tool := NewWebSearchTool()
+	tool := NewWebSearchTool(logging.NewNopLogger())
 	result, err := tool.Execute(ctx, map[string]any{
 		"query":       "Agentic应用2026的趋势",
 		"max_results": float64(15),
@@ -57,12 +59,14 @@ func TestHybridSearch_AdapterPerformance(t *testing.T) {
 		t.Skip("skipping real network test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
 	defer cancel()
 
 	adapters := []SearchAdapter{
-		NewSogouAdapter(),
-		NewWeixinAdapter(),
+		NewSogouAdapter(logging.NewNopLogger()),
+		NewWeixinAdapter(logging.NewNopLogger()),
+		NewBingAdapter(logging.NewNopLogger()),
+		NewSo360Adapter(logging.NewNopLogger()),
 	}
 
 	query := "Agentic RAG system design patterns"

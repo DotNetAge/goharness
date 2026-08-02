@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/tools/filestate"
 )
 
@@ -111,6 +112,38 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 		return true, ""
 	}
 
+	// 沙箱启用时，由沙箱统一做文件安全决策
+	if sb := tc.Session.Sandbox(); sb != nil {
+		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+		switch dec.Decision {
+		case sandbox.DecisionAllow:
+			return true, ""
+		case sandbox.DecisionDeny:
+			return false, dec.Reason
+		case sandbox.DecisionAskUser:
+			for _, dir := range t.whitelist {
+				if pathWithinScope(dir, resolved) {
+					return true, ""
+				}
+			}
+			if tc.SessionWhitelist != nil {
+				for _, allowed := range tc.SessionWhitelist.Edit {
+					if pathWithinScope(allowed, resolved) {
+						return true, ""
+					}
+				}
+			}
+			return false, dec.Reason
+		}
+	}
+
+	// 文件不存在或无法访问时跳过授权：Edit 对不存在的文件永远报错不创建（创建模式仅在
+	// "存在但为空"时触发）。ENOTDIR/EACCES 等场景文件同样不可能正常编辑，
+	// 授权后 Execute 同样会失败，直接放行让 Execute 报错，避免浪费一轮用户交互。
+	if _, statErr := os.Stat(resolved); statErr != nil {
+		return true, ""
+	}
+
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
 		for _, dir := range t.whitelist {
 			if pathWithinScope(dir, resolved) {
@@ -147,8 +180,12 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		"scope", scope,
 	)
 
-	// Security check
-	if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// Security check：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return nil, err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
 		return nil, err
 	}
 

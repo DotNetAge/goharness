@@ -101,7 +101,7 @@ func TestToolExecutor_Execute_Basic(t *testing.T) {
 	executor := NewToolExecutor(registry)
 
 	t.Run("成功执行", func(t *testing.T) {
-		result, err := executor.Execute(context.Background(), "TestExecute", map[string]any{"key": "value"})
+		result, err := executor.Execute(ctxWithLogger(), "TestExecute", map[string]any{"key": "value"})
 		if err != nil {
 			t.Fatalf("Execute 返回错误: %v", err)
 		}
@@ -120,14 +120,14 @@ func TestToolExecutor_Execute_Basic(t *testing.T) {
 	})
 
 	t.Run("工具不存在", func(t *testing.T) {
-		_, err := executor.Execute(context.Background(), "NonExistentTool", nil)
+		_, err := executor.Execute(ctxWithLogger(), "NonExistentTool", nil)
 		if err == nil {
 			t.Error("不存在的工具应返回错误")
 		}
 	})
 
 	t.Run("空参数执行", func(t *testing.T) {
-		result, err := executor.Execute(context.Background(), "TestExecute", nil)
+		result, err := executor.Execute(ctxWithLogger(), "TestExecute", nil)
 		if err != nil {
 			t.Fatalf("nil 参数应能正常执行: %v", err)
 		}
@@ -151,7 +151,7 @@ func TestToolExecutor_Execute_Timeout(t *testing.T) {
 	executor := NewToolExecutor(registry)
 
 	t.Run("上下文超时取消", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		ctx, cancel := context.WithTimeout(ctxWithLogger(), 100*time.Millisecond)
 		defer cancel()
 
 		result, err := executor.Execute(ctx, "SlowTool", nil)
@@ -179,7 +179,7 @@ func TestToolExecutor_Execute_ErrorPropagation(t *testing.T) {
 		registry.Register(errorTool)
 
 		executor := NewToolExecutor(registry)
-		result, err := executor.Execute(context.Background(), "ErrorTool", nil)
+		result, err := executor.Execute(ctxWithLogger(), "ErrorTool", nil)
 
 		if err != nil {
 			t.Fatalf("工具错误应在 Result 中，不应直接返回: %v", err)
@@ -197,7 +197,7 @@ func TestToolExecutor_Execute_ErrorPropagation(t *testing.T) {
 		registry.Register(mapTool)
 
 		executor := NewToolExecutor(registry)
-		result, err := executor.Execute(context.Background(), "MapResultTool", nil)
+		result, err := executor.Execute(ctxWithLogger(), "MapResultTool", nil)
 
 		if err != nil {
 			t.Fatalf("Execute 失败: %v", err)
@@ -227,7 +227,7 @@ func TestToolExecutor_ExtractsReadImages(t *testing.T) {
 	registry.Register(imgTool)
 
 	executor := NewToolExecutor(registry)
-	result, err := executor.Execute(context.Background(), "ReadImageTool", nil)
+	result, err := executor.Execute(ctxWithLogger(), "ReadImageTool", nil)
 	if err != nil {
 		t.Fatalf("Execute 失败: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestToolExecutor_NonReadResultNoImages(t *testing.T) {
 	registry.Register(plain)
 
 	executor := NewToolExecutor(registry)
-	result, err := executor.Execute(context.Background(), "PlainTool", nil)
+	result, err := executor.Execute(ctxWithLogger(), "PlainTool", nil)
 	if err != nil {
 		t.Fatalf("Execute 失败: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestToolExecutor_LargeResult(t *testing.T) {
 	registry.Register(largeTool)
 
 	executor := NewToolExecutor(registry)
-	result, err := executor.Execute(context.Background(), "LargeResultTool", nil)
+	result, err := executor.Execute(ctxWithLogger(), "LargeResultTool", nil)
 
 	if err != nil {
 		t.Fatalf("大结果执行失败: %v", err)

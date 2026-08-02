@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/sandbox"
 )
 
 // const globDefaultTimeout = 30 * time.Second
@@ -74,16 +75,27 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 
 	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
 	// 修复前 "~/projects" 会被 os.Stat 当作字面量目录，导致"搜索路径错误"。
+	tc := GetToolContext(ctx)
 	var projectDir, sessionDir string
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+	if tc != nil && tc.Session != nil {
 		projectDir = tc.Session.ProjectDir()
 		sessionDir = tc.Session.SessionDir()
 	}
 	resolvedSearch, _ := ResolveTargetPath(searchPath, projectDir, sessionDir)
 
 	// Security check：防止 "../" 等相对路径上跳越出工作区。
-	// 修复前 Glob 缺少边界检查，"path: ../../" 会直接扫描工作区外的目录。
-	if err := ValidateFileSafety(resolvedSearch, projectDir); err != nil {
+	// 沙箱启用时用 CheckFileAllowOrDeny（Glob 不实现 PermissionRequired，越界直接拒绝不弹窗）；
+	// 沙箱未启用时走旧的 ValidateFileSafety。
+	if tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			dec := sb.CheckFileAllowOrDeny(resolvedSearch, projectDir)
+			if dec.Decision != sandbox.DecisionAllow {
+				return nil, fmt.Errorf("%s", dec.Reason)
+			}
+		} else if err := ValidateFileSafety(resolvedSearch, projectDir); err != nil {
+			return nil, err
+		}
+	} else if err := ValidateFileSafety(resolvedSearch, projectDir); err != nil {
 		return nil, err
 	}
 

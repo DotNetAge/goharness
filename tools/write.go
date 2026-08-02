@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/tools/diffutil"
 	"github.com/DotNetAge/goharness/tools/filestate"
 )
@@ -70,8 +71,11 @@ func NewWriteTool() *Write {
 
 // Grant implements tools.PermissionRequired.
 // 与设计保持一致：硬拒绝（敏感文件 .env/.ssh）在 Execute 中处理，不在 Grant 中重复。
+//
+// 注意：参数名必须与 ToolInfo.Parameters 定义（"filePath"）及 Execute 取参保持一致。
+// 早期版本此处误用 "file_path" 导致 Grant 永远取不到路径，安全检查被绕过（沙箱启用时同样失效）。
 func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	raw, _ := GetParam(params, "file_path")
+	raw, _ := GetParam(params, "filePath")
 	filePath, _ := raw.(string)
 	if filePath == "" {
 		return true, ""
@@ -85,6 +89,33 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 	resolved, _ := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 	if resolved == "" {
 		return true, ""
+	}
+
+	// 沙箱启用时，由沙箱统一做文件安全决策。
+	// 注意：Write 语义是"创建或覆盖"，沙箱 CheckFile 对不存在的文件返回 Allow
+	// （让 Execute 走创建路径），对存在的越界文件返回 AskUser。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+		switch dec.Decision {
+		case sandbox.DecisionAllow:
+			return true, ""
+		case sandbox.DecisionDeny:
+			return false, dec.Reason
+		case sandbox.DecisionAskUser:
+			for _, dir := range w.whitelist {
+				if pathWithinScope(dir, resolved) {
+					return true, ""
+				}
+			}
+			if tc.SessionWhitelist != nil {
+				for _, allowed := range tc.SessionWhitelist.Write {
+					if pathWithinScope(allowed, resolved) {
+						return true, ""
+					}
+				}
+			}
+			return false, dec.Reason
+		}
 	}
 
 	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
@@ -166,8 +197,12 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		"content_len", len(content),
 	)
 
-	// 安全校验
-	if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// 安全校验：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return nil, err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
 		return nil, err
 	}
 
