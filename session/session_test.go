@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -117,10 +118,10 @@ func TestSession_ConcurrentAccess(t *testing.T) {
 // ── 压缩相关测试 ─────────────────────────────────────────────────────────
 
 func TestSession_TryCompact(t *testing.T) {
-	summarizerCalled := false
-	mockSummarizer := &mockSummarizer{
-		SummarizeFunc: func(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error) {
-			summarizerCalled = true
+	compactorCalled := false
+	mockComp := &mockCompactor{
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+			compactorCalled = true
 			return []memory.MemoryChunk{
 				{Summary: "summary of old messages", Content: "compacted content"},
 			}, nil
@@ -134,8 +135,8 @@ func TestSession_TryCompact(t *testing.T) {
 
 	s := newTestSession("session-window-size", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 100 }),
-		WithSummarizer(mockSummarizer),
-		WithMemory(newInMemoryMemory()), // 必须配置 mem，否则 persistSummary 会失败
+		WithCompactor(mockComp),
+		WithMemory(newInMemoryMemory()), // 必须配置 mem，否则 persistCompactionChunks 会失败
 		WithCompactionHandler(handler),
 	)
 
@@ -148,11 +149,11 @@ func TestSession_TryCompact(t *testing.T) {
 		})
 	}
 
-	// Trigger compaction
+	// 触发压缩
 	s.TryCompact(context.Background())
 
-	if !summarizerCalled {
-		t.Error("Summarizer should have been called when window exceeded threshold")
+	if !compactorCalled {
+		t.Error("Compactor should have been called when window exceeded threshold")
 	}
 
 	if len(compactionEvents) == 0 {
@@ -160,13 +161,98 @@ func TestSession_TryCompact(t *testing.T) {
 	}
 }
 
-type mockSummarizer struct {
-	SummarizeFunc func(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error)
+// TestSession_TryCompact_MemNil_SkipsCompactor 验证未配置记忆存储（mem==nil）时
+// doCompact 在入口即跳过，不调用 compactor —— 避免白烧 LLM token 且 cursor 永不移动的死循环。
+func TestSession_TryCompact_MemNil_SkipsCompactor(t *testing.T) {
+	compactorCalled := false
+	mockComp := &mockCompactor{
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+			compactorCalled = true
+			return nil, nil
+		},
+	}
+
+	// 故意不 WithMemory —— mem 保持 nil
+	s := newTestSession("session-mem-nil", "agent", newMockStore(),
+		WithModelContextResolver(func() int64 { return 100 }),
+		WithCompactor(mockComp),
+	)
+
+	longContent := string(make([]byte, 400))
+	for i := 0; i < 5; i++ {
+		s.Append(context.Background(), Message{
+			Role:      "user",
+			Content:   longContent,
+			Timestamp: time.Now().Unix(),
+		})
+	}
+
+	s.TryCompact(context.Background())
+
+	if compactorCalled {
+		t.Error("mem 为 nil 时不应调用 compactor（会白烧 LLM token）")
+	}
+	// cursor 不应移动，活跃窗口仍包含全部消息
+	if got := len(s.Current()); got != 5 {
+		t.Errorf("mem 为 nil 时 cursor 不应移动，Current() = %d 条，期望 5", got)
+	}
 }
 
-func (m *mockSummarizer) Summarize(ctx context.Context, msgs []Message) ([]memory.MemoryChunk, error) {
-	if m.SummarizeFunc != nil {
-		return m.SummarizeFunc(ctx, msgs)
+// TestSession_TryCompact_CooldownAfterFailure 验证压缩失败后 TryCompact 进入冷却，
+// 冷却期内再次触发不会调用 compactor —— 避免 LLM 失败/空返回时每轮重试的死循环。
+func TestSession_TryCompact_CooldownAfterFailure(t *testing.T) {
+	callCount := 0
+	mockComp := &mockCompactor{
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+			callCount++
+			return nil, errors.New("模拟 LLM 失败")
+		},
+	}
+
+	s := newTestSession("session-cooldown", "agent", newMockStore(),
+		WithModelContextResolver(func() int64 { return 100 }),
+		WithCompactor(mockComp),
+		WithMemory(newInMemoryMemory()),
+	)
+
+	longContent := string(make([]byte, 400))
+	for i := 0; i < 5; i++ {
+		s.Append(context.Background(), Message{
+			Role:      "user",
+			Content:   longContent,
+			Timestamp: time.Now().Unix(),
+		})
+	}
+
+	// 第一次：触发压缩，compactor 被调，失败，记录冷却时间戳
+	s.TryCompact(context.Background())
+	if callCount != 1 {
+		t.Fatalf("第一次 TryCompact 应调用 compactor 1 次，实际 %d", callCount)
+	}
+
+	// 第二次：冷却期内（5min），应直接跳过，compactor 不再被调
+	s.TryCompact(context.Background())
+	if callCount != 1 {
+		t.Errorf("冷却期内第二次 TryCompact 不应调用 compactor，实际调用 %d 次", callCount)
+	}
+
+	// 手动把冷却时间戳设到 5min 前，模拟冷却过期，第三次应再次调用
+	s.lastCompactionFailAt.Store(time.Now().Add(-compactionCooldown - time.Second).UnixNano())
+	s.TryCompact(context.Background())
+	if callCount != 2 {
+		t.Errorf("冷却过期后第三次 TryCompact 应再次调用 compactor，实际调用 %d 次", callCount)
+	}
+}
+
+// mockCompactor 实现 Compactor 接口用于测试。
+// generateCompactionChunks 通过 s.compactor.Compact 调用。
+type mockCompactor struct {
+	CompactFunc func(ctx context.Context, s *Session, messages []Message) ([]memory.MemoryChunk, error)
+}
+
+func (m *mockCompactor) Compact(ctx context.Context, s *Session, messages []Message) ([]memory.MemoryChunk, error) {
+	if m.CompactFunc != nil {
+		return m.CompactFunc(ctx, s, messages)
 	}
 	return nil, nil
 }

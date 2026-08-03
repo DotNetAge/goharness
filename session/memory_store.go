@@ -7,10 +7,10 @@ import (
 	"github.com/DotNetAge/goharness/memory"
 )
 
-// MemoryStore defines the interface for storing and retrieving session memory/summaries.
+// MemoryStore defines the interface for storing and retrieving session memory/compaction chunks.
 // Implementations can use various backends (Redis, database, RAGMemory, etc.)
 //
-// StoreChunks is called during compaction to persist context summaries as MemoryChunks.
+// StoreChunks is called during compaction to persist compaction chunks as MemoryChunks.
 // Retrieve can be used to load historical context when needed.
 type MemoryStore interface {
 	// StoreChunks persists memory chunks associated with a session.

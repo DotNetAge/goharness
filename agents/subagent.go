@@ -34,7 +34,7 @@ func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor str
 		return s
 	}
 
-	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger, rt.sessionOpts()...)
+	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger, rt.SessionConfigs()...)
 	if err != nil {
 		rt.logger.Error("创建子智能体会话失败", err, "agent", agentName, "project", projectDir)
 		return nil
@@ -43,14 +43,24 @@ func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor str
 	return s
 }
 
-// sessionOpts 返回 Runtime 应注入到所有子会话的 SessionConfig 列表。
-// 当前仅注入沙箱（若已配置）；未来可扩展其他自动注入项。
-// 返回 nil 时 session.New 使用默认配置，不影响现有行为。
-func (rt *Runtime) sessionOpts() []session.SessionConfig {
-	if rt.sandbox == nil {
-		return nil
+// SessionConfigs 返回 Runtime 应注入到所有会话（主会话与子会话）的通用 SessionConfig 列表。
+//
+// 这里注入的是 Runtime 提供的通用能力，所有会话共享：
+//   - Compactor：上下文压缩引擎。其依赖（llmClient/model/请求构造路径）全部来自
+//     Runtime，是 goharness 内置能力，无需外部应用注入——外部只需在创建会话时
+//     合并本方法返回的配置即可启用压缩。
+//   - Sandbox：工具安全沙箱（若已配置）。
+//
+// 会话特有的配置（如 MemoryStore、ModelContextResolver，依赖会话级数据）由调用方
+// 在创建会话时额外追加，不应放入此处。
+func (rt *Runtime) SessionConfigs() []session.SessionConfig {
+	opts := []session.SessionConfig{
+		session.WithCompactor(NewCompactor(rt)),
 	}
-	return []session.SessionConfig{session.WithSandbox(rt.sandbox)}
+	if rt.sandbox != nil {
+		opts = append(opts, session.WithSandbox(rt.sandbox))
+	}
+	return opts
 }
 
 // spawnSubAgent 是创建并运行子智能体的 SpawnFunc 实现。
@@ -61,8 +71,8 @@ func (rt *Runtime) sessionOpts() []session.SessionConfig {
 //   - 通过 Runtime.Ask() 运行，与主智能体使用相同的思考循环。
 //   - 独立会话意味着与父级上下文完全隔离。
 func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (answer string, sessionID string, err error) {
-	if rt.agentReg != nil {
-		if cfg := rt.agentReg.Get(agentName); cfg == nil {
+	if rt.prompt.agentReg != nil {
+		if cfg := rt.prompt.agentReg.Get(agentName); cfg == nil {
 			return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
 		}
 	}

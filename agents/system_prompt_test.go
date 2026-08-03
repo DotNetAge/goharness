@@ -17,7 +17,7 @@ func TestBuildSystemPromptsStructure(t *testing.T) {
 	rt := newTestRuntime(t)
 	sess := newTestSession(t)
 
-	msgs := rt.buildSystemPrompts(sess.ID(), sess)
+	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "system", msgs[0].Role)
 
@@ -40,7 +40,7 @@ func TestBuildSystemPromptsWithAgent(t *testing.T) {
 	rt := newTestRuntime(t, WithAgentRegistry(reg))
 	sess := newTestSession(t)
 
-	msgs := rt.buildSystemPrompts(sess.ID(), sess)
+	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text := msgText(t, msgs[0])
 	assert.Contains(t, text, "你是 测试助手。")
 	assert.Contains(t, text, "用于测试")
@@ -57,37 +57,37 @@ func TestBuildSystemPromptsCompactPlaceholder(t *testing.T) {
 	sess := newTestSessionWithResolver(t, func() int64 { return currentCtx })
 
 	// ModelContextLength = 0 时（未注入/禁用压缩）不插入占位符
-	msgs := rt.buildSystemPrompts(sess.ID(), sess)
+	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text := msgText(t, msgs[0])
 	assert.NotContains(t, text, "## 压缩内容")
 
 	// ModelContextLength = 128K 时（≤128K，由 TryCompact 独占管理）不插入占位符
 	currentCtx = 128 * 1024
-	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.NotContains(t, text, "## 压缩内容")
 
 	// ModelContextLength = 200K 时（128K–250K 区间）应插入压缩占位符
 	currentCtx = 200 * 1024
-	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.Contains(t, text, "## 压缩内容")
 
 	// ModelContextLength = 250K 时（边界值，128K–250K 区间）应插入压缩占位符
 	currentCtx = 250 * 1024
-	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.Contains(t, text, "## 压缩内容")
 
 	// ModelContextLength = 256K 时（>250K，不启用 MicroCompact）不插入占位符
 	currentCtx = 256 * 1024
-	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.NotContains(t, text, "## 压缩内容")
 
 	// ModelContextLength = 1M 时（>250K，不启用 MicroCompact）不插入占位符
 	currentCtx = 1024 * 1024
-	msgs = rt.buildSystemPrompts(sess.ID(), sess)
+	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text = msgText(t, msgs[0])
 	assert.NotContains(t, text, "## 压缩内容")
 }
@@ -113,7 +113,7 @@ func TestBuildSystemPromptsCustomBuilders(t *testing.T) {
 	)
 	sess := newTestSession(t)
 
-	msgs := rt.buildSystemPrompts(sess.ID(), sess)
+	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text := msgText(t, msgs[0])
 	assert.Contains(t, text, "CUSTOM_SKILLS")
 	assert.Contains(t, text, "CUSTOM_ENVS")
@@ -129,7 +129,7 @@ func TestAssembleMessagesOrder(t *testing.T) {
 		{Role: "tool", Content: "result", ToolCallID: "tc1"},
 	}
 
-	msgs := rt.assembleMessages(rt.buildSystemPrompts("sid", newTestSession(t)), history, "follow up")
+	msgs := rt.prompt.AssembleMessages(rt.prompt.BuildSystemPrompts("sid", newTestSession(t)), history, "follow up")
 	require.Len(t, msgs, 5)
 	assert.Equal(t, "system", msgs[0].Role)
 	assert.Equal(t, "user", msgs[1].Role)
@@ -148,7 +148,7 @@ func TestAssembleMessagesDeduplicatesQuestion(t *testing.T) {
 		{Role: "user", Content: "same question"},
 	}
 
-	msgs := rt.assembleMessages(nil, history, "same question")
+	msgs := rt.prompt.AssembleMessages(nil, history, "same question")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "user", msgs[0].Role)
 	assert.Equal(t, "same question", msgText(t, msgs[0]))
@@ -161,7 +161,7 @@ func TestAssembleMessagesAssistantWithReasoning(t *testing.T) {
 		{Role: "assistant", Content: "answer", ReasoningContent: "thinking process"},
 	}
 
-	msgs := rt.assembleMessages(nil, history, "")
+	msgs := rt.prompt.AssembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "thinking process", msgs[0].ReasoningContent)
 }
@@ -182,7 +182,7 @@ func TestAssembleMessagesImageBlocks(t *testing.T) {
 		},
 	}
 
-	msgs := rt.assembleMessages(nil, history, "")
+	msgs := rt.prompt.AssembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "user", msgs[0].Role)
 	require.Len(t, msgs[0].Content, 2)
@@ -200,7 +200,7 @@ func TestAssembleMessagesUserWithoutImages(t *testing.T) {
 		{Role: "user", Content: "plain text"},
 	}
 
-	msgs := rt.assembleMessages(nil, history, "")
+	msgs := rt.prompt.AssembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	require.Len(t, msgs[0].Content, 1)
 	assert.Equal(t, "plain text", msgText(t, msgs[0]))

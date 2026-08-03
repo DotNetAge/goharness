@@ -19,10 +19,10 @@ import (
 // 覆盖范围：
 //  1. WithSandbox 注入后 Runtime.Sandbox() 返回沙箱实例
 //  2. 未注入时 Runtime.Sandbox() 返回 nil
-//  3. sessionOpts() 在沙箱已配置时返回 WithSandbox 选项
-//  4. sessionOpts() 在沙箱未配置时返回 nil
+//  3. SessionConfigs() 在沙箱已配置时返回 Compactor + Sandbox
+//  4. SessionConfigs() 在沙箱未配置时返回仅 Compactor（始终非 nil）
 //  5. 子 Agent 会话自动注入沙箱（通过 getOrCreateSubAgentSession 验证）
-//  6. 主会话通过 rt.Sandbox() 手动注入
+//  6. 主会话通过 rt.SessionConfigs() 统一注入
 
 // newTestSandbox 创建用于测试的沙箱实例。
 func newTestSandbox(t *testing.T, projectDir string) *sandbox.Sandbox {
@@ -56,20 +56,23 @@ func TestRuntime_Sandbox_ReturnsInstance(t *testing.T) {
 	assert.Equal(t, sb, rt.Sandbox(), "Sandbox() 应返回注入的沙箱实例")
 }
 
-// TestRuntime_SessionOpts_NilWhenSandboxNotSet 验证沙箱未配置时 sessionOpts() 返回 nil。
-func TestRuntime_SessionOpts_NilWhenSandboxNotSet(t *testing.T) {
+// TestRuntime_SessionConfigs_AlwaysContainsCompactor 验证 SessionConfigs 始终返回含 Compactor 的配置。
+// 即使沙箱未配置，Compactor（压缩引擎）作为 Runtime 内置能力也必须注入。
+func TestRuntime_SessionConfigs_AlwaysContainsCompactor(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()))
-	assert.Nil(t, rt.sessionOpts(), "沙箱未配置时 sessionOpts() 应返回 nil")
+	opts := rt.SessionConfigs()
+	require.NotNil(t, opts, "SessionConfigs 应始终返回非 nil（至少含 Compactor）")
+	assert.Len(t, opts, 1, "沙箱未配置时应只含 Compactor")
 }
 
-// TestRuntime_SessionOpts_ContainsSandboxWhenSet 验证沙箱已配置时 sessionOpts() 返回 WithSandbox。
-func TestRuntime_SessionOpts_ContainsSandboxWhenSet(t *testing.T) {
+// TestRuntime_SessionConfigs_ContainsSandboxWhenSet 验证沙箱已配置时 SessionConfigs 同时含 Compactor 和 Sandbox。
+func TestRuntime_SessionConfigs_ContainsSandboxWhenSet(t *testing.T) {
 	projectDir := t.TempDir()
 	sb := newTestSandbox(t, projectDir)
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()), WithSandbox(sb))
-	opts := rt.sessionOpts()
-	require.NotNil(t, opts, "沙箱已配置时 sessionOpts() 应返回非 nil")
-	assert.Len(t, opts, 1, "应恰好返回 1 个 SessionConfig")
+	opts := rt.SessionConfigs()
+	require.NotNil(t, opts, "SessionConfigs 应返回非 nil")
+	assert.Len(t, opts, 2, "沙箱已配置时应含 Compactor + Sandbox 共 2 个 SessionConfig")
 }
 
 // TestRuntime_SubAgentSession_AutoInjectsSandbox 验证子 Agent 会话自动注入沙箱。

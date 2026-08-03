@@ -100,11 +100,9 @@ const (
 //
 //   - model: 大语言模型配置，包括 API 密钥、基础 URL、模型名、温度、最大 token 数及采样参数等。
 //   - toolReg: 可用工具注册表（Grep、Bash、WebSearch 等）。
-//   - skillReg: 智能体技能 / 能力注册表，用于在系统提示词中展示。
-//   - ruleReg: 行为规则注册表，约束智能体行为。
 //   - mem: 向量存储与检索（RAG）接口。
-//   - agentReg: 具名智能体配置注册表（角色、描述、介绍）。
 //   - providerReg: 大语言模型提供商配置注册表。
+//   - prompt: 提示词装配器，持有 agent/skill/rule 注册表与可覆盖段落构造器。
 //   - toolExec: 工具执行引擎，支持钩子与事件发射。
 //   - logger: 结构化日志器。
 //   - loopHooks: 思考循环中每次大语言模型调用前后运行的钩子。
@@ -114,14 +112,16 @@ const (
 type Runtime struct {
 	model config.ModelConfig
 
-	toolReg  tools.ToolRegistry
-	skillReg skill.SkillRegistry
-	ruleReg  rule.RuleRegistry
-	mem      memory.Memory
+	toolReg tools.ToolRegistry
+	mem     memory.Memory
 
-	agentReg    *config.AgentRegistry
 	providerReg config.ProviderRegistry
 	toolExec    tools.ToolExecutor
+
+	// prompt 承载系统提示词与消息序列的构造职责（持有 agent/skill/rule 注册表引用
+	// 与可覆盖的段落构造器）。通过 WithAgentRegistry/WithSkillRegistry/WithRuleRegistry
+	// 及 WithSkillsPrompt/WithEnvs/WithSearchStrategy 配置。
+	prompt PromptAssembler
 
 	// kvStore 为需要会话级持久化的工具（TaskCreate / TaskGet / TaskUpdate / TaskList）
 	// 提供键值存储。若为 nil，这些工具返回“KVStore 不可用”。通过 WithKVStore 配置。
@@ -154,20 +154,6 @@ type Runtime struct {
 	// fileModifyHook 保存已注册 FileModifyHook 的引用，
 	// 使 WithFileModifyTracker 能在初始化后动态更新其 provider。
 	fileModifyHook *action.FileModifyHook
-
-	// skillsCatalogBuilder 覆盖默认的 buildSkillsCatalog 输出。
-	// 若设置，接收过滤后的智能体技能并返回目录字符串；为 nil 时使用默认实现。
-	// 通过 WithSkillsCatalogBuilder 设置。
-	skillsCatalogBuilder func(skills []*skill.Skill) string
-
-	// envsBuilder 覆盖系统提示词中的默认环境信息段落。
-	// 若设置，接收 EnvsParams 并返回完整的环境段落字符串；为 nil 时使用默认实现。
-	envsBuilder func(EnvsParams) string
-
-	// searchStrategyBuilder 覆盖系统提示词中的默认搜索策略段落。
-	// 若设置，返回完整段落字符串；为 nil（默认）时使用内置 buildSearchPriority。
-	// 通过 WithSearchStrategy 设置。
-	searchStrategyBuilder func() string
 
 	// llmClient 负责与大语言模型交互。
 	// 默认为基于 gochat 的实现；可通过 WithLLMClient 注入 mock 或其他提供商实现。
@@ -216,11 +202,13 @@ type RunResult struct {
 func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	r := &Runtime{
 		toolReg:              tools.NewDefaultToolRegistry(),
-		skillReg:             skill.NewDefaultSkillRegistry(),
 		logger:               logging.DefaultLogger(),
 		asyncTimeout:         5 * time.Minute,
 		syncTimeout:          5 * time.Minute,
 		subAgentSessionCache: make(map[string]*session.Session),
+		prompt: PromptAssembler{
+			skillReg: skill.NewDefaultSkillRegistry(),
+		},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -294,7 +282,7 @@ func (rt *Runtime) registerDefaultTools() {
 			toolOf("TaskGet", tools.NewTaskGetTool),
 			toolOf("TaskUpdate", tools.NewTaskUpdateTool),
 			// toolOf("Sleep", tools.NewSleepTool),
-			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }),
+			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.prompt.skillReg.GetSkill) }),
 			toolOf("SubAgent", func() *tools.SubAgentTool {
 				subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
 				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
@@ -347,7 +335,7 @@ func (rt *Runtime) registerDefaultHooks() {
 	}
 
 	// 注册默认工具钩子
-	defaultHooks := action.Defaults(nil, rt.skillReg, rt.logger, rt.fileModifyTracker)
+	defaultHooks := action.Defaults(nil, rt.prompt.skillReg, rt.logger, rt.fileModifyTracker)
 
 	// 捕获 FileModifyHook 引用，以便通过 WithFileModifyTracker 延迟绑定。
 	rt.fileModifyHook = nil
@@ -418,11 +406,11 @@ func (rt *Runtime) ToolRegistry() tools.ToolRegistry { return rt.toolReg }
 // SkillRegistry 返回 Runtime 的技能注册表，用于管理智能体能力。
 // 技能定义在系统提示词中向智能体展示的高级能力。
 // 与工具（函数调用）不同，技能描述智能体能做什么。
-func (rt *Runtime) SkillRegistry() skill.SkillRegistry { return rt.skillReg }
+func (rt *Runtime) SkillRegistry() skill.SkillRegistry { return rt.prompt.skillReg }
 
 // RuleRegistry 返回 Runtime 的行为规则注册表。
 // 规则定义智能体应如何表现、应避免什么以及任何操作边界。规则会纳入系统提示词。
-func (rt *Runtime) RuleRegistry() rule.RuleRegistry { return rt.ruleReg }
+func (rt *Runtime) RuleRegistry() rule.RuleRegistry { return rt.prompt.ruleReg }
 
 // ProviderRegistry 返回 Runtime 的大语言模型提供商注册表。
 // 提供商配置可用于多提供商设置或回退逻辑。
@@ -438,7 +426,7 @@ func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
 
 // AgentRegistry 返回 Runtime 的智能体配置注册表。
 // 智能体配置定义角色、描述和介绍，用于构建系统提示词中的身份段落。
-func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.agentReg }
+func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.prompt.agentReg }
 
 // WithFileModifyTracker 设置当前 Runtime 的文件修改追踪器 provider。
 // 设置后，默认工具钩子中会自动注册 FileModifyHook，以在 Write / FileEdit 工具执行前备份文件。

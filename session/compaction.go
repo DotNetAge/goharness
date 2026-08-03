@@ -12,6 +12,11 @@ import (
 
 // ── Compaction helpers ────────────────────────────────────────────────────
 
+// compactionCooldown 是自动压缩（TryCompact）失败后的冷却时长。
+// 冷却期内 TryCompact 直接跳过，避免 LLM 失败或空返回时每轮重试形成死循环
+// （每次重试最多耗时 compactionTimeout=10min 并消耗 token）。ForceCompact 不受约束。
+const compactionCooldown = 5 * time.Minute
+
 // sessionState 是压缩决策用的会话状态快照。
 //
 // 偏移量模型：cursor 是当前窗口起始偏移量，
@@ -169,36 +174,39 @@ func sanitizeMessagesForLLM(msgs []Message) []Message {
 	return out
 }
 
-// generateSummary 在任何锁之外调用摘要器以防止死锁。
+// generateCompactionChunks 在任何锁之外调用压缩器以防止死锁。
 // 把所有待摘要消息完整交给 LLM，由 LLM 借助 prompt 的 Quality rules
 // 自主判断哪些值得记忆（识别 trivial/重复/纠正/冲突）。代码层不做源头过滤，
 // 因为砍掉消息会让 LLM 失去完整上下文，反而降低摘要质量。
 // 但必须先剔除末尾未配对的 tool_call/tool_result（Anthropic API 校验）。
-func (s *Session) generateSummary(ctx context.Context, messages []Message) ([]memory.MemoryChunk, error) {
-	if s.summarizer == nil || len(messages) == 0 {
+func (s *Session) generateCompactionChunks(ctx context.Context, messages []Message) ([]memory.MemoryChunk, error) {
+	if s.compactor == nil || len(messages) == 0 {
 		return nil, nil
 	}
 
-	// 剔除末尾未配对的 tool_call/tool_result，避免 LLM API 校验拒绝
+	// 剔除末尾未配对的 tool_call/tool_result，避免 LLM API 校验拒绝。
+	// 与 assembleMessages 内部的 stripOrphanedToolCalls 幂等共存，不冲突。
 	messages = sanitizeMessagesForLLM(messages)
 	if len(messages) == 0 {
-		s.logInfo("generateSummary: 未生成有效摘要，所有消息都被剔除后为空", "session_id", s.id)
+		s.logInfo("generateCompactionChunks: 未生成有效摘要，所有消息都被剔除后为空", "session_id", s.id)
 		return nil, nil
 	}
 
-	chunks, err := s.summarizer.Summarize(ctx, messages)
+	// 委托 compactor 执行 LLM 调用 + 解析。compactor 由 agents 层注入，
+	// 复用主对话的 system/tools/messages 前缀以命中 KV 缓存。
+	chunks, err := s.compactor.Compact(ctx, s, messages)
 	if err != nil {
-		s.logError("generateSummary: 生成摘要失败，摘要器返回错误", err, "session_id", s.id)
+		s.logError("generateCompactionChunks: 生成摘要失败，压缩器返回错误", err, "session_id", s.id)
 		return nil, err
 	}
 	if len(chunks) == 0 {
-		s.logInfo("generateSummary: 未生成有效摘要，摘要器返回的分块为空", "session_id", s.id)
+		s.logInfo("generateCompactionChunks: 未生成有效摘要，压缩器返回的分块为空", "session_id", s.id)
 		return nil, nil
 	}
 
 	// 用智能体名称、会话 ID、项目目录和时间戳回退值丰富 chunks。
 	// 时间戳优先使用 LLM 在 JSON 中提供的事件时间；LLM 未填或解析失败时
-	// 才回退到 summarize 触发时间。
+	// 才回退到压缩触发时间。
 	for i := range chunks {
 		chunks[i].AgentName = s.agentName
 		chunks[i].SessionID = s.id
@@ -215,21 +223,21 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) ([]me
 	return chunks, nil
 }
 
-// persistSummary 将生成的记忆 chunks 存储到记忆存储中。
+// persistCompactionChunks 将生成的记忆 chunks 存储到记忆存储中。
 // 如果存储失败则返回错误；调用者必须将其视为压缩失败。
 // 当 mem 为 nil（未配置记忆存储）时，这被视为错误 —
 // 摘要预期会被持久化，而不是被静默丢弃。
-func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChunk) error {
+func (s *Session) persistCompactionChunks(ctx context.Context, chunks []memory.MemoryChunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
 	if s.mem == nil {
-		err := fmt.Errorf("persistSummary: 未配置记忆存储，无法持久化摘要分块")
+		err := fmt.Errorf("persistCompactionChunks: 未配置记忆存储，无法持久化摘要分块")
 		return err
 	}
 
 	if err := s.mem.StoreChunks(ctx, s.id, chunks); err != nil {
-		s.logError("persistSummary: 无法持久化摘要分块", err, "session_id", s.id)
+		s.logError("persistCompactionChunks: 无法持久化摘要分块", err, "session_id", s.id)
 		return err
 	}
 	return nil
@@ -245,6 +253,13 @@ func (s *Session) persistSummary(ctx context.Context, chunks []memory.MemoryChun
 //   - state: 当前会话状态快照
 //   - operation: 操作名称（"TryCompact" 或 "ForceCompact"），用于日志
 func (s *Session) doCompact(ctx context.Context, state sessionState, operation string) {
+	// 未配置记忆存储时跳过压缩：压缩产物无处持久化，调用 LLM 只会白烧 token，
+	// 且 persist 失败会导致 cursor 永不移动，形成死循环。
+	if s.mem == nil {
+		s.logInfo(operation+": 未配置记忆存储，跳过压缩", "session_id", s.id)
+		return
+	}
+
 	// 触发 compact start handler
 	if s.compactStartHandler != nil {
 		s.compactStartHandler(state.windowTokens, s.ModelContextLength())
@@ -252,38 +267,46 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 
 	// 摘要当前活跃窗口（无锁，允许 LLM I/O 阻塞）
 	slidCount := 0
-	summaryFailed := false
-	if s.summarizer != nil && len(state.activeMessages) > 0 {
+	compactionFailed := false
+	if s.compactor != nil && len(state.activeMessages) > 0 {
 		s.logInfo(operation+": 开始生成摘要", "session_id", s.id,
 			"active_messages", len(state.activeMessages))
-		chunks, err := s.generateSummary(ctx, state.activeMessages)
+		chunks, err := s.generateCompactionChunks(ctx, state.activeMessages)
 		if err != nil {
 			s.logError(operation+": 生成摘要失败，将不压缩", err, "session_id", s.id)
-			summaryFailed = true
+			compactionFailed = true
 		} else if len(chunks) == 0 {
-			// generateSummary 返回 nil,nil 时（LLM 判定无实质信息 / sanitize 全剥离），
+			// generateCompactionChunks 返回 nil,nil 时（LLM 判定无实质信息 / sanitize 全剥离），
 			// 不做 cursor 移动以免丢消息历史但不留记忆。
 			s.logInfo(operation+": 生成摘要为空，跳过压缩", "session_id", s.id)
-			summaryFailed = true
+			compactionFailed = true
 		} else {
 			s.logInfo(operation+": 生成摘要成功，开始持久化", "session_id", s.id, "chunks", len(chunks))
-			if err := s.persistSummary(ctx, chunks); err != nil {
+			if err := s.persistCompactionChunks(ctx, chunks); err != nil {
 				s.logError(operation+": 无法持久化摘要分块", err, "session_id", s.id)
-				summaryFailed = true
+				compactionFailed = true
 			} else {
 				s.logInfo(operation+": 摘要持久化成功", "session_id", s.id)
 			}
 		}
-	} else if s.summarizer == nil {
-		s.logInfo(operation+": 未配置摘要器，跳过摘要生成", "session_id", s.id)
+	} else if s.compactor == nil {
+		s.logInfo(operation+": 未配置压缩器，跳过摘要生成", "session_id", s.id)
 	}
 
-	if !summaryFailed {
+	if !compactionFailed {
 		// 移动 cursor 到末尾（清空当前窗口，不删除历史消息）
 		slidCount = s.executeFullCompaction(ctx)
 		s.logInfo(operation+": 摘要持久化成功，游标移动到末尾", "session_id", s.id, "slid_count", slidCount)
 	} else {
 		s.logInfo(operation+": 摘要持久化失败，跳过游标移动", "session_id", s.id)
+	}
+
+	// 记录/清零压缩失败时间戳，驱动 TryCompact 冷却逻辑。
+	// ForceCompact 不读冷却，但其失败同样会记录，避免手动失败后自动重试陷入同一问题。
+	if compactionFailed {
+		s.lastCompactionFailAt.Store(time.Now().UnixNano())
+	} else {
+		s.lastCompactionFailAt.Store(0)
 	}
 
 	// 触发 compact done handler
@@ -309,9 +332,21 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 // 调用时机：由 runtime 在新一个轮次开始前调用（不在 Append 末尾调用，
 // 避免工具结果 append 中途触发清空破坏 tool_call 配对）
 //
-// 无锁设计：先 captureState（读锁快照）→ 无锁调用 summarizer（I/O）→
+// 无锁设计：先 captureState（读锁快照）→ 无锁调用 compactor（I/O）→
 // 写锁内执行 cursor 移动。避免持锁期间进行 LLM 调用。
 func (s *Session) TryCompact(ctx context.Context) {
+	// 冷却：上次压缩失败后短期内不重试，避免 LLM 失败/空返回时每轮触发死循环。
+	// ForceCompact（手动触发）不受此约束。
+	if failNano := s.lastCompactionFailAt.Load(); failNano > 0 {
+		if elapsed := time.Since(time.Unix(0, failNano)); elapsed < compactionCooldown {
+			s.logInfo("TryCompact: 压缩冷却中（上次失败），跳过",
+				"session_id", s.id,
+				"elapsed_since_fail", elapsed.String(),
+				"cooldown", compactionCooldown.String())
+			return
+		}
+	}
+
 	state := s.captureState()
 
 	s.logInfo("TryCompact: entered", "session_id", s.id,
@@ -380,11 +415,13 @@ func (s *Session) SetCompactionHandler(h func(CompactionEvent)) {
 	s.compactionHandler = h
 }
 
-// SetSummarizer 设置用于上下文压缩的基于 LLM 的摘要器。
-// 可以随时调用以更改或移除摘要器。
-// 传递 nil 以在压缩期间禁用摘要。
-func (s *Session) SetSummarizer(ss Summarizer) {
-	s.summarizer = ss
+// SetCompactor 设置用于上下文压缩的压缩器（依赖倒置，由 agents 层实现）。
+// 可以随时调用以更改或移除压缩器。传递 nil 以禁用压缩摘要生成。
+//
+// Compactor 负责构造与主对话请求字段一致的 LLM 调用（system + tools + messages
+// 前缀逐 token 一致，仅末尾追加压缩指令），以命中 KV 前缀缓存。
+func (s *Session) SetCompactor(c Compactor) {
+	s.compactor = c
 }
 
 // SetMemory 设置用于持久化压缩摘要的记忆存储。

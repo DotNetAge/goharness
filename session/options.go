@@ -10,7 +10,6 @@ import "github.com/DotNetAge/goharness/sandbox"
 //
 //	session := NewSession("id", "agent",
 //	    WithModelContextResolver(func() int64 { return model.ContextLength }),
-//	    WithSummarizer(mySummarizer),
 //	    WithCompactionHandler(myHandler),
 //	)
 type SessionConfig func(*Session)
@@ -27,17 +26,18 @@ func (s *Session) logError(msg string, err error, keyvals ...any) {
 	}
 }
 
-// WithMemory configures the memory store for context summaries.
+// WithMemory configures the memory store for compaction chunks.
 // If not set, an in-memory store is used by default.
 func WithMemory(mem MemoryStore) SessionConfig {
 	return func(s *Session) { s.mem = mem }
 }
 
-// WithSummarizer sets the LLM-based summarizer for context compaction.
-// When the context window exceeds thresholds, old messages are summarized
-// using this component to preserve important information.
-func WithSummarizer(ss Summarizer) SessionConfig {
-	return func(s *Session) { s.summarizer = ss }
+// WithCompactor 注入压缩器（依赖倒置，由 agents 层实现）。
+//
+// Compactor 负责构造与主对话请求字段一致的 LLM 调用（system + tools + messages 前缀
+// 逐 token 一致，仅末尾追加压缩指令），以命中 KV 前缀缓存。未注入时压缩跳过摘要生成。
+func WithCompactor(c Compactor) SessionConfig {
+	return func(s *Session) { s.compactor = c }
 }
 
 // WithModelContextResolver 注入一个回调，用于动态查询当前会话使用的

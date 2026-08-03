@@ -84,13 +84,19 @@ type SessionInfo struct {
 	ModifyFiles    []string  `json:"modify_files,omitempty"` // 追踪的已修改文件路径
 }
 
-// Summarizer 定义了摘要器接口。
-// 将消息列表浓缩为多个 MemoryChunk，每个包含 Title/Summary/Content 三段式结构与标签。
-type Summarizer interface {
-	// Summarize 将消息列表摘要为多个记忆片。
-	// 返回的 MemoryChunk 采用三段式：Title（导航标题）、Summary（核心结论）、Content（分条细节）。
-	// AgentName、SessionID、Timestamp 由调用方填充。
-	Summarize(ctx context.Context, messages []Message) ([]memory.MemoryChunk, error)
+// Compactor 执行上下文压缩：构造 LLM 请求、流式调用、解析返回。
+//
+// 由 agents 层实现并注入到 Session（依赖倒置）。实现方必须复用主对话的请求构造路径
+// （buildSystemPrompts / buildAllToolDefinitions / assembleMessages / rt.llmClient），
+// 保证压缩请求与主对话请求在 system + tools + messages 前缀上逐 token 一致——
+// 这是命中 KV 前缀缓存的前提（DeepSeek/通义千问/豆包三家官方文档一致要求）。
+//
+// 唯一允许的差异：messages 末尾追加一条 user 压缩指令。
+type Compactor interface {
+	// Compact 对 messages 执行一次压缩（含内部重试），返回记忆片。
+	// s 提供会话上下文（AgentName/SessionDir/ProjectDir/ModelContextLength 等），
+	// 供实现方构造与主对话一致的 system prompt。
+	Compact(ctx context.Context, s *Session, messages []Message) ([]memory.MemoryChunk, error)
 }
 
 type SessionStore interface {

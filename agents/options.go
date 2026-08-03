@@ -20,7 +20,7 @@ func WithModel(cfg config.ModelConfig) RuntimeConfig {
 }
 
 func WithAgentRegistry(reg *config.AgentRegistry) RuntimeConfig {
-	return func(r *Runtime) { r.agentReg = reg }
+	return func(r *Runtime) { r.prompt.agentReg = reg }
 }
 
 func WithProviderRegistry(reg config.ProviderRegistry) RuntimeConfig {
@@ -32,11 +32,11 @@ func WithToolRegistry(reg tools.ToolRegistry) RuntimeConfig {
 }
 
 func WithSkillRegistry(reg skill.SkillRegistry) RuntimeConfig {
-	return func(r *Runtime) { r.skillReg = reg }
+	return func(r *Runtime) { r.prompt.skillReg = reg }
 }
 
 func WithRuleRegistry(reg rule.RuleRegistry) RuntimeConfig {
-	return func(r *Runtime) { r.ruleReg = reg }
+	return func(r *Runtime) { r.prompt.ruleReg = reg }
 }
 
 func WithMemory(mem memory.Memory) RuntimeConfig {
@@ -82,7 +82,7 @@ func WithSessionStore(ss session.SessionStore) RuntimeConfig {
 // and should return the complete catalog string (or empty to omit the section).
 // When nil (default), the built-in buildSkillsCatalog is used.
 func WithSkillsPrompt(builder func(skills []*skill.Skill) string) RuntimeConfig {
-	return func(r *Runtime) { r.skillsCatalogBuilder = builder }
+	return func(r *Runtime) { r.prompt.skillsCatalogBuilder = builder }
 }
 
 // WithEnvs overrides the default Environment section in system prompts.
@@ -90,7 +90,7 @@ func WithSkillsPrompt(builder func(skills []*skill.Skill) string) RuntimeConfig 
 // and should return the complete environment section string (or empty to omit).
 // When nil (default), the built-in buildEnvironmentInfo is used.
 func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
-	return func(r *Runtime) { r.envsBuilder = builder }
+	return func(r *Runtime) { r.prompt.envsBuilder = builder }
 }
 
 // WithSearchStrategy overrides the default Search Strategy section in system prompts.
@@ -98,7 +98,7 @@ func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
 // string (or empty to omit the section entirely).
 // When nil (default), the built-in buildSearchPriority is used.
 func WithSearchStrategy(builder func() string) RuntimeConfig {
-	return func(r *Runtime) { r.searchStrategyBuilder = builder }
+	return func(r *Runtime) { r.prompt.searchStrategyBuilder = builder }
 }
 
 // WithLLMClient 设置自定义大语言模型客户端。

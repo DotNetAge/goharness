@@ -259,11 +259,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// 使用全量工具定义：所有已注册工具一次性发送给 LLM，
 	// 不在迭代间改变工具集，以保持前缀缓存稳定。
 	// 应用当前 Agent 的 ExcludeTools 过滤，排除声明中不允许使用的工具。
-	excludeTools := rt.agentExcludeTools(b.agentName)
+	excludeTools := rt.prompt.AgentExcludeTools(b.agentName)
 	allToolDefs := buildAllToolDefinitions(rt.toolReg, excludeTools)
 
 	// 构建系统提示词段落（每轮之间静态不变）
-	systemSections := rt.buildSystemPrompts(sid, b.session)
+	systemSections := rt.prompt.BuildSystemPrompts(sid, b.session)
 
 	var lastIteration int
 	var prevToolResults []hooks.ToolResult
@@ -348,7 +348,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// 重新读取窗口 —— Current() 返回 messages[cursor:] 的新副本。
 		window = b.session.Current()
 
-		msgs := rt.assembleMessages(callInput.SystemPromptSections, window, question)
+		msgs := rt.prompt.AssembleMessages(callInput.SystemPromptSections, window, question)
 
 		// ── 调试：打印完整系统提示词 ──
 		if rt.logger != nil {
@@ -727,21 +727,6 @@ func formatToolResult(tr hooks.ToolResult) string {
 	}
 	// 空结果属于"不及预期"场景，同样采用第一人称引导，提示调整参数或换工具。
 	return fmt.Sprintf("[%s] 返回结果: (空结果)。我未能从该工具获得任何输出，下一步我应该考虑调整参数或改用其它工具来获取所需信息。", tr.ToolName)
-}
-
-// agentExcludeTools 返回指定 Agent 配置中声明要排除的工具集合。
-// 若 Agent 注册表不可用或未找到该 Agent，返回空集合（不排除任何工具）。
-func (rt *Runtime) agentExcludeTools(agentName string) map[string]bool {
-	excluded := make(map[string]bool)
-	if rt.agentReg == nil {
-		return excluded
-	}
-	if cfg := rt.agentReg.Get(agentName); cfg != nil {
-		for _, name := range cfg.ExcludeTools {
-			excluded[name] = true
-		}
-	}
-	return excluded
 }
 
 // buildAllToolDefinitions 从工具注册表构建工具定义，用于 LLM 请求的 tools 字段。

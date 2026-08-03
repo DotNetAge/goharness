@@ -4,7 +4,7 @@
 // 关键特性：
 //   - 线程安全的消息追加和检索
 //   - 基于 token 计数的自动上下文窗口压缩
-//   - 可配置的窗口大小和摘要
+//   - 可配置的窗口大小和压缩
 //   - 持久化存储后端支持
 //   - 上下文摘要的记忆存储
 //
@@ -17,8 +17,8 @@
 //	      │                    │
 //	      ▼                    ▼
 //	┌─────────────┐     ┌────────────────┐
-//	│  MemoryStore│     │   Summarizer   │
-//	│  (summaries)│     │  (LLM calls)   │
+//	│  MemoryStore│     │   Compactor    │
+//	│  (compacted)│     │  (LLM calls)   │
 //	└─────────────┘     └────────────────┘
 //
 // 用法：
@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DotNetAge/goharness/logging"
@@ -111,7 +112,7 @@ func New(agentName, sponsor, projectDir string, store SessionStore, logger loggi
 //   - agentName: 操作此会话的智能体名称（可选，可以为空以从元数据恢复）
 //   - store: 要加载的持久化 SessionStore（必填，不能为 nil）
 //   - logger: 用于会话操作的日志记录器（必填，不能为 nil）
-//   - opts: 可选的配置函数（WithMemory、WithSummarizer 等）
+//   - opts: 可选的配置函数（WithMemory、WithCompactor 等）
 //
 // Load 通过调用 store.GetMeta() 验证会话是否存在。如果会话
 // 在存储中未找到，则返回错误 — 调用者应将其作为"会话不存在"处理。
@@ -193,11 +194,19 @@ type Session struct {
 	// log 是会话操作的结构化日志记录器。
 	log logging.Logger
 
-	// summarizer 在压缩期间生成摘要
-	summarizer Summarizer
+	// compactor 执行上下文压缩的 LLM 调用（依赖倒置，由 agents 层注入）。
+	// 复用主对话的 system/tools/messages 前缀以命中 KV 缓存。
+	// 为 nil 时压缩跳过摘要生成（generateCompactionChunks 直接返回 nil）。
+	compactor Compactor
 
 	// mem 存储上下文摘要以供后续检索
 	mem MemoryStore
+
+	// lastCompactionFailAt 记录上次压缩失败的时间戳（unix nano，0 表示无失败）。
+	// 压缩失败后进入冷却期，避免 TryCompact 每轮重试导致死循环烧 token。
+	// ForceCompact（用户手动触发）不受冷却约束。
+	// 用 atomic 无锁读写：TryCompact（runtime 轮次）与 ForceCompact（RPC）可能并发。
+	lastCompactionFailAt atomic.Int64
 
 	// compactionHandler 在每次压缩事件后调用
 	compactionHandler func(CompactionEvent)
