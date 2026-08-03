@@ -173,7 +173,42 @@ func fetchBody(ctx context.Context, client *stealthClient, reqURL string, extraH
 	if err != nil {
 		return "", fmt.Errorf("读取响应失败：%w", err)
 	}
+	// 风控检测：状态码 403/429/503 或响应体含风控特征短语时报错，
+	// 使适配器进入 failedAdapterSet，被错误分类逻辑如实报告“搜索失败”而非“没有结果”。
+	// 修复背景：原逻辑下风控页被 goquery 解析出 0 条结果，适配器返回 (nil,nil)，
+	// 既无结果也无错误，被当成“没有搜索结果”——掩盖了被风控的事实。
+	if err := checkAntiCrawl(resp.StatusCode, body); err != nil {
+		return "", err
+	}
 	return string(body), nil
+}
+
+// riskKeywords 是国内搜索引擎风控页的特征短语。
+// 这些短语不会出现在正常搜索结果页中，命中任一即判定被风控拦截。
+var riskKeywords = []string{
+	"百度安全验证",
+	"人机验证",
+	"请完成验证",
+	"访问验证",
+	"异常访问",
+	"请求已被拦截",
+	"为了您的安全",
+	"captcha",
+}
+
+// checkAntiCrawl 检测响应是否被风控拦截。
+// 触发条件：风控状态码（403/429/503）或响应体含风控特征短语。
+func checkAntiCrawl(statusCode int, body []byte) error {
+	if statusCode == 403 || statusCode == 429 || statusCode == 503 {
+		return fmt.Errorf("搜索引擎返回风控状态码 %d", statusCode)
+	}
+	lower := strings.ToLower(string(body))
+	for _, kw := range riskKeywords {
+		if strings.Contains(lower, kw) {
+			return fmt.Errorf("搜索引擎返回风控页面（命中特征：%s）", kw)
+		}
+	}
+	return nil
 }
 
 // --- WebSearchTool ---
@@ -233,7 +268,6 @@ func (t *WebSearchTool) Info() *ToolInfo {
 		Prompt: `搜索网络以获取实时信息。返回搜索结果信息，格式化为搜索结果块，包含作为 markdown 超链接的链接。
 为当前事件和最近的数据提供最新信息。
 使用此工具访问模型知识截止日期之外的信息。
-搜索在单次 API 调用中自动执行。
 
 关键要求 - 您必须遵循以下规则：
 - 在回答用户问题后，您必须在回复末尾包含"来源："部分
@@ -254,7 +288,7 @@ func (t *WebSearchTool) Info() *ToolInfo {
 			{
 				Name:        "max_results",
 				Type:        "integer",
-				Description: "要返回的最大结果数（默认：10，最大：20）。提前退出阈值 - 一旦收集到足够的结果，将立即返回较快引擎的结果，而无需等待较慢的引擎。",
+				Description: "要返回的最大结果数（默认：10，最大：20）。",
 				Required:    false,
 			},
 		},
@@ -262,7 +296,10 @@ func (t *WebSearchTool) Info() *ToolInfo {
 }
 
 // searchAllAdapters 针对单个查询在所有适配器上并行搜索，合并并去重结果。
-func (t *WebSearchTool) searchAllAdapters(ctx context.Context, query string, opts SearchOptions, maxResults int) ([]SearchResult, []string) {
+// 返回值：去重后的结果、失败引擎列表（"name (err)" 格式）、allFailed（所有引擎是否都明确失败）。
+// allFailed=true 表示"全部兜底策略被打穿"——只有此时才应告知 Agent 被风控；
+// 部分失败时 allFailed=false（其余引擎可能超时或无匹配，不算全部打穿）。
+func (t *WebSearchTool) searchAllAdapters(ctx context.Context, query string, opts SearchOptions, maxResults int) ([]SearchResult, []string, bool) {
 	t.adapterMu.RLock()
 	adapters := make([]SearchAdapter, len(t.adapters))
 	copy(adapters, t.adapters)
@@ -304,11 +341,6 @@ func (t *WebSearchTool) searchAllAdapters(ctx context.Context, query string, opt
 	}
 
 	deadline := time.After(8 * time.Second)
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
 
 	var allResults []SearchResult
 	var failedAdapters []string
@@ -330,8 +362,6 @@ collectLoop:
 			} else if result.err != nil {
 				failedAdapters = append(failedAdapters, fmt.Sprintf("%s (%v)", result.adapter, result.err))
 			}
-		case <-done:
-			break collectLoop
 		case <-deadline:
 			break collectLoop
 		case <-ctx.Done():
@@ -351,7 +381,11 @@ collectLoop:
 	if maxResults > 0 && len(deduped) > maxResults {
 		deduped = deduped[:maxResults]
 	}
-	return deduped, failedAdapters
+	// allFailed: 所有引擎都明确失败（报错），即"全部兜底被打穿"。
+	// 超时未响应的引擎不在 failedAdapters 里，故 len(failedAdapters) < len(adapters)，
+	// allFailed 自然为 false——不算全部打穿。
+	allFailed := len(adapters) > 0 && len(failedAdapters) == len(adapters)
+	return deduped, failedAdapters, allFailed
 }
 
 func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
@@ -410,9 +444,10 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	var allResults []SearchResult
 	seenURLs := make(map[string]bool)
 	failedAdapterSet := make(map[string]bool)
+	allTokensAllFailed := true // 所有 token 的所有引擎都失败才为 true（全部兜底被打穿）
 
 	for _, token := range tokens {
-		results, failedAdapters := t.searchAllAdapters(ctx, token, hybridOpts, maxResults)
+		results, failedAdapters, allFailed := t.searchAllAdapters(ctx, token, hybridOpts, maxResults)
 		for _, r := range results {
 			if !seenURLs[r.URL] {
 				seenURLs[r.URL] = true
@@ -422,6 +457,9 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		for _, f := range failedAdapters {
 			failedAdapterSet[f] = true
 		}
+		if !allFailed {
+			allTokensAllFailed = false
+		}
 	}
 
 	// 注意：最终结果不做 maxResults 截断——条数限制已由每次关键词搜索
@@ -430,21 +468,41 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	results := allResults
 
 	if len(results) == 0 {
-		if ctx.Err() != nil {
-			failedList := make([]string, 0, len(failedAdapterSet))
-			for f := range failedAdapterSet {
-				failedList = append(failedList, f)
-			}
-			failedNote := "无"
-			if len(failedList) > 0 {
-				failedNote = "[" + strings.Join(failedList, ", ") + "]"
-			}
+		failedList := make([]string, 0, len(failedAdapterSet))
+		for f := range failedAdapterSet {
+			failedList = append(failedList, f)
+		}
+
+		// 全部兜底策略被打穿：所有引擎都明确失败（风控/网络错误/解析失败）。
+		// 只有此时才告知 Agent “被风控”，避免部分失败就报错——
+		// 容错优先：只要有任一引擎返回数据就正常返回，不算打穿。
+		if allTokensAllFailed && len(failedList) > 0 {
 			return nil, fmt.Errorf("%s", BuildGuide(
-				fmt.Sprintf("搜索查询 %q，但 8 秒内未获得任何结果（失败的适配器：%s）", query, failedNote),
+				fmt.Sprintf("搜索查询 %q 失败：所有搜索引擎均报错，全部兜底策略被打穿。失败引擎：%s", query, strings.Join(failedList, ", ")),
+				"所有搜索引擎均无法完成搜索（风控/网络错误/解析失败）",
+				"稍后重试；若持续失败，说明当前搜索源全部不可达，应告知用户",
+			))
+		}
+
+		// 部分引擎失败，但未全部打穿（其余超时或无匹配）——不说“被风控”，如实说明部分失败
+		if len(failedList) > 0 {
+			return nil, fmt.Errorf("%s", BuildGuide(
+				fmt.Sprintf("搜索查询 %q 未获得结果：部分引擎失败，其余超时或无匹配。失败引擎：%s", query, strings.Join(failedList, ", ")),
+				"部分搜索引擎失败，未获得任何结果",
+				"稍后重试；或更换关键词重新搜索",
+			))
+		}
+
+		// 无引擎报错但无结果：上下文超时（8 秒 deadline 或外层取消）
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%s", BuildGuide(
+				fmt.Sprintf("搜索查询 %q，但 8 秒内未获得任何结果", query),
 				fmt.Sprintf("搜索超时（查询：%q）", query),
 				"缩短查询词或更换关键词后重试；若持续超时，说明当前搜索源不可达，应告知用户",
 			))
 		}
+
+		// 所有引擎都成功返回但无匹配结果——这才是真正的“没有搜索结果”
 		return nil, fmt.Errorf("%s", BuildGuide(
 			fmt.Sprintf("搜索查询 %q，但未找到任何搜索结果", query),
 			"没有搜索引擎返回与查询匹配的结果",
@@ -660,7 +718,6 @@ func formatSearchResults(query string, results []SearchResult) string {
 
 	sb.WriteString("---\n")
 	sb.WriteString("使用 WebFetch 从上述任何 URL 获取完整内容。\n")
-	sb.WriteString("注意：WebFetch 有 50,000 字符的内容预算。对于大型页面，请使用 prompt 参数定位特定部分。\n")
 	return sb.String()
 }
 

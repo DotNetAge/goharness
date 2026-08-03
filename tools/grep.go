@@ -35,12 +35,7 @@ func (t *GrepTool) Info() *ToolInfo {
 		MaxResultSizeChars: 50000,
 		Description:        "本地全文搜索",
 		Prompt: `本地全文搜索。
-- 支持完整的正则表达式语法（例如 "log.*Error"、"function\s+\w+"）。
-- 使用 include 参数过滤文件（例如 "*.js"、"**/*.tsx"）。
-- 输出模式："content" 显示匹配行，"files_with_matches" 仅显示文件路径（默认），"count" 显示匹配计数。
-- 多行匹配：默认仅在单行内匹配。对于跨行模式，使用 multiline: true。
-- 模式语法：ripgrep 字面大括号需要转义（如 interface\{\} 匹配 interface{}）。
-- 不要使用 Bash 调用 grep/rg，使用本工具。`,
+- 支持完整的正则表达式语法（例如 "log.*Error"、"function\s+\w+"）。`,
 		Tags: []string{"file", "search", "content", "regex", "text"},
 		Parameters: []Parameter{
 			{

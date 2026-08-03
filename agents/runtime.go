@@ -293,7 +293,7 @@ func (rt *Runtime) registerDefaultTools() {
 			toolOf("TaskList", tools.NewTaskListTool),
 			toolOf("TaskGet", tools.NewTaskGetTool),
 			toolOf("TaskUpdate", tools.NewTaskUpdateTool),
-			toolOf("Sleep", tools.NewSleepTool),
+			// toolOf("Sleep", tools.NewSleepTool),
 			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.skillReg.GetSkill) }),
 			toolOf("SubAgent", func() *tools.SubAgentTool {
 				subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)

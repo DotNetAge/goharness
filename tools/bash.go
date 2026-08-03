@@ -113,17 +113,8 @@ func (t *BashTool) Info() *ToolInfo {
 - 编辑文件：使用 Edit（不要用 sed/awk）
 - 写入文件：使用 Write（不要用 tee/cat）
 
-专用工具提供更好的体验，也更容易审查工具调用。
-
 - 如果命令将创建新目录或文件，先用 Ls 验证父目录存在。
-- 始终用双引号引用包含空格的文件路径。
-- 使用 working_dir 在特定目录中运行命令。
-
-**输出限制**：stdout 和 stderr 各最多 30000 字符，超出部分会被截断，并在结果中标明（stdout_truncated / stderr_truncated）。
-如需查看完整输出或预期输出较大，请主动用管道缩小范围，例如 <cmd | head -n 100>、<cmd | tail -n 100>、
-<cmd | grep 关键词>、<cmd | jq .[0:10]>，或将输出重定向到文件后使用 Read 工具分页读取。
-
-**命令限制**：单个命令最长 16000 字符，超长命令会被拒绝。写入或修改文件请使用 Write / Edit 工具（不要用 cat heredoc 或 echo 重定向绕过），复杂逻辑请将命令拆分后分步执行。`,
+- 始终用双引号引用包含空格的文件路径。`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: events.LevelHighRisk,
 		Parameters: []Parameter{

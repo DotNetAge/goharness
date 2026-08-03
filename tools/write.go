@@ -38,7 +38,7 @@ func (w *Write) AddWhiteList(dirs ...string) *Write {
 }
 
 // writeDescription 是 Write 工具的简短描述。
-const writeDescription = `将内容写入文件。自动创建父目录。使用 append=true 进行追加而不是覆盖。`
+const writeDescription = `将内容写入文件。使用 append=true 进行追加而不是覆盖。`
 
 // NewWriteTool 创建一个文件写入工具实例。
 //
@@ -53,11 +53,10 @@ func NewWriteTool() *Write {
 
 **用法**
 - Write 用于创建新文件或完全重写已有文件。
-- 覆盖已有文件前必须先用 Read 工具读取文件。Write 会自动检测读取状态，未读取时拒绝操作。
-- 修改已有文件的小部分内容时，优先使用 Edit 工具（只发送差异，更安全）。
-- 使用 append=true 在文件末尾追加内容（追加模式不要求先读取）。
-- 写入会返回变更差异（diff），请通过 diff 验证写入是否正确。
-- 仅在用户明确要求时使用表情符号。`,
+- 覆盖已有文件前必须先用 Read 工具读取文件。
+- 修改已有文件的小部分内容时，优先使用 Edit 工具。
+- 追加模式（append=true）不要求先读取。
+- 写入会返回变更差异（diff），请通过 diff 验证写入是否正确。`,
 			Tags:          []string{"file", "filesystem", "write", "create"},
 			SecurityLevel: events.LevelSensitive,
 			Parameters: []Parameter{

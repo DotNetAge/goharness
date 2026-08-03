@@ -2,35 +2,44 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
 )
 
-// webFetchCacheTTL 是 WebFetch 缓存的生存时间。
-const webFetchCacheTTL = 15 * time.Minute
+// webFetchLargePageLines 是判定页面需要落盘的行数阈值。
+// 超过此行数的页面落盘到 SessionDir/.webfetch/，Agent 用 Read 的 offset/limit 分页读取，
+// 避免一次性塞满上下文。阈值取 500 行：与 Read 的默认行数（read.go:68）一致——
+// Read 单次默认最多读 500 行，WebFetch 同样以 500 行作为"直返/落盘"分界，
+// 两端阈值统一，Agent 用 Read 读落盘文件时一次恰好读完一屏，语义对齐。
+const webFetchLargePageLines = 500
 
-// webFetchCacheSessionID 是 WebFetch 缓存在 KVStore 中的会话 ID。
-const webFetchCacheSessionID = "__goharness_webfetch_cache__"
+// webFetchCacheTTL 是落盘文件的有效期。命中且未过期时跳过网络抓取。
+const webFetchCacheTTL = 24 * time.Hour
 
-// webFetchMaxContentChars 是 WebFetch 返回内容的最大字符数。
+// webFetchMaxFileBytes 是落盘文件的最大字节数。
+// 受 Read 工具 MaxSizeBytes=256KB 硬限制约束（read.go:356 在分页前先做大小检查），
+// 留 16KB 安全边距，避免 UTF-8 多字节字符在边界处把文件顶过 256KB。
+const webFetchMaxFileBytes = 240 * 1024
+
+// webFetchMaxContentChars 是 SessionDir 不可用时回退截断的字符数上限。
 const webFetchMaxContentChars = 50000
 
-// cachedFetch 表示缓存的一次网页获取结果。
-type cachedFetch struct {
-	Content   string    `json:"content"`   // 页面内容（Markdown 格式）
-	Timestamp time.Time `json:"timestamp"` // 缓存时间
-	URL       string    `json:"url"`       // 原始 URL
-}
+// webFetchDirName 是 SessionDir 下存放 WebFetch 落盘文件的子目录名。
+// 以点开头：不污染 Agent 的 Ls 视图（默认不显示隐藏目录）。
+const webFetchDirName = ".webfetch"
 
 // WebFetchTool 实现了网页内容获取工具。
 // 用于获取并转换网页内容为 Markdown 格式，具有以下安全特性：
@@ -39,13 +48,13 @@ type cachedFetch struct {
 //   - 重定向限制：最多 10 次重定向
 //   - 内容大小限制：最大 10MB 响应体
 //
-// 内容处理：
+// 内容处理（工具正交：WebFetch 管抓取落盘，Read 管分页读取）：
 //   - HTML → Markdown 转换
-//   - 非 HTML 内容的原样返回
-//   - 输出截断至 50000 字符
+//   - 小页面（≤500 行）：直接返回 Markdown 内容
+//   - 大页面（>500 行）：落盘到 SessionDir/.webfetch/，返回路径提示 Agent 用 Read 分页读取
+//   - 非 HTML 内容：原样返回预览
 type WebFetchTool struct {
-	client   *stealthClient // 隐蔽客户端（TLS 指纹伪装 + SSRF 防护 + 重试退避）
-	memCache sync.Map       // 内存缓存（进程内）
+	client *stealthClient // 隐蔽客户端（TLS 指纹伪装 + SSRF 防护 + 重试退避）
 }
 
 // NewWebFetchTool 创建一个 WebFetchTool 实例。
@@ -64,67 +73,102 @@ func NewWebFetchTool(logger logging.Logger) FuncTool {
 // Info 返回 WebFetch 工具的元信息。
 func (t *WebFetchTool) Info() *ToolInfo {
 	return &ToolInfo{
-		Name:               "WebFetch",
-		MaxResultSizeChars: 25000,
-		Description:        "获取并提取网页内容。在 WebSearch 之后使用，以读取已发现 URL 的实际内容。",
-		Prompt: `获取并提取网页内容。在 WebSearch 之后使用，以读取已发现 URL 的实际内容。
-
-工作流程：
-1. 验证 URL 并检查 SSRF 风险（阻止私有 IP）。
-2. 通过 HTTP 在本地获取页面内容。
-3. 去除 HTML 标签（脚本、样式、导航等）以生成干净的 Markdown。
-4. 返回提取的内容。
-
-内容预算：
-- 最大返回内容：50,000 字符（约 16K tokens）
-- 如果页面超出此限制，输出将注明省略了多少字符
-- 使用 prompt 参数将获取范围缩小到相关部分（例如，prompt="提取定价信息"）
-- 如果您需要被截断页面的更多内容，请使用更具体的 prompt 重新获取`,
-		Tags:       []string{"web", "fetch", "url", "content", "http"},
-		IsReadOnly: true,
+		Name: "WebFetch",
+		// -1 禁用 executor 的通用截断：WebFetch 自行管理内容形态——
+		// 小页面直接返回（≤500 行），大页面落盘并返回路径提示（几十字符）。
+		// executor 再截断会破坏大页面的路径提示语义。唯一内容控制由 Execute 内完成。
+		MaxResultSizeChars: -1,
+		Description:        "获取网页内容并转为 Markdown。",
+		Prompt:             `获取网页内容并转为 Markdown。`,
+		Tags:               []string{"web", "fetch", "url", "content", "http"},
+		IsReadOnly:         true,
 		Parameters: []Parameter{
 			{
 				Name:        "url",
 				Type:        "string",
-				Description: "要获取内容的 URL。",
+				Description: "要获取的 URL。",
 				Required:    true,
-			},
-			{
-				Name:        "prompt",
-				Type:        "string",
-				Description: "要提取的信息或关于页面内容要回答的问题。有助于将输出集中在相关细节上。",
-				Required:    false,
 			},
 		},
 	}
+}
+
+// webFetchFileName 把 URL 转成 sha256 摘要文件名（不含目录）。
+// 用 sha256 而非 URL sanitize：URL 可能极长（超过 255 字节文件名上限），
+// sanitize 后的名称仍可能因截断而冲突或不可读；sha256 产生固定 64 字符摘要，
+// 加 .md 后缀共 67 字节，稳定、唯一、无冲突、无非法字符。
+// 相同 URL（经规范化）必产生相同文件名（缓存命中）；不同 URL 摘要几乎不可能碰撞。
+// 调用前须先完成 URL 规范化（http→https、补前缀），
+// 确保 example.com / http://example.com / https://example.com 命中同一缓存。
+func webFetchFileName(rawURL string) string {
+	h := sha256.Sum256([]byte(rawURL))
+	return hex.EncodeToString(h[:]) + ".md"
+}
+
+// webFetchCachePath 返回 URL 对应的落盘绝对路径与 .webfetch 目录路径。
+// sessionDir 为空时（测试 mock 或未配置持久化）返回 ("","")，表示无可用落盘位置。
+func webFetchCachePath(sessionDir, rawURL string) (filePath, dirPath string) {
+	if sessionDir == "" {
+		return "", ""
+	}
+	dirPath = filepath.Join(sessionDir, webFetchDirName)
+	filePath = filepath.Join(dirPath, webFetchFileName(rawURL))
+	return
+}
+
+// countLines 统计 Markdown 行数（与 Read 的 cat -n 行号语义一致）。
+// 末尾无换行符的最后一行也计入。
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// truncateMarkdownToBytes 按 webFetchMaxFileBytes 截断 Markdown，rune 安全。
+// 截断位置回退到上一个 \n 边界，避免切断段落/行。返回截断后的内容与是否截断。
+func truncateMarkdownToBytes(content string) (string, bool) {
+	if len(content) <= webFetchMaxFileBytes {
+		return content, false
+	}
+	// 按字节切到上限，再回退到 rune 边界（避免切坏多字节字符）
+	cut := webFetchMaxFileBytes
+	for cut > 0 && !utf8.RuneStart(content[cut]) {
+		cut--
+	}
+	truncated := content[:cut]
+	// 回退到最后一个换行符，避免切坏行
+	if i := strings.LastIndexByte(truncated, '\n'); i > 0 {
+		truncated = truncated[:i]
+	}
+	return truncated, true
 }
 
 // Execute 执行网页内容获取操作。
 //
 // 处理流程：
 //  1. 验证并规范化 URL（强制 HTTPS）
-//  2. 检查内存缓存和 KVStore 缓存
+//  2. 检查文件缓存（SessionDir/.webfetch/，mtime 判断 24h 过期）
 //  3. 验证 URL 安全性（SSRF 防护）
 //  4. 发送 HTTP GET 请求
 //  5. 处理响应（HTML 转 Markdown 或原样返回）
-//  6. 截断过长的内容
-//  7. 缓存结果
+//  6. 小页面（≤500 行）直接返回；大页面（>500 行）落盘并返回路径提示
 //
 // 参数：
 //   - ctx: 上下文
-//   - params: 必须包含 "url"，可选 "prompt"
+//   - params: 必须包含 "url"
 //
 // 返回：
-//   - string: 格式化的页面内容
+//   - string: 格式化的页面内容，或大页面的文件路径提示
 //   - error: URL 无效、访问被拒绝或网络错误时返回错误
 func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	rawURL, err := ValidateRequiredString("WebFetch", params, "url")
 	if err != nil {
 		return nil, err
-	}
-	var prompt string
-	if raw, found := GetParam(params, "prompt"); found {
-		prompt, _ = raw.(string)
 	}
 
 	rawURL = strings.TrimSpace(rawURL)
@@ -153,24 +197,31 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		return nil, err
 	}
 
-	wfCacheKey := rawURL
-	if cached, ok := t.memCache.Load(wfCacheKey); ok {
-		entry := cached.(cachedFetch)
-		if time.Since(entry.Timestamp) < webFetchCacheTTL {
-			return formatWebFetchOutput(rawURL, prompt, entry.Content, len([]rune(entry.Content)), entry.Content, false), nil
-		}
-		t.memCache.Delete(wfCacheKey)
+	// 获取 Session 与落盘路径；logger 从 ToolContext 注入（禁止内部创建日志）。
+	tc := GetToolContext(ctx)
+	var logger logging.Logger
+	if tc != nil {
+		logger = tc.Logger
+	}
+	var filePath, dirPath string
+	if tc != nil && tc.Session != nil {
+		filePath, dirPath = webFetchCachePath(tc.Session.SessionDir(), rawURL)
 	}
 
-	kvs := GetToolContext(ctx).KVStore
-	if kvs != nil {
-		if data, err := kvs.Get(ctx, webFetchCacheSessionID, wfCacheKey); err == nil && len(data) > 0 {
-			var entry cachedFetch
-			if json.Unmarshal(data, &entry) == nil && time.Since(entry.Timestamp) < webFetchCacheTTL {
-				t.memCache.Store(wfCacheKey, entry)
-				return formatWebFetchOutput(rawURL, prompt, entry.Content, len([]rune(entry.Content)), entry.Content, false), nil
+	// 文件缓存命中检查：文件存在且 mtime 在 24h 内 → 跳过网络，按行数决定返回形态。
+	if filePath != "" {
+		if info, statErr := os.Stat(filePath); statErr == nil && time.Since(info.ModTime()) < webFetchCacheTTL {
+			if data, readErr := os.ReadFile(filePath); readErr == nil {
+				content := string(data)
+				lines := countLines(content)
+				if lines <= webFetchLargePageLines {
+					return formatWebFetchOutput(rawURL, content, len([]rune(content)), false), nil
+				}
+				return formatWebFetchPathOutput(rawURL, filePath, lines, len(content), false), nil
 			}
-			kvs.Delete(ctx, webFetchCacheSessionID, wfCacheKey)
+			if logger != nil {
+				logger.Warn("读取 WebFetch 缓存文件失败，将重新抓取", "path", filePath)
+			}
 		}
 	}
 
@@ -207,7 +258,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 	if !isHTMLContentType(ct) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return formatNonHTML(rawURL, prompt, resp.StatusCode, ct, string(body)), nil
+		return formatNonHTML(rawURL, resp.StatusCode, ct, string(body)), nil
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
@@ -221,42 +272,84 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	rawContent := htmlToMarkdown(string(body))
 	originalLen := len([]rune(rawContent))
+	lines := countLines(rawContent)
 
-	content := rawContent
-	truncated := false
-	if originalLen > webFetchMaxContentChars {
-		content = string([]rune(rawContent[:webFetchMaxContentChars]))
-		truncated = true
+	// 小页面（≤500 行）：直接返回 Markdown 内容，不落盘。
+	if lines <= webFetchLargePageLines {
+		return formatWebFetchOutput(rawURL, rawContent, originalLen, false), nil
 	}
 
-	entry := cachedFetch{
-		Content:   content,
-		Timestamp: time.Now(),
-		URL:       rawURL,
-	}
-	t.memCache.Store(wfCacheKey, entry)
-	if kvs != nil {
-		if data, err := json.Marshal(entry); err == nil {
-			kvs.Set(ctx, webFetchCacheSessionID, wfCacheKey, data, int(webFetchCacheTTL.Seconds()))
+	// 大页面（>500 行）：落盘到 SessionDir/.webfetch/，返回路径提示 Agent 用 Read 分页读取。
+	// SessionDir 不可用（测试 mock 或未配置持久化）时回退到旧的字符截断策略，不让大页面无路可走。
+	if filePath == "" {
+		content := rawContent
+		truncated := false
+		if originalLen > webFetchMaxContentChars {
+			content = string([]rune(rawContent[:webFetchMaxContentChars]))
+			truncated = true
 		}
+		if logger != nil {
+			logger.Warn("SessionDir 不可用，WebFetch 回退到字符截断返回（无法落盘分页）", "url", rawURL)
+		}
+		return formatWebFetchOutput(rawURL, content, originalLen, truncated), nil
 	}
 
-	return formatWebFetchOutput(rawURL, prompt, content, originalLen, rawContent, truncated), nil
+	// 创建 .webfetch 目录
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return nil, fmt.Errorf("创建 WebFetch 缓存目录失败: %w", err)
+	}
+
+	// 截断到 240KB（Read 的 256KB 硬限制约束），超限追加注释行说明
+	storedContent, byteTruncated := truncateMarkdownToBytes(rawContent)
+	if byteTruncated {
+		storedContent += fmt.Sprintf(
+			"\n\n<!-- 已截断：原始 %d 字节，存储 %d 字节。 -->\n",
+			len(rawContent), len(storedContent))
+	}
+
+	// 写文件（覆盖式，缓存过期后重新抓取直接覆盖）
+	if err := os.WriteFile(filePath, []byte(storedContent), 0644); err != nil {
+		return nil, fmt.Errorf("写入 WebFetch 缓存文件失败: %w", err)
+	}
+
+	// SessionDir 位于沙箱 AllowedDirs（如 ~/.mindx）子树内，isOutsideWorkspace 默认放行，
+	// Read 的 EnforceFile/Grant 无需 WebFetch 手动打补丁——工具正交：WebFetch 只管落盘。
+
+	if logger != nil {
+		logger.Info("WebFetch 落盘完成",
+			"url", rawURL, "file", filePath,
+			"lines", lines, "bytes", len(storedContent), "byte_truncated", byteTruncated)
+	}
+
+	return formatWebFetchPathOutput(rawURL, filePath, lines, len(storedContent), byteTruncated), nil
 }
 
-func formatWebFetchOutput(rawURL, prompt, content string, originalLen int, rawContent string, truncated bool) string {
+// formatWebFetchOutput 格式化小页面（≤500 行）或回退截断场景的输出。
+func formatWebFetchOutput(rawURL, content string, originalLen int, truncated bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- 网页获取：%s ---\n", rawURL)
 	fmt.Fprintf(&sb, "状态：200 | 原始大小：%d 字符 | 返回：%d 字符\n",
-		originalLen, len(content))
-	if prompt != "" {
-		fmt.Fprintf(&sb, "提示词：%s\n", prompt)
-	}
+		originalLen, len([]rune(content)))
 	if truncated {
 		fmt.Fprintf(&sb, "注意：内容已被截断（省略了 %d 字符）。\n", originalLen-webFetchMaxContentChars)
-		fmt.Fprintf(&sb, "要聚焦于特定部分，请使用描述性的 `prompt` 参数重新获取（例如，prompt=\"提取关于定价的部分\"）。\n")
 	}
 	fmt.Fprintf(&sb, "\n%s\n", content)
+	return sb.String()
+}
+
+// formatWebFetchPathOutput 生成大页面（>500 行）落盘后的引导输出。
+// 用绝对路径，匹配 ResolveTargetPath 对绝对路径直通的语义（utils.go:478-479）。
+// 文案保持简洁：WebFetch 只负责落盘并告知路径，分页读法由 Read 的 Prompt 说明，
+// 不在 WebFetch 侧重复，保持工具正交。
+func formatWebFetchPathOutput(rawURL, filePath string, lines, bytes int, byteTruncated bool) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- 网页获取：%s ---\n", rawURL)
+	fmt.Fprintf(&sb, "状态：200 | 行数：%d | 字节数：%d\n", lines, bytes)
+	if byteTruncated {
+		fmt.Fprintf(&sb, "注意：原始页面超过 240KB，已截断存储（Read 工具的单文件 256KB 上限约束）。\n")
+	}
+	fmt.Fprintf(&sb, "\n文件已下载到：%s\n", filePath)
+	fmt.Fprintf(&sb, "请用 Read 工具读取上述路径（绝对路径）以获取搜索内容。\n")
 	return sb.String()
 }
 
@@ -268,13 +361,10 @@ func isHTMLContentType(ct string) bool {
 		ct == ""
 }
 
-func formatNonHTML(rawURL, prompt string, statusCode int, contentType, preview string) string {
+func formatNonHTML(rawURL string, statusCode int, contentType, preview string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- 网页获取：%s ---\n", rawURL)
 	fmt.Fprintf(&sb, "状态：%d | Content-Type：%s\n", statusCode, contentType)
-	if prompt != "" {
-		fmt.Fprintf(&sb, "提示词：%s\n", prompt)
-	}
 	fmt.Fprintf(&sb, "\n非 HTML 内容。正文预览（%d 字节）：\n", len(preview))
 	if len(preview) > 0 {
 		fmt.Fprintf(&sb, "%s...\n", preview)

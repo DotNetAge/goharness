@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -422,4 +423,157 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ============================================================
+// 错误分类回归测试 —— 防止“引擎报错被掩盖成没有搜索结果”
+// ============================================================
+
+// stubAdapter 是测试用的搜索适配器桩，按预设返回结果或错误。
+type stubAdapter struct {
+	name    string
+	results []SearchResult
+	err     error
+}
+
+func (a *stubAdapter) Name() string { return a.name }
+func (a *stubAdapter) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
+	return a.results, a.err
+}
+
+// TestWebSearch_ErrorClassification_AllFail 验证所有引擎报错时报“搜索失败”而非“没有结果”。
+// 回归防护：原逻辑在此场景统一报“未找到搜索结果”，掩盖了真实的引擎错误，
+// 导致 Agent 误判为“无结果”而非“搜索失败”。
+func TestWebSearch_ErrorClassification_AllFail(t *testing.T) {
+	tool := &WebSearchTool{
+		adapters: []SearchAdapter{
+			&stubAdapter{name: "stub1", err: errors.New("网络错误")},
+			&stubAdapter{name: "stub2", err: errors.New("风控拦截")},
+		},
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
+	if err == nil {
+		t.Fatal("期望返回错误，实际为 nil")
+	}
+	if !strings.Contains(err.Error(), "全部兜底策略被打穿") {
+		t.Errorf("所有引擎失败时应报全部兜底策略被打穿，实际：%s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "失败引擎") {
+		t.Errorf("错误信息应包含失败引擎详情，实际：%s", err.Error())
+	}
+	if strings.Contains(err.Error(), "未找到任何搜索结果") {
+		t.Errorf("全部打穿时不应报未找到搜索结果，实际：%s", err.Error())
+	}
+}
+
+// TestWebSearch_ErrorClassification_PartialFail 验证部分引擎失败时（未全部打穿）报"部分失败"而非"全部打穿"。
+// 核心诉求：只有全部兜底被打穿才报风控，部分失败时不夸大；只要有任一引擎返回数据就正常返回。
+func TestWebSearch_ErrorClassification_PartialFail(t *testing.T) {
+	tool := &WebSearchTool{
+		adapters: []SearchAdapter{
+			&stubAdapter{name: "stub1", err: errors.New("风控拦截")},
+			&stubAdapter{name: "stub2"}, // 成功但 0 条结果
+		},
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
+	if err == nil {
+		t.Fatal("期望返回错误，实际为 nil")
+	}
+	if !strings.Contains(err.Error(), "部分引擎失败") {
+		t.Errorf("部分引擎失败时应报部分引擎失败，实际：%s", err.Error())
+	}
+	if strings.Contains(err.Error(), "全部兜底策略被打穿") {
+		t.Errorf("部分失败时不应报全部打穿，实际：%s", err.Error())
+	}
+}
+
+// TestWebSearch_ErrorClassification_PartialSuccessHasData 验证：部分引擎失败但有引擎返回数据时，
+// 正常返回数据（容错优先），仅附加失败引擎附注，不报错。
+func TestWebSearch_ErrorClassification_PartialSuccessHasData(t *testing.T) {
+	tool := &WebSearchTool{
+		adapters: []SearchAdapter{
+			&stubAdapter{name: "stub1", err: errors.New("风控拦截")},
+			&stubAdapter{name: "stub2", results: []SearchResult{{Title: "结果A", URL: "https://a.com"}}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	defer cancel()
+
+	out, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
+	if err != nil {
+		t.Fatalf("有引擎返回数据时不应报错，实际：%s", err.Error())
+	}
+	s := out.(string)
+	if !strings.Contains(s, "结果A") {
+		t.Errorf("应包含成功引擎的结果，实际：%s", s)
+	}
+	if !strings.Contains(s, "部分引擎失败") {
+		t.Errorf("应附加失败引擎附注，实际：%s", s)
+	}
+}
+
+// TestWebSearch_ErrorClassification_NoMatch 验证所有引擎成功但无结果时报“没有搜索结果”。
+func TestWebSearch_ErrorClassification_NoMatch(t *testing.T) {
+	tool := &WebSearchTool{
+		adapters: []SearchAdapter{
+			&stubAdapter{name: "stub1"}, // nil results, nil err —— 成功但无匹配
+			&stubAdapter{name: "stub2"},
+		},
+	}
+	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
+	if err == nil {
+		t.Fatal("期望返回错误，实际为 nil")
+	}
+	if !strings.Contains(err.Error(), "未找到任何搜索结果") {
+		t.Errorf("引擎成功但无结果时应报未找到任何搜索结果，实际：%s", err.Error())
+	}
+	if strings.Contains(err.Error(), "搜索引擎报错") {
+		t.Errorf("无引擎报错时不应提示搜索引擎报错，实际：%s", err.Error())
+	}
+}
+
+// TestCheckAntiCrawl 验证风控检测逻辑：风控状态码和风控特征短语应报错，正常页面不报错。
+func TestCheckAntiCrawl(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantErr    bool
+		wantSubstr string
+	}{
+		{"正常页面", 200, "<html>正常搜索结果页</html>", false, ""},
+		{"状态码403", 403, "", true, "风控状态码 403"},
+		{"状态码429限流", 429, "", true, "429"},
+		{"状态码503", 503, "", true, "503"},
+		{"百度安全验证", 200, "<html>百度安全验证</html>", true, "百度安全验证"},
+		{"人机验证", 200, "<title>人机验证</title>", true, "人机验证"},
+		{"captcha大写", 200, "<html>CAPTCHA challenge</html>", true, "captcha"},
+		{"正常含验证词但非风控", 200, "<html>某结果标题含验证二字</html>", false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkAntiCrawl(c.status, []byte(c.body))
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("期望报错，实际为 nil")
+				}
+				if c.wantSubstr != "" && !strings.Contains(err.Error(), c.wantSubstr) {
+					t.Errorf("错误信息应包含 %q，实际：%s", c.wantSubstr, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("正常页面不应报错，实际：%s", err.Error())
+				}
+			}
+		})
+	}
 }

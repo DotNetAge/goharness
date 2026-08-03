@@ -37,10 +37,8 @@ func (t *GlobTool) Info() *ToolInfo {
 		MaxResultSizeChars: 30000,
 		Description:        "查找文件。当你需要通过文件名模式查找文件时使用此工具。",
 		Prompt: `快速文件模式匹配工具，适用于任何规模的文件查找任务。
-	**用法**
-- 支持 glob 模式，如 "**/*.js" 或 "src/**/*.ts"
-- 返回匹配的文件路径，按修改时间排序
-- 当你进行可能需要多轮 glob 和 grep 的开放式搜索时，使用 SubAgent 工具代替`,
+- 返回匹配的文件路径，按修改时间排序。
+- 当你进行可能需要多轮 glob 和 grep 的开放式搜索时，使用 SubAgent 工具代替。`,
 		Tags:          []string{"file", "search", "pattern", "filesystem", "discovery"},
 		SecurityLevel: events.LevelSafe,
 		Parameters: []Parameter{

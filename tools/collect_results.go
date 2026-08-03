@@ -40,9 +40,7 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 如果返回 status=completed，result 字段包含子代理的最终答案。
 如果某个 session_id 未返回结果（missing/failed），请对该 agent 重新发起
 SubAgent 调用（task 设为"继续之前的任务并给出最终结果"），
-再调用 CollectResults 获取新结果。同一 agent 会复用之前的 session。
-
-注意：session_id 来自 SubAgent 返回结果中的 session_id 字段。`,
+再调用 CollectResults 获取新结果。同一 agent 会复用之前的 session。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{

@@ -45,14 +45,11 @@ func NewEditTool() *EditTool {
 func (t *EditTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "Edit",
-		Description: "通过精确字符串替换来编辑文件。支持花引号降级和末尾换行容错。",
+		Description: "通过精确字符串替换来编辑文件。",
 		Prompt: `在文件中进行精确字符串替换。
 **用法**
-- 编辑 Read 工具输出中的文本时，确保保留行号前缀之后的精确缩进（制表符/空格）。
-- old_string 必须精确匹配文件中的内容。工具会自动处理花引号和末尾换行差异。
-- 使用 replace_all=true 在文件所有位置更改字符串。
-- 使用 limit=N 仅替换前 N 次出现。
-- 使用 old_string="" + 空文件来创建新文件。非空文件使用 Write 工具。
+- old_string 必须精确匹配文件中的内容。编辑 Read 工具输出中的文本时，确保保留行号前缀之后的精确缩进（制表符/空格）。
+- 创建新文件或完全重写已有文件使用 Write 工具。
 
 **减少重复调用**
 - 同一文件的多个段落修改可连续多次调用本工具，无需在每次调用之间重复 Read：

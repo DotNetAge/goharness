@@ -223,22 +223,20 @@ func TestIntegration_WebFetch_ExampleCom(t *testing.T) {
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
 	result, err := tool.Execute(ctx, map[string]any{
-		"url":    "https://example.com",
-		"prompt": "Extract the main heading",
+		"url": "https://example.com",
 	})
 	if err != nil {
 		t.Fatalf("FAIL [Claude-Example]: error = %v", err)
 	}
 	s := result.(string)
-	hasHeader := strings.Contains(s, "--- Web Fetch:")
-	hasStatus := strings.Contains(s, "Status:")
-	hasPrompt := strings.Contains(s, "Prompt:")
+	hasHeader := strings.Contains(s, "--- 网页获取：")
+	hasStatus := strings.Contains(s, "状态：")
 	hasContent := strings.Contains(s, "Example Domain")
-	t.Logf("PASS [Claude-Example]: header=%v status_line=%v prompt_line=%v content=%v, total_len=%d",
-		hasHeader, hasStatus, hasPrompt, hasContent, len(s))
+	t.Logf("PASS [Claude-Example]: header=%v status_line=%v content=%v, total_len=%d",
+		hasHeader, hasStatus, hasContent, len(s))
 	if !hasHeader || !hasStatus || !hasContent {
-		t.Errorf("missing expected fields: header=%v status=%v prompt=%v content=%v",
-			hasHeader, hasStatus, hasPrompt, hasContent)
+		t.Errorf("missing expected fields: header=%v status=%v content=%v",
+			hasHeader, hasStatus, hasContent)
 	}
 }
 
@@ -249,8 +247,7 @@ func TestIntegration_WebFetch_HTMLToTextExtraction(t *testing.T) {
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
 	result, err := tool.Execute(ctx, map[string]any{
-		"url":    "https://httpbin.org/html",
-		"prompt": "Extract all text content",
+		"url": "https://httpbin.org/html",
 	})
 	if err != nil {
 		t.Fatalf("FAIL [Claude-HTMLExtract]: error = %v", err)
@@ -497,8 +494,7 @@ func TestIntegration_Workflow_SearchThenFetch(t *testing.T) {
 	step2 := time.Now()
 	fetchTool := NewWebFetchTool(logging.NewNopLogger())
 	fetchResult, err := fetchTool.Execute(ctx, map[string]any{
-		"url":    "https://pkg.go.dev/io/ioutil",
-		"prompt": "List all available functions and their signatures",
+		"url": "https://pkg.go.dev/io/ioutil",
 	})
 	if err != nil {
 		t.Fatalf("FAIL [Workflow-Step2-Fetch]: error = %v", err)

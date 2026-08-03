@@ -60,22 +60,13 @@ func NewReadToolWithLimits(limits FileReadingLimits) *Read {
 		limits: limits,
 		info: &ToolInfo{
 			Name:        "Read",
-			Description: "从本地文件系统读取文件。支持 PDF、DOCX、XLSX、EPUB 文档自动转换为 Markdown。",
+			Description: "从本地文件系统读取文件。支持文本、PDF/DOCX/XLSX/EPUB 文档、图片。",
 			Prompt: `从本地文件系统读取文件。
 
-**文本文件（.go, .py, .txt, .json 等）**
-- 结果使用 cat -n 格式显示行号。
-- 使用 offset/limit 读取特定范围，默认从开头读取最多 500 行。
-
-**文档文件（.pdf, .docx, .xlsx, .epub）**
-- 自动转换为 Markdown 后按纯文本处理，支持 offset/limit 分页精读。
-- 超过输出字符预算时返回错误，并提示改用 offset/limit 分页读取后续部分。
-- 结果中会包含 format、title、author、pages 等元数据字段。
-
-**图片文件（.png, .jpg, .gif, .bmp, .webp, .svg）**
-- 启用后自动读取并压缩图片，返回 base64 编码数据。
-- 压缩最长边为 512px，JPEG 质量自适应（90/85/70）。
-- SVG 文件不解码不压缩，直接返回 base64 编码。`,
+支持三类文件：
+- **文本文件**（.go, .py, .txt, .json 等）：返回带行号的内容，可用 offset/limit 分页。
+- **文档文件**（.pdf, .docx, .xlsx, .epub）：返回文本内容与元数据（title/author/pages 等），可用 offset/limit 分页精读。
+- **图片文件**（.png, .jpg, .gif, .bmp, .webp, .svg）：返回 base64 编码数据。`,
 			Tags:               []string{"file", "filesystem", "read", "content"},
 			SecurityLevel:      events.LevelSafe,
 			IsReadOnly:         true,

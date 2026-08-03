@@ -34,13 +34,7 @@ func (t *SleepTool) Info() *ToolInfo {
 
 当用户要求你睡眠或休息时，当你无事可做时，或者当你等待某事时，请使用此工具。
 
-你可能会收到 <tick> 提示——这些是定期检查。在睡眠前寻找有用的工作要做。
-
-你可以与其他工具并发调用此工具——它不会干扰它们。
-
-优先使用此工具而不是 Bash(sleep ...)——它不会持有 shell 进程。
-
-每次唤醒都会消耗一次 API 调用，但提示缓存在 5 分钟不活动后过期——相应地平衡。`,
+你可以与其他工具并发调用此工具，它不会干扰它们。优先使用此工具而不是 Bash(sleep ...)。`,
 		Tags:          []string{"sleep", "wait", "delay", "rest"},
 		SecurityLevel: events.LevelSafe,
 		IsIdempotent:  true,

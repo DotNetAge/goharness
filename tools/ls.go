@@ -48,29 +48,17 @@ func NewLsTool() FuncTool {
 			MaxResultSizeChars: 30000,
 			Description:        "列出目录内容及文件元数据。在读取文件之前使用此工具了解项目结构。对于基于模式的文件搜索，优先使用 Glob。",
 			Prompt: `列出目录内容以浏览文件系统结构。当你需要查看目录中存在哪些文件、检查文件大小，或在读取或编辑文件之前了解项目结构时，使用此工具。
-
-## 用法
-
-### 基本列表 — 查看目录中的文件
-不带参数调用以列出当前目录。每个条目包括：名称、类型（文件/目录）、字节大小、修改时间和 Unix 权限。
-
-### 递归树形视图
-设置 recursive=true 以显示两级深度的完整目录树。子目录会展开并列出其自身的子项。
-
-### 显示隐藏文件
-设置 show_hidden=true 以包含点文件（.gitignore、.env、.config 等）。默认情况下隐藏文件被排除。
-
 ## 何时使用此工具而非其他工具
 - 使用 Ls 在读取文件之前探索目录内容。
 - 使用 Glob 在整个项目中搜索匹配模式的文件。
 - 使用 Read 读取特定文件的内容。
-- 探索不熟悉的代码库时，从根目录开始使用 Ls 了解项目结构。`,
+- 探索不熟悉的目录时，从根目录开始使用 Ls 了解项目结构。`,
 			Tags:          []string{"file", "filesystem", "list", "directory"},
 			SecurityLevel: events.LevelSafe,
 			Parameters: []Parameter{
 				{Name: "path", Type: "string", Description: "要列出的目录路径。默认为当前目录（'.'）。", Required: false},
 				{Name: "recursive", Type: "boolean", Description: "如果为 true，递归列出子目录（2 级深度）。默认值：false。", Required: false},
-				{Name: "show_hidden", Type: "boolean", Description: "如果为 true，包含点文件和隐藏目录。默认值：false。", Required: false},
+				{Name: "show_hidden", Type: "boolean", Description: "如果为 true，显示包含点文件和隐藏目录。默认值：false。", Required: false},
 			},
 		},
 	}
