@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/tools/diffutil"
 	"github.com/DotNetAge/goharness/tools/filestate"
@@ -68,7 +69,7 @@ func NewWriteTool() *Write {
 	}
 }
 
-// Grant implements tools.PermissionRequired.
+// Grant 实现 tools.PermissionRequired 接口。
 // 与设计保持一致：硬拒绝（敏感文件 .env/.ssh）在 Execute 中处理，不在 Grant 中重复。
 //
 // 注意：参数名必须与 ToolInfo.Parameters 定义（"filePath"）及 Execute 取参保持一致。
@@ -140,78 +141,24 @@ func (w *Write) Info() *ToolInfo {
 	return w.info
 }
 
-// Execute 执行文件写入操作。
-//
-// 处理流程（严格遵循 WRITE_DESIGN.md 数据流图）：
-//
-//	params 进入 → Grant → 参数校验 → 路径解析 + 安全校验 → MkdirAll
-//	    │
-//	    ├── append=true → 追加模式
-//	    │   ├── 跳过读前检查
-//	    │   ├── M3：检测文件是否以 \n 结尾
-//	    │   │   ├── 不以 \n 结尾 → 在 content 前加 "\n"
-//	    │   │   └── 正常 → 原样追加
-//	    │   └── os.OpenFile(O_APPEND|O_CREATE) → 写入 → 返回 WriteResult{Type:"append"}
-//	    │
-//	    └── append=false
-//	        ├── 文件已存在？
-//	        │   ├── 是（overwrite）
-//	        │   │   ├── filestate.CheckStale 读前检查
-//	        │   │   ├── 读取原内容用于 diff
-//	        │   │   └── os.Create → 写入 → 生成 diff → 清除 StaleState
-//	        │   │
-//	        │   └── 否（create）
-//	        │       ├── 跳过读前检查（审计 m4：记录 INFO 日志）
-//	        │       └── os.Create → 写入 → 记录 StaleState
-//	        │
-//	        └── 返回 WriteResult{Type:"create"|"overwrite"}
-//
-// 参数：
-//   - ctx: 上下文（包含 ToolContext）
-//   - params: 必须包含 "filePath" 和 "content"，可选 "append"
-//
-// 返回：
-//   - *WriteResult: 结构化的写入结果（见 content_types.go）
-//   - error: 参数错误、路径验证失败、读前检查失败或 I/O 错误
-func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error) {
+// writeParams 承载 Write 工具解析后的参数。
+type writeParams struct {
+	filePath   string
+	content    string
+	appendMode bool
+}
+
+// validateWriteParams 从参数映射提取并验证 Write 工具参数。
+func validateWriteParams(params map[string]any) (writeParams, error) {
 	filePath, err := ValidateRequiredString("Write", params, "filePath")
 	if err != nil {
-		return nil, err
+		return writeParams{}, err
 	}
-
 	content, err := ValidateRequiredString("Write", params, "content")
 	if err != nil {
-		return nil, err
+		return writeParams{}, err
 	}
 
-	logger := getLogger(ctx)
-
-	tc := GetToolContext(ctx)
-	resolvedPath, scope := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
-
-	logger.Info("writing file",
-		"input_path", filePath,
-		"resolved_path", resolvedPath,
-		"scope", scope,
-		"content_len", len(content),
-	)
-
-	// 安全校验：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return nil, err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
-		return nil, err
-	}
-
-	// 确保父目录存在
-	dir := filepath.Dir(resolvedPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建父目录", dir, err), err)
-	}
-
-	// 判断写入模式
 	appendMode := false
 	if raw, found := GetParam(params, "append"); found {
 		if v, ok := raw.(bool); ok {
@@ -222,11 +169,39 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 			appendMode = v != 0
 		}
 	}
+	return writeParams{filePath: filePath, content: content, appendMode: appendMode}, nil
+}
+
+// authorizeWrite 解析文件路径并执行沙箱/敏感文件安全检查。
+func authorizeWrite(ctx context.Context, filePath string) (resolvedPath string, scope PathScope, err error) {
+	tc := GetToolContext(ctx)
+	resolvedPath, scope = ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
+
+	// 安全校验：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return "", "", err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+		return "", "", err
+	}
+	return resolvedPath, scope, nil
+}
+
+// performWrite 执行文件写入核心逻辑：目录创建、模式判断、追加/覆盖/创建写入、后处理。
+func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p writeParams) (*WriteResult, error) {
+	content := p.content
+
+	// 确保父目录存在
+	dir := filepath.Dir(resolvedPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建父目录", dir, err), err)
+	}
 
 	var writeType string
 	var diffStr string
 
-	if appendMode {
+	if p.appendMode {
 		// ── 追加模式 ──
 		writeType = "append"
 
@@ -348,4 +323,27 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		result.Diff = diffStr
 	}
 	return result, nil
+}
+
+// Execute 编排 Write 工具执行流程：validate → authorize → perform。
+func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error) {
+	p, err := validateWriteParams(params)
+	if err != nil {
+		return nil, err
+	}
+
+	resolvedPath, scope, err := authorizeWrite(ctx, p.filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	logger := getLogger(ctx)
+	logger.Info("writing file",
+		"input_path", p.filePath,
+		"resolved_path", resolvedPath,
+		"scope", scope,
+		"content_len", len(p.content),
+	)
+
+	return performWrite(logger, resolvedPath, scope, p)
 }

@@ -95,7 +95,7 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 
 	start := time.Now()
 
-	// Protect against panics in tool execution that could crash the process.
+	// 防止工具执行中的 panic 导致进程崩溃。
 	var (
 		result   any
 		err      error

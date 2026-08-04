@@ -8,14 +8,14 @@ import (
 	"github.com/DotNetAge/goharness/memory"
 )
 
-// MemorySearch implements a tool for searching long-term and session memory.
-// It provides semantic retrieval over stored knowledge using the memory.Memory interface.
+// MemorySearch 实现长期记忆与会话记忆的搜索工具。
+// 通过 memory.Memory 接口对已存储的知识进行语义检索。
 type MemorySearch struct {
 	memory memory.Memory
 }
 
-// NewMemorySearch creates a MemorySearch tool with the given Memory implementation.
-// Returns nil if memory is nil (memory not configured).
+// NewMemorySearch 使用给定的 Memory 实现创建 MemorySearch 工具。
+// 当 memory 为 nil 时返回 nil（表示未配置记忆）。
 func NewMemorySearch(memory memory.Memory) FuncTool {
 	if memory == nil {
 		return nil

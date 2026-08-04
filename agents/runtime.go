@@ -50,7 +50,6 @@ package agents
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/DotNetAge/goharness/config"
@@ -137,11 +136,10 @@ type Runtime struct {
 	asyncTimeout time.Duration
 	syncTimeout  time.Duration
 
-	// subAgentSessionCache 按 "agentName:projectDir" 缓存子智能体会话。
-	// 保证“同一 Agent + 同一 ProjectDir = 同一会话 ID”：同一子智能体在同一项目中复用同一会话，
+	// subAgents 管理子智能体的会话缓存与派生执行（详见 subAgentManager）。
+	// 保证"同一 Agent + 同一 ProjectDir = 同一会话 ID"：同一子智能体在同一项目中复用同一会话，
 	// 以维持对话连续性。
-	subAgentSessionCache map[string]*session.Session
-	subAgentSessionMu    sync.RWMutex
+	subAgents *subAgentManager
 
 	// tokenUsageStore 持久化大语言模型 token 使用记录，包含分组维度与成本。
 	// 默认：NoopTokenUsageStore（空操作）。通过 WithTokenUsageStore 注入。
@@ -201,17 +199,22 @@ type RunResult struct {
 //   - WithSyncTimeout(time.Duration)：设置同步工具超时（默认 5 分钟）
 func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	r := &Runtime{
-		toolReg:              tools.NewDefaultToolRegistry(),
-		logger:               logging.DefaultLogger(),
-		asyncTimeout:         5 * time.Minute,
-		syncTimeout:          5 * time.Minute,
-		subAgentSessionCache: make(map[string]*session.Session),
+		toolReg:      tools.NewDefaultToolRegistry(),
+		logger:       logging.DefaultLogger(),
+		asyncTimeout: 5 * time.Minute,
+		syncTimeout:  5 * time.Minute,
 		prompt: PromptAssembler{
 			skillReg: skill.NewDefaultSkillRegistry(),
 		},
 	}
+	r.subAgents = newSubAgentManager(r)
 	for _, opt := range opts {
 		opt(r)
+	}
+	// logger 保障：若 WithLogger(nil) 被调用，回退到默认日志器。
+	// 策略统一为：NewRuntime 保证 logger 非 nil，函数体内一律不做 nil 检查。
+	if r.logger == nil {
+		r.logger = logging.DefaultLogger()
 	}
 	if r.tokenUsageStore == nil {
 		r.tokenUsageStore = session.NewNoopTokenUsageStore()
@@ -284,18 +287,21 @@ func (rt *Runtime) registerDefaultTools() {
 			// toolOf("Sleep", tools.NewSleepTool),
 			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.prompt.skillReg.GetSkill) }),
 			toolOf("SubAgent", func() *tools.SubAgentTool {
-				subAgentTool := tools.NewSubAgentTool(rt.spawnSubAgent)
+				subAgentTool := tools.NewSubAgentTool(rt.subAgents.spawn)
 				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
 					tc := tools.GetToolContext(ctx)
 					if tc == nil || tc.Session == nil {
 						return "", fmt.Errorf("上下文未包含会话")
 					}
-					sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
+					sess := rt.subAgents.getOrCreate(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
+					if sess == nil {
+						return "", fmt.Errorf("获取子智能体会话失败: %q", agentName)
+					}
 					return sess.ID(), nil
 				})
 				return subAgentTool
 			}),
-			toolOf("TeamCreate", func() *tools.TeamCreateTool { return tools.NewTeamCreateTool(rt.spawnSubAgent) }),
+			toolOf("TeamCreate", func() *tools.TeamCreateTool { return tools.NewTeamCreateTool(rt.subAgents.spawn) }),
 			toolOf("TeamDelete", tools.NewTeamDeleteTool),
 			toolOf("TeamList", tools.NewTeamListTool),
 			toolOf("TeamGetTasks", tools.NewTeamGetTasksTool),
@@ -355,6 +361,29 @@ func (rt *Runtime) registerDefaultHooks() {
 	if rt.model.Visioning {
 		rt.toolHooks = append(rt.toolHooks, action.NewImageHook(rt.logger))
 	}
+}
+
+// SessionConfigs 返回 Runtime 应注入到所有会话（主会话与子会话）的通用 SessionConfig 列表。
+//
+// 这里注入的是 Runtime 提供的通用能力，所有会话共享：
+//   - Compactor：上下文压缩引擎。其依赖（llmClient/model/请求构造路径）全部来自
+//     Runtime，是 goharness 内置能力，无需外部应用注入——外部只需在创建会话时
+//     合并本方法返回的配置即可启用压缩。
+//   - Sandbox：工具安全沙箱（若已配置）。
+//
+// 会话特有的配置（如 MemoryStore、ModelContextResolver，依赖会话级数据）由调用方
+// 在创建会话时额外追加，不应放入此处。
+//
+// 注意：本方法是「Runtime 通用会话配置提供者」，并非子智能体专属——主会话同样使用
+// （见 mindx app.go / daemon.go），故保留在 Runtime 而非 subAgentManager 上。
+func (rt *Runtime) SessionConfigs() []session.SessionConfig {
+	opts := []session.SessionConfig{
+		session.WithCompactor(NewCompactor(rt)),
+	}
+	if rt.sandbox != nil {
+		opts = append(opts, session.WithSandbox(rt.sandbox))
+	}
+	return opts
 }
 
 // Ask 创建用于启动与智能体对话的 AskBuilder。

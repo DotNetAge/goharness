@@ -22,6 +22,18 @@ const defaultCompactWindowThreshold = 128 * 1024
 //   - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
 const microCompactMaxContextThreshold = 250 * 1024
 
+// shouldEnableMicroCompact 判断当前模型上下文长度是否应启用 MicroCompact。
+// 启用区间：128K < ContextLength <= 250K。
+//   - ≤128K：由 TryCompact 独占管理（80% 触发全量摘要清空），无需 MicroCompact
+//   - 128K–250K：MicroCompact（45% 触发局部压缩）先于 TryCompact（80% 触发全量清空）执行
+//   - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
+//
+// 该条件在 executor.go（控制 TryMicroCompact 调用）与 prompt_assembler.go
+//（控制压缩内容占位符插入）两处共用，集中此处避免修改时遗漏其一。
+func shouldEnableMicroCompact(ctxLen int64) bool {
+	return ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold
+}
+
 // PromptAssembler 负责构造发送给 LLM 的系统提示词与消息序列。
 // 它从 Runtime 抽离提示词构造职责，集中持有相关注册表引用与可覆盖的段落构造器，
 // 使 Runtime 退回装配根，提示词逻辑可独立测试与演进。
@@ -57,47 +69,42 @@ type PromptAssembler struct {
 func (p *PromptAssembler) BuildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
 	var sections []string
 
-	// 1. 身份
+	// 预取智能体配置（身份与技能目录两段共用，避免重复查询注册表）。
+	var agentCfg *config.AgentConfig
 	if p.agentReg != nil {
-		cfg := p.agentReg.Get(s.AgentName())
-		if cfg != nil {
-			sections = append(sections,
-				buildIdentity(cfg.Name, cfg.Role, cfg.Description, cfg.Introduction))
-		}
+		agentCfg = p.agentReg.Get(s.AgentName())
+	}
+
+	// 1. 身份
+	if agentCfg != nil {
+		sections = append(sections,
+			buildIdentity(agentCfg.Name, agentCfg.Role, agentCfg.Description, agentCfg.Introduction))
 	}
 
 	// 2. 技能目录 — 仅包含当前智能体声明的技能
-	if p.skillReg != nil && p.agentReg != nil {
-		cfg := p.agentReg.Get(s.AgentName())
-		if cfg != nil && len(cfg.Skills) > 0 {
-			allSkills := p.skillReg.ListSkills()
-			allowed := make(map[string]bool, len(cfg.Skills))
-			for _, name := range cfg.Skills {
-				allowed[name] = true
+	if p.skillReg != nil && agentCfg != nil && len(agentCfg.Skills) > 0 {
+		allSkills := p.skillReg.ListSkills()
+		allowed := make(map[string]bool, len(agentCfg.Skills))
+		for _, name := range agentCfg.Skills {
+			allowed[name] = true
+		}
+		var agentSkills []*skill.Skill
+		for _, sk := range allSkills {
+			if allowed[sk.Name] {
+				agentSkills = append(agentSkills, sk)
 			}
-			var agentSkills []*skill.Skill
-			for _, sk := range allSkills {
-				if allowed[sk.Name] {
-					agentSkills = append(agentSkills, sk)
-				}
-			}
-			if catalog := p.skillsCatalog(agentSkills); catalog != "" {
-				sections = append(sections, catalog)
-			}
+		}
+		if catalog := p.skillsCatalog(agentSkills); catalog != "" {
+			sections = append(sections, catalog)
 		}
 	}
 
-	// 3. 行为规则
-	rules := defaultBehavioralRules()
+	// 3. 行为规则（默认规则 + 可选的自定义扩展规则）
+	sections = append(sections, defaultBehavioralRules())
 	if p.ruleReg != nil {
 		if custom := p.ruleReg.FormatPromptSection(); custom != "" {
-			sections = append(sections, rules)
 			sections = append(sections, "## 扩展规则\n\n"+custom)
-		} else {
-			sections = append(sections, rules)
 		}
-	} else {
-		sections = append(sections, rules)
 	}
 
 	// 4. 搜索优先级
@@ -113,7 +120,7 @@ func (p *PromptAssembler) BuildSystemPrompts(sessionID string, s *session.Sessio
 	// 6. 压缩内容占位符：仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入。
 	//    该占位符向 LLM 解释 [已压缩] 标记的格式和规则，
 	//    必须与 executor.go 中的 TryMicroCompact 调用保持同步。
-	if ctxLen := s.ModelContextLength(); ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold {
+	if shouldEnableMicroCompact(s.ModelContextLength()) {
 		sections = append(sections, buildCompressedContent())
 	}
 
@@ -152,12 +159,13 @@ func (p *PromptAssembler) buildSearchStrategy() string {
 
 // AssembleMessages 构造发送给 LLM API 的完整消息序列。
 // 组合系统提示词、对话历史以及当前用户问题，并保持 LLM 提供商期望的消息顺序。
+// 该函数为纯函数：不依赖任何接收者状态，便于独立测试与复用。
 //
 // 消息顺序：
 //  1. 系统提示词段落
 //  2. 对话历史（最多允许两条连续同角色消息）
 //  3. 当前用户问题（若历史末尾不是同内容的问题）
-func (p *PromptAssembler) AssembleMessages(systemSections []gochatcore.Message, history []session.Message, question string) []gochatcore.Message {
+func AssembleMessages(systemSections []gochatcore.Message, history []session.Message, question string) []gochatcore.Message {
 	var msgs []gochatcore.Message
 	msgs = append(msgs, systemSections...)
 

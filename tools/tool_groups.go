@@ -1,34 +1,33 @@
 package tools
 
-// toolGroupMaps defines tool group expansions.
-// When a tool name maps to a non-empty list, selecting that tool
-// automatically activates all tools in the group.
+// toolGroupMaps 定义工具组展开规则。
+// 当工具名映射到非空列表时，选择该工具会自动激活组内所有工具。
 //
-// Groups are defined for tools that share a data model and
-// lifecycle — where using one member alone has no independent value.
+// 组定义针对共享数据模型和生命周期的工具——
+// 单独使用其中某个成员没有独立价值。
 //
-// This mapping is internal-only. It is not visible to LLM
-// (Tool Catalog remains flat) and does not affect external APIs.
+// 此映射仅限内部使用，对 LLM 不可见
+// （工具目录保持扁平结构），不影响外部 API。
 var toolGroupMaps = map[string][]string{
-	// Task group: CRUD lifecycle on shared Task data model
+	// Task 组：基于共享 Task 数据模型的 CRUD 生命周期
 	"TaskCreate": {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"},
 	"TaskGet":    {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"},
 	"TaskList":   {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"},
 	"TaskUpdate": {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"},
 
-	// Team group: lifecycle on shared Team data model
+	// Team 组：基于共享 Team 数据模型的生命周期
 	"TeamCreate":    {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 	"TeamDelete":    {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 	"TeamList":      {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 	"TeamGetTasks":  {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 
-	// Skill group: Skill loads instructions + RootDir, RunScript executes scripts within that dir
+	// Skill 组：Skill 加载指令 + RootDir，RunScript 在该目录下执行脚本
 	"Skill":     {"Skill", "RunScript"},
 	"RunScript": {"Skill", "RunScript"},
 }
 
-// ExpandGroup returns the full group for a tool name.
-// If the tool is not in any group, returns a slice with only the tool itself.
+// ExpandGroup 返回工具名对应的完整组。
+// 若工具不属于任何组，返回仅包含该工具自身的切片。
 func ExpandGroup(name string) []string {
 	if group, ok := toolGroupMaps[name]; ok {
 		return group

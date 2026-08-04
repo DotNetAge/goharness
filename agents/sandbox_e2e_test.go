@@ -21,7 +21,7 @@ import (
 //  2. 未注入时 Runtime.Sandbox() 返回 nil
 //  3. SessionConfigs() 在沙箱已配置时返回 Compactor + Sandbox
 //  4. SessionConfigs() 在沙箱未配置时返回仅 Compactor（始终非 nil）
-//  5. 子 Agent 会话自动注入沙箱（通过 getOrCreateSubAgentSession 验证）
+//  5. 子 Agent 会话自动注入沙箱（通过 subAgents.getOrCreate 验证）
 //  6. 主会话通过 rt.SessionConfigs() 统一注入
 
 // newTestSandbox 创建用于测试的沙箱实例。
@@ -76,14 +76,14 @@ func TestRuntime_SessionConfigs_ContainsSandboxWhenSet(t *testing.T) {
 }
 
 // TestRuntime_SubAgentSession_AutoInjectsSandbox 验证子 Agent 会话自动注入沙箱。
-// 通过 getOrCreateSubAgentSession 创建子会话，验证沙箱字段已注入。
+// 通过 subAgents.getOrCreate 创建子会话，验证沙箱字段已注入。
 func TestRuntime_SubAgentSession_AutoInjectsSandbox(t *testing.T) {
 	projectDir := t.TempDir()
 	sb := newTestSandbox(t, projectDir)
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()), WithSandbox(sb))
 	store := newFakeSessionStore()
 
-	sess := rt.getOrCreateSubAgentSession("sub-agent", projectDir, "", store)
+	sess := rt.subAgents.getOrCreate("sub-agent", projectDir, "", store)
 	require.NotNil(t, sess, "子会话应创建成功")
 	assert.Equal(t, sb, sess.Sandbox(), "子会话应自动注入沙箱")
 }
@@ -94,7 +94,7 @@ func TestRuntime_SubAgentSession_NoSandboxWhenNotSet(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()))
 	store := newFakeSessionStore()
 
-	sess := rt.getOrCreateSubAgentSession("sub-agent", projectDir, "", store)
+	sess := rt.subAgents.getOrCreate("sub-agent", projectDir, "", store)
 	require.NotNil(t, sess, "子会话应创建成功")
 	assert.Nil(t, sess.Sandbox(), "未配置沙箱时子会话不应注入沙箱")
 }
@@ -106,8 +106,8 @@ func TestRuntime_SubAgentSession_SandboxReusedAcrossSessions(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()), WithSandbox(sb))
 	store := newFakeSessionStore()
 
-	sess1 := rt.getOrCreateSubAgentSession("agent-a", projectDir, "", store)
-	sess2 := rt.getOrCreateSubAgentSession("agent-b", projectDir, "", store)
+	sess1 := rt.subAgents.getOrCreate("agent-a", projectDir, "", store)
+	sess2 := rt.subAgents.getOrCreate("agent-b", projectDir, "", store)
 	require.NotNil(t, sess1)
 	require.NotNil(t, sess2)
 	assert.Equal(t, sb, sess1.Sandbox(), "agent-a 会话应注入沙箱")
@@ -154,6 +154,7 @@ func TestRuntime_SandboxEndToEnd_ToolEnforcement(t *testing.T) {
 	ctx := tools.WithToolContext(context.Background(), &tools.ToolContext{
 		Session:          sess,
 		SessionWhitelist: sess.Whitelist(),
+		Logger:           rt.Logger(),
 	})
 
 	// Grant 阶段应拒绝敏感文件

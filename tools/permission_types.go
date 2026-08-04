@@ -1,10 +1,8 @@
 package tools
 
-// PermissionBehavior describes what a permission decision is at the
-// runtime level. It is intentionally distinct from the user-facing
-// magic-word constants (PermissionAllow / PermissionDeny) emitted over
-// the chat channel — those are the strings the UI sends; this enum is
-// the internal flow control.
+// PermissionBehavior 描述运行时层面的权限决策语义。
+// 它与用户可见的魔法词常量（PermissionAllow / PermissionDeny）有意区分——
+// 魔法词是 UI 发送到聊天通道的字符串，而此枚举用于内部流程控制。
 type PermissionBehavior string
 
 const (

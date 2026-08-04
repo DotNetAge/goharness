@@ -60,7 +60,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 
 	updated := false
 
-	// Update basic fields
+	// 更新基础字段
 	rawSubj, _ := GetParam(params, "subject")
 	if subj, ok := rawSubj.(string); ok && subj != "" && subj != task.Subject {
 		task.Subject = subj
@@ -77,14 +77,14 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		updated = true
 	}
 
-	// Update active_form
+	// 更新 active_form
 	rawActiveForm, _ := GetParam(params, "active_form")
 	if activeForm, ok := rawActiveForm.(string); ok && activeForm != "" && activeForm != task.ActiveForm {
 		task.ActiveForm = activeForm
 		updated = true
 	}
 
-	// Update metadata (merge)
+	// 更新 metadata（合并）
 	rawMeta, _ := GetParam(params, "metadata")
 	if meta, ok := rawMeta.(map[string]any); ok {
 		if task.Metadata == nil {
@@ -100,7 +100,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		updated = true
 	}
 
-	// Update status with transition validation
+	// 更新 status（含状态流转校验）
 	rawStatus, _ := GetParam(params, "status")
 	if statusStr, ok := rawStatus.(string); ok && statusStr != "" {
 		newStatus := TaskStatus(statusStr)
@@ -113,7 +113,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		}
 	}
 
-	// Add blocks (this task blocks listed tasks → listed tasks' blockedBy += this)
+	// 添加 blocks（本任务阻塞列出的任务 → 列出任务的 blockedBy += 本任务）
 	rawBlocksVal, _ := GetParam(params, "add_blocks")
 	if rawBlocks, ok := rawBlocksVal.([]any); ok && len(rawBlocks) > 0 {
 		for _, raw := range rawBlocks {
@@ -143,7 +143,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		updated = true
 	}
 
-	// Add blockedBy (this task is blocked by listed tasks → listed tasks' blocks += this)
+	// 添加 blockedBy（本任务被列出的任务阻塞 → 列出任务的 blocks += 本任务）
 	rawBlockedByVal, _ := GetParam(params, "add_blocked_by")
 	if rawBlockedBy, ok := rawBlockedByVal.([]any); ok && len(rawBlockedBy) > 0 {
 		for _, raw := range rawBlockedBy {
@@ -191,7 +191,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, params map[string]any) (an
 		"status":  string(task.Status),
 	}
 
-	// Verification nudge: when completing tasks, suggest verifying after every 3 completions
+	// 验证提醒：完成任务时，每完成 3 个任务建议进行验证
 	if task.Status == TaskCompleted {
 		completedCount := 0
 		allIDs, _ := ListTasks(ctx, tc.Session.ID())

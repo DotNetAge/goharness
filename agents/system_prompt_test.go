@@ -129,7 +129,7 @@ func TestAssembleMessagesOrder(t *testing.T) {
 		{Role: "tool", Content: "result", ToolCallID: "tc1"},
 	}
 
-	msgs := rt.prompt.AssembleMessages(rt.prompt.BuildSystemPrompts("sid", newTestSession(t)), history, "follow up")
+	msgs := AssembleMessages(rt.prompt.BuildSystemPrompts("sid", newTestSession(t)), history, "follow up")
 	require.Len(t, msgs, 5)
 	assert.Equal(t, "system", msgs[0].Role)
 	assert.Equal(t, "user", msgs[1].Role)
@@ -143,12 +143,11 @@ func TestAssembleMessagesOrder(t *testing.T) {
 
 // TestAssembleMessagesDeduplicatesQuestion 验证当历史末尾已有相同用户问题时不再追加。
 func TestAssembleMessagesDeduplicatesQuestion(t *testing.T) {
-	rt := newTestRuntime(t)
 	history := []session.Message{
 		{Role: "user", Content: "same question"},
 	}
 
-	msgs := rt.prompt.AssembleMessages(nil, history, "same question")
+	msgs := AssembleMessages(nil, history, "same question")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "user", msgs[0].Role)
 	assert.Equal(t, "same question", msgText(t, msgs[0]))
@@ -156,12 +155,11 @@ func TestAssembleMessagesDeduplicatesQuestion(t *testing.T) {
 
 // TestAssembleMessagesAssistantWithReasoning 验证 assistant 消息的推理内容被保留。
 func TestAssembleMessagesAssistantWithReasoning(t *testing.T) {
-	rt := newTestRuntime(t)
 	history := []session.Message{
 		{Role: "assistant", Content: "answer", ReasoningContent: "thinking process"},
 	}
 
-	msgs := rt.prompt.AssembleMessages(nil, history, "")
+	msgs := AssembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "thinking process", msgs[0].ReasoningContent)
 }
@@ -172,7 +170,6 @@ func TestAssembleMessagesAssistantWithReasoning(t *testing.T) {
 // gochat 的 ollama 客户端只识别 ContentTypeImage；OpenAI 转换端对两者都支持，
 // 统一使用 ContentTypeImage 可同时兼容两个提供商。
 func TestAssembleMessagesImageBlocks(t *testing.T) {
-	rt := newTestRuntime(t)
 	history := []session.Message{
 		{
 			Role: "user", Content: "请分析这张图",
@@ -182,7 +179,7 @@ func TestAssembleMessagesImageBlocks(t *testing.T) {
 		},
 	}
 
-	msgs := rt.prompt.AssembleMessages(nil, history, "")
+	msgs := AssembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "user", msgs[0].Role)
 	require.Len(t, msgs[0].Content, 2)
@@ -195,12 +192,11 @@ func TestAssembleMessagesImageBlocks(t *testing.T) {
 
 // TestAssembleMessagesUserWithoutImages 验证普通用户消息仍为单文本块。
 func TestAssembleMessagesUserWithoutImages(t *testing.T) {
-	rt := newTestRuntime(t)
 	history := []session.Message{
 		{Role: "user", Content: "plain text"},
 	}
 
-	msgs := rt.prompt.AssembleMessages(nil, history, "")
+	msgs := AssembleMessages(nil, history, "")
 	require.Len(t, msgs, 1)
 	require.Len(t, msgs[0].Content, 1)
 	assert.Equal(t, "plain text", msgText(t, msgs[0]))

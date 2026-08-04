@@ -58,7 +58,7 @@ func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
 		}
 	}
 
-	// Query all records for sess-1
+	// 查询 sess-1 的全部记录
 	result, err := store.Query(ctx, TokenUsageFilter{SessionID: "sess-1"})
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
@@ -73,7 +73,7 @@ func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
 		t.Errorf("result[1].CompletionTokens = %d, want 800", result[1].CompletionTokens)
 	}
 
-	// Query by agent
+	// 按代理查询
 	result, err = store.Query(ctx, TokenUsageFilter{AgentName: "architect"})
 	if err != nil {
 		t.Fatalf("Query by agent failed: %v", err)
@@ -82,7 +82,7 @@ func TestTokenUsageStore_AppendAndQuery(t *testing.T) {
 		t.Fatalf("expected 1 record for architect, got %d", len(result))
 	}
 
-	// Query by model
+	// 按模型查询
 	result, err = store.Query(ctx, TokenUsageFilter{ModelName: "gpt-4o"})
 	if err != nil {
 		t.Fatalf("Query by model failed: %v", err)

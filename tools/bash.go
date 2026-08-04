@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -140,25 +141,6 @@ func (t *BashTool) Info() *ToolInfo {
 	}
 }
 
-// Execute 执行 Shell 命令。
-//
-// 执行流程：
-//  1. 验证命令参数（必须为非空字符串）
-//  2. 检查命令长度限制（最大 16000 字符）
-//  3. 危险命令检测（阻止破坏性操作）
-//  4. 白名单检查（如果启用）
-//  5. 解析超时参数（默认 30 秒，最小 1 秒，最大 5 分钟）
-//  6. 通过 sh -c 执行命令
-//  7. 收集输出并返回结构化结果
-//
-// 参数：
-//   - ctx: 上下文
-//   - params: 必须包含 "command" 键，可选 "timeout" 和 "working_dir"
-//
-// 返回：
-//   - map[string]any: 包含 stdout、stderr、exit_code、success 等字段
-//   - error: 仅在参数验证失败时返回错误，执行错误在 result 中
-
 // generateKeyVariants 根据规范键名（小写+下划线格式）生成所有常见命名约定的变体，
 // 用于实现大小写和命名风格不敏感的参数查找。
 //
@@ -256,41 +238,27 @@ func GetParam(params map[string]any, key string) (any, bool) {
 	return nil, false
 }
 
-func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+// bashParams 承载 Bash 工具解析后的参数。
+type bashParams struct {
+	command    string
+	timeoutMs  int
+	workingDir string
+}
+
+// validateBashParams 从参数映射提取并验证 Bash 工具参数。
+// 命令必须为非空字符串；超时参数被限制在 [1000, 300000] 毫秒范围内。
+func validateBashParams(params map[string]any) (bashParams, error) {
 	rawCommand, ok := GetParam(params, "command")
 	if !ok {
-		return nil, fmt.Errorf("%s", GuideMissingParam("Bash", "command"))
+		return bashParams{}, fmt.Errorf("%s", GuideMissingParam("Bash", "command"))
 	}
 	command, ok := rawCommand.(string)
 	if !ok {
-		return nil, fmt.Errorf("%s", GuideWrongParamType("Bash", "command", "string", rawCommand))
+		return bashParams{}, fmt.Errorf("%s", GuideWrongParamType("Bash", "command", "string", rawCommand))
 	}
-
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return nil, fmt.Errorf("%s", GuideMissingParam("Bash", "command"))
-	}
-
-	logger := getLogger(ctx)
-	sessionID := ExtractSessionID(ctx)
-
-	if len(command) > maxBashCommandLength {
-		logger.Warn("command 长度超过限制，拒绝执行",
-			"length", len(command),
-			"max", maxBashCommandLength,
-		)
-		return nil, fmt.Errorf("%s", BuildGuide(
-			fmt.Sprintf("尝试执行长度为 %d 字符的命令，超过 %d 字符的上限", len(command), maxBashCommandLength),
-			"命令过长，极大概率是通过 cat heredoc、echo 重定向等方式写入文件内容，此类操作应使用专用工具完成",
-			"如需写入文件内容请使用 Write 工具，修改文件请使用 Edit 工具（不要用 cat heredoc 或 echo 重定向绕过）；如需执行复杂逻辑，请将命令拆分后分步执行",
-		))
-	}
-
-	// 安全强制检查：Grant 被绕过（如 PermissionAllow）时仍拦截危险命令与越权访问。
-	// 沙箱启用时由沙箱统一检查（危险模式 + 白名单 + 网络命令 URL 预检）；
-	// 沙箱未启用时走旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
-	if blocked, ok := t.enforceCommand(ctx, command); ok {
-		return blocked, nil
+		return bashParams{}, fmt.Errorf("%s", GuideMissingParam("Bash", "command"))
 	}
 
 	timeoutMs := defaultBashTimeoutMs
@@ -306,30 +274,37 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 		}
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+	workingDir := ""
+	if rawWd, ok := GetParam(params, "working_dir"); ok {
+		if s, ok := rawWd.(string); ok {
+			workingDir = s
+		}
+	}
+
+	return bashParams{command: command, timeoutMs: timeoutMs, workingDir: workingDir}, nil
+}
+
+// performBash 执行命令核心逻辑：构建命令、解析工作目录、运行命令、收集输出与结果构建。
+func performBash(ctx context.Context, logger logging.Logger, sessionID string, p bashParams) (map[string]any, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
 	defer cancel()
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(timeoutCtx, "cmd", "/c", command)
+		cmd = exec.CommandContext(timeoutCtx, "cmd", "/c", p.command)
 	} else {
-		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", command)
+		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", p.command)
 	}
 
-	wd := ""
-	if rawWd, ok := GetParam(params, "working_dir"); ok {
-		if s, ok := rawWd.(string); ok {
-			wd = s
-		}
-	}
-	if wd != "" {
+	// 工作目录解析
+	if p.workingDir != "" {
 		// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
 		// 修复前 "~/workspaces" 直接 filepath.Clean 不会展开 ~，导致目录不存在。
 		var projectDir string
 		if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
 			projectDir = tc.Session.ProjectDir()
 		}
-		cmd.Dir, _ = ResolveTargetPath(wd, projectDir, "")
+		cmd.Dir, _ = ResolveTargetPath(p.workingDir, projectDir, "")
 	} else {
 		// 默认以 ProjectDir 为工作目录
 		if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
@@ -338,9 +313,9 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	logger.Info("执行 Bash 命令",
-		"command", truncateForLog(command, 200),
+		"command", truncateForLog(p.command, 200),
 		"session_id", sessionID,
-		"timeout_ms", timeoutMs,
+		"timeout_ms", p.timeoutMs,
 		"working_dir", cmd.Dir,
 	)
 
@@ -372,7 +347,7 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 		} else {
 			// 统一写入 stderrStr 变量，避免后续截断覆盖 err.Error()。
 			stderrStr += "\n" + BuildGuide(
-				fmt.Sprintf("尝试执行命令 %q，但命令未能启动", command),
+				fmt.Sprintf("尝试执行命令 %q，但命令未能启动", p.command),
 				WithErrDetail("命令无法启动（解释器/可执行文件不存在或不可执行）", err),
 				"确认命令引用的可执行文件存在且可执行（可用 which 验证），或检查命令路径是否拼写正确",
 			)
@@ -409,8 +384,40 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	return result, nil
 }
 
-// Grant implements tools.PermissionRequired. It pre-checks the shell command
-// for any "ask the user" signals BEFORE Execute runs.
+// Execute 编排 Bash 工具执行流程：validate → 长度检查 → enforce → perform。
+func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+	p, err := validateBashParams(params)
+	if err != nil {
+		return nil, err
+	}
+
+	logger := getLogger(ctx)
+
+	if len(p.command) > maxBashCommandLength {
+		logger.Warn("command 长度超过限制，拒绝执行",
+			"length", len(p.command),
+			"max", maxBashCommandLength,
+		)
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("尝试执行长度为 %d 字符的命令，超过 %d 字符的上限", len(p.command), maxBashCommandLength),
+			"命令过长，极大概率是通过 cat heredoc、echo 重定向等方式写入文件内容，此类操作应使用专用工具完成",
+			"如需写入文件内容请使用 Write 工具，修改文件请使用 Edit 工具（不要用 cat heredoc 或 echo 重定向绕过）；如需执行复杂逻辑，请将命令拆分后分步执行",
+		))
+	}
+
+	// 安全强制检查：Grant 被绕过（如 PermissionAllow）时仍拦截危险命令与越权访问。
+	// 沙箱启用时由沙箱统一检查（危险模式 + 白名单 + 网络命令 URL 预检）；
+	// 沙箱未启用时走旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
+	if blocked, ok := t.enforceCommand(ctx, p.command); ok {
+		return blocked, nil
+	}
+
+	sessionID := ExtractSessionID(ctx)
+	return performBash(ctx, logger, sessionID, p)
+}
+
+// Grant 实现 tools.PermissionRequired 接口。在 Execute 运行前预检 shell 命令，
+// 判断是否需要"询问用户"的信号。
 //
 // 沙箱启用时由沙箱统一做命令安全决策（CheckCommand + 网络命令 URL 预检）；
 // 沙箱未启用时回退旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
@@ -433,8 +440,7 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	}
 	command = strings.TrimSpace(command)
 	if command == "" {
-		// No command? Let Execute produce a clean error — no point asking
-		// the user about an empty invocation.
+		// 无命令时让 Execute 产生清晰的错误——无需就空调用询问用户。
 		return true, ""
 	}
 

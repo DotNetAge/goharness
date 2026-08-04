@@ -5,14 +5,14 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 )
 
-// LoopLoggerHook logs the start and end of each LLM call in the Think-Act loop.
+// LoopLoggerHook 记录 Think-Act 循环中每次 LLM 调用的开始和结束。
 type LoopLoggerHook struct {
 	Logger logging.Logger
 }
 
 func (h *LoopLoggerHook) Priority() int { return hooks.PriorityLoopLogger }
 
-// BeforeLLM logs the start of an LLM call with session ID, iteration, and input preview.
+// BeforeLLM 记录 LLM 调用的开始，包含 session ID、迭代序号和输入预览。
 func (h *LoopLoggerHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -25,7 +25,7 @@ func (h *LoopLoggerHook) BeforeLLM(sessionID string, iteration int, input *hooks
 	return hooks.HookResult{}
 }
 
-// AfterLLM logs the completion of an LLM call with tool call information.
+// AfterLLM 记录 LLM 调用的完成，包含工具调用信息。
 func (h *LoopLoggerHook) AfterLLM(sessionID string, iteration int, resp *hooks.LLMResponse, results []hooks.ToolResult) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -40,5 +40,5 @@ func (h *LoopLoggerHook) AfterLLM(sessionID string, iteration int, resp *hooks.L
 	return hooks.HookResult{}
 }
 
-// Abort is a no-op for LoopLoggerHook.
+// Abort 对 LoopLoggerHook 是空操作。
 func (h *LoopLoggerHook) Abort(sessionID string, reason string) {}

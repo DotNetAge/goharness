@@ -58,7 +58,7 @@ func convertDocument(format string, r io.Reader) (*docResult, error) {
 }
 
 // ---------------------------------------------------------------------------
-// PDF → Markdown
+// PDF → Markdown 转换
 // ---------------------------------------------------------------------------
 
 func pdfToMarkdown(r io.Reader) (*docResult, error) {
@@ -167,7 +167,7 @@ func epubToMarkdown(r io.Reader) (*docResult, error) {
 	return result, nil
 }
 
-// --- EPUB internal types ---
+// --- EPUB 内部类型 ---
 
 type opfMetadata struct {
 	Title    string
@@ -822,7 +822,7 @@ func (zf *docxFile) walk(node *xmlNode, w io.Writer) error {
 }
 
 // ---------------------------------------------------------------------------
-// XLSX → Markdown tables
+// XLSX → Markdown 表格转换
 // ---------------------------------------------------------------------------
 
 func xlsxToMarkdown(r io.Reader) (*docResult, error) {
@@ -906,7 +906,7 @@ func xlsxEscapeCell(text string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Shared text helpers
+// 共享文本辅助函数
 // ---------------------------------------------------------------------------
 
 // textToMarkdown 将提取的纯文本整理为更干净的 Markdown 格式。

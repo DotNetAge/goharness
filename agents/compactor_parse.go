@@ -3,7 +3,6 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -95,16 +94,43 @@ func buildCompactionChunks(rawChunks []rawCompactionChunk) []memory.MemoryChunk 
 	return chunks
 }
 
-// invalidCompactionJSONEscapeRe 匹配 JSON 字符串中反斜杠后跟非法转义字符的序列。
-// 合法 JSON 转义：\" \\ \/ \b \f \n \r \t \u
-var invalidCompactionJSONEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
+// isValidJSONEscapeChar 判断反斜杠后跟的字符是否为合法 JSON 转义字符。
+// 合法 JSON 转义：\" \\ \/ \b \f \n \r \t \uXXXX
+func isValidJSONEscapeChar(c byte) bool {
+	switch c {
+	case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+		return true
+	}
+	return false
+}
 
 // sanitizeCompactionJSON 尝试修复 LLM 输出的常见 JSON 格式问题：
-//   - 移除非法转义序列（如 \后跟空格 → 仅保留空格）
+//   - 移除非法转义序列（如 \x → x，丢弃反斜杠保留字符）
 //
-// 只对明显非法的序列做替换，不会改变合法 JSON。
+// 采用逐字符扫描而非正则，确保不会误伤合法的 \\ 转义：
+// 正则方案因回溯会把 \\y 中的第二个 \ 单独匹配为非法 \y，破坏合法 JSON。
+// 逐字符扫描遇到 \\ 时将其作为合法转义整体保留，遇到 \x 时丢弃反斜杠。
 func sanitizeCompactionJSON(text string) string {
-	return invalidCompactionJSONEscapeRe.ReplaceAllString(text, "$1")
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		if text[i] == '\\' && i+1 < len(text) {
+			next := text[i+1]
+			if isValidJSONEscapeChar(next) {
+				b.WriteByte('\\')
+				b.WriteByte(next)
+				i += 2
+				continue
+			}
+			// 非法转义：丢弃反斜杠，保留字符
+			b.WriteByte(next)
+			i += 2
+			continue
+		}
+		b.WriteByte(text[i])
+		i++
+	}
+	return b.String()
 }
 
 // rawCompactionChunk 是解析 LLM 压缩输出 JSON 时使用的中间结构体，采用三段式。

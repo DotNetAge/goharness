@@ -1,23 +1,23 @@
-// Package rule provides types and interfaces for permission and behavior rules.
-// It includes permission rule definitions for tool access control,
-// as well as behavior rule types for AI agent constraint management.
+// Package rule 提供权限规则与行为规则的类型和接口。
+// 它包含用于工具访问控制的权限规则定义，
+// 以及用于 AI agent 约束管理的行为规则类型。
 package rule
 
-// RuleBehavior defines the possible behaviors when a permission rule matches.
+// RuleBehavior 定义权限规则匹配时可能的行为。
 type RuleBehavior string
 
 const (
-	// RuleAllow indicates the tool usage is permitted.
+	// RuleAllow 表示允许使用该工具。
 	RuleAllow RuleBehavior = "allow"
 
-	// RuleDeny indicates the tool usage is forbidden.
+	// RuleDeny 表示禁止使用该工具。
 	RuleDeny RuleBehavior = "deny"
 
-	// RuleAsk indicates the tool usage requires user approval.
+	// RuleAsk 表示使用该工具需要用户批准。
 	RuleAsk RuleBehavior = "ask"
 )
 
-// PermissionRule defines a single permission rule for tool access control.
+// PermissionRule 定义用于工具访问控制的单条权限规则。
 type PermissionRule struct {
 	Behavior       RuleBehavior `json:"behavior"`
 	ToolName       string       `json:"tool_name"`
@@ -26,17 +26,17 @@ type PermissionRule struct {
 	Source         string       `json:"source,omitempty"`
 }
 
-// PermissionRules holds categorized permission rules organized by behavior type.
+// PermissionRules 按行为类型组织的分类权限规则集合。
 type PermissionRules struct {
 	AlwaysAllow []PermissionRule `json:"always_allow"`
 	AlwaysDeny  []PermissionRule `json:"always_deny"`
 	AlwaysAsk   []PermissionRule `json:"always_ask"`
 }
 
-// PermissionRuleStore defines the interface for loading and saving permission rules.
+// PermissionRuleStore 定义加载和保存权限规则的接口。
 type PermissionRuleStore interface {
-	// Load retrieves the current set of permission rules.
+	// Load 获取当前的权限规则集合。
 	Load() (*PermissionRules, error)
-	// Save persists the given permission rules.
+	// Save 持久化给定的权限规则。
 	Save(rules *PermissionRules) error
 }

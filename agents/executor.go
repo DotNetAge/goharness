@@ -58,48 +58,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		)
 	}()
 
-	// 事件总线
-	eb := events.NewEventBus()
-	if logger != nil {
-		eb.SetLogger(logger)
-	}
-	_, cancel := eb.SubscribeFiltered(func(ev events.ReactEvent) bool {
-		// 如果是子智能体，将事件转发到父级事件总线，
-		// 以便客户端能够看到跨智能体边界的事件。
-		if b.parentEmit != nil {
-			logger.Debug("[exec] 转发事件到父级 EventBus",
-				"type", ev.Type,
-				"agent", ev.AgentName,
-				"session", ev.SessionID,
-			)
-			b.parentEmit(ev)
-		}
-		// 先触发通用的 OnEvent 处理器，再触发类型特定的处理器。
-		for _, h := range b.onAnyEvent {
-			h(ev)
-		}
-		if handlers, ok := b.onEvent[ev.Type]; ok {
-			for _, h := range handlers {
-				h(ev.Data)
-			}
-		}
-		return false
-	})
-	defer cancel()
+	// 事件总线：创建 EventBus、注册事件分发回调与压缩事件处理器，返回 emit/emitRaw 闭包与 cleanup。
+	emit, emitRaw, ctx, cancelEventBus := prepareEventBus(b, logger, ctx)
+	defer cancelEventBus()
 
-	emit := func(typ events.ReactEventType, data any) {
-		eb.Emit(events.ReactEvent{
-			SessionID: sid,
-			AgentName: b.agentName,
-			Type:      typ,
-			Data:      data,
-			Timestamp: time.Now().UnixMilli(),
-		})
-	}
-	// 将父级 EventBus 发射器存入 context，供子智能体（spawnSubAgent）获取并转发事件。
-	ctx = context.WithValue(ctx, parentEmitKeyType{}, func(ev events.ReactEvent) {
-		eb.Emit(ev)
-	})
 	conversationID := session.NewRecordID()
 	var totalUsage = session.TokenUsage{Timestamp: time.Now()}
 	defer func() {
@@ -110,69 +72,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			TerminationReason: b.resultTerminationReason,
 		})
 	}()
-
-	// 注册会话压缩事件处理器
-	b.session.SetCompactionHandler(func(ev session.CompactionEvent) {
-		emit(events.Compaction, events.CompactionData{
-			SessionID:      sid,
-			MessagesSlid:   ev.MessagesSlid,
-			RemainingAfter: ev.RemainingAfter,
-			WindowSize:     ev.WindowSize,
-		})
-	})
-
-	// 压缩开始事件
-	var compactBeforeTokens int64
-	b.session.SetCompactStartHandler(func(windowTokens, maxWindowSize int64) {
-		compactBeforeTokens = windowTokens
-		emit(events.CompactStart, events.CompactStartData{
-			SessionID:     sid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: maxWindowSize,
-		})
-	})
-
-	// 压缩完成事件
-	b.session.SetCompactDoneHandler(func(messagesSlid int, windowTokens int64) {
-		var ratio float64
-		if compactBeforeTokens > 0 {
-			ratio = float64(windowTokens) / float64(compactBeforeTokens)
-		}
-		emit(events.CompactDone, events.CompactDoneData{
-			SessionID:     sid,
-			MessagesSlid:  messagesSlid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.ModelContextLength(),
-			Ratio:         ratio,
-		})
-	})
-
-	// 微压缩开始事件
-	var microCompactBeforeTokens int64
-	b.session.SetMicroCompactStartHandler(func(windowTokens, maxWindowSize int64) {
-		microCompactBeforeTokens = windowTokens
-		emit(events.MicroCompactStart, events.MicroCompactStartData{
-			SessionID:     sid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: maxWindowSize,
-		})
-	})
-
-	// 微压缩完成事件
-	b.session.SetMicroCompactDoneHandler(func(compressed, deduped int, windowTokens int64) {
-		var ratio float64
-		if microCompactBeforeTokens > 0 {
-			ratio = float64(windowTokens) / float64(microCompactBeforeTokens)
-		}
-		emit(events.MicroCompactDone, events.MicroCompactDoneData{
-			SessionID:     sid,
-			Compressed:    compressed,
-			Deduped:       deduped,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.ModelContextLength(),
-			Ratio:         ratio,
-		})
-	})
 
 	// 在创建工具执行器前预加载会话元数据，
 	// 以便 WithProjectDirExecutor 从持久化的会话元数据中获取正确的项目目录。
@@ -217,7 +116,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// 权限 enforcement 现在是工具内部的关注点（参见 tools.PermissionRequired / Grant）。
 	// Runtime 在这里预先检查 Grant()；被拒绝的工具在 runtime 层就被拦下，不会进入执行器。
 	toolExec := tools.NewToolExecutor(rt.toolReg,
-		tools.WithEventEmitter(func(ev events.ReactEvent) { eb.Emit(ev) }),
+		tools.WithEventEmitter(emitRaw),
 		tools.WithLogger(logger),
 		tools.WithSession(b.session),
 		tools.WithSessionStore(rt.sessionStore),
@@ -239,9 +138,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	//   - 会话中 "assistant with tool_call" 与 "tool" 消息成对，满足 OpenAI 严格校验。
 	magicHandled := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, logger)
 
-	// 将用户消息追加到会话（仅当它不是被消费的魔法词时）。
-	if !magicHandled {
-		// 用同一个 ts 构造消息和事件，避免两次 time.Now() 跨秒不一致。
+	// 魔法词已被消费时清空 b.question（避免下方循环将其作为普通用户消息重新注入 LLM 调用）；
+	// 否则将用户消息追加到会话。用同一个 ts 构造消息和事件，避免两次 time.Now() 跨秒不一致。
+	if magicHandled {
+		b.question = ""
+	} else {
 		ts := time.Now().Unix()
 		if !appendAndAbort(-1, session.Message{
 			Role: "user", Content: b.question, Timestamp: ts,
@@ -250,10 +151,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		}
 		// 通知前端：user 消息已持久化，回传 Timestamp 用于实时回收本轮。
 		emit(events.UserMessageSaved, events.UserMessageSavedData{Timestamp: ts})
-	}
-	// 如果魔法词已被消费，清空 b.question，避免下方循环将其作为普通用户消息重新注入 LLM 调用。
-	if magicHandled {
-		b.question = ""
 	}
 
 	// 使用全量工具定义：所有已注册工具一次性发送给 LLM，
@@ -270,13 +167,9 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	// ── 重复错误引导状态 ──
 	// 本地小模型往往无法从工具错误反馈中自我纠正，容易陷入「反复用相同方式调用
-	// 同一工具并得到相同错误」的死循环。这里按工具名跟踪连续相同错误：
-	//   - dupCount: 连续相同错误计数（错误发生变化或工具成功时重置）
-	//   - lastErr:  该工具上一次的错误文本，用于判断是否「完全相同」
-	//   - guided:   是否已为该工具注入过引导话术（避免每轮重复注入同一段话术）
-	dupCount := make(map[string]int)
-	lastErr := make(map[string]string)
-	guided := make(map[string]bool)
+	// 同一工具并得到相同错误」的死循环。dupErrorTracker 按工具名跟踪连续相同错误，
+	// 达阈值时注入一次引导话术；详见 maybeGuide。
+	dupTracker := newDupErrorTracker()
 
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
@@ -341,32 +234,17 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// - 128K–250K：MicroCompact 在 45% 触发局部压缩，仅压缩 [25%, 65%] 位置范围内的
 		//   工具消息，保留最近的 tool_call 配对；若窗口继续涨到 80%，TryCompact 全量清空
 		// - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
-		if ctxLen := b.session.ModelContextLength(); ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold {
+		if shouldEnableMicroCompact(b.session.ModelContextLength()) {
 			b.session.TryMicroCompact()
 		}
 
 		// 重新读取窗口 —— Current() 返回 messages[cursor:] 的新副本。
 		window = b.session.Current()
 
-		msgs := rt.prompt.AssembleMessages(callInput.SystemPromptSections, window, question)
+		msgs := AssembleMessages(callInput.SystemPromptSections, window, question)
 
 		// ── 调试：打印完整系统提示词 ──
-		if rt.logger != nil {
-			var sysTexts []string
-			for _, m := range msgs {
-				if m.Role == "system" {
-					for _, block := range m.Content {
-						if block.Type == "text" {
-							sysTexts = append(sysTexts, block.Text)
-						}
-					}
-				}
-			}
-			if len(sysTexts) > 0 {
-				rt.logger.Debug("===== SYSTEM PROMPT =====",
-					"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n\n---\n\n"))
-			}
-		}
+		logSystemPromptDebug(rt.logger, sid, iter, msgs)
 
 		// ── 流式调用 LLM ──
 		logger.Info("LLM思想流开始", "session", sid, "iter", iter)
@@ -406,37 +284,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			return
 		}
 
-		// 流式读取循环
-		var contentBuf, reasoningBuf strings.Builder
-		var streamToolCalls []gochatcore.ToolCall
-		var finishReason string
-		var streamErr error
-
-		for stream.Next() {
-			ev := stream.Event()
-			switch ev.Type {
-			case gochatcore.EventContent:
-				contentBuf.WriteString(ev.Content)
-				emit(events.ContentDelta, ev.Content)
-			case gochatcore.EventThinking:
-				reasoningBuf.WriteString(ev.Content)
-				emit(events.ThinkingDelta, ev.Content)
-			case gochatcore.EventToolCall:
-				for _, delta := range ev.ToolCallDeltas {
-					emit(events.ToolUseDelta, events.ToolUseDeltaData{
-						Index:     delta.Index,
-						ID:        delta.ID,
-						Name:      delta.Name,
-						Arguments: delta.Arguments,
-					})
-				}
-			case gochatcore.EventError:
-				streamErr = ev.Err
-			case gochatcore.EventDone:
-				finishReason = ev.FinishReason
-			}
-		}
-		stream.Close()
+		// 流式读取并收集响应（content/reasoning/finishReason/错误）。
+		// 工具调用由下方在确认无错误后通过 stream.ToolCalls() 获取，
+		// 保持「错误时不收集工具调用」的原有行为。
+		content, reasoning, finishReason, streamErr := collectStreamResponse(stream, emit)
 
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) {
@@ -461,7 +312,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		}
 
 		// 收集流式调用中的工具调用
-		streamToolCalls = stream.ToolCalls()
+		streamToolCalls := stream.ToolCalls()
 
 		emit(events.ThinkingDone, nil)
 
@@ -469,8 +320,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		callUsage := rt.recordStreamUsage(ctx, sid, b.agentName, iter, stream, start, conversationID, &totalUsage, emit, logger)
 
 		// 根据流式数据构造 LLM 响应，供 hooks 使用
-		content := contentBuf.String()
-		reasoning := reasoningBuf.String()
 		usageCopy := totalUsage
 		llmResp := &hooks.LLMResponse{
 			Content:      content,
@@ -504,34 +353,9 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			return
 		}
 
-		// 持久化助手消息（content + reasoning + tool_calls）
-		//
-		// 某些 LLM 提供商（DeepSeek、Qwen、本地 vLLM 等）可能在流式响应中emit工具调用但不带 tool_call_id。
-		// OpenAI 严格的消息格式要求助手消息中的每个 tool_call 后面必须跟着一条 tool_call_id 匹配的 tool 消息，
-		// 否则会返回 400 "insufficient tool messages following tool_calls message"。
-		//
-		// 为了保持 assistant.ToolCalls 与后续持久化的 tool.ToolCallID 同步，
-		// 我们为任何缺少 ID 的工具调用回填一个合成 ID。该 ID 随后被 parseToolInvocations 和 executeTools 使用，
-		// 因此 pair 始终匹配。
-		assistantMsg := session.Message{
-			Role:             "assistant",
-			Content:          content,
-			ReasoningContent: reasoningBuf.String(),
-			Timestamp:        time.Now().Unix(),
-			Usage:            callUsage,
-		}
-		for i := range streamToolCalls {
-			if streamToolCalls[i].ID == "" {
-				streamToolCalls[i].ID = "syn_" + session.NewRecordID()
-				logger.Warn("LLM调用了工具但没有包含ID，已填充合成的工具ID",
-					"session", sid, "iter", iter, "tool", streamToolCalls[i].Name, "id", streamToolCalls[i].ID)
-			}
-			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, session.ToolCall{
-				ID:        streamToolCalls[i].ID,
-				Name:      streamToolCalls[i].Name,
-				Arguments: streamToolCalls[i].Arguments,
-			})
-		}
+		// 持久化助手消息（content + reasoning + tool_calls）；缺少 ID 的工具调用会被回填合成 ID，
+		// 以满足 OpenAI 严格的 tool_call/tool 消息配对要求。详见 buildAssistantMessage。
+		assistantMsg := buildAssistantMessage(content, reasoning, callUsage, streamToolCalls, logger, sid, iter)
 		if !appendAndAbort(iter, assistantMsg, "助手消息") {
 			return
 		}
@@ -543,27 +367,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// ── 没有工具调用 → 回答完成 ──
 		if len(streamToolCalls) == 0 {
-			answer := content
-			if answer == "" && reasoning != "" {
-				answer = reasoning
-			}
-			switch finishReason {
-			case "length", "max_tokens":
-				b.resultTerminationReason = "max_tokens"
-			case "content_filter":
-				b.resultTerminationReason = "content_filtered"
-			default:
-				b.resultTerminationReason = "completed"
-			}
-			emit(events.FinalAnswer, answer)
-			emit(events.TaskSummary, events.TaskSummaryData{
-				Summary:    answer,
-				TokenUsage: totalUsage,
-			})
-			b.resultAnswer = answer
-			b.resultIterations = lastIteration
-			b.resultDuration = time.Since(start)
-			b.resultUsage = totalUsage
+			rt.finalizeAnswer(b, content, reasoning, finishReason, totalUsage, lastIteration, start, emit)
 			return
 		}
 
@@ -601,67 +405,10 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec)
 		prevToolResults = toolResults
 
-		// 持久化工具结果（完整内容，不做截断）
-		for _, tr := range toolResults {
-			toolContent := formatToolResult(tr)
-
-			// ── 重复错误引导 ──
-			// 当同一工具连续出现 duplicateErrorThreshold 次完全相同的错误时，
-			// 在工具结果末尾追加引导话术，提示大模型更换工作方式（而非硬性熔断循环）。
-			// 引导话术注入的是动态追加的 tool 消息，不影响 system prompt 与
-			// tools 字段构成的前缀缓存。
-			// 注意：工具错误已含「下一步我应该」引导时（tools 层 Guide 体系），
-			// 不再叠加反思话术，避免同一消息出现两个「下一步我应该」块造成冗余；
-			// 仅对零包装的未知错误叠加反思引导，与 tools 层「兜底不给指引」互补。
-			if tr.Error != "" && !strings.Contains(tr.Error, "下一步我应该") {
-				if lastErr[tr.ToolName] == tr.Error {
-					dupCount[tr.ToolName]++
-				} else {
-					lastErr[tr.ToolName] = tr.Error
-					dupCount[tr.ToolName] = 1
-				}
-				if dupCount[tr.ToolName] >= duplicateErrorThreshold && !guided[tr.ToolName] {
-					guided[tr.ToolName] = true
-					guide := fmt.Sprintf(duplicateErrorGuideTemplate, dupCount[tr.ToolName], tr.ToolName)
-					toolContent += "\n\n" + guide
-					logger.Warn("检测到工具重复相同错误，已注入引导话术",
-						"session", sid, "tool", tr.ToolName, "iter", iter, "dup_count", dupCount[tr.ToolName])
-				}
-			} else {
-				// 工具成功执行，重置该工具的重复错误跟踪状态，
-				// 确保后续若再出现错误，重新从第 1 次开始计数。
-				delete(dupCount, tr.ToolName)
-				delete(lastErr, tr.ToolName)
-				delete(guided, tr.ToolName)
-			}
-
-			preview := toolContent
-			if len(preview) > 120 {
-				preview = preview[:120]
-			}
-			logger.Info("工具结果已持久化", "session", sid, "tool", tr.ToolName, "content_len", len(toolContent), "content_preview", preview)
-			if !appendAndAbort(iter, session.Message{
-				Role: "tool", Content: toolContent, Timestamp: time.Now().Unix(),
-				ToolCallID: tr.ToolCallID,
-			}, "工具结果") {
-				return
-			}
-
-			// 图片消息：ImageHook 已把工具返回的图片转换为图片内容块。
-			// 图片以 image_url 消息（user 角色）进入上下文，紧随对应的工具结果之后，
-			// 而非混入工具结果的文本内容——tool 消息的 content 在 API 侧只能是字符串。
-			if len(tr.ImageBlocks) > 0 {
-				imgMsg := session.Message{
-					Role: "user", Timestamp: time.Now().Unix(),
-					Content: "以下是工具 " + tr.ToolName + " 读取到的图片内容（视觉消息），请结合图片进行分析：",
-					Images:  tr.ImageBlocks,
-				}
-				logger.Info("图片已作为视觉消息追加",
-					"session", sid, "tool", tr.ToolName, "images", len(tr.ImageBlocks))
-				if !appendAndAbort(iter, imgMsg, "图片消息") {
-					return
-				}
-			}
+		// 持久化工具结果（完整内容，不做截断）：含重复错误引导与图片视觉消息。
+		// 追加失败时 persistToolResults 返回 false，调用方终止循环。
+		if !rt.persistToolResults(iter, toolResults, dupTracker, sid, appendAndAbort) {
+			return
 		}
 
 		// 为助手消息声明但未被执行的工具调用回填"跳过"结果。
@@ -750,6 +497,239 @@ func buildAllToolDefinitions(registry tools.ToolRegistry, exclude map[string]boo
 		})
 	}
 	return out
+}
+
+// collectStreamResponse 读取 LLM 流式响应，收集文本内容、推理内容与完成原因，
+// 并将增量事件（content/thinking/toolCall）通过 emit 转发。流在读取完毕后关闭。
+//
+// 设计说明：工具调用（stream.ToolCalls()）刻意不在此函数内收集，而由调用方在
+// 确认无错误后自行获取，以保持「流式出错时不收集工具调用」的原有行为。
+func collectStreamResponse(stream *gochatcore.Stream, emit func(events.ReactEventType, any)) (content, reasoning, finishReason string, streamErr error) {
+	var contentBuf, reasoningBuf strings.Builder
+	for stream.Next() {
+		ev := stream.Event()
+		switch ev.Type {
+		case gochatcore.EventContent:
+			contentBuf.WriteString(ev.Content)
+			emit(events.ContentDelta, ev.Content)
+		case gochatcore.EventThinking:
+			reasoningBuf.WriteString(ev.Content)
+			emit(events.ThinkingDelta, ev.Content)
+		case gochatcore.EventToolCall:
+			for _, delta := range ev.ToolCallDeltas {
+				emit(events.ToolUseDelta, events.ToolUseDeltaData{
+					Index:     delta.Index,
+					ID:        delta.ID,
+					Name:      delta.Name,
+					Arguments: delta.Arguments,
+				})
+			}
+		case gochatcore.EventError:
+			streamErr = ev.Err
+		case gochatcore.EventDone:
+			finishReason = ev.FinishReason
+		}
+	}
+	stream.Close()
+	return contentBuf.String(), reasoningBuf.String(), finishReason, streamErr
+}
+
+// logSystemPromptDebug 在 Debug 级别打印完整系统提示词，便于排查提示词装配问题。
+// logger 为 nil 时直接返回。仅收集 role=system 消息中的 text 内容块。
+func logSystemPromptDebug(logger logging.Logger, sid string, iter int, msgs []gochatcore.Message) {
+	if logger == nil {
+		return
+	}
+	var sysTexts []string
+	for _, m := range msgs {
+		if m.Role != "system" {
+			continue
+		}
+		for _, block := range m.Content {
+			if block.Type == "text" {
+				sysTexts = append(sysTexts, block.Text)
+			}
+		}
+	}
+	if len(sysTexts) > 0 {
+		logger.Debug("===== SYSTEM PROMPT =====",
+			"session_id", sid, "iter", iter, "system_prompt", strings.Join(sysTexts, "\n\n---\n\n"))
+	}
+}
+
+// dupErrorTracker 跟踪同一工具连续出现的完全相同错误，达到阈值时生成引导话术，
+// 提示大模型更换工作方式（而非硬性熔断循环）。
+//
+// 计数规则：
+//   - 工具返回错误且错误文本未自带「下一步我应该」引导时，按工具名累计连续相同错误次数；
+//     错误文本变化则重新从 1 开始计数。
+//   - 工具成功执行、或错误已含引导时，重置该工具的全部计数状态，
+//     确保后续若再出现错误从第 1 次开始计数。
+//   - 引导话术对每个工具仅注入一次（guided 标记），避免每轮重复注入同一段话术。
+//
+// 注入的话术追加到 tool 消息末尾，不影响 system prompt 与 tools 字段构成的前缀缓存。
+type dupErrorTracker struct {
+	dupCount map[string]int
+	lastErr  map[string]string
+	guided   map[string]bool
+}
+
+func newDupErrorTracker() dupErrorTracker {
+	return dupErrorTracker{
+		dupCount: make(map[string]int),
+		lastErr:  make(map[string]string),
+		guided:   make(map[string]bool),
+	}
+}
+
+// maybeGuide 根据工具结果决定是否生成重复错误引导话术。
+// 返回 guide 为应追加到工具结果末尾的话术（空串表示不追加），count 为该工具当前的连续相同错误次数。
+// map 为引用类型，故值接收器即可在调用间保持并修改状态。
+func (t dupErrorTracker) maybeGuide(tr hooks.ToolResult) (guide string, count int) {
+	// 工具成功执行或错误已含引导时，重置该工具的重复错误跟踪状态。
+	if tr.Error == "" || strings.Contains(tr.Error, "下一步我应该") {
+		delete(t.dupCount, tr.ToolName)
+		delete(t.lastErr, tr.ToolName)
+		delete(t.guided, tr.ToolName)
+		return "", 0
+	}
+	if t.lastErr[tr.ToolName] == tr.Error {
+		t.dupCount[tr.ToolName]++
+	} else {
+		t.lastErr[tr.ToolName] = tr.Error
+		t.dupCount[tr.ToolName] = 1
+	}
+	count = t.dupCount[tr.ToolName]
+	if count >= duplicateErrorThreshold && !t.guided[tr.ToolName] {
+		t.guided[tr.ToolName] = true
+		guide = fmt.Sprintf(duplicateErrorGuideTemplate, count, tr.ToolName)
+	}
+	return guide, count
+}
+
+// buildAssistantMessage 构造助手消息（content + reasoning + tool_calls），并为缺少
+// tool_call_id 的工具调用回填合成 ID。
+//
+// 某些 LLM 提供商（DeepSeek、Qwen、本地 vLLM 等）可能在流式响应中 emit 工具调用但不带
+// tool_call_id。OpenAI 严格消息格式要求每个 tool_call 后必须跟一条 tool_call_id 匹配的
+// tool 消息，否则返回 400 "insufficient tool messages following tool_calls message"。
+// 为保持 assistant.ToolCalls 与后续持久化的 tool.ToolCallID 同步，此处为缺失 ID 回填
+// 合成 ID；该 ID 随后被 parseToolInvocations 和 executeTools 使用，故 pair 始终匹配。
+//
+// 注意：streamToolCalls 的 ID 回填会通过共享底层数组反映到调用方切片。
+func buildAssistantMessage(content, reasoning string, usage *session.TokenUsage, streamToolCalls []gochatcore.ToolCall, logger logging.Logger, sid string, iter int) session.Message {
+	msg := session.Message{
+		Role:             "assistant",
+		Content:          content,
+		ReasoningContent: reasoning,
+		Timestamp:        time.Now().Unix(),
+		Usage:            usage,
+	}
+	for i := range streamToolCalls {
+		if streamToolCalls[i].ID == "" {
+			streamToolCalls[i].ID = "syn_" + session.NewRecordID()
+			logger.Warn("LLM调用了工具但没有包含ID，已填充合成的工具ID",
+				"session", sid, "iter", iter, "tool", streamToolCalls[i].Name, "id", streamToolCalls[i].ID)
+		}
+		msg.ToolCalls = append(msg.ToolCalls, session.ToolCall{
+			ID:        streamToolCalls[i].ID,
+			Name:      streamToolCalls[i].Name,
+			Arguments: streamToolCalls[i].Arguments,
+		})
+	}
+	return msg
+}
+
+// persistToolResults 将工具执行结果逐一持久化为 tool 消息：格式化结果文本、按需注入
+// 重复错误引导话术（dupTracker）、追加图片视觉消息。返回 ok=false 表示某次消息追加失败，
+// 调用方应终止循环（appendMsg 已设置错误结果与终止原因）。
+func (rt *Runtime) persistToolResults(
+	iter int,
+	toolResults []hooks.ToolResult,
+	dupTracker dupErrorTracker,
+	sid string,
+	appendMsg func(int, session.Message, string) bool,
+) bool {
+	for _, tr := range toolResults {
+		toolContent := formatToolResult(tr)
+
+		// ── 重复错误引导 ──
+		// 当同一工具连续出现 duplicateErrorThreshold 次完全相同的错误时，
+		// 在工具结果末尾追加引导话术，提示大模型更换工作方式（而非硬性熔断循环）。
+		// 引导话术注入的是动态追加的 tool 消息，不影响 system prompt 与
+		// tools 字段构成的前缀缓存。
+		// 注意：工具错误已含「下一步我应该」引导时（tools 层 Guide 体系），
+		// 不再叠加反思话术，避免同一消息出现两个「下一步我应该」块造成冗余；
+		// 仅对零包装的未知错误叠加反思引导，与 tools 层「兜底不给指引」互补。
+		if guide, dupCnt := dupTracker.maybeGuide(tr); guide != "" {
+			toolContent += "\n\n" + guide
+			rt.logger.Warn("检测到工具重复相同错误，已注入引导话术",
+				"session", sid, "tool", tr.ToolName, "iter", iter, "dup_count", dupCnt)
+		}
+
+		preview := toolContent
+		if len(preview) > 120 {
+			preview = preview[:120]
+		}
+		rt.logger.Info("工具结果已持久化", "session", sid, "tool", tr.ToolName, "content_len", len(toolContent), "content_preview", preview)
+		if !appendMsg(iter, session.Message{
+			Role: "tool", Content: toolContent, Timestamp: time.Now().Unix(),
+			ToolCallID: tr.ToolCallID,
+		}, "工具结果") {
+			return false
+		}
+
+		// 图片消息：ImageHook 已把工具返回的图片转换为图片内容块。
+		// 图片以 image_url 消息（user 角色）进入上下文，紧随对应的工具结果之后，
+		// 而非混入工具结果的文本内容——tool 消息的 content 在 API 侧只能是字符串。
+		if len(tr.ImageBlocks) > 0 {
+			imgMsg := session.Message{
+				Role: "user", Timestamp: time.Now().Unix(),
+				Content: "以下是工具 " + tr.ToolName + " 读取到的图片内容（视觉消息），请结合图片进行分析：",
+				Images:  tr.ImageBlocks,
+			}
+			rt.logger.Info("图片已作为视觉消息追加",
+				"session", sid, "tool", tr.ToolName, "images", len(tr.ImageBlocks))
+			if !appendMsg(iter, imgMsg, "图片消息") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// finalizeAnswer 在 LLM 未调用工具时收尾本轮 Ask：确定答案文本（content 为空时回退到
+// reasoning）、按 finishReason 设置终止原因、发送 FinalAnswer/TaskSummary 事件并填写
+// 结果字段。调用方应在调用后立即 return。
+func (rt *Runtime) finalizeAnswer(
+	b *AskBuilder,
+	content, reasoning, finishReason string,
+	totalUsage session.TokenUsage,
+	lastIteration int,
+	start time.Time,
+	emit func(events.ReactEventType, any),
+) {
+	answer := content
+	if answer == "" && reasoning != "" {
+		answer = reasoning
+	}
+	switch finishReason {
+	case "length", "max_tokens":
+		b.resultTerminationReason = "max_tokens"
+	case "content_filter":
+		b.resultTerminationReason = "content_filtered"
+	default:
+		b.resultTerminationReason = "completed"
+	}
+	emit(events.FinalAnswer, answer)
+	emit(events.TaskSummary, events.TaskSummaryData{
+		Summary:    answer,
+		TokenUsage: totalUsage,
+	})
+	b.resultAnswer = answer
+	b.resultIterations = lastIteration
+	b.resultDuration = time.Since(start)
+	b.resultUsage = totalUsage
 }
 
 // recordStreamUsage 从流式响应中提取 usage 并持久化到 TokenUsageStore。

@@ -116,8 +116,8 @@ title 是名词短语，summary 是结论句，content 用 - 分条列举且必�
 
 // compactor 实现 session.Compactor。
 //
-// 复用 Runtime 的 llmClient 和请求构造逻辑（buildSystemPrompts /
-// buildAllToolDefinitions / assembleMessages），确保压缩请求与主对话请求
+// 复用 Runtime 的 llmClient 和请求构造逻辑（PromptAssembler.BuildSystemPrompts /
+// buildAllToolDefinitions / AssembleMessages），确保压缩请求与主对话请求
 // 在 system + tools + messages 前缀上逐 token 完全一致——这是命中 KV 前缀缓存
 // 的前提（DeepSeek/通义千问/豆包三家官方文档一致要求从第 0 个 token 起前缀完整匹配）。
 //
@@ -129,8 +129,8 @@ type compactor struct {
 
 // NewCompactor 创建压缩器实例。
 //
-// rt 提供主对话的请求构造能力（buildSystemPrompts/buildAllToolDefinitions/
-// assembleMessages/llmClient/model）。压缩响应的 JSON 解析由 Compactor 内部
+// rt 提供主对话的请求构造能力（PromptAssembler.BuildSystemPrompts/buildAllToolDefinitions/
+// AssembleMessages/llmClient/model）。压缩响应的 JSON 解析由 Compactor 内部
 // 的 parseCompactionResponse 完成，不依赖任何外部解析器。
 func NewCompactor(rt *Runtime) session.Compactor {
 	return &compactor{
@@ -158,9 +158,7 @@ func (c *compactor) Compact(ctx context.Context, s *session.Session, messages []
 		return nil, err
 	}
 	// 重试：同一前缀，仅末尾 instruction 不同
-	if c.logger != nil {
-		c.logger.Warn("压缩首次失败，使用精简指令重试", "error", err, "session_id", s.ID())
-	}
+	c.logger.Warn("压缩首次失败，使用精简指令重试", "error", err, "session_id", s.ID())
 	chunks, retryErr := c.compactionTurn(ctx, s, messages, retryInstruction)
 	if retryErr != nil {
 		return nil, fmt.Errorf("compactor: %w (retry also failed: %v)", err, retryErr)
@@ -171,9 +169,9 @@ func (c *compactor) Compact(ctx context.Context, s *session.Session, messages []
 // compactionTurn 执行一次实际的 LLM 压缩调用。
 //
 // 请求构造契约（不可违反）——与主对话请求逐字段一致，仅末尾追加压缩指令：
-//   - system prompt:  rt.buildSystemPrompts(sid, s)
-//   - tools 数组:     buildAllToolDefinitions(rt.toolReg, rt.agentExcludeTools(agentName))
-//   - messages 前缀:  原始 messages（不 formatMessages、不重排），经 assembleMessages 构造
+//   - system prompt:  rt.prompt.BuildSystemPrompts(sid, s)
+//   - tools 数组:     buildAllToolDefinitions(rt.toolReg, rt.prompt.AgentExcludeTools(agentName))
+//   - messages 前缀:  原始 messages（不 formatMessages、不重排），经 AssembleMessages 构造
 //   - 末尾追加:       gochatcore.NewUserMessage(instruction) 手动 append
 //   - Model/Temp/...: rt.model.*（与主对话一致）
 //   - ToolChoice:     "auto"（与主对话一致，靠指令文本禁止工具调用）
@@ -184,35 +182,33 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	sid := s.ID()
 	agentName := s.AgentName()
 
-	// 1. system prompts —— 与主对话一致（证据：executor.go:266 调用 buildSystemPrompts）
+	// 1. system prompts —— 与主对话一致（Runtime.exec 中同样调用 prompt.BuildSystemPrompts）
 	systemMsgs := c.rt.prompt.BuildSystemPrompts(sid, s)
 
-	// 2. tools 数组 —— 与主对话一致（证据：executor.go:262-263）
+	// 2. tools 数组 —— 与主对话一致（Runtime.exec 中同样调用 buildAllToolDefinitions）。
 	//    buildAllToolDefinitions 注释明确："所有工具一次性注册，不在迭代间改变工具集，
 	//    以保持前缀缓存稳定。"
 	excludeTools := c.rt.prompt.AgentExcludeTools(agentName)
 	toolDefs := buildAllToolDefinitions(c.rt.toolReg, excludeTools)
 
-	// 3. messages 前缀 —— 使用 assembleMessages 构造，question="" 不追加。
+	// 3. messages 前缀 —— 使用 AssembleMessages 构造，question="" 不追加。
 	//    保留原始消息结构（role/content/tool_calls/tool_result），不 formatMessages。
-	//    assembleMessages 内部会调用 stripOrphanedToolCalls 剔除孤立 tool_call，
+	//    AssembleMessages 内部会调用 stripOrphanedToolCalls 剔除孤立 tool_call，
 	//    与 session.generateCompactionChunks 中的 sanitizeMessagesForLLM 幂等共存。
-	msgs := c.rt.prompt.AssembleMessages(systemMsgs, messages, "")
+	msgs := AssembleMessages(systemMsgs, messages, "")
 
 	// 4. 末尾追加压缩指令（唯一允许的差异）。
-	//    手动 append 而非传给 assembleMessages 的 question 参数，避开去重检查，
+	//    手动 append 而非传给 AssembleMessages 的 question 参数，避开去重检查，
 	//    保证 instruction 一定被追加到末尾。
 	msgs = append(msgs, gochatcore.NewUserMessage(instruction))
 
-	if c.logger != nil {
-		c.logger.Debug("压缩请求构造完成",
-			"session_id", sid,
-			"msg_count", len(msgs),
-			"tool_count", len(toolDefs),
-			"instruction_len", len(instruction))
-	}
+	c.logger.Debug("压缩请求构造完成",
+		"session_id", sid,
+		"msg_count", len(msgs),
+		"tool_count", len(toolDefs),
+		"instruction_len", len(instruction))
 
-	// 5. 流式调用 LLM —— 所有字段与主对话一致（证据：executor.go:374-385），
+	// 5. 流式调用 LLM —— 所有字段与主对话一致（Runtime.exec 中同样调用 llmClient.Stream），
 	//    唯一差异：Timeout 用 compactionTimeout（10min）而非 defaultLLMTimeout。
 	stream, err := c.rt.llmClient.Stream(ctx, LLMRequest{
 		Messages:          msgs,
@@ -231,7 +227,7 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	}
 
 	// 6. 流式收集：只收集 content，忽略 thinking/tool_call/done 事件。
-	//    参考 executor.go:415-438 的流消费模式。
+	//    模式参考 collectStreamResponse（此处为精简版：compaction 无需事件转发与 reasoning）。
 	var contentBuf strings.Builder
 	var streamErr error
 	for stream.Next() {
@@ -244,10 +240,8 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 		case gochatcore.EventToolCall:
 			// ToolChoice="auto" 下模型理论上可能调工具，但靠 instruction 已禁止。
 			// 若仍收到 tool_call 事件，记录日志但不中断流（让 content 部分仍被收集）。
-			if c.logger != nil {
-				c.logger.Warn("压缩阶段收到意外的 tool_call 事件（instruction 已禁止）",
-					"session_id", sid)
-			}
+			c.logger.Warn("压缩阶段收到意外的 tool_call 事件（instruction 已禁止）",
+				"session_id", sid)
 		case gochatcore.EventThinking, gochatcore.EventDone:
 			// 忽略思考内容和完成事件
 		}
@@ -261,9 +255,7 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	content := contentBuf.String()
 	if content == "" {
 		// 空响应返回 nil,nil（LLM 未返回内容，无实质信息可压缩）
-		if c.logger != nil {
-			c.logger.Info("压缩响应为空，LLM 未返回内容", "session_id", sid)
-		}
+		c.logger.Info("压缩响应为空，LLM 未返回内容", "session_id", sid)
 		return nil, nil
 	}
 
@@ -273,12 +265,10 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 		return nil, fmt.Errorf("compactor parse: %w", err)
 	}
 
-	if c.logger != nil {
-		c.logger.Debug("压缩完成",
-			"session_id", sid,
-			"content_len", len(content),
-			"chunks", len(chunks))
-	}
+	c.logger.Debug("压缩完成",
+		"session_id", sid,
+		"content_len", len(content),
+		"chunks", len(chunks))
 
 	return chunks, nil
 }

@@ -72,7 +72,7 @@ func TestAskUser_ExecuteWithAnswers(t *testing.T) {
 		t.Fatalf("expected string result, got %T", result)
 	}
 
-	// Should contain the formatted question message
+	// 应包含格式化后的提问消息
 	if !strings.Contains(str, "已向用户提问") {
 		t.Errorf("expected question summary, got: %s", str)
 	}

@@ -18,14 +18,13 @@ type AskBuilder struct {
 	onEvent   map[events.ReactEventType][]func(data any)
 	resultErr error
 
-	// onAnyEvent fires for every ReactEvent emitted by the execution loop,
-	// before type-specific handlers (onEvent). Used by the daemon to track
-	// agent_name across forwarded sub-agent events.
+	// onAnyEvent 在执行循环发射每个 ReactEvent 时触发（先于类型特定处理器 onEvent）。
+	// daemon 用它跟踪跨子智能体转发事件中的 agent_name。
 	onAnyEvent []func(events.ReactEvent)
 
-	// parentEmit forwards ReactEvent to the parent EventBus.
-	// When set (sub-agent), all events from this execution are also
-	// emitted to the parent, enabling cross-agent event visibility.
+	// parentEmit 将 ReactEvent 转发到父级 EventBus。
+	// 设置后（子智能体场景），本执行循环的所有事件也会发射到父级，
+	// 实现跨智能体的事件可见性。
 	parentEmit func(events.ReactEvent)
 
 	resultAnswer            string
@@ -228,11 +227,10 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 	})
 }
 
-// OnUserMessageSaved registers a handler fired right after a real user message
-// is appended to the session (magic words are not appended and thus don't
-// trigger it). The handler receives the backend message Timestamp, which the
-// frontend stores as backendTimestamp to enable session.delete_round on the
-// just-sent round — even before the session is reloaded.
+// OnUserMessageSaved 注册一个处理器，在真实用户消息追加到会话后立即触发
+//（魔法词不会被追加，因此不会触发）。处理器接收后端消息的 Timestamp，
+// 前端将其存为 backendTimestamp，以支持对刚发送轮次的 session.delete_round
+// 操作——甚至在会话重新加载之前即可执行。
 func (b *AskBuilder) OnUserMessageSaved(fn func(data events.UserMessageSavedData)) *AskBuilder {
 	return b.on(events.UserMessageSaved, func(d any) {
 		if v, ok := d.(events.UserMessageSavedData); ok {
@@ -241,9 +239,9 @@ func (b *AskBuilder) OnUserMessageSaved(fn func(data events.UserMessageSavedData
 	})
 }
 
-// OnTokenUsageRecorded registers a handler for per-LLM-call token usage updates.
-// This fires after each individual LLM API call's tokens are persisted to the
-// TokenUsageStore. Use this for real-time token usage tracking in the UI.
+// OnTokenUsageRecorded 注册每次 LLM 调用 token 用量更新的处理器。
+// 在每次 LLM API 调用的 token 用量持久化到 TokenUsageStore 后触发。
+// 用于 UI 中的实时 token 用量跟踪。
 func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)) *AskBuilder {
 	return b.on(events.TokenUsageRecorded, func(d any) {
 		if v, ok := d.(session.TokenUsageRecord); ok {
@@ -252,21 +250,19 @@ func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)
 	})
 }
 
-// OnEvent registers a catch-all handler that fires for every ReactEvent
-// emitted by the execution loop, before type-specific handlers.
-// The handler receives the full ReactEvent including AgentName, SessionID, Type, and Data.
-// This is useful for tracking metadata like which agent produced an event.
+// OnEvent 注册一个全量处理器，在执行循环发射每个 ReactEvent 时触发
+//（先于类型特定处理器）。处理器接收完整的 ReactEvent，包含 AgentName、
+// SessionID、Type 和 Data。适用于跟踪「哪个智能体产生了事件」等元数据。
 func (b *AskBuilder) OnEvent(fn func(events.ReactEvent)) *AskBuilder {
 	b.onAnyEvent = append(b.onAnyEvent, fn)
 	return b
 }
 
-// OnMaxTurnsReached registers a handler for the MaxTurnsReached event.
-// This event fires when the Think-Act loop reaches MaxTurns without producing
-// a final answer. It is NOT an error - it's a normal boundary condition.
+// OnMaxTurnsReached 注册 MaxTurnsReached 事件的处理器。
+// 当 Think-Act 循环达到 MaxTurns 仍未产生最终答案时触发。
+// 这不是错误——而是正常的边界条件。
 //
-// Use this to display a friendly suggestion to the user instead of an error.
-// Example:
+// 用于向用户展示友好的建议而非错误。示例：
 //
 //	result, err := rt.Ask("agent", "question", session).
 //	    OnMaxTurnsReached(func(data events.MaxTurnsReachedData) {
@@ -281,15 +277,15 @@ func (b *AskBuilder) OnMaxTurnsReached(fn func(data events.MaxTurnsReachedData))
 	})
 }
 
-// WithContext sets a custom context for the AskBuilder.
-// If the context is cancelled, the execution loop stops.
-// Cancel() will not cancel the custom context — callers should cancel it directly.
+// WithContext 为 AskBuilder 设置自定义 context。
+// 若 context 被取消，执行循环将停止。
+// Cancel() 不会取消自定义 context——调用方应自行取消。
 func (b *AskBuilder) WithContext(ctx context.Context) *AskBuilder {
 	b.ctx = ctx
 	return b
 }
 
-// Cancel stops the execution loop.
+// Cancel 停止执行循环。
 func (b *AskBuilder) Cancel() {
 	if b.cancel != nil {
 		b.cancel()
@@ -304,7 +300,7 @@ func (b *AskBuilder) OnAnswer(fn func(answer string)) *AskBuilder {
 	})
 }
 
-// Run executes the ThinkingLoop and returns the result.
+// Run 执行思考循环并返回结果。
 func (b *AskBuilder) Run() (*RunResult, error) {
 	b.runtime.exec(b)
 	if b.resultErr != nil {

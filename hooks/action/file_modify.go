@@ -7,8 +7,8 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 )
 
-// PriorityFileModify is the priority for file modification tracking hooks.
-// Runs after permission check (41) but before tool logger (46).
+// PriorityFileModify 是文件修改追踪钩子的优先级。
+// 在权限检查（41）之后、工具日志（46）之前运行。
 const PriorityFileModify = 42
 
 // fileModifyingTools 是需要追踪文件修改的工具名称集合。
@@ -91,7 +91,7 @@ func (h *FileModifyHook) Before(sessionID string, toolName string, params map[st
 	return hooks.HookResult{}
 }
 
-// After is a no-op for FileModifyHook.
+// After 对 FileModifyHook 是空操作。
 func (h *FileModifyHook) After(result *hooks.ToolResult) hooks.HookResult {
 	return hooks.HookResult{}
 }
@@ -103,7 +103,7 @@ func (h *FileModifyHook) SetProvider(provider TrackerProvider) {
 	h.trackerProvider = provider
 }
 
-// Abort is a no-op for FileModifyHook.
+// Abort 对 FileModifyHook 是空操作。
 func (h *FileModifyHook) Abort(reason string) {}
 
 // extractFilePath 从工具参数中提取目标文件路径。

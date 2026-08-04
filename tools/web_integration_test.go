@@ -12,14 +12,14 @@ import (
 )
 
 // ============================================================
-// Integration Test: WebFetch + WebSearch with Proxy
+// 集成测试：WebFetch + WebSearch（带代理）
 //
-// Usage:
+// 用法：
 //   export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890
 //   go test ./tools/... -v -count=1 -run "TestIntegration" -timeout 300s
 //
-// This test suite exercises both WebFetchTool (simple) and
-// WebFetchTool (Claude-style) against REAL internet targets.
+// 本测试套件同时覆盖 WebFetchTool（简单模式）和
+// WebFetchTool（Claude 风格）对真实互联网目标的访问。
 // ============================================================
 
 var (

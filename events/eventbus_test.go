@@ -37,7 +37,7 @@ func TestEventBus_FilteredSubscribe(t *testing.T) {
 	bus := NewEventBus()
 	defer bus.Close()
 
-	// Only subscribe to events from task_1
+	// 仅订阅来自 task_1 的事件
 	ch, cancel := bus.SubscribeFiltered(func(e ReactEvent) bool {
 		return e.TaskID == "task_1"
 	})
@@ -88,7 +88,7 @@ func TestEventBus_CancelUnsubscribes(t *testing.T) {
 
 	bus.Emit(NewReactEvent("s", "main", "", ThinkingDelta, "test"))
 
-	// Channel should be closed, not receive the event
+	// 通道应已关闭，不应再收到事件
 	_, ok := <-ch
 	if ok {
 		t.Error("expected channel to be closed after cancel")
@@ -114,9 +114,9 @@ func TestEventBus_FullChannelDrops(t *testing.T) {
 	bus := NewEventBus()
 	defer bus.Close()
 
-	// Use unbuffered channel to test drop behavior
-	// Actually our implementation uses buffered(256), so we need to fill it
-	// This test just verifies Emit doesn't block on full channel
+	// 使用无缓冲通道测试丢弃行为
+	// 实际上本实现使用缓冲通道（256），因此需要先填满它
+	// 本测试仅验证 Emit 在通道满时不会阻塞
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 300; i++ {
@@ -127,7 +127,7 @@ func TestEventBus_FullChannelDrops(t *testing.T) {
 
 	select {
 	case <-done:
-		// Success - Emit never blocked
+		// 成功——Emit 从未阻塞
 	case <-time.After(2 * time.Second):
 		t.Fatal("Emit blocked on full channel")
 	}
@@ -140,20 +140,20 @@ func TestEventBus_CriticalEventNotDropped(t *testing.T) {
 	ch, cancel := bus.Subscribe()
 	defer cancel()
 
-	// Fill subscriber channel to capacity with non-critical events
+	// 用非关键事件填满订阅者通道
 	for i := 0; i < StreamChannelBufferSize; i++ {
 		bus.Emit(NewReactEvent("s", "main", "", ThinkingDelta, "fill"))
 	}
 
-	// Emit critical event — will block on the full channel
+	// 发射关键事件——将在通道满时阻塞
 	permDone := make(chan struct{})
 	go func() {
 		bus.Emit(NewReactEvent("s", "main", "", PermissionRequest, "critical"))
 		close(permDone)
 	}()
 
-	// Drain all events (256 fill + 1 critical = 257). The critical event
-	// must arrive — Emit blocks (not drops) until we free a slot.
+	// 排空所有事件（256 填充 + 1 关键 = 257）。关键事件必须到达
+	// ——Emit 会阻塞（而非丢弃）直到腾出空位。
 	evts := make([]ReactEvent, 0, StreamChannelBufferSize+1)
 	for i := 0; i < StreamChannelBufferSize+1; i++ {
 		select {
@@ -187,7 +187,7 @@ func TestReactContext_EmitEvent(t *testing.T) {
 
 	emit := bus.Emit
 
-	// Emit through event bus
+	// 通过事件总线发射
 	emit(ReactEvent{SessionID: "test", Type: ToolExecStart, Data: ToolExecStartData{ToolName: "Read", Params: map[string]any{"path": "test"}}})
 	emit(ReactEvent{SessionID: "test", Type: ThinkingDelta, Data: "should be filtered"})
 
@@ -203,12 +203,12 @@ func TestReactContext_EmitEvent(t *testing.T) {
 }
 
 func TestReactContext_EmitEvent_NilBus(t *testing.T) {
-	// Nil EventBus is handled at the reactor level (makeEmitter returns no-op).
-	// This test is no longer applicable at the EventBus level.
+	// 空 EventBus 在 reactor 层处理（makeEmitter 返回 no-op）。
+	// 本测试在 EventBus 层已不再适用。
 }
 
 func TestReactEventTypes(t *testing.T) {
-	// Verify all event types are defined and unique
+	// 验证所有事件类型均已定义且唯一
 	types := map[ReactEventType]bool{
 		ThinkingDelta:    false,
 		ThinkingDone:     false,
@@ -271,7 +271,7 @@ func TestEventBus_ConcurrentEmit(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Drain the channel and count
+	// 排空通道并计数
 	received := 0
 	timeout := time.After(2 * time.Second)
 drain:

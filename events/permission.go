@@ -1,7 +1,7 @@
 package events
 
-// PermissionPendingData carries the tool permission details sent to the UI
-// when a tool requires user authorization (non-blocking).
+// PermissionPendingData 携带当工具需要用户授权（非阻塞）时
+// 发送给 UI 的工具权限详情。
 type PermissionPendingData struct {
 	TickID        string         `json:"tick_id"`
 	ToolName      string         `json:"tool_name"`
@@ -20,9 +20,9 @@ func NewPermissionPendingData(tickID, toolName string, params map[string]any, re
 	}
 }
 
-// PermissionRequestData is the old blocking permission request type.
-// Kept for backward compatibility (TUI may still use it).
-// Deprecated: Use PermissionPendingData with the non-blocking flow instead.
+// PermissionRequestData 是旧的阻塞式权限请求类型。
+// 保留用于向后兼容（TUI 可能仍在使用）。
+// Deprecated: 请改用 PermissionPendingData 配合非阻塞流程。
 type PermissionRequestData struct {
 	TickID        string         `json:"tick_id"`
 	ToolName      string         `json:"tool_name"`

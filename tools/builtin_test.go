@@ -51,7 +51,7 @@ func TestGrep(t *testing.T) {
 	// Create Grep tool
 	grep := NewGrepTool()
 
-	// Test searching for a pattern in the current file
+	// 测试在当前文件中搜索模式
 	result, err := grep.Execute(ctxWithLogger(), map[string]any{"pattern": "TestGrep", "path": "./builtin_test.go"})
 	if err != nil {
 		t.Errorf("Expected no error for grep, got %v", err)
@@ -534,7 +534,7 @@ func TestValidateFunctions(t *testing.T) {
 	})
 
 	t.Run("validateFileSafety - restricted files", func(t *testing.T) {
-		// These are outside workspace, so should be rejected
+		// 这些文件在工作区之外，应被拒绝
 		err := ValidateFileSafety("/etc/passwd", "")
 		if err == nil {
 			t.Error("Expected error for /etc/passwd (outside workspace)")

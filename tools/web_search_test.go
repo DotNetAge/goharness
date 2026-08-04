@@ -132,7 +132,7 @@ func TestWebSearchTool_CacheBehavior(t *testing.T) {
 	s1 := result1.(string)
 	s2 := result2.(string)
 	if s1 == s2 {
-		return // exact cache hit
+		return // 精确缓存命中
 	}
 	t.Logf("cache results differ (acceptable for dynamic content): len1=%d, len2=%d", len(s1), len(s2))
 }

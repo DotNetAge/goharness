@@ -5,14 +5,14 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 )
 
-// ToolLoggerHook logs the start and end of each tool execution.
+// ToolLoggerHook 记录每次工具执行的开始和结束。
 type ToolLoggerHook struct {
 	Logger logging.Logger
 }
 
 func (h *ToolLoggerHook) Priority() int { return hooks.PriorityToolLogger }
 
-// Before logs the start of a tool execution with session ID and tool name.
+// Before 记录工具执行的开始，包含 session ID 和工具名。
 func (h *ToolLoggerHook) Before(sessionID string, toolName string, params map[string]any) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -21,7 +21,7 @@ func (h *ToolLoggerHook) Before(sessionID string, toolName string, params map[st
 	return hooks.HookResult{}
 }
 
-// After logs the completion of a tool execution with success status and duration.
+// After 记录工具执行的完成，包含成功状态和耗时。
 func (h *ToolLoggerHook) After(result *hooks.ToolResult) hooks.HookResult {
 	if h.Logger == nil {
 		return hooks.HookResult{}
@@ -34,5 +34,5 @@ func (h *ToolLoggerHook) After(result *hooks.ToolResult) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
-// Abort is a no-op for ToolLoggerHook.
+// Abort 对 ToolLoggerHook 是空操作。
 func (h *ToolLoggerHook) Abort(reason string) {}

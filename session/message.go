@@ -27,7 +27,7 @@ type ImageBlock struct {
 
 // Message 表示对话中的单条消息。
 // 与 OpenAI 聊天完成格式兼容：
-//   - role: "system" | "user" | "assistant" | "tool"
+//   - role: 角色（"system" | "user" | "assistant" | "tool"）
 //   - content: 消息文本
 //   - reasoning_content: 模型的思考/推理流（如 DeepSeek-R1）
 //   - tool_calls: 助手消息中的工具调用

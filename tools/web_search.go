@@ -95,7 +95,7 @@ func isResultQualityOK(title, snippet, rawURL string) bool {
 	return true
 }
 
-// --- WebSearch Tool (Claude-style adapter pattern) ---
+// --- WebSearch 工具（Claude 风格的适配器模式） ---
 
 // SearchResult 表示单条网络搜索结果。
 type SearchResult struct {
@@ -121,10 +121,10 @@ type SearchOptions struct {
 	MaxResults int // 最大返回结果数量
 }
 
-// searchCacheTTL is the lifetime of cached search results (2 days).
+// searchCacheTTL 是缓存搜索结果的生命周期（2 天）。
 const searchCacheTTL = 48 * time.Hour
 
-// cacheSessionID is a virtual session ID for KVStore-scoped search cache entries.
+// cacheSessionID 是用于 KVStore 作用域搜索缓存条目的虚拟会话 ID。
 const cacheSessionID = "__goharness_search_cache__"
 
 type cachedSearch struct {
@@ -135,7 +135,7 @@ type cachedSearch struct {
 
 var mdConverter = md.NewConverter("", true, nil)
 
-// Each adapter is responsible for building the request URL and resolving result URLs.
+// 每个适配器负责构建请求 URL 和解析结果 URL。
 
 // fetchBody 发起搜索请求并返回原始 HTML body。
 // 通过 stealthClient 统一处理 TLS 指纹伪装、浏览器指纹头注入、cookiejar 会话、
@@ -211,7 +211,7 @@ func checkAntiCrawl(statusCode int, body []byte) error {
 	return nil
 }
 
-// --- WebSearchTool ---
+// --- WebSearchTool 工具 ---
 
 // WebSearchTool 实现了网络搜索工具。
 // 支持多引擎并行搜索和结果缓存，遵循 Claude Code 的架构设计：
@@ -251,9 +251,9 @@ func NewWebSearchTool(logger logging.Logger) FuncTool {
 	return t
 }
 
-// AddAdapter adds a search adapter to the fallback chain.
-// Adapters are tried in order; first successful result wins.
-// This method is safe for concurrent use.
+// AddAdapter 将一个搜索适配器添加到回退链中。
+// 适配器按顺序尝试；第一个成功的结果胜出。
+// 此方法可安全用于并发场景。
 func (t *WebSearchTool) AddAdapter(adapter SearchAdapter) {
 	t.adapterMu.Lock()
 	defer t.adapterMu.Unlock()
@@ -369,7 +369,7 @@ collectLoop:
 		}
 	}
 
-	// Deduplicate by URL
+	// 按 URL 去重
 	seenURLs := make(map[string]bool)
 	var deduped []SearchResult
 	for _, r := range allResults {
@@ -388,13 +388,21 @@ collectLoop:
 	return deduped, failedAdapters, allFailed
 }
 
-func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+// webSearchParams 承载 WebSearch 工具解析后的参数。
+type webSearchParams struct {
+	query      string
+	maxResults int
+}
+
+// validateWebSearchParams 从参数映射提取并验证 WebSearch 工具参数。
+// query 必填且至少 2 个字符；max_results 默认 10，上限 20。
+func validateWebSearchParams(params map[string]any) (webSearchParams, error) {
 	query, err := ValidateRequiredString("WebSearch", params, "query")
 	if err != nil {
-		return nil, err
+		return webSearchParams{}, err
 	}
 	if len(query) < 2 {
-		return nil, fmt.Errorf("%s", GuideInvalidValue("WebSearch", "query", query, "提供至少 2 个字符的具体关键词（可使用组合词或英文关键词）后重试"))
+		return webSearchParams{}, fmt.Errorf("%s", GuideInvalidValue("WebSearch", "query", query, "提供至少 2 个字符的具体关键词（可使用组合词或英文关键词）后重试"))
 	}
 
 	maxResults := 10
@@ -406,8 +414,15 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 			}
 		}
 	}
+	return webSearchParams{query: query, maxResults: maxResults}, nil
+}
 
-	// Check KVStore cache (2-day TTL) — 使用原始查询做缓存键
+// performWebSearch 执行搜索核心逻辑：缓存检查、多引擎搜索、结果合并去重、错误处理与格式化。
+func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logger, p webSearchParams) (string, error) {
+	query := p.query
+	maxResults := p.maxResults
+
+	// 检查 KVStore 缓存（2 天 TTL）— 使用原始查询做缓存键
 	cacheKey := query
 	kvs := GetToolContext(ctx).KVStore
 	if kvs != nil {
@@ -421,8 +436,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 			}
 		}
 	}
-
-	logger := getLogger(ctx)
 
 	// 每引擎每关键词最多贡献 5 条。配合提前退出阈值（默认 10）：
 	//   - 2 个稳定引擎即可凑够 10 条（5×2=10），应对搜狗/微信被风控的场景
@@ -474,19 +487,19 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		}
 
 		// 全部兜底策略被打穿：所有引擎都明确失败（风控/网络错误/解析失败）。
-		// 只有此时才告知 Agent “被风控”，避免部分失败就报错——
+		// 只有此时才告知 Agent "被风控"，避免部分失败就报错——
 		// 容错优先：只要有任一引擎返回数据就正常返回，不算打穿。
 		if allTokensAllFailed && len(failedList) > 0 {
-			return nil, fmt.Errorf("%s", BuildGuide(
+			return "", fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("搜索查询 %q 失败：所有搜索引擎均报错，全部兜底策略被打穿。失败引擎：%s", query, strings.Join(failedList, ", ")),
 				"所有搜索引擎均无法完成搜索（风控/网络错误/解析失败）",
 				"稍后重试；若持续失败，说明当前搜索源全部不可达，应告知用户",
 			))
 		}
 
-		// 部分引擎失败，但未全部打穿（其余超时或无匹配）——不说“被风控”，如实说明部分失败
+		// 部分引擎失败，但未全部打穿（其余超时或无匹配）——不说"被风控"，如实说明部分失败
 		if len(failedList) > 0 {
-			return nil, fmt.Errorf("%s", BuildGuide(
+			return "", fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("搜索查询 %q 未获得结果：部分引擎失败，其余超时或无匹配。失败引擎：%s", query, strings.Join(failedList, ", ")),
 				"部分搜索引擎失败，未获得任何结果",
 				"稍后重试；或更换关键词重新搜索",
@@ -495,15 +508,15 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 
 		// 无引擎报错但无结果：上下文超时（8 秒 deadline 或外层取消）
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("%s", BuildGuide(
+			return "", fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("搜索查询 %q，但 8 秒内未获得任何结果", query),
 				fmt.Sprintf("搜索超时（查询：%q）", query),
 				"缩短查询词或更换关键词后重试；若持续超时，说明当前搜索源不可达，应告知用户",
 			))
 		}
 
-		// 所有引擎都成功返回但无匹配结果——这才是真正的“没有搜索结果”
-		return nil, fmt.Errorf("%s", BuildGuide(
+		// 所有引擎都成功返回但无匹配结果——这才是真正的"没有搜索结果"
+		return "", fmt.Errorf("%s", BuildGuide(
 			fmt.Sprintf("搜索查询 %q，但未找到任何搜索结果", query),
 			"没有搜索引擎返回与查询匹配的结果",
 			"更换关键词或使用更通用的表述重新搜索；若多次尝试仍无结果，基于已有信息直接作答",
@@ -521,7 +534,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 		adapterNote = "\n\n[搜索状态] 所有引擎均成功。"
 	}
 
-	// Cache results in KVStore (2-day TTL) — 以原始查询为键
+	// 将结果缓存到 KVStore（2 天 TTL）— 以原始查询为键
 	if kvs != nil {
 		if data, err := json.Marshal(cachedSearch{
 			Results:   results,
@@ -542,9 +555,20 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	return formatted, nil
 }
 
-// ---- Cache query API (knowledge reuse via KVStore) ----
+// Execute 编排 WebSearch 工具执行流程：validate → perform。
+func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+	p, err := validateWebSearchParams(params)
+	if err != nil {
+		return nil, err
+	}
 
-// CachedQueryCount returns how many unique queries are in the KVStore cache.
+	logger := getLogger(ctx)
+	return performWebSearch(ctx, t, logger, p)
+}
+
+// ---- 缓存查询 API（通过 KVStore 复用知识） ----
+
+// CachedQueryCount 返回 KVStore 缓存中唯一查询的数量。
 func (t *WebSearchTool) CachedQueryCount(ctx context.Context) int {
 	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
@@ -557,7 +581,7 @@ func (t *WebSearchTool) CachedQueryCount(ctx context.Context) int {
 	return len(keys)
 }
 
-// AllCachedQueries returns all cache keys (query strings) stored in KVStore.
+// AllCachedQueries 返回 KVStore 中存储的所有缓存键（查询字符串）。
 func (t *WebSearchTool) AllCachedQueries(ctx context.Context) []string {
 	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
@@ -570,7 +594,7 @@ func (t *WebSearchTool) AllCachedQueries(ctx context.Context) []string {
 	return keys
 }
 
-// AllCachedResults returns every unique URL across all cached queries in KVStore.
+// AllCachedResults 返回 KVStore 中所有缓存查询里每个唯一的 URL。
 func (t *WebSearchTool) AllCachedResults(ctx context.Context) []SearchResult {
 	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
@@ -601,10 +625,10 @@ func (t *WebSearchTool) AllCachedResults(ctx context.Context) []SearchResult {
 	return all
 }
 
-// SearchCache searches all cached KVStore entries by keyword. Title, snippet,
-// and the original query are all matched. Returns deduplicated results.
-// This enables other mechanisms (memory, checks) to reuse externally
-// collected knowledge without making a new network request.
+// SearchCache 按关键词搜索所有 KVStore 缓存条目。标题、摘要和原始查询
+// 都会被匹配。返回去重后的结果。
+// 这使得其他机制（记忆、检查）可以复用外部收集的知识，
+// 而无需发起新的网络请求。
 func (t *WebSearchTool) SearchCache(ctx context.Context, keyword string) []SearchResult {
 	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
@@ -649,7 +673,7 @@ func (t *WebSearchTool) SearchCache(ctx context.Context, keyword string) []Searc
 	return matches
 }
 
-// EvictExpiredCache removes entries older than the TTL from KVStore.
+// EvictExpiredCache 从 KVStore 中移除超过 TTL 的条目。
 func (t *WebSearchTool) EvictExpiredCache(ctx context.Context) {
 	kvs := GetToolContext(ctx).KVStore
 	if kvs == nil {
@@ -721,9 +745,9 @@ func formatSearchResults(query string, results []SearchResult) string {
 	return sb.String()
 }
 
-// --- SSRF Protection Helpers ---
+// --- SSRF 防护辅助函数 ---
 
-// MarshalJSON for SearchResult
+// SearchResult 的 MarshalJSON 方法
 func (r SearchResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Title   string `json:"title"`
@@ -744,9 +768,10 @@ func truncateStr(s string, maxLen int) string {
 }
 
 // getLogger 从 ToolContext 取系统注入的 Logger。
-// 生产环境下 ToolContext.Logger 必然非空：rt.logger 默认非 nil（runtime.go:220），
-// 经 executor.go:44/220/91 注入到 ToolContext.Logger。故此处不再用 DefaultLogger 兜底——
-// 那是内部创建日志，违背「禁止内部创建日志」约束，也属多余（ToolContext.Logger 必然非空）。
+// 生产环境下 ToolContext.Logger 必然非空：rt.logger 默认非 nil（NewRuntime 中以
+// logging.DefaultLogger() 初始化），经 tools.WithLogger 注入 ToolExecutor，再由
+// ToolExecutor 写入 ToolContext.Logger。故此处不再用 DefaultLogger 兜底——那是内部
+// 创建日志，违背「禁止内部创建日志」约束，也属多余（ToolContext.Logger 必然非空）。
 // 裸调用（无 ToolContext）属用法错误，应让 nil 暴露而非掩盖。
 func getLogger(ctx context.Context) logging.Logger {
 	return GetToolContext(ctx).Logger

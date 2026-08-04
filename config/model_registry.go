@@ -2,7 +2,7 @@ package config
 
 import "fmt"
 
-// ModelStore is a read-only interface for model lookup.
+// ModelStore 是用于模型查找的只读接口。
 type ModelStore interface {
 	Get(name string) (*ModelConfig, error)
 	List() []string

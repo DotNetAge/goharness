@@ -1,6 +1,6 @@
 package events
 
-// CompactionData carries details about a session compaction event.
+// CompactionData 携带会话压缩事件的详细信息。
 type CompactionData struct {
 	SessionID      string `json:"session_id"`
 	MessagesSlid   int    `json:"messages_slid"`

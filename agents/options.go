@@ -55,48 +55,48 @@ func WithToolHooks(hh ...hooks.ToolHook) RuntimeConfig {
 	return func(r *Runtime) { r.toolHooks = append(r.toolHooks, hh...) }
 }
 
-// WithTokenUsageStore sets the token usage storage backend.
-// The store persists usage records after each LLM streaming response.
-// If not set, a NoopTokenUsageStore is used (no usage tracking).
+// WithTokenUsageStore 设置 token 用量存储后端。
+// 每次大语言模型流式响应后，用量记录会被持久化到该存储。
+// 若未设置，使用 NoopTokenUsageStore（不进行用量跟踪）。
 func WithTokenUsageStore(store session.TokenUsageStore) RuntimeConfig {
 	return func(r *Runtime) { r.tokenUsageStore = store }
 }
 
-// WithKVStore sets the session-scoped key-value storage backend.
-// The store is injected into the ToolContext so task management tools
-// (TaskCreate/TaskGet/TaskUpdate/TaskList) and other KV-aware tools
-// can persist per-session state. If not set, those tools will return
-// "KVStore 不可用" at execution time.
+// WithKVStore 设置会话级键值存储后端。
+// 该存储注入到 ToolContext 中，使任务管理工具
+//（TaskCreate/TaskGet/TaskUpdate/TaskList）及其他 KV 感知工具
+// 可以持久化会话级状态。若未设置，这些工具在执行时返回
+// "KVStore 不可用"。
 func WithKVStore(kv store.KVStore) RuntimeConfig {
 	return func(r *Runtime) { r.kvStore = kv }
 }
 
-// WithSessionStore sets the session store for sub-session message loading.
-// Used by CollectResults to recover SubAgent results from disk.
+// WithSessionStore 设置会话存储，用于子会话消息加载。
+// CollectResults 用它从磁盘恢复 SubAgent 结果。
 func WithSessionStore(ss session.SessionStore) RuntimeConfig {
 	return func(r *Runtime) { r.sessionStore = ss }
 }
 
-// WithSkillsPrompt overrides the default skills catalog prompt section.
-// The provided function receives the filtered list of skills for the current agent
-// and should return the complete catalog string (or empty to omit the section).
-// When nil (default), the built-in buildSkillsCatalog is used.
+// WithSkillsPrompt 覆盖默认的技能目录提示词段落。
+// 传入的函数接收当前智能体过滤后的技能列表，
+// 应返回完整的目录字符串（空字符串则省略该段落）。
+// 为 nil 时（默认），使用内置的 buildSkillsCatalog。
 func WithSkillsPrompt(builder func(skills []*skill.Skill) string) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.skillsCatalogBuilder = builder }
 }
 
-// WithEnvs overrides the default Environment section in system prompts.
-// The provided function receives EnvsParams (SessionID, ProjectDir, SessionDir)
-// and should return the complete environment section string (or empty to omit).
-// When nil (default), the built-in buildEnvironmentInfo is used.
+// WithEnvs 覆盖系统提示词中默认的环境信息段落。
+// 传入的函数接收 EnvsParams（SessionID、ProjectDir、SessionDir），
+// 应返回完整的环境信息字符串（空字符串则省略）。
+// 为 nil 时（默认），使用内置的 buildEnvironmentInfo。
 func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.envsBuilder = builder }
 }
 
-// WithSearchStrategy overrides the default Search Strategy section in system prompts.
-// The provided function receives no parameters and should return the complete section
-// string (or empty to omit the section entirely).
-// When nil (default), the built-in buildSearchPriority is used.
+// WithSearchStrategy 覆盖系统提示词中默认的搜索策略段落。
+// 传入的函数无参数，应返回完整的段落字符串
+//（空字符串则省略整个段落）。
+// 为 nil 时（默认），使用内置的 buildSearchPriority。
 func WithSearchStrategy(builder func() string) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.searchStrategyBuilder = builder }
 }

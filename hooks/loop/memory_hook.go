@@ -22,12 +22,12 @@ type MemoryThoughtHook struct {
 	Logger logging.Logger
 }
 
-// NewMemoryThoughtHook creates a new MemoryThoughtHook with the given memory store.
+// NewMemoryThoughtHook 使用给定的记忆存储创建一个新的 MemoryThoughtHook。
 func NewMemoryThoughtHook(mem memory.Memory) *MemoryThoughtHook {
 	return &MemoryThoughtHook{memory: mem}
 }
 
-// Priority returns the priority for MemoryThoughtHook (50).
+// Priority 返回 MemoryThoughtHook 的优先级 (50)。
 func (h *MemoryThoughtHook) Priority() int { return 50 }
 
 // BeforeLLM 按时间倒序取最新记忆并注入到系统指令区末尾。
@@ -69,7 +69,7 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 		return hooks.HookResult{}
 	}
 	if len(records) == 0 && sessionID != "" {
-		// Fallback: agent+project 过滤空结果时按 sessionID 捞回
+		// 回退：agent+project 过滤空结果时按 sessionID 捞回
 		if sessionRetriever, ok := h.memory.(memory.SessionRetriever); ok {
 			h.Logger.Debug("MemoryThoughtHook: 回退到 RetrieveBySession 接口",
 				"session_id", sessionID, "agent", input.AgentName)
@@ -120,10 +120,10 @@ func (h *MemoryThoughtHook) BeforeLLM(sessionID string, iteration int, input *ho
 	return hooks.HookResult{}
 }
 
-// AfterLLM is a no-op for MemoryThoughtHook.
+// AfterLLM 对 MemoryThoughtHook 是空操作。
 func (h *MemoryThoughtHook) AfterLLM(_ string, _ int, _ *hooks.LLMResponse, _ []hooks.ToolResult) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
-// Abort is a no-op for MemoryThoughtHook.
+// Abort 对 MemoryThoughtHook 是空操作。
 func (h *MemoryThoughtHook) Abort(_ string, _ string) {}

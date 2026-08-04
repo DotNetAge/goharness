@@ -1,15 +1,15 @@
 package constants
 
-// Default configuration values
+// 默认配置值
 const (
-	// Reactor defaults
+	// Reactor 默认值
 	DefaultMaxSteps = 200
 
-	// Thinker defaults
+	// Thinker 默认值
 	DefaultTemperature = 0.7
 )
 
-// Special values
+// 特殊值
 const (
 	DefaultModel = ""
 )

@@ -7,55 +7,53 @@ import (
 	"github.com/DotNetAge/goharness/store"
 )
 
-// executorConfig is the configuration struct for the tool executor.
+// executorConfig 是工具执行器的配置结构体。
 //
-// Permission enforcement is intentionally NOT an executor concern — the
-// runtime pre-checks PermissionRequired.Grant() before calling the
-// executor, and tools that opt out of the permission interface are
-// trusted to handle their own input validation. Keeping the executor
-// focused on "how to run a tool" avoids duplicating the chain-of-checkers
-// pattern at two layers.
+// 权限校验有意不归执行器管——运行时在调用执行器之前会预检
+// PermissionRequired.Grant()，而未接入权限接口的工具则自行负责
+// 输入校验。让执行器只关注"如何运行工具"，避免在两个层级
+// 重复实现检查链模式。
 type executorConfig struct {
 	registry     ToolRegistry
 	eventEmitter func(events.ReactEvent)
 	sessionStore session.SessionStore
 	kvStore      store.KVStore
 	fileStore    store.FileStore
-	session      *session.Session // authoritative source for session-level state
+	session      *session.Session // 会话级状态的权威来源
 	logger       logging.Logger
 }
 
-// ExecutorOption is a functional option for configuring ToolExecutor.
+// ExecutorOption 是配置 ToolExecutor 的函数式选项。
 type ExecutorOption func(*executorConfig)
 
-// WithLogger sets the logger for tool execution.
+// WithLogger 设置工具执行的日志器。
 func WithLogger(logger logging.Logger) ExecutorOption {
 	return func(c *executorConfig) { c.logger = logger }
 }
 
-// WithEventEmitter sets the event emitter for tool execution.
+// WithEventEmitter 设置工具执行的事件发射器。
 func WithEventEmitter(emitter func(events.ReactEvent)) ExecutorOption {
 	return func(c *executorConfig) { c.eventEmitter = emitter }
 }
 
-// WithSessionStore sets the session store for loading sub-session messages.
+// WithSessionStore 设置用于加载子会话消息的 session store。
 func WithSessionStore(store session.SessionStore) ExecutorOption {
 	return func(c *executorConfig) { c.sessionStore = store }
 }
 
-// WithKVStore sets the KV store.
+// WithKVStore 设置 KV store。
 func WithKVStore(store store.KVStore) ExecutorOption {
 	return func(c *executorConfig) { c.kvStore = store }
 }
 
-// WithFileStore sets the file store.
+// WithFileStore 设置 file store。
 func WithFileStore(store store.FileStore) ExecutorOption {
 	return func(c *executorConfig) { c.fileStore = store }
 }
 
-// WithSession sets the Session pointer on the executor config.
-// Tools access session properties (ID, ProjectDir, AgentName, etc.)
-// through the Session pointer rather than extracted copies.
+// WithSession 在执行器配置上设置 Session 指针。
+// 工具通过 Session 指针访问会话属性（ID、ProjectDir、AgentName 等），
+// 而非使用提取的副本。
 func WithSession(s *session.Session) ExecutorOption {
 	return func(c *executorConfig) { c.session = s }
 }

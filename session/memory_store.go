@@ -7,33 +7,32 @@ import (
 	"github.com/DotNetAge/goharness/memory"
 )
 
-// MemoryStore defines the interface for storing and retrieving session memory/compaction chunks.
-// Implementations can use various backends (Redis, database, RAGMemory, etc.)
+// MemoryStore 定义了存储和检索会话记忆/压缩分块的接口。
+// 实现可使用多种后端（Redis、数据库、RAGMemory 等）。
 //
-// StoreChunks is called during compaction to persist compaction chunks as MemoryChunks.
-// Retrieve can be used to load historical context when needed.
+// StoreChunks 在压缩期间被调用，将压缩分块以 MemoryChunk 形式持久化。
+// Retrieve 可在需要时用于加载历史上下文。
 type MemoryStore interface {
-	// StoreChunks persists memory chunks associated with a session.
+	// StoreChunks 持久化与会话关联的记忆分块。
 	StoreChunks(ctx context.Context, sessionID string, chunks []memory.MemoryChunk) error
 
-	// Retrieve loads memory chunks for a session, returning up to `limit` most recent entries.
+	// Retrieve 加载会话的记忆分块，最多返回 `limit` 条最近的记录。
 	Retrieve(ctx context.Context, query, sessionID string, limit int) ([]memory.MemoryChunk, error)
 }
 
-// inMemoryMemory provides an in-memory implementation of MemoryStore for development
-// and testing purposes.
+// inMemoryMemory 提供 MemoryStore 的内存实现，用于开发和测试。
 type inMemoryMemory struct {
 	mu   sync.RWMutex
 	data map[string][]memory.MemoryChunk
 }
 
-// newInMemoryMemory creates a new in-memory store initialized with an empty data map.
+// newInMemoryMemory 创建一个新的内存存储，初始化为空的数据 map。
 func newInMemoryMemory() *inMemoryMemory {
 	return &inMemoryMemory{data: make(map[string][]memory.MemoryChunk)}
 }
 
-// StoreChunks saves memory chunks to the store under the given session ID.
-// Chunks are appended to existing entries for the same session.
+// StoreChunks 将记忆分块按指定会话 ID 保存到存储中。
+// 分块会追加到同一会话的现有记录之后。
 func (m *inMemoryMemory) StoreChunks(_ context.Context, sessionID string, chunks []memory.MemoryChunk) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -41,7 +40,7 @@ func (m *inMemoryMemory) StoreChunks(_ context.Context, sessionID string, chunks
 	return nil
 }
 
-// Retrieve fetches stored memory chunks for a session, limited to the most recent `limit` entries.
+// Retrieve 获取会话已存储的记忆分块，限制为最近的 `limit` 条记录。
 func (m *inMemoryMemory) Retrieve(_ context.Context, query, sessionID string, limit int) ([]memory.MemoryChunk, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -5,122 +5,105 @@ import (
 	"strings"
 )
 
-// PermissionRequired is an opt-in interface that tools can implement to
-// declare that their execution needs a runtime permission check.
+// PermissionRequired 是一个可选实现接口，工具可通过实现它来声明其执行需要运行时权限校验。
 //
-// # Why opt-in?
+// # 为什么是可选实现？
 //
-// The vast majority of tools (Read, Grep, Glob, Ls, WebSearch, WebFetch,
-// AskUser, CollectResults, TaskCreate, TaskGet, TaskList, TaskUpdate,
-// TeamCreate, TeamDelete, TeamGetTasks, TeamList, Skill, Sleep) have
-// SecurityLevel = LevelSafe / IsReadOnly = true and can be invoked
-// without bothering the user. Only a small subset of tools — Bash,
-// RunScript, Write, Edit — touch the filesystem or shell in a way that
-// could damage the system, so they opt in by implementing this interface.
+// 绝大多数工具（Read、Grep、Glob、Ls、WebSearch、WebFetch、
+// AskUser、CollectResults、TaskCreate、TaskGet、TaskList、TaskUpdate、
+// TeamCreate、TeamDelete、TeamGetTasks、TeamList、Skill、Sleep）的
+// SecurityLevel = LevelSafe / IsReadOnly = true，可以在不打扰用户的情况下直接调用。
+// 只有一小部分工具 —— Bash、RunScript、Write、Edit —— 会以可能损害系统的方式
+// 访问文件系统或 shell，因此它们通过实现该接口来选择加入权限校验。
 //
-// # How it works
+// # 工作原理
 //
-// The runtime calls Grant(ctx, params) *before* tool execution:
+// 运行时会在工具执行*之前*调用 Grant(ctx, params)：
 //
-//   - granted == true  → the tool is safe; runtime executes it directly.
-//   - granted == false → the tool needs user approval. Runtime emits a
-//                        PermissionPending event, saves the invocation in
-//                        session.PendingPermission, and stops the thinking
-//                        loop. The user responds via a "magic word" (see
-//                        PermissionAllow / PermissionDeny below) in a new
-//                        Ask() call. Runtime then either runs the tool
-//                        (Allow) or appends a "Permission Denied" tool
-//                        result (Deny) before continuing the loop.
+//   - granted == true  → 工具安全；运行时直接执行它。
+//   - granted == false → 工具需要用户批准。运行时发出
+//                        PermissionPending 事件，将该调用保存到
+//                        session.PendingPermission 中，并停止思考循环。
+//                        用户通过新的 Ask() 调用以"魔法词"（参见下文的
+//                        PermissionAllow / PermissionDeny）作出响应。
+//                        随后运行时要么执行工具（Allow），要么在继续循环前
+//                        追加一条"Permission Denied"工具结果（Deny）。
 //
-// # Magic words vs AskUser
+// # 魔法词与 AskUser 的区别
 //
-// AskUser's response (e.g. "option A") is itself part of the LLM context:
-// the assistant's next turn sees both the question and the user's answer.
+// AskUser 的响应（例如"选项 A"）本身就是 LLM 上下文的一部分：
+// 助手的下一轮既能看到问题，也能看到用户的回答。
 //
-// Permission is invisible to the LLM: the magic word "PermissionAllow" /
-// "PermissionDeny" arrives via the regular chat channel but is filtered
-// out by the runtime before reaching the session. The LLM only ever sees
-// the tool result (success or "Permission Denied"), never the "waiting
-// for human approval" intermediate state.
+// 权限校验对 LLM 是不可见的：魔法词"PermissionAllow" /
+// "PermissionDeny"通过常规聊天通道到达，但在到达会话之前会被运行时过滤掉。
+// LLM 只会看到工具结果（成功或"Permission Denied"），永远不会看到
+// "等待人工批准"的中间状态。
 //
-// # Implementation
+// # 实现
 //
-// Each tool decides what is "restricted". Typical signals:
-//   - Bash: dangerousPatterns match, or base command is not whitelisted.
-//   - Write / Edit: resolved path is outside the project/session boundary.
-//   - RunScript: script path is outside the skill root, or the interpreter
-//                is not in the platform's supported list.
+// 每个工具自行决定什么是"受限的"。典型信号：
+//   - Bash：命中 dangerousPatterns，或基础命令不在白名单中。
+//   - Write / Edit：解析后的路径位于项目/会话边界之外。
+//   - RunScript：脚本路径位于技能根目录之外，或解释器不在平台支持列表中。
 //
-// Hard errors (sensitive files like .env, .ssh, etc.) should NOT be
-// expressed via Grant() — keep them as errors in Execute(). Grant() only
-// expresses "ask, but user can override".
+// 硬性错误（如 .env、.ssh 等敏感文件）不应通过 Grant() 表达——
+// 应保留为 Execute() 中的错误。Grant() 仅表达"询问，但用户可覆盖"。
 type PermissionRequired interface {
-	// Grant inspects the tool input and returns whether the tool can
-	// proceed without asking the user.
+	// Grant 检查工具输入并返回工具是否可以在不询问用户的情况下继续执行。
 	//
-	// Parameters:
-	//   - ctx:    Standard context.Context (no deadline required — runtime
-	//            handles cancellation if the user aborts).
-	//   - params: The same parameter map that will be passed to Execute.
-	//            Tools should treat it as read-only; if a tool needs to
-	//            normalize the input (e.g. resolve "session:" prefixes),
-	//            it should re-do that resolution in Execute() rather than
-	//            mutate params here.
+	// 参数：
+	//   - ctx:    标准 context.Context（无需截止时间——运行时会
+	//            在用户中止时处理取消）。
+	//   - params: 将传递给 Execute 的同一参数 map。
+	//            工具应将其视为只读；若工具需要规范化输入
+	//            （例如解析 "session:" 前缀），应在 Execute() 中重新执行该解析，
+	//            而不是在此处修改 params。
 	//
-	// Return:
-	//   - granted: true if no permission is needed; false to trigger the
-	//              permission flow.
-	//   - reason:  Human-readable explanation shown in the UI when asking
-	//              the user. Ignored when granted is true. Should describe
-	//              WHAT triggered the check (e.g. "command contains 'rm
-	//              -rf /'", "path is outside the project boundary"), not
-	//              just "this needs approval".
+	// 返回：
+	//   - granted: true 表示无需权限校验；false 表示触发权限校验流程。
+	//   - reason:  在向用户询问时显示在 UI 中的人类可读说明。
+	//              当 granted 为 true 时被忽略。应描述触发校验的具体内容
+	//              （例如"命令包含 'rm -rf /'"、"路径位于项目边界之外"），
+	//              而不仅仅是"这需要批准"。
 	Grant(ctx context.Context, params map[string]any) (granted bool, reason string)
 }
 
-// ImplementsPermissionRequired reports whether a tool optionally implements
-// the PermissionRequired interface. Tools that do not implement it are
-// considered "always allow" by the runtime.
+// ImplementsPermissionRequired 报告工具是否可选实现了
+// PermissionRequired 接口。未实现该接口的工具被运行时视为"始终允许"。
 func ImplementsPermissionRequired(tool FuncTool) bool {
 	_, ok := tool.(PermissionRequired)
 	return ok
 }
 
-// Magic-word constants used by the UI to respond to a PermissionPending
-// event. The runtime intercepts these as control signals: the message is
-// never appended to the session, and the runtime immediately resolves the
-// pending permission (executing the tool on Allow, or appending a
-// "Permission Denied" result on Deny) before continuing the loop.
+// 魔法词常量，由 UI 用于响应 PermissionPending 事件。运行时将这些常量作为
+// 控制信号拦截：该消息永远不会被追加到会话中，运行时会立即解决挂起的权限
+// （在 Allow 时执行工具，或在 Deny 时追加"Permission Denied"结果），
+// 然后继续循环。
 //
-// Format is a single bare word with no prefix so the UI can render it as
-// plain text in the chat box. Magic-word detection is whitespace-trimmed
-// and case-insensitive.
+// 格式为无前缀的纯单词，以便 UI 在聊天框中以纯文本形式渲染。魔法词检测
+// 会去除首尾空白且不区分大小写。
 const (
-	// PermissionAllow is sent by the UI to approve the pending permission
-	// and run the tool with its original arguments.
+	// PermissionAllow 由 UI 发送，用于批准挂起的权限并以原始参数运行工具。
 	PermissionAllow = "PermissionAllow"
 
-	// PermissionAllowSession is sent by the UI when the user checks
-	// "Remember my choice for this session". It works like PermissionAllow
-	// — the tool is executed — but also adds the tool + its approved
-	// parameters to the session-level whitelist ({sessionDir}/session-wl.json).
-	// Subsequent invocations of the same tool with matching parameters
-	// will auto-grant without user confirmation.
+	// PermissionAllowSession 由 UI 在用户勾选"记住本次会话的选择"时发送。
+	// 其作用与 PermissionAllow 相同——工具会被执行——但同时会将该工具及其
+	// 已批准的参数加入会话级白名单（{sessionDir}/session-wl.json）。
+	// 后续以匹配参数调用同一工具时将自动放行，无需用户确认。
 	PermissionAllowSession = "PermissionAllowSession"
 
-	// PermissionDeny is sent by the UI to reject the pending permission.
-	// The LLM sees a "Permission Denied" tool result and can adapt its
-	// plan (e.g. ask the user, choose a different path, etc.).
+	// PermissionDeny 由 UI 发送，用于拒绝挂起的权限。
+	// LLM 会看到一条"Permission Denied"工具结果，并可据此调整计划
+	// （例如询问用户、选择不同路径等）。
 	PermissionDeny = "PermissionDeny"
 )
 
-// ClassifyMagicWord returns the magic-word action implied by a user message
-// after whitespace trimming, or "" if the message is not a magic word.
+// ClassifyMagicWord 在去除首尾空白后返回用户消息所暗示的魔法词动作，
+// 若该消息不是魔法词则返回 ""。
 //
-// The detection is intentionally narrow — the whole point is to keep the
-// permission flow invisible to the LLM. Anything other than an exact
-// (trimmed, case-insensitive) match for PermissionAllow / PermissionDeny
-// is treated as a regular user message.
+// 检测范围被刻意收窄——核心目的是让权限校验流程对 LLM 不可见。
+// 除与 PermissionAllow / PermissionDeny 精确匹配（去除空白、不区分大小写）外，
+// 其他任何内容都被视为普通用户消息。
 func ClassifyMagicWord(msg string) string {
 	trimmed := strings.TrimSpace(msg)
 	switch {

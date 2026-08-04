@@ -1,4 +1,4 @@
-// Package events provides an event bus implementation for publishing and subscribing to React events.
+// Package events 提供了一个事件总线实现，用于发布和订阅 React 事件。
 package events
 
 import (
@@ -9,31 +9,31 @@ import (
 )
 
 const (
-	// StreamChannelBufferSize defines the buffer size for subscriber channels.
-	// Increased from 256 to 8192 to prevent event drops under burst traffic
-	// from sub-agents (thinking/content deltas, tool events, etc.).
+	// StreamChannelBufferSize 定义订阅者通道的缓冲区大小。
+	// 从 256 增加到 8192，以防止在子代理突发流量
+	// （思考/内容增量、工具事件等）下发生事件丢失。
 	StreamChannelBufferSize = 8192
 )
 
-// EventBus defines the interface for an event publishing and subscription system.
-// It allows emitting events and subscribing to them with optional filtering.
+// EventBus 定义了事件发布和订阅系统的接口。
+// 它允许发出事件并可选地通过过滤条件订阅事件。
 type EventBus interface {
-	// Emit publishes an event to all subscribers.
+	// Emit 向所有订阅者发布一个事件。
 	Emit(event ReactEvent)
-	// Subscribe returns a channel of events and a cancellation function to unsubscribe.
+	// Subscribe 返回一个事件通道和一个用于取消订阅的取消函数。
 	Subscribe() (ch <-chan ReactEvent, cancel func())
-	// SubscribeFiltered returns a channel of filtered events and a cancellation function.
+	// SubscribeFiltered 返回一个过滤后的事件通道和一个取消函数。
 	SubscribeFiltered(filter func(ReactEvent) bool) (ch <-chan ReactEvent, cancel func())
 }
 
-// subscriber represents a single subscriber with its channel and optional filter.
+// subscriber 表示单个订阅者，包含其通道和可选的过滤器。
 type subscriber struct {
 	ch     chan ReactEvent
 	filter func(ReactEvent) bool
 }
 
-// InProcessEventBus is an in-process implementation of EventBus using channels.
-// It supports filtered subscriptions and graceful shutdown.
+// InProcessEventBus 是基于通道实现的进程内 EventBus。
+// 它支持过滤订阅和优雅关闭。
 type InProcessEventBus struct {
 	mu          sync.RWMutex
 	subscribers map[string]*subscriber
@@ -42,27 +42,27 @@ type InProcessEventBus struct {
 	logger      logging.Logger
 }
 
-// SetLogger sets the logger for the event bus.
+// SetLogger 设置事件总线的日志记录器。
 func (b *InProcessEventBus) SetLogger(logger logging.Logger) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logger = logger
 }
 
-// NewEventBus creates a new InProcessEventBus instance.
+// NewEventBus 创建一个新的 InProcessEventBus 实例。
 func NewEventBus() *InProcessEventBus {
 	return &InProcessEventBus{
 		subscribers: make(map[string]*subscriber),
 	}
 }
 
-// isCriticalEvent checks if an event type requires guaranteed delivery.
-// Critical events are sent with blocking (synchronous) channel writes.
-// Non-critical events use non-blocking writes that silently drop when
-// the subscriber channel is full (backpressure safety valve).
+// isCriticalEvent 检查事件类型是否需要保证投递。
+// 关键事件使用阻塞式（同步）通道写入发送。
+// 非关键事件使用非阻塞写入，当订阅者通道已满时会静默丢弃
+// （背压安全阀）。
 //
-// Any event type that carries streaming content or execution results
-// that the UI depends on MUST be marked as critical.
+// 任何携带 UI 所依赖的流式内容或执行结果的事件类型
+// 都必须标记为关键事件。
 func isCriticalEvent(eventType ReactEventType) bool {
 	switch eventType {
 	case PermissionRequest, PermissionDenied,
@@ -76,9 +76,9 @@ func isCriticalEvent(eventType ReactEventType) bool {
 	return false
 }
 
-// Emit publishes an event to all matching subscribers.
-// Critical events (permission-related) are delivered synchronously;
-// non-critical events use non-blocking sends to avoid slow consumer backpressure.
+// Emit 向所有匹配的订阅者发布事件。
+// 关键事件（权限相关）以同步方式投递；
+// 非关键事件使用非阻塞发送，以避免慢消费者造成的背压。
 func (b *InProcessEventBus) Emit(event ReactEvent) {
 	b.mu.RLock()
 	if b.closed {
@@ -114,14 +114,14 @@ func (b *InProcessEventBus) Emit(event ReactEvent) {
 	}
 }
 
-// Subscribe subscribes to all events on the bus.
-// Returns a receive-only channel and a cancel function to unsubscribe.
+// Subscribe 订阅总线上的所有事件。
+// 返回一个只读通道和一个用于取消订阅的取消函数。
 func (b *InProcessEventBus) Subscribe() (<-chan ReactEvent, func()) {
 	return b.SubscribeFiltered(nil)
 }
 
-// SubscribeFiltered subscribes to events matching the provided filter function.
-// If filter is nil, all events are received. Returns a channel and cancel function.
+// SubscribeFiltered 订阅与提供的过滤函数匹配的事件。
+// 如果 filter 为 nil，则接收所有事件。返回一个通道和取消函数。
 func (b *InProcessEventBus) SubscribeFiltered(filter func(ReactEvent) bool) (<-chan ReactEvent, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -164,8 +164,8 @@ func (b *InProcessEventBus) SubscribeFiltered(filter func(ReactEvent) bool) (<-c
 	return sub.ch, unsubscribe
 }
 
-// Close shuts down the event bus, closing all subscriber channels.
-// Subsequent Emit and Subscribe calls will be no-ops.
+// Close 关闭事件总线，关闭所有订阅者通道。
+// 后续的 Emit 和 Subscribe 调用将变为无操作。
 func (b *InProcessEventBus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -184,7 +184,7 @@ func (b *InProcessEventBus) Close() {
 	}
 }
 
-// SubscriberCount returns the current number of active subscribers.
+// SubscriberCount 返回当前活跃订阅者的数量。
 func (b *InProcessEventBus) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

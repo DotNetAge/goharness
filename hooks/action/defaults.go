@@ -10,22 +10,20 @@ import (
 // 返回的 bool 表示该 session 是否启用了文件修改追踪。
 type TrackerProvider func(sessionID string) (TrackFunc, bool)
 
-// Defaults returns the default set of tool hooks for the action phase.
-// Hooks are returned in priority order (lower = earlier execution).
+// Defaults 返回 action 阶段的默认工具钩子集合。
+// 钩子按优先级顺序返回（数值越小越先执行）。
 //
-// ToolExecStart and ToolExecEnd events are emitted DIRECTLY by
-// Runtime.executeSingleTool(). No event-emission hook is included here.
+// ToolExecStart 和 ToolExecEnd 事件由 Runtime.executeSingleTool() 直接发射，
+// 此处不包含事件发射钩子。
 //
-// Registered hooks:
-//   - FileModifyHook (42): Tracks file modifications (Write/FileEdit) by backing up
-//     files before they are modified. Only active when tracker
-//     provider is non-nil.
-//   - ToolLoggerHook (46): Logs tool execution start/end when Logger is configured.
+// 注册的钩子：
+//   - FileModifyHook (42)：通过在文件被修改前备份来追踪文件修改（Write/FileEdit）。
+//     仅当 tracker provider 非 nil 时激活。
+//   - ToolLoggerHook (46)：当配置了 Logger 时记录工具执行的开始/结束。
 //
-// Permission enforcement is no longer a tool hook — it is now an in-tool
-// concern (see tools.PermissionRequired). The runtime calls Grant() before
-// each tool call; denied tools are stopped at the runtime level and the
-// permission flow is invisible to the LLM.
+// 权限强制不再是工具钩子——它现在是工具内部关注点
+// （见 tools.PermissionRequired）。运行时在每次工具调用前调用 Grant()；
+// 被拒绝的工具在运行时层被阻止，权限流程对 LLM 不可见。
 func Defaults(_ /* ruleStore */ interface{}, _ /* skillRegistry */ skill.SkillRegistry, logger logging.Logger, trackerProvider ...TrackerProvider) []hooks.ToolHook {
 	// FileModifyHook 始终被注册（provider 可为 nil），
 	// 以便后期通过 FileModifyHook.SetProvider() 动态注入 tracker。

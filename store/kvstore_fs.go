@@ -12,23 +12,23 @@ import (
 	"time"
 )
 
-// kvEntry represents a single key-value entry with optional expiration.
+// kvEntry 表示一个带可选过期时间的键值条目。
 type kvEntry struct {
 	Value     []byte    `json:"value"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-// FileSystemKVStore implements KVStore using the local filesystem.
-// Each session gets its own directory, and each key is stored as a JSON file.
-// Thread-safe with read-write locking for concurrent access.
+// FileSystemKVStore 使用本地文件系统实现 KVStore。
+// 每个会话拥有独立的目录，每个键以 JSON 文件形式存储。
+// 通过读写锁保证并发访问的线程安全。
 type FileSystemKVStore struct {
 	baseDir string
 	mu      sync.RWMutex
 }
 
-// NewFileSystemKVStore creates a new filesystem-based KV store.
-// If baseDir is empty, uses a default temp directory.
-// Creates the base directory if it doesn't exist.
+// NewFileSystemKVStore 创建一个新的基于文件系统的 KV 存储。
+// 如果 baseDir 为空，则使用默认的临时目录。
+// 若基础目录不存在则会创建。
 func NewFileSystemKVStore(baseDir string) (*FileSystemKVStore, error) {
 	if baseDir == "" {
 		baseDir = filepath.Join(os.TempDir(), "goharness", "kvstore")
@@ -39,19 +39,19 @@ func NewFileSystemKVStore(baseDir string) (*FileSystemKVStore, error) {
 	return &FileSystemKVStore{baseDir: baseDir}, nil
 }
 
-// sessionDir returns the filesystem path for a session's storage directory.
+// sessionDir 返回会话存储目录的文件系统路径。
 func (s *FileSystemKVStore) sessionDir(sessionID string) string {
 	return filepath.Join(s.baseDir, sanitizeSessionID(sessionID))
 }
 
-// keyPath returns the filesystem path for a specific key within a session.
+// keyPath 返回会话内特定键的文件系统路径。
 func (s *FileSystemKVStore) keyPath(sessionID, key string) string {
 	safeKey := sanitizeKey(key)
 	return filepath.Join(s.sessionDir(sessionID), safeKey+".json")
 }
 
-// Set stores a key-value pair in the given session.
-// Supports optional TTL: 0 = no expiry, >0 = expire after N seconds, <0 = immediately expire.
+// Set 在给定会话中存储一个键值对。
+// 支持可选 TTL：0 = 不过期，>0 = N 秒后过期，<0 = 立即过期。
 func (s *FileSystemKVStore) Set(_ context.Context, sessionID, key string, value []byte, ttlSeconds int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,8 +76,8 @@ func (s *FileSystemKVStore) Set(_ context.Context, sessionID, key string, value 
 	return os.WriteFile(s.keyPath(sessionID, key), data, 0644)
 }
 
-// Get retrieves the value for a key from the given session.
-// Returns nil if the key doesn't exist or has expired (expired entries are cleaned up).
+// Get 从给定会话中获取键对应的值。
+// 如果键不存在或已过期则返回 nil（过期条目会被清理）。
 func (s *FileSystemKVStore) Get(_ context.Context, sessionID, key string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -108,7 +108,7 @@ func (s *FileSystemKVStore) Get(_ context.Context, sessionID, key string) ([]byt
 	return entry.Value, nil
 }
 
-// Delete removes a key from the given session.
+// Delete 从给定会话中删除一个键。
 func (s *FileSystemKVStore) Delete(_ context.Context, sessionID, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,7 +117,7 @@ func (s *FileSystemKVStore) Delete(_ context.Context, sessionID, key string) err
 	return os.Remove(path)
 }
 
-// ListKeys returns all non-expired keys in the given session.
+// ListKeys 返回给定会话中所有未过期的键。
 func (s *FileSystemKVStore) ListKeys(_ context.Context, sessionID string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -144,7 +144,7 @@ func (s *FileSystemKVStore) ListKeys(_ context.Context, sessionID string) ([]str
 	return keys, nil
 }
 
-// ClearSession removes all keys associated with a session.
+// ClearSession 删除会话关联的所有键。
 func (s *FileSystemKVStore) ClearSession(_ context.Context, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,18 +153,18 @@ func (s *FileSystemKVStore) ClearSession(_ context.Context, sessionID string) er
 	return os.RemoveAll(dir)
 }
 
-// FileSystemFileStore implements FileStore using the local filesystem.
-// Each session gets its own directory for isolated file storage.
-// Path traversal attacks are prevented by validating file paths.
-// Thread-safe with read-write locking for concurrent access.
+// FileSystemFileStore 使用本地文件系统实现 FileStore。
+// 每个会话拥有独立的目录以实现隔离的文件存储。
+// 通过校验文件路径来防止路径遍历攻击。
+// 通过读写锁保证并发访问的线程安全。
 type FileSystemFileStore struct {
 	baseDir string
 	mu      sync.RWMutex
 }
 
-// NewFileSystemFileStore creates a new filesystem-based file store.
-// If baseDir is empty, uses a default temp directory.
-// Creates the base directory if it doesn't exist.
+// NewFileSystemFileStore 创建一个新的基于文件系统的文件存储。
+// 如果 baseDir 为空，则使用默认的临时目录。
+// 若基础目录不存在则会创建。
 func NewFileSystemFileStore(baseDir string) (*FileSystemFileStore, error) {
 	if baseDir == "" {
 		baseDir = filepath.Join(os.TempDir(), "goharness", "filestore")
@@ -175,13 +175,13 @@ func NewFileSystemFileStore(baseDir string) (*FileSystemFileStore, error) {
 	return &FileSystemFileStore{baseDir: baseDir}, nil
 }
 
-// sessionDir returns the filesystem path for a session's storage directory.
+// sessionDir 返回会话存储目录的文件系统路径。
 func (s *FileSystemFileStore) sessionDir(sessionID string) string {
 	return filepath.Join(s.baseDir, sanitizeSessionID(sessionID))
 }
 
-// filePath returns the full filesystem path for a file within a session.
-// Validates the path to prevent directory traversal attacks.
+// filePath 返回会话内文件的完整文件系统路径。
+// 校验路径以防止目录遍历攻击。
 func (s *FileSystemFileStore) filePath(sessionID, path string) (string, error) {
 	cleanPath := filepath.Clean(path)
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
@@ -190,8 +190,8 @@ func (s *FileSystemFileStore) filePath(sessionID, path string) (string, error) {
 	return filepath.Join(s.sessionDir(sessionID), cleanPath), nil
 }
 
-// WriteFile writes content to the specified path within a session.
-// Creates intermediate directories as needed.
+// WriteFile 将内容写入会话内指定路径。
+// 按需创建中间目录。
 func (s *FileSystemFileStore) WriteFile(_ context.Context, sessionID, path string, content io.Reader) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -221,8 +221,8 @@ func (s *FileSystemFileStore) WriteFile(_ context.Context, sessionID, path strin
 	return err
 }
 
-// ReadFile reads and returns the content of a file within a session.
-// Returns nil if the file doesn't exist.
+// ReadFile 读取并返回会话内文件的内容。
+// 如果文件不存在则返回 nil。
 func (s *FileSystemFileStore) ReadFile(_ context.Context, sessionID, path string) (io.ReadCloser, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -242,7 +242,7 @@ func (s *FileSystemFileStore) ReadFile(_ context.Context, sessionID, path string
 	return f, nil
 }
 
-// DeleteFile removes a file from the session storage.
+// DeleteFile 从会话存储中删除文件。
 func (s *FileSystemFileStore) DeleteFile(_ context.Context, sessionID, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -254,7 +254,7 @@ func (s *FileSystemFileStore) DeleteFile(_ context.Context, sessionID, path stri
 	return os.Remove(fullPath)
 }
 
-// ListFiles returns all files in the session that match the given prefix.
+// ListFiles 返回会话中匹配给定前缀的所有文件。
 func (s *FileSystemFileStore) ListFiles(_ context.Context, sessionID, prefix string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -278,7 +278,7 @@ func (s *FileSystemFileStore) ListFiles(_ context.Context, sessionID, prefix str
 	return files, nil
 }
 
-// ClearSession removes all files associated with a session.
+// ClearSession 删除会话关联的所有文件。
 func (s *FileSystemFileStore) ClearSession(_ context.Context, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -287,13 +287,13 @@ func (s *FileSystemFileStore) ClearSession(_ context.Context, sessionID string) 
 	return os.RemoveAll(dir)
 }
 
-// GetSessionPath returns the filesystem path for a session's storage directory.
+// GetSessionPath 返回会话存储目录的文件系统路径。
 func (s *FileSystemFileStore) GetSessionPath(sessionID string) string {
 	return s.sessionDir(sessionID)
 }
 
-// sanitizeSessionID sanitizes a session ID for use as a directory name.
-// Replaces any non-alphanumeric characters (except - and _) with underscores.
+// sanitizeSessionID 对会话 ID 进行清理以用作目录名。
+// 将任何非字母数字字符（除 - 和 _ 外）替换为下划线。
 func sanitizeSessionID(id string) string {
 	return strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
@@ -303,8 +303,8 @@ func sanitizeSessionID(id string) string {
 	}, id)
 }
 
-// sanitizeKey sanitizes a key for use as a filename.
-// Replaces any non-alphanumeric characters (except -, _, and .) with underscores.
+// sanitizeKey 对键进行清理以用作文件名。
+// 将任何非字母数字字符（除 -、_ 和 . 外）替换为下划线。
 func sanitizeKey(key string) string {
 	return strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {

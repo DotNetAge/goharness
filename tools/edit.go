@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/tools/filestate"
 )
@@ -91,7 +92,7 @@ func (t *EditTool) Info() *ToolInfo {
 	}
 }
 
-// Grant implements tools.PermissionRequired.
+// Grant 实现 tools.PermissionRequired 接口。
 func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	raw, _ := GetParam(params, "file_path")
 	filePath, _ := raw.(string)
@@ -159,41 +160,28 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 	return true, ""
 }
 
-// Execute 执行文件编辑操作。
-func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+// editParams 承载 Edit 工具解析后的参数。
+type editParams struct {
+	filePath   string
+	oldStr     string
+	newStr     string
+	replaceAll bool
+	limit      int
+}
+
+// validateEditParams 从参数映射提取并验证 Edit 工具参数。
+func validateEditParams(params map[string]any) (editParams, error) {
 	filePath, err := ValidateRequiredString("Edit", params, "file_path")
 	if err != nil {
-		return nil, err
+		return editParams{}, err
 	}
-
-	logger := getLogger(ctx)
-
-	tc := GetToolContext(ctx)
-	resolvedPath, scope := ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
-
-	logger.Info("editing file",
-		"input_path", filePath,
-		"resolved_path", resolvedPath,
-		"scope", scope,
-	)
-
-	// Security check：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return nil, err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
-		return nil, err
-	}
-
 	oldStr, err := ValidateRequiredString("Edit", params, "old_string")
 	if err != nil {
-		return nil, err
+		return editParams{}, err
 	}
-
 	newStr, err := ValidateRequiredString("Edit", params, "new_string")
 	if err != nil {
-		return nil, err
+		return editParams{}, err
 	}
 
 	rawReplaceAll, _ := GetParam(params, "replace_all")
@@ -205,6 +193,36 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 			limit = int(l)
 		}
 	}
+	return editParams{
+		filePath:   filePath,
+		oldStr:     oldStr,
+		newStr:     newStr,
+		replaceAll: replaceAll,
+		limit:      limit,
+	}, nil
+}
+
+// authorizeEdit 解析文件路径并执行沙箱/敏感文件安全检查。
+func authorizeEdit(ctx context.Context, filePath string) (resolvedPath string, scope PathScope, err error) {
+	tc := GetToolContext(ctx)
+	resolvedPath, scope = ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
+
+	// 安全检查：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return "", "", err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+		return "", "", err
+	}
+	return resolvedPath, scope, nil
+}
+
+// performEdit 执行文件编辑核心逻辑：存在性检查、ENOENT 处理、创建模式、
+// staleness 检测、容错匹配、替换、写入。
+func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p editParams) (*EditResult, error) {
+	oldStr, newStr := p.oldStr, p.newStr
+	replaceAll, limit := p.replaceAll, p.limit
 
 	// E. 创建 + ENOENT 合并处理
 	info, statErr := os.Stat(resolvedPath)
@@ -302,7 +320,7 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 	switch {
 	case limit == -1:
 		updatedContent = strings.ReplaceAll(fileContent, actualOld, newStr)
-		replaceCount = strings.Count(updatedContent, newStr) // approximate
+		replaceCount = strings.Count(updatedContent, newStr) // 近似值
 		replaceMode = "all"
 	case limit > 0:
 		updatedContent = strings.Replace(fileContent, actualOld, newStr, limit)
@@ -353,6 +371,31 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 		TotalMatches: totalMatches,
 		ReplaceMode:  replaceMode,
 	}, nil
+}
+
+// Execute 编排 Edit 工具执行流程：validate → authorize → perform。
+func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+	// 1. 参数验证
+	p, err := validateEditParams(params)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 路径解析 + 安全授权
+	resolvedPath, scope, err := authorizeEdit(ctx, p.filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	logger := getLogger(ctx)
+	logger.Info("editing file",
+		"input_path", p.filePath,
+		"resolved_path", resolvedPath,
+		"scope", scope,
+	)
+
+	// 3. 执行编辑核心逻辑
+	return performEdit(logger, resolvedPath, scope, p)
 }
 
 // findEditMatch 在文件内容中查找 old_string 的匹配。
@@ -414,7 +457,7 @@ func normalizeQuotes(s string) string {
 	return b.String()
 }
 
-// UnixMilli returns the file modification time in milliseconds.
+// fileMtimeMs 返回文件修改时间的毫秒表示。
 func fileMtimeMs(info os.FileInfo) int64 {
 	return info.ModTime().UnixMilli()
 }

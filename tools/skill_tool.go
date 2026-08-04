@@ -9,8 +9,8 @@ import (
 	"github.com/DotNetAge/goharness/skill"
 )
 
-// SkillLookupFunc looks up a skill by name and returns it if found.
-// The reactor provides this to avoid circular imports.
+// SkillLookupFunc 按名称查找技能，找到则返回。
+// reactor 提供此函数以避免循环导入。
 type SkillLookupFunc func(name string) (*skill.Skill, error)
 
 // skillDedupCache 记录已加载的技能名称，防止重复加载浪费 token。
@@ -23,20 +23,19 @@ func checkSkillLoaded(name string) bool {
 	return loaded
 }
 
-// SkillTool lets the LLM load a skill's full instructions on demand.
+// SkillTool 允许 LLM 按需加载技能的完整指令。
 //
-// The tool is called by the LLM when it determines that a listed skill
-// (from the SkillsCatalog in System Prompt) is needed for the current task.
-// The tool returns the full skill instructions via tool result, which the
-// LLM sees in the next round's Observation.
+// 当 LLM 判断当前任务需要某个已列出技能（来自 System Prompt 中的
+// SkillsCatalog）时调用此工具。工具通过执行结果返回完整技能指令，
+// LLM 在下一轮的 Observation 中可见。
 //
 // 改进：增加去重缓存，同一技能多次加载时返回简短提示避免 token 浪费。
 type SkillTool struct {
 	lookup SkillLookupFunc
 }
 
-// NewSkillTool creates a SkillTool.
-// lookup is provided by the reactor.
+// NewSkillTool 创建一个 SkillTool。
+// lookup 由 reactor 提供。
 func NewSkillTool(lookup SkillLookupFunc) *SkillTool {
 	return &SkillTool{lookup: lookup}
 }
@@ -91,7 +90,7 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 		"loaded":     true,
 	}
 
-	// Include allowed_tools for post-skill tool activation.
+	// 包含 allowed_tools，用于技能加载后的工具激活。
 	if skill.AllowedTools != "" {
 		result["allowed_tools"] = strings.Fields(skill.AllowedTools)
 	}

@@ -160,7 +160,7 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		},
 	})
 
-	// Run sub-agent in background
+	// 在后台运行子代理
 	subagentSem <- struct{}{}
 	go func() {
 		startedAt := time.Now()

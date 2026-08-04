@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -150,5 +151,46 @@ func TestParseCompactionResponse_TimestampInvalid(t *testing.T) {
 	}
 	if !chunks[0].Timestamp.IsZero() {
 		t.Errorf("timestamp 解析失败时应保持零值，得到 %v", chunks[0].Timestamp)
+	}
+}
+
+// ─── sanitizeCompactionJSON 测试 ─────────────────────────
+
+func TestSanitizeCompactionJSON_IllegalEscape(t *testing.T) {
+	// \x 是非法 JSON 转义，sanitize 应丢弃反斜杠保留字符
+	input := `[{"content":"\x"}]`
+	sanitized := sanitizeCompactionJSON(input)
+	want := `[{"content":"x"}]`
+	if sanitized != want {
+		t.Errorf("非法转义清洗错误: got %q, want %q", sanitized, want)
+	}
+}
+
+func TestSanitizeCompactionJSON_PreservesLegalEscape(t *testing.T) {
+	// 合法的 \\ 转义不应被误伤（旧正则方案因回溯会破坏为非法的 \）
+	// 输入同时含非法 \x 和合法 \\y，确保只修复非法部分
+	input := `[{"content":"\x 和 \\y"}]`
+	sanitized := sanitizeCompactionJSON(input)
+	// \x → x（非法转义修复），\\y 保留（合法转义不动）
+	want := `[{"content":"x 和 \\y"}]`
+	if sanitized != want {
+		t.Errorf("合法转义被误伤: got %q, want %q", sanitized, want)
+	}
+	// 清洗后应能被 json.Unmarshal 解析
+	var chunks []rawCompactionChunk
+	if err := json.Unmarshal([]byte(sanitized), &chunks); err != nil {
+		t.Errorf("清洗后仍无法解析: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Content != `x 和 \y` {
+		t.Errorf("解析结果错误: got %+v", chunks)
+	}
+}
+
+func TestSanitizeCompactionJSON_AllLegalUnchanged(t *testing.T) {
+	// 全部合法转义的 JSON 应保持不变
+	input := `[{"content":"路径 C:\\x 和 D:\\y\n换行"}]`
+	sanitized := sanitizeCompactionJSON(input)
+	if sanitized != input {
+		t.Errorf("合法 JSON 不应被修改: got %q, want %q", sanitized, input)
 	}
 }

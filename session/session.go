@@ -11,14 +11,14 @@
 // 架构：
 //
 //	┌─────────────┐     ┌────────────────┐     ┌──────────────┐
-//	│  Session    │────>│  SessionStore  │────>│  Persistence │
-//	│  (in-memory)│     │  (interface)   │     │  (disk/db)   │
+//	│  Session    │────>│  SessionStore  │────>│  持久化      │
+//	│  (内存)     │     │  (接口)        │     │  (磁盘/DB)   │
 //	└─────────────┘     └────────────────┘     └──────────────┘
 //	      │                    │
 //	      ▼                    ▼
 //	┌─────────────┐     ┌────────────────┐
 //	│  MemoryStore│     │   Compactor    │
-//	│  (compacted)│     │  (LLM calls)   │
+//	│  (已压缩)   │     │  (LLM 调用)    │
 //	└─────────────┘     └────────────────┘
 //
 // 用法：
@@ -154,8 +154,8 @@ func Load(ctx context.Context, sessionID, agentName string, store SessionStore, 
 //	│              messages[]                  │
 //	├──────────────────┬──────────────────────┤
 //	│  [0..cursor]     │  [cursor..len]       │
-//	│  Historical      │  Active Window       │
-//	│  (compacted)     │  (sent to LLM)       │
+//	│  历史消息          │  活跃窗口              │
+//	│  (已压缩)        │  (发送到 LLM)          │
 //	└──────────────────┴──────────────────────┘
 //
 // 线程安全：所有公共方法都可以安全地并发使用。

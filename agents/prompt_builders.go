@@ -8,7 +8,7 @@ import (
 	"github.com/DotNetAge/goharness/skill"
 )
 
-// ── Identity ────────────────────────────────────────────────────────────────
+// ── 身份信息 ────────────────────────────────────────────────────────────────
 
 func buildIdentity(name, role, description, introduction string) string {
 	if role == "" {
@@ -19,7 +19,7 @@ func buildIdentity(name, role, description, introduction string) string {
 		role, name, description, introduction)
 }
 
-// ── Skills Catalog ──────────────────────────────────────────────────────────
+// ── 技能目录 ──────────────────────────────────────────────────────────────────
 
 func buildSkillsCatalog(skills []*skill.Skill) string {
 	if len(skills) == 0 {
@@ -91,7 +91,7 @@ func buildSkillsCatalog(skills []*skill.Skill) string {
 	return header + entryBuilder.String() + footer
 }
 
-// ── Environment Info ────────────────────────────────────────────────────────
+// ── 环境信息 ────────────────────────────────────────────────────────────────
 
 const directorySemanticsPrompt = "## 文件操作指南\n\n" +
 	"### 项目目录 (%s)\n" +

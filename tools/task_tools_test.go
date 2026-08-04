@@ -187,7 +187,7 @@ func TestTaskUpdateTool_Execute(t *testing.T) {
 
 	tool := NewTaskUpdateTool()
 
-	// Test updating description and status
+	// 测试更新描述和状态
 	params := map[string]any{
 		"task_id":     "task-update",
 		"description": "Updated description",

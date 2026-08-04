@@ -16,12 +16,16 @@ type mockStore struct {
 	mu          sync.RWMutex
 	msgs        map[string][]Message
 	appends     []appendRecord
-	cursors     map[string]int // cursor persistence (internal to Session)
+	cursors     map[string]int // 游标持久化（Session 内部使用）
 	modifyFiles map[string][]string
 
-	// getMetaResult allows tests to configure what GetMeta returns.
-	// If nil, GetMeta returns a default SessionInfo with empty ProjectDir.
+	// getMetaResult 允许测试配置 GetMeta 的返回值。
+	// 若为 nil，则 GetMeta 返回带空 ProjectDir 的默认 SessionInfo。
 	getMetaResult *SessionInfo
+
+	// sessionDir 若非空，则 ResolveSessionDir 返回该路径。
+	// 用于 TryMicroCompact 等需要写入缓存文件的测试场景。
+	sessionDir string
 }
 
 type appendRecord struct {
@@ -98,7 +102,12 @@ func (m *mockStore) GetMeta(_ context.Context, _ string) (*SessionInfo, error) {
 	}
 	return &SessionInfo{SessionID: "test-sess"}, nil
 }
-func (m *mockStore) ResolveSessionDir(_ string) (string, error) { return "", nil }
+func (m *mockStore) ResolveSessionDir(_ string) (string, error) {
+	if m.sessionDir != "" {
+		return m.sessionDir, nil
+	}
+	return "", nil
+}
 func (m *mockStore) GetCursor(_ context.Context, sessionID string) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -153,8 +162,8 @@ func (m *mockStore) UpdateMessages(_ context.Context, sessionID string, cursor i
 
 // ── 懒加载核心测试 ───────────────────────────────────────────────────────
 
-// TestLazyLoad_CurrentTriggersAutoLoad verifies that Current() automatically
-// loads messages from store on first access.
+// TestLazyLoad_CurrentTriggersAutoLoad 验证 Current() 在首次访问时
+// 自动从存储中加载消息。
 func TestLazyLoad_CurrentTriggersAutoLoad(t *testing.T) {
 	store := newMockStore()
 	sessionID := "lazy-test-1"
@@ -295,8 +304,8 @@ func TestLazyLoad_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-// TestLazyLoad_NewSessionWithNoHistory tests edge case:
-// Brand new session with no prior messages in store.
+// TestLazyLoad_NewSessionWithNoHistory 测试边界场景：
+// 存储中没有任何历史消息的全新会话。
 func TestLazyLoad_NewSessionWithNoHistory(t *testing.T) {
 	store := newMockStore()
 	sessionID := "brand-new-session"

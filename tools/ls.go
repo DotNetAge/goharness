@@ -73,7 +73,7 @@ func (l *LS) Info() *ToolInfo {
 // 超过此数量的目录会被截断，防止上下文爆炸。
 const maxLsItems = 500
 
-// Grant implements tools.PermissionRequired。
+// Grant 实现 tools.PermissionRequired 接口。
 //
 // 与 Read / Edit / Bash 保持一致的授权语义：目标目录超出项目边界
 // （ValidateFileSafety 失败）时，先放行工具白名单（AddWhiteList）与会话级
@@ -145,25 +145,16 @@ func (l *LS) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	return true, ""
 }
 
-// Execute 执行目录列表操作。
-//
-// 处理流程：
-//  1. 获取 ToolContext（用于路径验证）
-//  2. 确定目标目录（默认为当前目录）
-//  3. 安全性检查（路径不能超出项目目录）
-//  4. 验证路径存在且是目录
-//  5. 读取目录内容
-//  6. 根据参数过滤和格式化结果
-//
-// 参数：
-//   - ctx: 上下文（包含 ToolContext）
-//   - params: 可选 "path", "recursive", "show_hidden"
-//
-// 返回：
-//   - map[string]any: 包含 success, path, total_items, items 等字段
-//   - error: 路径不存在或不是目录时返回错误
-func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
-	// Get directory path (defaults to current directory)
+// lsParams 承载 LS 工具解析后的参数。
+type lsParams struct {
+	path        string
+	recursive   bool
+	showHidden  bool
+}
+
+// validateLSParams 从参数映射提取 LS 工具参数。
+// path 默认为 "."，recursive 和 show_hidden 默认为 false。
+func validateLSParams(params map[string]any) lsParams {
 	dirPath := "."
 	if rawPath, found := GetParam(params, "path"); found {
 		if path, ok := rawPath.(string); ok && path != "" {
@@ -171,44 +162,6 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 		}
 	}
 
-	// 统一路径解析：绝对路径化 + ~ 展开 + 相对项目目录解析。
-	// 修复前 "~/workspaces" 直接传给 os.Stat 会被当作字面量目录，导致"目录不存在"。
-	tc := GetToolContext(ctx)
-	var projectDir, sessionDir string
-	if tc != nil && tc.Session != nil {
-		projectDir = tc.Session.ProjectDir()
-		sessionDir = tc.Session.SessionDir()
-	}
-	resolvedPath, _ := ResolveTargetPath(dirPath, projectDir, sessionDir)
-
-	// 安全校验：敏感文件硬性拦截。
-	// 沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
-	if tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			if err := sb.EnforceFile(resolvedPath, projectDir); err != nil {
-				return nil, err
-			}
-		} else if err := checkSensitiveFiles(resolvedPath); err != nil {
-			return nil, err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
-		return nil, err
-	}
-
-	// Check if path exists
-	info, err := os.Stat(resolvedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s", GuideLsDirNotFound(resolvedPath))
-		}
-		return nil, fmt.Errorf("%s", GuideLsStatFailed(resolvedPath, err))
-	}
-
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%s", GuideLsNotDirectory(resolvedPath))
-	}
-
-	// Get parameters
 	recursive := false
 	if rawRec, found := GetParam(params, "recursive"); found {
 		if rec, ok := rawRec.(bool); ok {
@@ -223,60 +176,92 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 		}
 	}
 
-	// Read directory contents
+	return lsParams{path: dirPath, recursive: recursive, showHidden: showHidden}
+}
+
+// authorizeLS 解析目录路径并执行沙箱/敏感文件安全检查。
+func authorizeLS(ctx context.Context, dirPath string) (resolvedPath string, err error) {
+	tc := GetToolContext(ctx)
+	var projectDir, sessionDir string
+	if tc != nil && tc.Session != nil {
+		projectDir = tc.Session.ProjectDir()
+		sessionDir = tc.Session.SessionDir()
+	}
+	resolvedPath, _ = ResolveTargetPath(dirPath, projectDir, sessionDir)
+
+	// 安全校验：敏感文件硬性拦截。
+	// 沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
+	if tc != nil && tc.Session != nil {
+		if sb := tc.Session.Sandbox(); sb != nil {
+			if err := sb.EnforceFile(resolvedPath, projectDir); err != nil {
+				return "", err
+			}
+		} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+			return "", err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+		return "", err
+	}
+	return resolvedPath, nil
+}
+
+// entryType 返回目录条目的类型字符串。
+func entryType(isDir bool) string {
+	if isDir {
+		return "directory"
+	}
+	return "file"
+}
+
+// performLS 执行目录列表核心逻辑：存在性检查、读取目录、构建条目、递归子目录。
+func performLS(resolvedPath string, p lsParams) (map[string]any, error) {
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s", GuideLsDirNotFound(resolvedPath))
+		}
+		return nil, fmt.Errorf("%s", GuideLsStatFailed(resolvedPath, err))
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s", GuideLsNotDirectory(resolvedPath))
+	}
+
 	entries, err := os.ReadDir(resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("%s", GuideLsReadFailed(resolvedPath, err))
 	}
 
-	// Build result
 	var items []map[string]any
-
 	for _, entry := range entries {
 		if len(items) >= maxLsItems {
 			break
 		}
-
-		// Skip hidden files unless show_hidden is set
-		if !showHidden && strings.HasPrefix(entry.Name(), ".") {
+		if !p.showHidden && strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 
 		finfo, _ := entry.Info()
 		item := map[string]any{
-			"name": entry.Name(),
-			"type": func() string {
-				if entry.IsDir() {
-					return "directory"
-				} else {
-					return "file"
-				}
-			}(),
+			"name":    entry.Name(),
+			"type":    entryType(entry.IsDir()),
 			"size":    finfo.Size(),
 			"modTime": finfo.ModTime().Format("2006-01-02 15:04:05"),
 			"mode":    finfo.Mode().String(),
 		}
 
-		// If recursive mode and entry is a directory, list its children
-		if recursive && entry.IsDir() {
+		if p.recursive && entry.IsDir() {
 			subDir := filepath.Join(resolvedPath, entry.Name())
 			subEntries, err := os.ReadDir(subDir)
 			if err == nil {
 				children := make([]map[string]any, 0)
 				for _, subEntry := range subEntries {
-					if !showHidden && strings.HasPrefix(subEntry.Name(), ".") {
+					if !p.showHidden && strings.HasPrefix(subEntry.Name(), ".") {
 						continue
 					}
 					subFinfo, _ := subEntry.Info()
 					child := map[string]any{
-						"name": subEntry.Name(),
-						"type": func() string {
-							if subEntry.IsDir() {
-								return "directory"
-							} else {
-								return "file"
-							}
-						}(),
+						"name":    subEntry.Name(),
+						"type":    entryType(subEntry.IsDir()),
 						"size":    subFinfo.Size(),
 						"modTime": subFinfo.ModTime().Format("2006-01-02 15:04:05"),
 					}
@@ -296,4 +281,16 @@ func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 		"items":       items,
 		"message":     fmt.Sprintf("在 '%s' 中列出了 %d 个项目", resolvedPath, len(items)),
 	}, nil
+}
+
+// Execute 编排 LS 工具执行流程：validate → authorize → perform。
+func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
+	p := validateLSParams(params)
+
+	resolvedPath, err := authorizeLS(ctx, p.path)
+	if err != nil {
+		return nil, err
+	}
+
+	return performLS(resolvedPath, p)
 }

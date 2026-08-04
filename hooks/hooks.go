@@ -1,6 +1,5 @@
-// Package hooks provides the hook system for the gochat framework.
-// It defines interfaces and types for intercepting and modifying
-// the behavior of LLM loops and tool executions.
+// Package hooks 提供 gochat 框架的钩子系统。
+// 它定义了用于拦截和修改 LLM 循环及工具执行行为的接口与类型。
 package hooks
 
 import (
@@ -11,44 +10,40 @@ import (
 	"github.com/DotNetAge/goharness/tools"
 )
 
-// Hook priority constants define the execution order of hooks.
-// Lower values indicate higher priority (executed first).
+// 钩子优先级常量定义钩子的执行顺序。
+// 数值越小优先级越高（越先执行）。
 const (
-	// PriorityPermission is the priority for permission-checking hooks.
+	// PriorityPermission 是权限检查类钩子的优先级。
 	PriorityPermission = 41
-	// PriorityLoopLogger is the priority for loop logging hooks.
+	// PriorityLoopLogger 是循环日志类钩子的优先级。
 	PriorityLoopLogger = 45
-	// PriorityToolLogger is the priority for tool logging hooks.
+	// PriorityToolLogger 是工具日志类钩子的优先级。
 	PriorityToolLogger = 46
-	// PriorityConvergence is the priority for convergence-checking hooks.
+	// PriorityConvergence 是收敛检查类钩子的优先级。
 	PriorityConvergence = 49
 )
 
-// HookResult represents the result of a hook execution.
-// It indicates whether the current operation should be aborted
-// and provides optional error information.
+// HookResult 表示钩子执行的结果。
+// 它指示当前操作是否应中止，并提供可选的错误信息。
 type HookResult struct {
-	// Abort indicates whether the operation should be stopped.
+	// Abort 指示是否应停止该操作。
 	Abort bool
-	// AbortReason contains the reason for aborting the operation.
+	// AbortReason 包含中止操作的原因。
 	AbortReason string
-	// Error contains any error that occurred during hook execution.
+	// Error 包含钩子执行期间发生的任何错误。
 	Error error
-	// SkipWithResult, when set, causes the tool execution to be skipped
-	// and the provided result to be used directly. Used by dedup hooks
-	// to return cached results without re-executing the tool.
+	// SkipWithResult 设置后，将跳过工具执行并直接使用提供的结果。
+	// 由去重钩子使用，用于在不重新执行工具的情况下返回缓存结果。
 	SkipWithResult *ToolResult
 }
 
-// IsTerminal returns true if the hook result indicates that
-// processing should stop (either due to abort or an error).
+// IsTerminal 当钩子结果表明应停止处理时（由于中止或错误）返回 true。
 func (r HookResult) IsTerminal() bool {
 	return r.Abort || r.Error != nil
 }
 
-// LoopHook defines the interface for hooks that intercept the Think-Act loop.
-// Implementations can inspect and modify behavior before and after LLM calls,
-// as well as handle abort scenarios.
+// LoopHook 定义拦截 Think-Act 循环的钩子接口。
+// 实现可在 LLM 调用前后检查和修改行为，并处理中止场景。
 type LoopHook interface {
 	Priority() int
 	BeforeLLM(sessionID string, iteration int, input *CallInput) HookResult
@@ -56,8 +51,8 @@ type LoopHook interface {
 	Abort(sessionID string, reason string)
 }
 
-// ToolHook defines the interface for hooks that intercept tool executions.
-// Implementations can check permissions before tool execution and log results after.
+// ToolHook 定义拦截工具执行的钩子接口。
+// 实现可在工具执行前检查权限，并在执行后记录结果。
 type ToolHook interface {
 	Priority() int
 	Before(sessionID string, toolName string, params map[string]any) HookResult
@@ -67,7 +62,7 @@ type ToolHook interface {
 
 type ConversationHistory = []session.Message
 
-// LLMResponse represents the response from an LLM call in the Think phase.
+// LLMResponse 表示 Think 阶段 LLM 调用的响应。
 type LLMResponse struct {
 	Content      string
 	Reasoning    string
@@ -77,14 +72,14 @@ type LLMResponse struct {
 	AbortReason  string
 }
 
-// ToolCallInvocation represents a single tool call requested by the LLM.
+// ToolCallInvocation 表示 LLM 请求的单次工具调用。
 type ToolCallInvocation struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
 }
 
-// ToolResult represents the result of a tool execution.
+// ToolResult 表示工具执行的结果。
 type ToolResult struct {
 	ToolName   string        `json:"tool_name"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
@@ -102,7 +97,7 @@ type ToolResult struct {
 	ImageBlocks []session.ImageBlock `json:"image_blocks,omitempty"`
 }
 
-// CallInput contains the input data for an LLM call.
+// CallInput 包含 LLM 调用的输入数据。
 type CallInput struct {
 	SessionID            string
 	AgentName            string
@@ -113,7 +108,7 @@ type CallInput struct {
 	Tools                []gochatcore.Tool
 }
 
-// ToolResultSummary returns a human-readable summary of a tool result.
+// ToolResultSummary 返回工具结果的可读摘要。
 func ToolResultSummary(tr ToolResult) string {
 	prefix := "[" + tr.ToolName + "]"
 	if tr.Error != "" {
@@ -126,8 +121,8 @@ func ToolResultSummary(tr ToolResult) string {
 	return prefix + " 返回: (空结果)"
 }
 
-// Truncate truncates a string to the specified maximum length in runes,
-// appending "..." if truncated.
+// Truncate 将字符串按 rune 截断到指定最大长度，
+// 若发生截断则追加 "..."。
 func Truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {

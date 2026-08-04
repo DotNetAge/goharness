@@ -42,7 +42,7 @@ func estimateWindowTokensV2(msgs []Message) int64 {
 	var total int64
 	for _, m := range msgs {
 		if m.Compacted != "" {
-			total += 20 // placeholder "…" ≈ 20 tokens
+			total += 20 // 占位符 "…" ≈ 20 tokens
 		} else if m.Role == "assistant" && m.Usage != nil && (m.Usage.CompletionTokens > 0 || m.Usage.ReasoningTokens > 0) {
 			total += int64(m.Usage.CompletionTokens + m.Usage.ReasoningTokens)
 		} else {
@@ -75,7 +75,7 @@ func BuildToolNameByID(msgs []Message) map[string]string {
 func RenderCompactedPlaceholder(msg Message, toolNameByID map[string]string) string {
 	var meta CompactedMeta
 	if err := json.Unmarshal([]byte(msg.Compacted), &meta); err != nil {
-		// Corrupted compacted data → show raw value as fallback
+		// 压缩数据损坏 → 显示原始值作为后备
 		return msg.Compacted
 	}
 
@@ -102,8 +102,8 @@ func stripDuplicateToolMessages(msgs []Message) ([]Message, map[string]bool) {
 		prev := out[len(out)-1]
 		curr := msgs[i]
 		if curr.Role == "tool" && prev.Role == "tool" && curr.Content == prev.Content {
-			// Mark the skipped message's ToolCallID as orphaned so the
-			// corresponding assistant ToolCall entry can be cleaned up.
+			// 将被跳过消息的 ToolCallID 标记为孤立，以便后续清理
+			// 对应的 assistant ToolCall 条目。
 			if curr.ToolCallID != "" {
 				orphaned[curr.ToolCallID] = true
 			}
@@ -114,14 +114,14 @@ func stripDuplicateToolMessages(msgs []Message) ([]Message, map[string]bool) {
 	return out, orphaned
 }
 
-// ── Session method: TryMicroCompact ──────────────────────────────────────
+// ── Session 方法：TryMicroCompact ────────────────────────────────────────
 
 const (
-	microCompactTriggerRatio  = 0.45 // start compressing when window >= 45% maxWindowSize
-	microCompactTargetRatio   = 0.40 // stop compressing when window <= 40% maxWindowSize
-	microCompactPositionStart = 0.25 // only compress messages in [25%, 65%] position range
+	microCompactTriggerRatio  = 0.45 // 当窗口 >= 45% maxWindowSize 时开始压缩
+	microCompactTargetRatio   = 0.40 // 当窗口 <= 40% maxWindowSize 时停止压缩
+	microCompactPositionStart = 0.25 // 仅压缩 [25%, 65%] 位置范围内的消息
 	microCompactPositionEnd   = 0.65
-	microCompactMinTokens     = 500 // skip short messages (not worth compressing)
+	microCompactMinTokens     = 500 // 跳过短消息（不值得压缩）
 )
 
 // TryMicroCompact 检查会话的活跃窗口是否超过 MicroCompact 触发阈值（maxWindowSize 的 45%）。
@@ -142,19 +142,19 @@ func (s *Session) TryMicroCompact() bool {
 		return false
 	}
 
-	// Step 1: Check trigger threshold
+	// Step 1：检查触发阈值
 	windowTokens := estimateWindowTokensV2(window)
 	triggerTokens := int64(float64(s.ModelContextLength()) * microCompactTriggerRatio)
 	if windowTokens < triggerTokens {
 		return false
 	}
 
-	// Fire micro-compact start handler
+	// 触发 micro-compact 开始回调
 	if s.microCompactStartHandler != nil {
 		s.microCompactStartHandler(windowTokens, s.ModelContextLength())
 	}
 
-	// Step 2: Strip duplicate tool messages first (cheap, reduces noise)
+	// Step 2：先去除重复的工具消息（成本低，可减少噪声）
 	deduped, orphanedIDs := stripDuplicateToolMessages(window)
 	dedupCount := len(window) - len(deduped)
 	hadDedup := dedupCount > 0
@@ -165,26 +165,26 @@ func (s *Session) TryMicroCompact() bool {
 		newMessages = append(newMessages, deduped...)
 		s.messages = newMessages
 		// cursor 不变 —— 仍指向历史分区边界
-		// Clean up orphaned ToolCalls from removed duplicate tool messages
+		// 清理被移除的重复工具消息对应的孤立 ToolCalls
 		if len(orphanedIDs) > 0 {
 			s.removeOrphanedToolCalls(s.cursor, orphanedIDs)
 		}
 	}
-	// Refresh window from s.messages so candidate pointers reference the
-	// canonical slice (important after dedup replaced the message list).
+	// 从 s.messages 刷新 window，使候选项指针引用
+	// 规范切片（在去重替换消息列表后尤为重要）。
 	window = s.messages[s.cursor:]
 
-	// Step 3: Recalculate after dedup
+	// Step 3：去重后重新计算
 	windowTokens = estimateWindowTokensV2(window)
 	if windowTokens < triggerTokens {
 		return hadDedup
 	}
 
-	// Step 4: Build tool name lookup
+	// Step 4：构建工具名称查找表
 	toolNameByID := BuildToolNameByID(window)
 
-	// Step 5: Find eligible candidates — role="tool", 25%-65% position,
-	// content > 500 tokens, compacted empty
+	// Step 5：查找符合条件的候选项 —— role="tool"，位于 25%-65% 位置，
+	// content > 500 tokens，compacted 为空
 	type candidate struct {
 		idx       int
 		msg       *Message
@@ -211,12 +211,12 @@ func (s *Session) TryMicroCompact() bool {
 		return hadDedup
 	}
 
-	// Sort by timestamp ascending (oldest first)
+	// 按时间戳升序排序（最旧的在前）
 	sort.Slice(candidates, func(a, b int) bool {
 		return candidates[a].timestamp < candidates[b].timestamp
 	})
 
-	// Step 6: Compress candidates one by one until below target threshold
+	// Step 6：逐个压缩候选项，直到低于目标阈值
 	sessionDir := s.SessionDir()
 	var compressed int
 	for _, c := range candidates {
@@ -226,7 +226,7 @@ func (s *Session) TryMicroCompact() bool {
 
 		sha32, tokenCount := processContent(c.msg.Content)
 
-		// Write cache file
+		// 写入缓存文件
 		if sessionDir != "" {
 			cacheDir := filepath.Join(sessionDir, "microcompact")
 			if err := os.MkdirAll(cacheDir, 0755); err == nil {
@@ -239,8 +239,8 @@ func (s *Session) TryMicroCompact() bool {
 					}
 					data, _ := json.Marshal(meta)
 					c.msg.Compacted = string(data)
-					// Compressed message now contributes ~20 tokens (placeholder)
-					// instead of tokenCount. Subtract the difference.
+					// 压缩后的消息现在仅占约 20 tokens（占位符），
+					// 而非 tokenCount。减去二者差值。
 					windowTokens -= (tokenCount - 20)
 					compressed++
 				}
@@ -248,11 +248,11 @@ func (s *Session) TryMicroCompact() bool {
 		}
 	}
 
-	// Step 7: Persist compacted changes + cursor to store
+	// Step 7：将压缩后的变更和 cursor 持久化到 store
 	if compressed > 0 || hadDedup {
 		if s.store != nil {
 			if err := s.store.UpdateMessages(context.Background(), s.id, s.cursor, s.messages); err != nil {
-				// Log but don't fail — compacted state is still correct in memory
+				// 仅记录日志但不视为失败 —— 内存中的压缩状态仍然正确
 			}
 		}
 		if s.microCompactDoneHandler != nil {

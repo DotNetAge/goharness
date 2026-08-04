@@ -435,7 +435,7 @@ func TestHasModifyFiles(t *testing.T) {
 func TestCleanFilePath(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"/abs/path", "/abs/path"},
-		{"./rel/path", ""}, // depends on cwd, just check no panic
+		{"./rel/path", ""}, // 依赖当前工作目录，仅检查不 panic
 	}
 	for _, tt := range tests {
 		result := cleanFilePath(tt.in)

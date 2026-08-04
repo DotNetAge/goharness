@@ -8,14 +8,14 @@ import (
 	"github.com/DotNetAge/goharness/logging"
 )
 
-// DefaultToolRegistry is the default implementation of ToolRegistry.
-// It provides thread-safe tool registration, lookup, and filtering capabilities.
+// DefaultToolRegistry 是 ToolRegistry 的默认实现。
+// 它提供线程安全的工具注册、查找和过滤能力。
 //
-// The registry maintains a map of tools keyed by their name and supports:
-//   - Registration and removal of tools
-//   - Lookup by name
-//   - Filtering based on keywords, security level, allowed names, or search terms
-//   - Thread-safe concurrent access via sync.RWMutex
+// 该注册表维护一个以工具名称为键的工具 map，并支持：
+//   - 工具的注册和移除
+//   - 按名称查找
+//   - 基于关键词、安全级别、允许名称或搜索词的过滤
+//   - 通过 sync.RWMutex 实现线程安全的并发访问
 type DefaultToolRegistry struct {
 	mu     sync.RWMutex
 	tools  map[string]FuncTool
@@ -24,8 +24,8 @@ type DefaultToolRegistry struct {
 
 var _ ToolRegistry = (*DefaultToolRegistry)(nil)
 
-// NewDefaultToolRegistry creates a new empty DefaultToolRegistry with default logger.
-// The returned registry is ready for tool registration and concurrent use.
+// NewDefaultToolRegistry 创建一个带默认 logger 的空 DefaultToolRegistry。
+// 返回的注册表可直接用于工具注册和并发使用。
 func NewDefaultToolRegistry() *DefaultToolRegistry {
 	return &DefaultToolRegistry{
 		tools:  make(map[string]FuncTool),
@@ -33,9 +33,9 @@ func NewDefaultToolRegistry() *DefaultToolRegistry {
 	}
 }
 
-// Register adds a tool to the registry.
-// Returns an error if a tool with the same name is already registered.
-// The tool's Info().Name is used as the registry key.
+// Register 将一个工具添加到注册表中。
+// 若已有同名工具被注册，则返回错误。
+// 工具的 Info().Name 用作注册表的键。
 func (r *DefaultToolRegistry) Register(tool FuncTool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -47,8 +47,8 @@ func (r *DefaultToolRegistry) Register(tool FuncTool) error {
 	return nil
 }
 
-// Remove deletes a tool from the registry by name.
-// Returns an error if no tool with the given name is found.
+// Remove 按名称从注册表中删除工具。
+// 若未找到指定名称的工具，则返回错误。
 func (r *DefaultToolRegistry) Remove(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -59,8 +59,8 @@ func (r *DefaultToolRegistry) Remove(name string) error {
 	return nil
 }
 
-// Get retrieves a tool by name.
-// Returns the tool and true if found, or zero value and false if not found.
+// Get 按名称获取工具。
+// 找到则返回该工具和 true，未找到则返回零值和 false。
 func (r *DefaultToolRegistry) Get(name string) (FuncTool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -68,8 +68,8 @@ func (r *DefaultToolRegistry) Get(name string) (FuncTool, bool) {
 	return t, ok
 }
 
-// All returns a slice of all registered tools.
-// The order of tools is non-deterministic (map iteration order).
+// All 返回所有已注册工具的切片。
+// 工具的顺序不确定（map 迭代顺序）。
 func (r *DefaultToolRegistry) All() []FuncTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -80,15 +80,15 @@ func (r *DefaultToolRegistry) All() []FuncTool {
 	return out
 }
 
-// FindAvailable returns tools that match the given filter criteria.
+// FindAvailable 返回匹配给定过滤条件的工具。
 //
-// Filtering logic (in order of precedence):
-//   - If filter is nil or empty, returns all tools
-//   - If AllowedNames is specified, only tools in that list are returned (exact name match)
-//   - Otherwise, filters by Keywords (matched against tags, name, description),
-//     Security level, and Terms (searched in description and tags)
+// 过滤逻辑（按优先级顺序）：
+//   - 若 filter 为 nil 或空，则返回所有工具
+//   - 若指定了 AllowedNames，则仅返回该列表中的工具（精确名称匹配）
+//   - 否则，按关键词（与标签、名称、描述匹配）、
+//     安全级别和搜索词（在描述和标签中搜索）进行过滤
 //
-// If keyword/term filtering matches no tools, a warning is logged and all tools are returned.
+// 若关键词/搜索词过滤未匹配到任何工具，则记录一条警告并返回所有工具。
 func (r *DefaultToolRegistry) FindAvailable(filter *ToolFilter) []FuncTool {
 	if filter == nil || (len(filter.Keywords) == 0 && len(filter.AllowedNames) == 0 && filter.Security == 0 && filter.Terms == "") {
 		return r.All()
@@ -132,14 +132,14 @@ func (r *DefaultToolRegistry) FindAvailable(filter *ToolFilter) []FuncTool {
 	return matched
 }
 
-// toolMatchesFilter checks if a tool's info matches the filter criteria.
-// All conditions are AND-combined: the tool must pass all non-zero filter fields.
+// toolMatchesFilter 检查工具的 info 是否匹配过滤条件。
+// 所有条件以 AND 方式组合：工具必须通过所有非零的过滤字段。
 //
-// Matching rules:
-//   - Security: exact match required if specified
-//   - Keywords: matched case-insensitively against tags (any match = pass),
-//     then against name and description (substring match)
-//   - Terms: searched case-insensitively in description and tags
+// 匹配规则：
+//   - Security：若指定则需精确匹配
+//   - Keywords：与 tags 不区分大小写匹配（任一命中即通过），
+//     再与 name 和 description 进行子串匹配
+//   - Terms：在 description 和 tags 中不区分大小写搜索
 func (r *DefaultToolRegistry) toolMatchesFilter(info *ToolInfo, filter *ToolFilter, keywords map[string]bool) bool {
 
 	if filter.Security != 0 && info.SecurityLevel != filter.Security {

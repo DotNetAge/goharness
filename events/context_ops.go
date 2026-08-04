@@ -1,61 +1,61 @@
 package events
 
-// ── Event types ────────────────────────────────────────────────
+// ── 事件类型 ────────────────────────────────────────────────
 
-// Session-level context management events (compact, micro-compact).
-// Each has a Start (before) and Done (after) variant.
-// Start carries the total window tokens before the operation.
-// Done carries the resulting window tokens and the compression ratio.
+// 会话级上下文管理事件（compact、micro-compact）。
+// 每个事件都有 Start（操作前）和 Done（操作后）两个变体。
+// Start 携带操作前的窗口 token 总数。
+// Done 携带操作后的窗口 token 数和压缩比。
 
 const (
-	// CompactStart signals that TryCompact (LLM summarization + cursor slide)
-	// is about to begin.  Data: CompactStartData
+	// CompactStart 表示 TryCompact（LLM 摘要 + 游标滑动）
+	// 即将开始。数据：CompactStartData
 	CompactStart ReactEventType = "compact_start"
 
-	// CompactDone signals that TryCompact has completed.
-	// Data: CompactDoneData
+	// CompactDone 表示 TryCompact 已完成。
+	// 数据：CompactDoneData
 	CompactDone ReactEventType = "compact_done"
 
-	// MicroCompactStart signals that TryMicroCompact (tool message compression)
-	// is about to begin.  Data: MicroCompactStartData
+	// MicroCompactStart 表示 TryMicroCompact（工具消息压缩）
+	// 即将开始。数据：MicroCompactStartData
 	MicroCompactStart ReactEventType = "micro_compact_start"
 
-	// MicroCompactDone signals that TryMicroCompact has completed.
-	// Data: MicroCompactDoneData
+	// MicroCompactDone 表示 TryMicroCompact 已完成。
+	// 数据：MicroCompactDoneData
 	MicroCompactDone ReactEventType = "micro_compact_done"
 )
 
-// ── Data structures ────────────────────────────────────────────
+// ── 数据结构 ────────────────────────────────────────────
 
-// CompactStartData carries the state before a full (LLM) compaction begins.
+// CompactStartData 携带完整（LLM）压缩开始前的状态。
 type CompactStartData struct {
 	SessionID     string `json:"session_id"`
-	WindowTokens  int64  `json:"window_tokens"`   // total tokens before compaction
+	WindowTokens  int64  `json:"window_tokens"`   // 压缩前的 token 总数
 	MaxWindowSize int64  `json:"max_window_size"`
 }
 
-// CompactDoneData carries the result of a full compaction.
+// CompactDoneData 携带完整压缩的结果。
 type CompactDoneData struct {
 	SessionID     string  `json:"session_id"`
 	MessagesSlid  int     `json:"messages_slid"`
-	WindowTokens  int64   `json:"window_tokens"`   // tokens after compaction (0 after cursor slide)
+	WindowTokens  int64   `json:"window_tokens"`   // 压缩后的 token 数（游标滑动后为 0）
 	MaxWindowSize int64   `json:"max_window_size"`
-	Ratio         float64 `json:"ratio"`            // after / before (0 when window is emptied)
+	Ratio         float64 `json:"ratio"`            // 压缩后 / 压缩前（窗口清空时为 0）
 }
 
-// MicroCompactStartData carries the state before micro-compression begins.
+// MicroCompactStartData 携带微压缩开始前的状态。
 type MicroCompactStartData struct {
 	SessionID     string `json:"session_id"`
-	WindowTokens  int64  `json:"window_tokens"`   // total tokens before micro-compression
+	WindowTokens  int64  `json:"window_tokens"`   // 微压缩前的 token 总数
 	MaxWindowSize int64  `json:"max_window_size"`
 }
 
-// MicroCompactDoneData carries the result of a micro-compression pass.
+// MicroCompactDoneData 携带一次微压缩操作的结果。
 type MicroCompactDoneData struct {
-	SessionID     string  `json:"session_id"`
-	Compressed    int     `json:"compressed"`     // number of messages micro-compressed
-	Deduped       int     `json:"deduped"`        // number of duplicate tool messages removed
-	WindowTokens  int64   `json:"window_tokens"`  // estimated window tokens after all ops
+	SessionID     string `json:"session_id"`
+	Compressed    int     `json:"compressed"`     // 被微压缩的消息数量
+	Deduped       int     `json:"deduped"`        // 被移除的重复工具消息数量
+	WindowTokens  int64   `json:"window_tokens"`  // 所有操作完成后的窗口 token 估算值
 	MaxWindowSize int64   `json:"max_window_size"`
-	Ratio         float64 `json:"ratio"`           // after / before
+	Ratio         float64 `json:"ratio"`           // 压缩后 / 压缩前
 }

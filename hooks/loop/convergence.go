@@ -4,18 +4,17 @@ import (
 	"github.com/DotNetAge/goharness/hooks"
 )
 
-// ConvergenceHook checks after each loop iteration whether the loop should terminate
-// due to irrecoverable errors in tool execution results.
+// ConvergenceHook 在每次循环迭代后检查是否应因工具执行结果中的不可恢复错误而终止循环。
 type ConvergenceHook struct{}
 
 func (h *ConvergenceHook) Priority() int { return hooks.PriorityConvergence }
 
-// BeforeLLM is a no-op for ConvergenceHook.
+// BeforeLLM 对 ConvergenceHook 是空操作。
 func (h *ConvergenceHook) BeforeLLM(sessionID string, iteration int, input *hooks.CallInput) hooks.HookResult {
 	return hooks.HookResult{}
 }
 
-// AfterLLM checks tool results for irrecoverable errors that should terminate the loop.
+// AfterLLM 检查工具结果中是否包含应终止循环的不可恢复错误。
 func (h *ConvergenceHook) AfterLLM(sessionID string, iteration int, resp *hooks.LLMResponse, results []hooks.ToolResult) hooks.HookResult {
 	for _, tr := range results {
 		if !tr.Success && tr.Error != "" {
@@ -27,10 +26,10 @@ func (h *ConvergenceHook) AfterLLM(sessionID string, iteration int, resp *hooks.
 	return hooks.HookResult{}
 }
 
-// Abort is a no-op for ConvergenceHook.
+// Abort 对 ConvergenceHook 是空操作。
 func (h *ConvergenceHook) Abort(sessionID string, reason string) {}
 
-// isIrrecoverable checks if an error string indicates an unrecoverable failure.
+// isIrrecoverable 检查错误字符串是否表示不可恢复的失败。
 func isIrrecoverable(errStr string) bool {
 	if errStr == "" {
 		return false
@@ -48,7 +47,7 @@ func isIrrecoverable(errStr string) bool {
 	return false
 }
 
-// containsLower performs a case-insensitive substring check.
+// containsLower 执行不区分大小写的子串检查。
 func containsLower(s, substr string) bool {
 	if len(s) < len(substr) {
 		return false

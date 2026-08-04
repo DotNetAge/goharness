@@ -1,8 +1,8 @@
 package agents
 
-// ── Section accessors — called by prompt_builders.go ────────────────────────
+// ── 段落构造器 — 供 prompt_builders.go 调用 ────────────────────────
 
-// defaultBehavioralRules returns the Behavioral Rules section.
+// defaultBehavioralRules 返回「行为准则」段落。
 func defaultBehavioralRules() string {
 	return `## 行为准则
 
@@ -63,21 +63,21 @@ func defaultBehavioralRules() string {
 `
 }
 
-// buildOutputEfficiency returns the Communication Style section.
+// buildOutputEfficiency 返回「沟通风格」段落。
 func buildOutputEfficiency() string {
 	return `## 沟通风格
 
 结论先行，简短回答，像人类一样说话。冷启动时重建上下文。不使用表情符号。`
 }
 
-// buildSearchPriority returns the Search Strategy section.
+// buildSearchPriority 返回「搜索策略」段落。
 func buildSearchPriority() string {
 	return `## 搜索策略
 
 优先搜索本地知识库；必要时才搜索互联网。`
 }
 
-// buildCompressedContent returns the Compressed Content section.
+// buildCompressedContent 返回「压缩内容」段落。
 func buildCompressedContent() string {
 	return `## 压缩内容
 

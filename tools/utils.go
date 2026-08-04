@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-// ValidateRequired checks that a required parameter exists in the params map.
-// It returns a guided error (带工具名）if the key is not present.
+// ValidateRequired 检查 params map 中是否存在某个必填参数。
+// 若该 key 不存在，则返回一个带工具名的引导式错误。
 //
-// Example:
+// 示例：
 //
 //	if err := ValidateRequired("Read", params, "path"); err != nil {
 //	    return nil, err
@@ -23,16 +23,16 @@ func ValidateRequired(toolName string, params map[string]any, key string) error 
 	return nil
 }
 
-// ValidateRequiredString validates that a required parameter exists and is of string type.
-// It returns the string value and an error if validation fails.
+// ValidateRequiredString 校验某个必填参数是否存在且为 string 类型。
+// 返回该字符串值以及校验失败时的错误。
 //
-// This function performs two checks:
-//  1. Ensures the parameter key exists
-//  2. Verifies the value is a string type
+// 此函数执行两项检查：
+//  1. 确保该参数 key 存在
+//  2. 验证值为 string 类型
 //
-// Returns:
-//   - The string value if valid
-//   - An error describing what validation failed
+// 返回：
+//   - 校验通过时的字符串值
+//   - 描述校验失败原因的错误
 func ValidateRequiredString(toolName string, params map[string]any, key string) (string, error) {
 	if err := ValidateRequired(toolName, params, key); err != nil {
 		return "", err
@@ -46,35 +46,35 @@ func ValidateRequiredString(toolName string, params map[string]any, key string) 
 	return str, nil
 }
 
-// ValidateFileSafety verifies file access safety using path anchoring with TOCTOU protection.
-// It normalizes the path via filepath.Clean, resolves symlinks, and ensures
-// the real path stays within the allowed workspace boundary.
+// ValidateFileSafety 通过路径锚定与 TOCTOU 防护来校验文件访问安全性。
+// 它通过 filepath.Clean 规范化路径、解析符号链接，并确保真实路径
+// 始终位于允许的工作区边界之内。
 //
-// Security Features:
-//   - Path normalization to eliminate directory traversal attempts (../)
-//   - Symlink resolution to prevent symlink-based attacks
-//   - Workspace boundary enforcement to restrict file access
-//   - Sensitive system file protection (.env, SSH keys, etc.)
+// 安全特性：
+//   - 路径规范化以消除目录穿越尝试（../）
+//   - 符号链接解析以防范基于符号链接的攻击
+//   - 工作区边界强制约束以限制文件访问
+//   - 敏感系统文件保护（.env、SSH 密钥等）
 //
-// Parameters:
-//   - path: The file path to validate (absolute or relative)
-//   - projectDir: The project directory to anchor paths against.
-//     If empty, falls back to os.Getwd() for backward compatibility.
+// 参数：
+//   - path: 待校验的文件路径（可为绝对路径或相对路径）
+//   - projectDir: 用于锚定路径的项目目录。
+//     若为空，则回退到 os.Getwd() 以保持向后兼容。
 //
-// Returns:
-//   - nil if the path is safe to access
-//   - An error describing why access was denied
+// 返回：
+//   - 若路径可安全访问则返回 nil
+//   - 描述访问被拒绝原因的错误
 //
-// Example:
+// 示例：
 //
 //	err := ValidateFileSafety("/project/file.txt", "/project")
 //	if err != nil {
-//	    // Handle denied access
+//	    // 处理被拒绝的访问
 //	}
 //
-// Security Considerations:
-// This function provides design-time safety validation. For runtime protection,
-// use SafeOpenFile or SafeCreateFile which perform atomic open-and-validate operations.
+// 安全考虑：
+// 此函数提供设计期的安全校验。如需运行时保护，
+// 请使用 SafeOpenFile 或 SafeCreateFile，它们会执行原子的"打开并校验"操作。
 func ValidateFileSafety(path string, projectDir string) error {
 	cleaned := filepath.Clean(path)
 
@@ -104,8 +104,8 @@ func ValidateFileSafety(path string, projectDir string) error {
 	return nil
 }
 
-// resolvePathSecurely resolves symlinks for existing paths with security checks.
-// For non-existent paths, it returns the cleaned absolute path to allow file creation.
+// resolvePathSecurely 对已存在的路径解析符号链接并执行安全检查。
+// 对于不存在的路径，返回清理后的绝对路径以允许文件创建。
 func resolvePathSecurely(absPath string) (string, error) {
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
@@ -117,7 +117,7 @@ func resolvePathSecurely(absPath string) (string, error) {
 	return realPath, nil
 }
 
-// resolveProjectDir resolves and validates the project directory path.
+// resolveProjectDir 解析并校验项目目录路径。
 func resolveProjectDir(projectDir string) (string, error) {
 	if projectDir == "" {
 		var err error
@@ -134,7 +134,7 @@ func resolveProjectDir(projectDir string) (string, error) {
 	return realCwd, nil
 }
 
-// enforceWorkspaceBoundary ensures the resolved path stays within the project directory.
+// enforceWorkspaceBoundary 确保解析后的路径位于项目目录之内。
 func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) error {
 	if realPath == realProjectDir {
 		return nil
@@ -157,7 +157,7 @@ func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) err
 	return nil
 }
 
-// checkSensitiveFiles blocks access to sensitive system files.
+// checkSensitiveFiles 阻止对敏感系统文件的访问。
 func checkSensitiveFiles(realPath string) error {
 	baseName := filepath.Base(realPath)
 
@@ -187,22 +187,22 @@ func CheckSensitiveFiles(path string) error {
 	return checkSensitiveFiles(path)
 }
 
-// SafeOpenFile opens a file with TOCTOU protection by validating the path after opening.
-// This prevents race conditions where the path could be changed between validation and opening.
+// SafeOpenFile 在打开文件后校验路径以提供 TOCTOU 防护。
+// 这可防止路径在校验与打开之间被篡改而导致的竞态条件。
 //
-// Parameters:
-//   - path: File path to open (will be validated)
-//   - projectDir: Project directory boundary
-//   - flags: Open flags (os.O_RDONLY, os.O_WRONLY, etc.)
-//   - perm: File permissions mode
+// 参数：
+//   - path: 待打开的文件路径（会被校验）
+//   - projectDir: 项目目录边界
+//   - flags: 打开标志（os.O_RDONLY、os.O_WRONLY 等）
+//   - perm: 文件权限模式
 //
-// Returns:
-//   - *os.File: Successfully opened file handle
-//   - error: Validation or OS error
+// 返回：
+//   - *os.File: 成功打开的文件句柄
+//   - error: 校验或操作系统错误
 //
-// Security:
-// This function uses O_NOFOLLOW on Unix systems to prevent symlink attacks,
-// and re-validates the resolved path after opening to ensure consistency.
+// 安全性：
+// 此函数在 Unix 系统上使用 O_NOFOLLOW 以防范符号链接攻击，
+// 并在打开后重新校验解析后的路径以确保一致性。
 func SafeOpenFile(path string, projectDir string, flags int, perm os.FileMode) (*os.File, error) {
 	resolvedPath, err := resolveAndValidate(path, projectDir)
 	if err != nil {
@@ -224,17 +224,17 @@ func SafeOpenFile(path string, projectDir string, flags int, perm os.FileMode) (
 	return file, nil
 }
 
-// SafeCreateFile safely creates a new file with TOCTOU protection.
-// It validates the path before creation and uses exclusive create flags when possible.
+// SafeCreateFile 安全地创建一个新文件，提供 TOCTOU 防护。
+// 它在创建前校验路径，并尽可能使用独占创建标志。
 //
-// Parameters:
-//   - path: Path for the new file
-//   - projectDir: Project directory boundary
-//   - perm: File permissions (default: 0644)
+// 参数：
+//   - path: 新文件的路径
+//   - projectDir: 项目目录边界
+//   - perm: 文件权限（默认：0644）
 //
-// Returns:
-//   - *os.File: Created file handle positioned at the beginning
-//   - error: Validation or creation error
+// 返回：
+//   - *os.File: 创建后定位到开头的文件句柄
+//   - error: 校验或创建错误
 func SafeCreateFile(path string, projectDir string, perm os.FileMode) (*os.File, error) {
 	if perm == 0 {
 		perm = 0644
@@ -264,7 +264,7 @@ func SafeCreateFile(path string, projectDir string, perm os.FileMode) (*os.File,
 	return file, nil
 }
 
-// resolveAndValidate resolves a path and performs full safety validation.
+// resolveAndValidate 解析路径并执行完整的安全校验。
 func resolveAndValidate(path string, projectDir string) (string, error) {
 	if err := ValidateFileSafety(path, projectDir); err != nil {
 		return "", err
@@ -278,7 +278,7 @@ func resolveAndValidate(path string, projectDir string) (string, error) {
 	return absPath, nil
 }
 
-// resolveAndValidateForCreation resolves a path for file creation with relaxed existence checks.
+// resolveAndValidateForCreation 解析用于文件创建的路径，对存在性检查有所放宽。
 func resolveAndValidateForCreation(path string, projectDir string) (string, error) {
 	cleaned := filepath.Clean(path)
 	absPath, err := filepath.Abs(cleaned)
@@ -311,8 +311,8 @@ func resolveAndValidateForCreation(path string, projectDir string) (string, erro
 	return absPath, nil
 }
 
-// postOpenValidation performs additional validation after a file has been opened.
-// This catches TOCTOU races where the path changed between validation and opening.
+// postOpenValidation 在文件打开后执行额外校验。
+// 用于捕获路径在校验与打开之间被篡改的 TOCTOU 竞态。
 func postOpenValidation(_ *os.File, resolvedPath string, projectDir string) error {
 	actualPath, err := filepath.EvalSymlinks(resolvedPath)
 	if err != nil {
@@ -338,25 +338,25 @@ func postOpenValidation(_ *os.File, resolvedPath string, projectDir string) erro
 	return nil
 }
 
-// TruncateString truncates a string to maxLen runes, appending "..." if truncated.
-// It counts by runes to safely handle multi-byte characters (Unicode).
+// TruncateString 将字符串截断为最多 maxLen 个 rune，若发生截断则追加 "..."。
+// 它按 rune 计数以安全处理多字节字符（Unicode）。
 //
-// Parameters:
-//   - s: The input string to truncate
-//   - maxLen: Maximum number of runes to keep (not bytes!)
+// 参数：
+//   - s: 待截断的输入字符串
+//   - maxLen: 保留的最大 rune 数（不是字节数！）
 //
-// Returns:
-//   - Truncated string with "..." appended if truncation occurred
-//   - Original string if len(s) <= maxLen
+// 返回：
+//   - 若发生截断则返回追加了 "..." 的截断字符串
+//   - 若 len(s) <= maxLen 则返回原字符串
 //
-// Edge Cases:
-//   - If maxLen <= 3, returns exactly maxLen runes without appending "..."
-//   - Empty strings are returned as-is
+// 边界情况：
+//   - 若 maxLen <= 3，则精确返回 maxLen 个 rune，不追加 "..."
+//   - 空字符串原样返回
 //
-// Example:
+// 示例：
 //
 //	truncated := TruncateString("Hello, 世界!", 8)
-//	// Result: "Hello, 世..."
+//	// 结果: "Hello, 世..."
 func TruncateString(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {
@@ -378,18 +378,18 @@ func pathWithinScope(parent, child string) bool {
 	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
 
-// ToFloat64 converts a numeric value of any common numeric type to float64.
-// This is useful when dealing with JSON unmarshaled numbers which may be float64 by default.
+// ToFloat64 将任意常见数值类型转换为 float64。
+// 在处理 JSON 反序列化的数字时很有用，它们默认可能就是 float64。
 //
-// Supported Types:
-//   - float64, float32
-//   - int, int32, int64
+// 支持的类型：
+//   - float64、float32
+//   - int、int32、int64
 //
-// Returns:
-//   - The converted float64 value
-//   - true if conversion succeeded, false if type is unsupported
+// 返回：
+//   - 转换后的 float64 值
+//   - 转换成功返回 true，类型不支持返回 false
 //
-// Example:
+// 示例：
 //
 //	val, ok := ToFloat64(42)
 //	// val = 42.0, ok = true
@@ -413,50 +413,50 @@ func ToFloat64(v any) (float64, bool) {
 	}
 }
 
-// PathScope represents the resolved scope of a file path.
-// It indicates whether a path resolves to the project directory or session sandbox.
+// PathScope 表示文件路径解析后的作用域。
+// 它指示某个路径解析为项目目录还是会话沙箱。
 type PathScope string
 
 const (
-	// PathScopeProject indicates the path resolves to the project directory.
+	// PathScopeProject 表示路径解析为项目目录。
 	PathScopeProject PathScope = "project"
 
-	// PathScopeSession indicates the path resolves to the session sandbox directory.
+	// PathScopeSession 表示路径解析为会话沙箱目录。
 	PathScopeSession PathScope = "session"
 )
 
 const sessionPathPrefix = "session:"
 
-// ResolveTargetPath resolves a file path with optional session: prefix.
-// This provides minimal syntax sugar for explicit directory selection without heuristic inference.
+// ResolveTargetPath 解析文件路径，支持可选的 session: 前缀。
+// 这为显式目录选择提供了最小的语法糖，不做启发式推断。
 //
-// Behavior:
-//   - "session:filename" → <sessionDir>/filename (scope: session)
-//     Falls back to <projectDir>/filename if sessionDir is empty.
-//   - "relative/path" → <projectDir>/relative/path (scope: project)
-//     Falls back to CWD if projectDir is empty.
-//   - "/absolute/path" → returned as-is (scope: empty)
+// 行为：
+//   - "session:filename" → <sessionDir>/filename（作用域：session）
+//     若 sessionDir 为空则回退到 <projectDir>/filename。
+//   - "relative/path" → <projectDir>/relative/path（作用域：project）
+//     若 projectDir 为空则回退到 CWD。
+//   - "/absolute/path" → 原样返回（作用域：空）
 //
-// Design Philosophy:
-// Directory semantics should be guided via System Prompt (Agent Native approach),
-// not inferred from context. This keeps behavior predictable and debuggable.
+// 设计哲学：
+// 目录语义应通过 System Prompt 引导（Agent Native 方式），
+// 而非从上下文中推断。这使行为可预测且可调试。
 //
-// Parameters:
-//   - inputPath: The path to resolve (may include session: prefix)
-//   - projectDir: Project directory for relative paths
-//   - sessionDir: Session sandbox directory for session: prefixed paths
+// 参数：
+//   - inputPath: 待解析的路径（可包含 session: 前缀）
+//   - projectDir: 相对路径所依据的项目目录
+//   - sessionDir: session: 前缀路径所依据的会话沙箱目录
 //
-// Returns:
-//   - absPath: Resolved absolute path
-//   - scope: PathScope indicating where the path resolves
+// 返回：
+//   - absPath: 解析后的绝对路径
+//   - scope: 指示路径解析到何处的作用域
 //
-// Example:
+// 示例：
 //
 //	path, scope := ResolveTargetPath("file.txt", "/project", "/sessions/abc")
 //	// path = "/sessions/abc/file.txt", scope = PathScopeSession
 //
 //	path, scope := ResolveTargetPath("/etc/passwd", "/project", "")
-//	// path = "/etc/passwd", scope = "" (empty for absolute paths)
+//	// path = "/etc/passwd", scope = ""（绝对路径时为空）
 func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath string, scope PathScope) {
 	if inputPath == "" {
 		return "", PathScopeProject
@@ -501,14 +501,14 @@ func ResolveTargetPath(inputPath string, projectDir, sessionDir string) (absPath
 	return filepath.Join(targetDir, inputPath), PathScopeProject
 }
 
-// SessionContextKey is the context key for storing session ID values.
-// It's defined as an unexported type to prevent context key collisions.
+// SessionContextKey 是用于存储会话 ID 值的 context key。
+// 它被定义为一个未导出类型以防止 context key 冲突。
 type SessionContextKey struct{}
 
-// ExtractSessionID extracts the session ID from a context.Context.
-// Returns empty string if no session ID is found or if it's not a string.
+// ExtractSessionID 从 context.Context 中提取会话 ID。
+// 若未找到会话 ID 或其不是字符串，则返回空字符串。
 //
-// Usage:
+// 用法：
 //
 //	sessionID := ExtractSessionID(ctx)
 //	if sessionID != "" {
@@ -521,13 +521,13 @@ func ExtractSessionID(ctx context.Context) string {
 	return ""
 }
 
-// WithSessionID returns a new context.Context that carries the given session ID.
-// The session ID can later be retrieved using ExtractSessionID.
+// WithSessionID 返回一个携带给定会话 ID 的新 context.Context。
+// 之后可通过 ExtractSessionID 取回该会话 ID。
 //
-// This is typically used to propagate session information through the call chain
-// for logging, tracing, and permission checking purposes.
+// 通常用于在调用链中传递会话信息，
+// 以便进行日志记录、链路追踪和权限校验。
 //
-// Example:
+// 示例：
 //
 //	ctx := WithSessionID(context.Background(), "session-123")
 //	sessionID := ExtractSessionID(ctx)

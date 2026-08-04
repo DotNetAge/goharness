@@ -87,7 +87,7 @@ type SessionInfo struct {
 // Compactor 执行上下文压缩：构造 LLM 请求、流式调用、解析返回。
 //
 // 由 agents 层实现并注入到 Session（依赖倒置）。实现方必须复用主对话的请求构造路径
-// （buildSystemPrompts / buildAllToolDefinitions / assembleMessages / rt.llmClient），
+//（BuildSystemPrompts / buildAllToolDefinitions / AssembleMessages / rt.llmClient），
 // 保证压缩请求与主对话请求在 system + tools + messages 前缀上逐 token 一致——
 // 这是命中 KV 前缀缓存的前提（DeepSeek/通义千问/豆包三家官方文档一致要求）。
 //

@@ -149,7 +149,7 @@ func NewStealthClient(logger logging.Logger, opts ...StealthOption) (*stealthCli
 	if cfg.Disabled {
 		c.initStdlibBackends()
 		logger.Info("[stealth]已禁用 tls-client，使用标准库后端")
-	} else if err := c.initTLSBackends(cfg); err != nil {
+	} else if err := c.initTLSBackends(); err != nil {
 		// tls-client 初始化失败时降级标准库，保证可用性而非直接失败。
 		logger.Warn("[stealth]tls-client 初始化失败，降级标准库后端", err)
 		c.initStdlibBackends()
@@ -158,7 +158,7 @@ func NewStealthClient(logger logging.Logger, opts ...StealthOption) (*stealthCli
 }
 
 // initTLSBackends 用 tls-client 构造跟随/不跟随重定向两个后端，共享 fhttp cookiejar。
-func (c *stealthClient) initTLSBackends(cfg StealthConfig) error {
+func (c *stealthClient) initTLSBackends() error {
 	tlsLog := tls_client.NewNoopLogger()
 	timeoutSec := int(c.timeout / time.Second)
 	jar := tls_client.NewCookieJar()

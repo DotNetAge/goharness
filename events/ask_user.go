@@ -27,9 +27,8 @@ func NewAskUserRequestData(tickID string, questions []AskUserQuestion, replyFn f
 	}
 }
 
-// AskUserPendingData carries the question data for a non-blocking AskUser
-// interaction. The thinking loop has been paused and the user will respond
-// via a regular user message.
+// AskUserPendingData 携带非阻塞式 AskUser 交互的问题数据。
+// 思考循环已被暂停，用户将通过常规用户消息进行回复。
 type AskUserPendingData struct {
 	Questions []AskUserQuestion `json:"questions"`
 }

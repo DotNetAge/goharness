@@ -98,7 +98,7 @@ func TestParseYamlFrontmatter(t *testing.T) {
 func TestFileSystemSkillLoader_Load(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a valid skill directory
+	// 创建一个有效的技能目录
 	skillDir := filepath.Join(tmpDir, "my-skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestFileSystemSkillLoader_Load(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a non-skill directory (no SKILL.md)
+	// 创建一个非技能目录（无 SKILL.md）
 	nonSkillDir := filepath.Join(tmpDir, "non-skill")
 	if err := os.MkdirAll(nonSkillDir, 0755); err != nil {
 		t.Fatal(err)

@@ -37,12 +37,12 @@ var (
 	}
 )
 
-// IsWindowsPlatform returns true if the current operating system is Windows.
+// IsWindowsPlatform 返回当前操作系统是否为 Windows。
 func IsWindowsPlatform() bool {
 	return runtime.GOOS == "windows"
 }
 
-// PowerShellTool implements the Windows PowerShell command execution tool.
+// PowerShellTool 实现了 Windows PowerShell 命令执行工具。
 type PowerShellTool struct {
 	maxOutput   int
 	maxDuration time.Duration
@@ -298,7 +298,7 @@ func (t *PowerShellTool) buildDescription() string {
 	return sb.String()
 }
 
-// PowerShellResult is the result returned by PowerShell command execution.
+// PowerShellResult 是 PowerShell 命令执行返回的结果。
 type PowerShellResult struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout,omitempty"`

@@ -17,10 +17,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Platform runtime
+// 平台运行时
 // ---------------------------------------------------------------------------
 
-// Platform represents the detected OS platform.
+// Platform 表示检测到的操作系统平台。
 type Platform string
 
 const (
@@ -29,17 +29,17 @@ const (
 	PlatformMacOS   Platform = "darwin"
 )
 
-// CurrentPlatform returns the runtime OS.
+// CurrentPlatform 返回运行时操作系统。
 func CurrentPlatform() Platform {
 	return Platform(runtime.GOOS)
 }
 
-// IsWindows, IsMacOS, IsLinux helpers.
+// IsWindows、IsMacOS、IsLinux 辅助方法。
 func (p Platform) IsWindows() bool { return p == PlatformWindows }
 func (p Platform) IsMacOS() bool   { return p == PlatformMacOS }
 func (p Platform) IsLinux() bool   { return p == PlatformLinux }
 
-// Shell returns the default shell executable for this platform.
+// Shell 返回该平台的默认 shell 可执行文件。
 func (p Platform) Shell() string {
 	switch p {
 	case PlatformWindows:
@@ -51,7 +51,7 @@ func (p Platform) Shell() string {
 	}
 }
 
-// ScriptExtensions returns all script file extensions supported on this platform.
+// ScriptExtensions 返回该平台支持的所有脚本文件扩展名。
 func (p Platform) ScriptExtensions() map[string]string {
 	exts := map[string]string{
 		".py":   "python",
@@ -77,7 +77,7 @@ func (p Platform) ScriptExtensions() map[string]string {
 	return exts
 }
 
-// SupportedInterpreters returns interpreter names recognized on this platform.
+// SupportedInterpreters 返回该平台可识别的解释器名称。
 func (p Platform) SupportedInterpreters() map[string]bool {
 	interpreters := map[string]bool{
 		"python": true, "python3": true, "pypy": true,
@@ -107,7 +107,7 @@ func (p Platform) SupportedInterpreters() map[string]bool {
 }
 
 // ---------------------------------------------------------------------------
-// scriptResult — internal execution result
+// scriptResult —— 内部执行结果
 // ---------------------------------------------------------------------------
 
 type scriptResult struct {
@@ -118,7 +118,7 @@ type scriptResult struct {
 }
 
 // ---------------------------------------------------------------------------
-// scriptExecutor — internal interface for script execution strategies
+// scriptExecutor —— 脚本执行策略的内部接口
 // ---------------------------------------------------------------------------
 
 type scriptExecutor interface {
@@ -126,14 +126,14 @@ type scriptExecutor interface {
 }
 
 // ---------------------------------------------------------------------------
-// platformScriptExecutor — dispatches execution based on platform + file type
+// platformScriptExecutor —— 根据平台和文件类型分发执行
 // ---------------------------------------------------------------------------
 
 type platformScriptExecutor struct {
 	platform      Platform
 	mu            sync.Mutex
 	venvManagers  map[string]*venvManager
-	pythonVenvDir string // external venv override (set via RunScript.SetPythonVenv)
+	pythonVenvDir string // 外部 venv 覆盖（通过 RunScript.SetPythonVenv 设置）
 }
 
 func newPlatformScriptExecutor() *platformScriptExecutor {
@@ -204,9 +204,9 @@ func (e *platformScriptExecutor) Execute(ctx context.Context, skillRoot, scriptP
 }
 
 func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	// If an external venv is configured (via SetPythonVenv), use it directly
-	// instead of auto-managing a per-skill venv. This allows consumers like
-	// mindx to reuse their own Python environment.
+	// 若配置了外部 venv（通过 SetPythonVenv），则直接使用它，
+	// 而不是自动管理按技能划分的 venv。这样像 mindx 这样的消费者
+	// 可以复用它们自己的 Python 环境。
 	if e.pythonVenvDir != "" {
 		pythonBin := filepath.Join(e.pythonVenvDir, "bin", "python")
 		if _, err := os.Stat(pythonBin); os.IsNotExist(err) {
@@ -381,7 +381,7 @@ func (e *platformScriptExecutor) executeGeneric(ctx context.Context, skillRoot, 
 	return runScriptCommand(cmd)
 }
 
-// runScriptCommand is a shared helper that runs an exec.Cmd and captures output.
+// runScriptCommand 是一个共享辅助函数，用于运行 exec.Cmd 并捕获输出。
 func runScriptCommand(cmd *exec.Cmd) (*scriptResult, error) {
 	start := time.Now()
 	stdout, err := cmd.Output()
@@ -405,9 +405,8 @@ func runScriptCommand(cmd *exec.Cmd) (*scriptResult, error) {
 	}, nil
 }
 
-// setProjectDir sets the working directory to the session's ProjectDir.
-// This decouples the script execution directory (where the script lives)
-// from the actual working directory (where the user's project is).
+// setProjectDir 将工作目录设置为会话的 ProjectDir。
+// 这将脚本执行目录（脚本所在位置）与实际工作目录（用户项目所在位置）解耦。
 func (e *platformScriptExecutor) setProjectDir(ctx context.Context, cmd *exec.Cmd) {
 	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
 		cmd.Dir = tc.Session.ProjectDir()
@@ -415,7 +414,7 @@ func (e *platformScriptExecutor) setProjectDir(ctx context.Context, cmd *exec.Cm
 }
 
 // ---------------------------------------------------------------------------
-// venvManager — per-skill Python virtual environment
+// venvManager —— 按技能划分的 Python 虚拟环境
 // ---------------------------------------------------------------------------
 
 type venvManager struct {
@@ -432,22 +431,21 @@ func newVenvManager(skillRoot string) *venvManager {
 	}
 }
 
-// ensureVenv ensures the Python virtual environment exists and is up-to-date.
-// Unlike the previous sync.Once-based approach, this checks the actual venv
-// state on every invocation, so it correctly handles cases where the venv
-// was deleted or corrupted externally after initial creation.
+// ensureVenv 确保 Python 虚拟环境存在且为最新。
+// 与之前基于 sync.Once 的方式不同，它在每次调用时都会检查 venv 的实际状态，
+// 因此能正确处理 venv 在初始创建后被外部删除或损坏的情况。
 func (m *venvManager) ensureVenv(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Recreate venv if it was deleted or never created.
+	// 若 venv 被删除或从未创建，则重新创建。
 	if !dirExists(m.venvPath) {
 		if err := m.createVenv(); err != nil {
 			return fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建 Python 虚拟环境", m.venvPath, err), err)
 		}
 	}
 
-	// Check if requirements need (re)installation.
+	// 检查是否需要（重新）安装依赖。
 	reqFile := filepath.Join(m.skillRoot, "scripts", "requirements.txt")
 	if _, err := os.Stat(reqFile); os.IsNotExist(err) {
 		return nil
@@ -516,13 +514,13 @@ func dirExists(path string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// RunScript — the Tool
+// RunScript —— 工具
 // ---------------------------------------------------------------------------
 
 type RunScript struct {
 	info           *ToolInfo
 	scriptExecutor scriptExecutor
-	pythonVenvDir  string // external venv override (see SetPythonVenv)
+	pythonVenvDir  string // 外部 venv 覆盖（参见 SetPythonVenv）
 }
 
 // SetPythonVenv 设置外部 Python 虚拟环境目录。
@@ -603,18 +601,16 @@ func buildRunScriptInfo(platform Platform) *ToolInfo {
 	}
 }
 
-// Grant implements tools.PermissionRequired. RunScript is special: it
-// already enforces a path-traversal block in executePlatformExecutor
-// ("script path is outside of skill root directory"), but that block
-// fires AFTER we've already been called. For the permission flow, we
-// only want to ask the user when the script lives OUTSIDE the working
-// directory (i.e. the user is being asked to bless a script that is
-// not in the active project/skill root). Scripts inside the working
-// directory are just like any other code execution inside the project —
-// they go through normally.
+// Grant 实现了 tools.PermissionRequired。RunScript 比较特殊：它
+// 已在 executePlatformExecutor 中强制执行了路径穿越拦截
+// （"脚本路径位于技能根目录之外"），但该拦截是在我们被调用之后才触发的。
+// 对于权限流程，我们只希望在脚本位于工作目录之外时询问用户
+// （即用户被要求批准一个不在活动项目/技能根目录中的脚本）。
+// 工作目录内的脚本与项目内其他任何代码执行一样——
+// 它们照常通过。
 //
-// Hard-blocks (e.g. malformed command) are Execute-level errors, not
-// Grant concerns.
+// 硬性阻断（例如格式错误的命令）是 Execute 层的错误，不是
+// Grant 关注的范畴。
 func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	rawCommand, ok := GetParam(params, "command")
 	command := ""
@@ -646,9 +642,8 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 		return true, ""
 	}
 
-	// Resolve the script path. If it can't be made absolute (e.g. the
-	// working directory is not yet realized), fall through — Execute will
-	// produce a clean error.
+	// 解析脚本路径。若无法转为绝对路径（例如工作目录尚未就绪），
+	// 则放行——Execute 会产生清晰的错误。
 	absScript, err := filepath.Abs(scriptPath)
 	if err != nil {
 		return true, ""
@@ -690,17 +685,16 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 		return true, ""
 	}
 
-	// Inside the working dir? Fine.
+	// 在工作目录内？没问题。
 	if cleanScript == absWork ||
 		strings.HasPrefix(cleanScript, absWork+string(filepath.Separator)) {
 		return true, ""
 	}
 
-	// Outside the working dir → ask the user. The actual executor will
-	// still double-check, so even if Grant is bypassed we never run an
-	// out-of-tree script.
+	// 在工作目录之外 → 询问用户。实际执行器仍会再次检查，
+	// 因此即使 Grant 被绕过，我们也绝不会运行目录外的脚本。
 	//
-	// Before prompting, check the session whitelist.
+	// 在提示之前，先检查会话白名单。
 	if tc != nil && tc.SessionWhitelist != nil {
 		for _, allowed := range tc.SessionWhitelist.RunScript {
 			if pathWithinScope(allowed, cleanScript) {
@@ -790,7 +784,7 @@ func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, er
 }
 
 // ---------------------------------------------------------------------------
-// Command parsing
+// 命令解析
 // ---------------------------------------------------------------------------
 
 func parseCommand(command, baseDir string) (language, scriptPath string) {
@@ -808,7 +802,7 @@ func parseCommand(command, baseDir string) (language, scriptPath string) {
 		"bash": true, "sh": true, "zsh": true,
 	}
 
-	// Add platform-specific interpreters
+	// 添加平台特定的解释器
 	platform := CurrentPlatform()
 	for k := range platform.SupportedInterpreters() {
 		interpreters[k] = true
@@ -839,7 +833,7 @@ func parseCommand(command, baseDir string) (language, scriptPath string) {
 }
 
 // ---------------------------------------------------------------------------
-// Result formatting
+// 结果格式化
 // ---------------------------------------------------------------------------
 
 func formatScriptResult(language, scriptPath string, result *scriptResult) map[string]any {

@@ -7,25 +7,25 @@ import (
 	"github.com/DotNetAge/goharness/events"
 )
 
-// SleepTool implements a sleep/wait tool for the agent framework.
-// Allows agents to pause execution for a specified duration, useful for
-// waiting in concurrent/async scenarios or when explicit rest is needed.
+// SleepTool 实现了 agent 框架的睡眠/等待工具。
+// 允许 agent 暂停执行指定时长，适用于并发/异步场景下等待
+// 或需要显式休息的情况。
 //
-// Unlike Bash(sleep ...), this tool does not hold a shell process,
-// and respects context cancellation for clean interruption.
+// 与 Bash(sleep ...) 不同，此工具不会占用 shell 进程，
+// 且支持 context 取消以实现干净的中断。
 //
-// Security level: LevelSafe (no side effects, read-only operation)
+// 安全级别：LevelSafe（无副作用，只读操作）
 type SleepTool struct{}
 
-// NewSleepTool creates a SleepTool instance.
+// NewSleepTool 创建一个 SleepTool 实例。
 //
-// Returns:
-//   - FuncTool: a SleepTool instance
+// 返回：
+//   - FuncTool: 一个 SleepTool 实例
 func NewSleepTool() FuncTool {
 	return &SleepTool{}
 }
 
-// Info returns the Sleep tool's metadata.
+// Info 返回 Sleep 工具的元数据。
 func (t *SleepTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "Sleep",
@@ -50,15 +50,15 @@ func (t *SleepTool) Info() *ToolInfo {
 	}
 }
 
-// Execute performs the sleep operation.
+// Execute 执行睡眠操作。
 //
-// Parameters:
-//   - ctx: context (supports cancellation for interruption)
-//   - params: optional "duration_ms" (default 5000, minimum 1000, maximum 300000)
+// 参数：
+//   - ctx: 上下文（支持取消以实现中断）
+//   - params: 可选 "duration_ms"（默认 5000，最小 1000，最大 300000）
 //
-// Returns:
-//   - map[string]any: contains "slept_ms" (actual duration slept) and "status" ("completed" or "interrupted")
-//   - error: only if parameter validation fails
+// 返回：
+//   - map[string]any: 包含 "slept_ms"（实际睡眠时长）和 "status"（"completed" 或 "interrupted"）
+//   - error: 仅在参数校验失败时返回
 func (t *SleepTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	durationMs := 5000
 	if raw, found := GetParam(params, "duration_ms"); found {
@@ -109,5 +109,5 @@ func (t *SleepTool) Execute(ctx context.Context, params map[string]any) (any, er
 	}
 }
 
-// Ensure SleepTool implements FuncTool at compile time.
+// 确保在编译期 SleepTool 实现 FuncTool 接口。
 var _ FuncTool = (*SleepTool)(nil)

@@ -37,18 +37,18 @@ func ValidateSkillDescription(desc string) error {
 	return nil
 }
 
-// AllowedToolsList can be either a string or a list of strings in YAML.
-// When unmarshaled from a list, items are joined with spaces.
+// AllowedToolsList 在 YAML 中可以是字符串或字符串列表。
+// 当从列表反序列化时，元素以空格连接。
 type AllowedToolsList string
 
 func (a *AllowedToolsList) UnmarshalYAML(unmarshal func(any) error) error {
-	// Try as string first
+	// 先尝试作为字符串解析
 	var s string
 	if err := unmarshal(&s); err == nil {
 		*a = AllowedToolsList(s)
 		return nil
 	}
-	// Try as list
+	// 再尝试作为列表解析
 	var list []string
 	if err := unmarshal(&list); err == nil {
 		*a = AllowedToolsList(strings.Join(list, " "))
@@ -125,11 +125,10 @@ func (l *FileSystemSkillLoader) Load() ([]*Skill, error) {
 	return skills, nil
 }
 
-// LoadSkillFromDir loads a single skill from the given directory.
-// It reads SKILL.md, parses the YAML frontmatter, verifies dependencies,
-// and returns the Skill. If the directory does not contain a SKILL.md,
-// it returns nil, nil. If dependencies are not met, it returns an error
-// so the caller can skip the skill.
+// LoadSkillFromDir 从给定目录加载单个技能。
+// 它会读取 SKILL.md、解析 YAML 前置元数据、校验依赖，并返回 Skill。
+// 如果目录不包含 SKILL.md，返回 nil, nil。如果依赖未满足，返回错误，
+// 以便调用方跳过该技能。
 func LoadSkillFromDir(dir string, source string) (*Skill, error) {
 	skillMdPath := filepath.Join(dir, "SKILL.md")
 	data, err := os.ReadFile(skillMdPath)
@@ -148,8 +147,8 @@ func LoadSkillFromDir(dir string, source string) (*Skill, error) {
 		return nil, fmt.Errorf("技能 %q 的依赖检查失败：%w", skill.Name, err)
 	}
 
-	// If a LICENSE.txt file exists in the skill directory, read its full content
-	// into the License field (overrides any license: value from YAML frontmatter)
+	// 如果技能目录中存在 LICENSE.txt 文件，将其完整内容读入 License 字段
+	// （覆盖 YAML 前置元数据中的 license: 值）
 	licensePath := filepath.Join(dir, "LICENSE.txt")
 	if _, err := os.Stat(licensePath); err == nil {
 		licenseData, readErr := os.ReadFile(licensePath)
@@ -188,7 +187,7 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 
 	instructions := strings.TrimSpace(body)
 
-	// Extract requires from metadata (as per spec, all extensions go in metadata)
+	// 从 metadata 中提取 requires（根据规范，所有扩展都放在 metadata 中）
 	var requires *Requires
 	if reqVal, ok := fm.Metadata["requires"]; ok {
 		if reqMap, ok := reqVal.(map[string]any); ok {
@@ -239,9 +238,9 @@ func parseSkillMd(data []byte, rootDir string, source string) (*Skill, error) {
 	}, nil
 }
 
-// verifyDependencies checks declared runtime dependencies.
-// Returns nil if all dependencies are met or no dependencies are declared.
-// Returns an error if any required binary is missing or required env var is empty.
+// verifyDependencies 检查声明的运行时依赖。
+// 所有依赖均满足或未声明依赖时返回 nil。
+// 任何必需的二进制文件缺失或必需的环境变量为空时返回错误。
 func verifyDependencies(s *Skill) error {
 	if s.Requires == nil {
 		return nil

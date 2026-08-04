@@ -6,22 +6,22 @@ import (
 	"sync"
 )
 
-// DefaultSkillRegistry implements SkillRegistry using keyword-based matching.
+// DefaultSkillRegistry 基于关键词匹配实现 SkillRegistry 接口。
 type DefaultSkillRegistry struct {
 	mu     sync.RWMutex
 	skills map[string]*Skill
 }
 
-// NewDefaultSkillRegistry creates a new empty skill registry.
+// NewDefaultSkillRegistry 创建一个空的技能注册表。
 func NewDefaultSkillRegistry() SkillRegistry {
 	return &DefaultSkillRegistry{
 		skills: make(map[string]*Skill),
 	}
 }
 
-// NewSkillRegistryFromDirectory creates a SkillRegistry by loading all skills from
-// a directory containing skill subdirectories (each with a SKILL.md file).
-// Non-existent directories are treated as empty (no error).
+// NewSkillRegistryFromDirectory 通过从包含技能子目录（每个子目录含一个 SKILL.md 文件）
+// 的目录中加载所有技能来创建 SkillRegistry。
+// 不存在的目录视为空目录（不返回错误）。
 func NewSkillRegistryFromDirectory(rootDir string) (SkillRegistry, error) {
 	reg := NewDefaultSkillRegistry()
 	loader := NewFileSystemSkillLoader(rootDir)
@@ -37,10 +37,10 @@ func NewSkillRegistryFromDirectory(rootDir string) (SkillRegistry, error) {
 	return reg, nil
 }
 
-// Compile-time interface check
+// 编译期接口检查
 var _ SkillRegistry = (*DefaultSkillRegistry)(nil)
 
-// RegisterSkill adds or updates a skill in the registry.
+// RegisterSkill 向注册表中添加或更新一个技能。
 func (r *DefaultSkillRegistry) RegisterSkill(sk *Skill) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -51,8 +51,8 @@ func (r *DefaultSkillRegistry) RegisterSkill(sk *Skill) error {
 	return nil
 }
 
-// GetSkill retrieves a skill by name.
-// Returns the skill and nil if found, or nil and ErrSkillNotFound if not found.
+// GetSkill 根据名称获取技能。
+// 找到时返回该技能和 nil，未找到时返回 nil 和 ErrSkillNotFound。
 func (r *DefaultSkillRegistry) GetSkill(name string) (*Skill, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -63,7 +63,7 @@ func (r *DefaultSkillRegistry) GetSkill(name string) (*Skill, error) {
 	return sk, nil
 }
 
-// ListSkills returns all registered skills. Returns a copy to avoid data races.
+// ListSkills 返回所有已注册的技能。返回副本以避免数据竞争。
 func (r *DefaultSkillRegistry) ListSkills() []*Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -74,10 +74,10 @@ func (r *DefaultSkillRegistry) ListSkills() []*Skill {
 	return result
 }
 
-// FindApplicableSkills finds skills whose description matches the given intent context.
-// The matching is done by checking if any keyword from the skill's description or name
-// appears in the intent's type, topic, summary, or entity blob.
-// Accepts a string or fmt.Stringer as the context; other types are silently ignored.
+// FindApplicableSkills 查找描述与给定意图上下文匹配的技能。
+// 匹配方式是检查技能描述或名称中的任意关键词是否出现在意图的
+// 类型、主题、摘要或实体文本中。
+// context 接受 string 或 fmt.Stringer 类型；其他类型会被静默忽略。
 func (r *DefaultSkillRegistry) FindApplicableSkills(context any) ([]*Skill, error) {
 	intentText := ""
 	switch v := context.(type) {
@@ -100,11 +100,11 @@ func (r *DefaultSkillRegistry) FindApplicableSkills(context any) ([]*Skill, erro
 	return applicable, nil
 }
 
-// matchSkill checks if a skill is relevant to the given intent text using
-// a weighted scoring algorithm that reduces false positives:
-//   - Longer keyword matches score higher (more specific)
-//   - Requires minimum total score of 2.0 (e.g., two 3-char words, or one 6+ char word)
-//   - Exact skill-name substring match provides a strong bonus
+// matchSkill 使用加权评分算法检查技能是否与给定意图文本相关，
+// 该算法可减少误匹配：
+//   - 更长的关键词匹配得分更高（更具体）
+//   - 要求最低总分为 2.0（例如两个 3 字符的词，或一个 6+ 字符的词）
+//   - 技能名称的精确子串匹配提供强有力的加成
 func matchSkill(skill *Skill, intentText string) bool {
 	skillText := strings.ToLower(skill.Name + " " + skill.Description)
 	skillName := strings.ToLower(skill.Name)
@@ -124,24 +124,24 @@ func matchSkill(skill *Skill, intentText string) bool {
 
 		switch {
 		case wordLen >= 7:
-			totalScore += 2.5 // very specific term
+			totalScore += 2.5 // 非常具体的词
 		case wordLen >= 5:
-			totalScore += 1.5 // moderately specific
+			totalScore += 1.5 // 中等具体的词
 		default:
-			totalScore += 1.0 // common term
+			totalScore += 1.0 // 常见词
 		}
 	}
 
-	// Exact skill name substring in intent gives a big bonus
+	// 意图中包含技能名称的精确子串会给予较大加成
 	if len(skillName) >= 4 && strings.Contains(intentText, skillName) {
 		totalScore += 2.0
 	}
 
-	// Minimum score threshold: 2.0 points required
+	// 最低分数阈值：需要达到 2.0 分
 	return totalScore >= 2.0
 }
 
-// extractKeywords splits text into lowercase words, filtering common stop words.
+// extractKeywords 将文本拆分为小写单词，并过滤常见停用词。
 func extractKeywords(text string) []string {
 	words := strings.Fields(text)
 	var keywords []string

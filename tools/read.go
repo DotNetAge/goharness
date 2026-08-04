@@ -129,7 +129,7 @@ func (r *Read) CheckSafety(resolvedPath string) error {
 	return checkSensitiveFiles(resolvedPath)
 }
 
-// Grant implements tools.PermissionRequired。
+// Grant 实现 tools.PermissionRequired 接口。
 //
 // 与 Edit / Bash 保持一致的授权语义：目标路径超出项目边界（ValidateFileSafety 失败）
 // 时，先放行工具白名单（AddWhiteList）与会话级白名单（PermissionAllowSession 记忆）
@@ -208,50 +208,32 @@ func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) 
 	return true, ""
 }
 
-// Execute 执行文件读取操作。
-//
-// 处理流程（严格遵循 DESIGN.md 数据流图）：
-//
-//	PreValidate → NegativeCache → 路径解析 → 安全校验 → fs.Stat
-//	    ├── ENOENT？    → NegativeCache + 渐进兜底
-//	    ├── 权限拒绝？   → SuggestionPermissionDenied
-//	    ├── 空文件？     → SuggestionEmptyFile
-//	    ├── 目录？       → SuggestionIsDirectory
-//	    ├── 文件过大？   → SuggestionFileTooLarge
-//	    ├── 文档格式     → convertDocument → buildTextResult（统一文本处理）
-//	    ├── 图片格式     → compressAndEncodeImage（内联压缩）
-//	    └── 文本文件     → buildTextResult（分页 + DedupCache + 输出预算）
-//
-// 参数：
-//   - ctx: 上下文（包含 ToolContext）
-//   - params: 必须包含 "filePath"，可选 "offset" 和 "limit"
-//
-// 返回：
-//   - *ReadResult: 结构化的读取结果
-//   - error: 参数错误、安全校验失败、或文件系统错误
-func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) {
-	path, err := ValidateRequiredString("Read", params, "filePath")
-	if err != nil {
-		return nil, err
-	}
-
-	logger := getLogger(ctx)
-
+// authorizeRead 解析文件路径并执行前置校验（设备/二进制）和安全检查（沙箱/敏感文件）。
+func authorizeRead(ctx context.Context, path string) (resolvedPath string, scope PathScope, err error) {
 	tc := GetToolContext(ctx)
-	resolvedPath, scope := ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
-
-	logger.Info("reading file",
-		"input_path", path,
-		"resolved_path", resolvedPath,
-		"scope", scope,
-	)
+	resolvedPath, scope = ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
 	// A. 零 I/O 前置校验（设备文件黑名单、二进制扩展名）
 	// 沙箱启用时设备文件由沙箱 EnforceFile 接管，但二进制扩展名检查保留（功能保护非安全决策）。
 	if err = validateReadPath(resolvedPath); err != nil {
-		return nil, err
+		return "", "", err
 	}
 
+	// 安全校验：敏感文件硬性拦截。
+	// 沙箱启用时由 EnforceFile 统一做强制检查（含符号链接解析，防 TOCTOU）；
+	// 沙箱未启用时走旧的 checkSensitiveFiles。
+	if sb := tc.Session.Sandbox(); sb != nil {
+		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
+			return "", "", err
+		}
+	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+		return "", "", err
+	}
+	return resolvedPath, scope, nil
+}
+
+// performRead 执行文件读取核心逻辑：NegativeCache、stat 检查、权限验证、格式检测与内容读取。
+func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedPath string, scope PathScope) (any, error) {
 	// B. NegativeCache：快速拒绝
 	if checkNegativeCache(resolvedPath) {
 		return &ReadResult{
@@ -265,17 +247,6 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		}, nil
 	}
 
-	// 安全校验：敏感文件硬性拦截。
-	// 沙箱启用时由 EnforceFile 统一做强制检查（含符号链接解析，防 TOCTOU）；
-	// 沙箱未启用时走旧的 checkSensitiveFiles。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return nil, err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
-		return nil, err
-	}
-
 	// Pre-read: stat 检查
 	cleanPath := strings.TrimLeft(filepath.ToSlash(resolvedPath), "/")
 	info, err := fs.Stat(store.OS, cleanPath)
@@ -283,7 +254,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		if errors.Is(err, fs.ErrNotExist) {
 			// C. ENOENT 兜底（简化版，见过度设计审计 #7）
 			setNegativeCache(resolvedPath)
-			message := ENOENTSuggestion(resolvedPath, tc.Session.ProjectDir())
+			message := ENOENTSuggestion(resolvedPath, GetToolContext(ctx).Session.ProjectDir())
 			return &ReadResult{
 				Data: &ReadData{
 					Success:    false,
@@ -418,4 +389,26 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		return nil, fmt.Errorf("%s", GuideReadIO(resolvedPath, err))
 	}
 	return r.buildTextResult(resolvedPath, cleanPath, data, info.Size(), scope, params, true, nil)
+}
+
+// Execute 编排 Read 工具执行流程：validate → authorize → perform。
+func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) {
+	path, err := ValidateRequiredString("Read", params, "filePath")
+	if err != nil {
+		return nil, err
+	}
+
+	resolvedPath, scope, err := authorizeRead(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+
+	logger := getLogger(ctx)
+	logger.Info("reading file",
+		"input_path", path,
+		"resolved_path", resolvedPath,
+		"scope", scope,
+	)
+
+	return r.performRead(ctx, params, resolvedPath, scope)
 }

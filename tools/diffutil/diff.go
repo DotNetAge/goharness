@@ -138,7 +138,7 @@ func computeLCS(a, b []string) []string {
 			i--
 			j--
 		} else if prev[j-1] >= curr[j] {
-			j-- // prev is actually the previous row at this point
+			j-- // 此时 prev 实际上指向上一行
 		} else {
 			i--
 		}

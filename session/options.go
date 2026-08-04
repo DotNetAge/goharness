@@ -2,11 +2,10 @@ package session
 
 import "github.com/DotNetAge/goharness/sandbox"
 
-// SessionConfig is a functional option for configuring Session instances.
-// This pattern allows for flexible, readable configuration without breaking changes
-// when new options are added.
+// SessionConfig 是用于配置 Session 实例的函数式选项。
+// 此模式允许灵活、可读的配置，且在新增选项时不会引入破坏性变更。
 //
-// Example:
+// 示例：
 //
 //	session := NewSession("id", "agent",
 //	    WithModelContextResolver(func() int64 { return model.ContextLength }),
@@ -26,8 +25,8 @@ func (s *Session) logError(msg string, err error, keyvals ...any) {
 	}
 }
 
-// WithMemory configures the memory store for compaction chunks.
-// If not set, an in-memory store is used by default.
+// WithMemory 配置用于存储压缩分块的记忆存储。
+// 如未设置，默认使用内存存储。
 func WithMemory(mem MemoryStore) SessionConfig {
 	return func(s *Session) { s.mem = mem }
 }
@@ -62,10 +61,32 @@ func WithSandbox(sb *sandbox.Sandbox) SessionConfig {
 	return func(s *Session) { s.sandbox = sb }
 }
 
-// WithCompactionHandler sets a callback function that is invoked after each
-// compaction event. This can be used for logging, metrics, or UI updates.
+// WithCompactionHandler 设置在每次压缩事件后调用的回调函数。
+// 可用于日志记录、指标采集或 UI 更新。
 func WithCompactionHandler(h func(CompactionEvent)) SessionConfig {
 	return func(s *Session) { s.compactionHandler = h }
 }
 
+// WithCompactStartHandler 注入 TryCompact 开始基于 LLM 摘要压缩前的回调。
+// 回调接收 (windowTokens, maxWindowSize)。传 nil 以禁用。
+func WithCompactStartHandler(h func(windowTokens, maxWindowSize int64)) SessionConfig {
+	return func(s *Session) { s.compactStartHandler = h }
+}
 
+// WithCompactDoneHandler 注入 TryCompact 完成后的回调。
+// 回调接收 (messagesSlid, windowTokens)。传 nil 以禁用。
+func WithCompactDoneHandler(h func(messagesSlid int, windowTokens int64)) SessionConfig {
+	return func(s *Session) { s.compactDoneHandler = h }
+}
+
+// WithMicroCompactStartHandler 注入 TryMicroCompact 开始工具消息压缩前的回调。
+// 回调接收 (windowTokens, maxWindowSize)。传 nil 以禁用。
+func WithMicroCompactStartHandler(h func(windowTokens, maxWindowSize int64)) SessionConfig {
+	return func(s *Session) { s.microCompactStartHandler = h }
+}
+
+// WithMicroCompactDoneHandler 注入 TryMicroCompact 完成后的回调。
+// 回调接收 (compressed, deduped, windowTokens)。传 nil 以禁用。
+func WithMicroCompactDoneHandler(h func(compressed, deduped int, windowTokens int64)) SessionConfig {
+	return func(s *Session) { s.microCompactDoneHandler = h }
+}

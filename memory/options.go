@@ -1,6 +1,6 @@
 package memory
 
-// RetrieveConfig holds configuration options for memory retrieval operations.
+// RetrieveConfig 保存记忆检索操作的配置选项。
 type RetrieveConfig struct {
 	Types     []MemoryType
 	SessionID string
@@ -10,16 +10,16 @@ type RetrieveConfig struct {
 	MinScore  float64
 }
 
-// RetrieveOption is a functional option for configuring RetrieveConfig.
+// RetrieveOption 是用于配置 RetrieveConfig 的函数式选项。
 type RetrieveOption func(*RetrieveConfig)
 
-// WithMemoryTypes filters retrieval to only include the specified memory types.
+// WithMemoryTypes 过滤检索结果，仅包含指定的记忆类型。
 func WithMemoryTypes(types ...MemoryType) RetrieveOption {
 	return func(c *RetrieveConfig) { c.Types = types }
 }
 
-// WithMemoryLimit sets the maximum number of records to return.
-// Values <= 0 are ignored (keeps default).
+// WithMemoryLimit 设置返回记录的最大数量。
+// 值 <= 0 时将被忽略（保持默认值）。
 func WithMemoryLimit(n int) RetrieveOption {
 	return func(c *RetrieveConfig) {
 		if n > 0 {
@@ -28,26 +28,26 @@ func WithMemoryLimit(n int) RetrieveOption {
 	}
 }
 
-// WithMinScore sets the minimum relevance score for returned records.
+// WithMinScore 设置返回记录的最小相关性分数。
 func WithMinScore(score float64) RetrieveOption {
 	return func(c *RetrieveConfig) { c.MinScore = score }
 }
 
-// WithMemorySessionID scopes memory retrieval to a specific session.
-// Memory implementations should filter by this field for session-scoped recall.
+// WithMemorySessionID 将记忆检索范围限定到特定会话。
+// Memory 实现应按此字段过滤以支持会话级召回。
 func WithMemorySessionID(sessionID string) RetrieveOption {
 	return func(c *RetrieveConfig) { c.SessionID = sessionID }
 }
 
-// WithAgentName scopes memory retrieval to a specific agent.
-// Used for both short-term (AgentName + SessionID) and long-term (AgentName only) filtering.
+// WithAgentName 将记忆检索范围限定到特定 agent。
+// 同时用于短期（AgentName + SessionID）和长期（仅 AgentName）过滤。
 func WithAgentName(agentName string) RetrieveOption {
 	return func(c *RetrieveConfig) { c.AgentName = agentName }
 }
 
-// WithProjectDir scopes memory retrieval to a specific project directory.
-// Combined with AgentName, this scopes recall to the same agent working on the
-// same project across multiple sessions (the memory buffer's default scope).
+// WithProjectDir 将记忆检索范围限定到特定项目目录。
+// 与 AgentName 结合使用，将召回范围限定为同一 agent 在多个会话中
+// 处理同一项目（记忆缓冲区的默认范围）。
 func WithProjectDir(dir string) RetrieveOption {
 	return func(c *RetrieveConfig) { c.ProjectDir = dir }
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/DotNetAge/goharness/memory"
 )
 
-// ── Compaction helpers ────────────────────────────────────────────────────
+// ── 压缩辅助函数 ────────────────────────────────────────────────────────
 
 // compactionCooldown 是自动压缩（TryCompact）失败后的冷却时长。
 // 冷却期内 TryCompact 直接跳过，避免 LLM 失败或空返回时每轮重试形成死循环
@@ -185,7 +185,7 @@ func (s *Session) generateCompactionChunks(ctx context.Context, messages []Messa
 	}
 
 	// 剔除末尾未配对的 tool_call/tool_result，避免 LLM API 校验拒绝。
-	// 与 assembleMessages 内部的 stripOrphanedToolCalls 幂等共存，不冲突。
+	// 与 AssembleMessages 内部的 stripOrphanedToolCalls 幂等共存，不冲突。
 	messages = sanitizeMessagesForLLM(messages)
 	if len(messages) == 0 {
 		s.logInfo("generateCompactionChunks: 未生成有效摘要，所有消息都被剔除后为空", "session_id", s.id)

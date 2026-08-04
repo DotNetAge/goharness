@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/session"
@@ -13,78 +14,93 @@ import (
 // 使子智能体能够将事件转发到父级事件总线。
 type parentEmitKeyType struct{}
 
-// getOrCreateSubAgentSession 返回指定 (agentName, projectDir) 对应的缓存会话；
-// 若不存在则创建新会话。该函数保证同一项目下的同一子智能体始终复用同一会话，
-// 从而维持对话连续性。
-func (rt *Runtime) getOrCreateSubAgentSession(agentName, projectDir, sponsor string, store session.SessionStore) *session.Session {
+// subAgentManager 管理子智能体的会话缓存与派生执行，是 Runtime 的一个内聚子系统，
+// 从 Runtime 抽离以减轻后者的职责密度。
+//
+// 职责：
+//   - 按 "agentName:projectDir" 缓存子智能体会话，保证同一子智能体在同一项目中复用同一会话，
+//     维持对话连续性。
+//   - 通过 Runtime.Ask 运行子智能体的独立思考循环（与父级上下文隔离）。
+//
+// 依赖经 rt 反向引用（子系统持有父编排器的引用是 Go 常见模式，相比传递多个回调更清晰）：
+//   - rt.Ask：运行子智能体思考循环
+//   - rt.prompt.agentReg：校验子智能体配置是否存在
+//   - rt.SessionConfigs()：为新建子会话注入 Compactor / Sandbox 等通用能力
+//   - rt.logger：日志
+type subAgentManager struct {
+	rt    *Runtime
+	mu    sync.RWMutex
+	cache map[string]*session.Session
+}
+
+// newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
+func newSubAgentManager(rt *Runtime) *subAgentManager {
+	return &subAgentManager{
+		rt:    rt,
+		cache: make(map[string]*session.Session),
+	}
+}
+
+// getOrCreate 返回指定 (agentName, projectDir) 对应的缓存会话；若不存在则创建。
+// 保证同一项目下的同一子智能体始终复用同一会话，从而维持对话连续性。
+// 创建失败时返回 nil（错误已记录日志）。
+func (m *subAgentManager) getOrCreate(agentName, projectDir, sponsor string, store session.SessionStore) *session.Session {
 	key := agentName + ":" + projectDir
 
-	rt.subAgentSessionMu.RLock()
-	if s, ok := rt.subAgentSessionCache[key]; ok {
-		rt.subAgentSessionMu.RUnlock()
+	m.mu.RLock()
+	if s, ok := m.cache[key]; ok {
+		m.mu.RUnlock()
 		return s
 	}
-	rt.subAgentSessionMu.RUnlock()
+	m.mu.RUnlock()
 
-	rt.subAgentSessionMu.Lock()
-	defer rt.subAgentSessionMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	// 双重检查，避免加锁期间其他 goroutine 已创建。
-	if s, ok := rt.subAgentSessionCache[key]; ok {
+	if s, ok := m.cache[key]; ok {
 		return s
 	}
 
-	s, err := session.New(agentName, sponsor, projectDir, store, rt.logger, rt.SessionConfigs()...)
+	s, err := session.New(agentName, sponsor, projectDir, store, m.rt.logger, m.rt.SessionConfigs()...)
 	if err != nil {
-		rt.logger.Error("创建子智能体会话失败", err, "agent", agentName, "project", projectDir)
+		m.rt.logger.Error("创建子智能体会话失败", err, "agent", agentName, "project", projectDir)
 		return nil
 	}
-	rt.subAgentSessionCache[key] = s
+	m.cache[key] = s
 	return s
 }
 
-// SessionConfigs 返回 Runtime 应注入到所有会话（主会话与子会话）的通用 SessionConfig 列表。
-//
-// 这里注入的是 Runtime 提供的通用能力，所有会话共享：
-//   - Compactor：上下文压缩引擎。其依赖（llmClient/model/请求构造路径）全部来自
-//     Runtime，是 goharness 内置能力，无需外部应用注入——外部只需在创建会话时
-//     合并本方法返回的配置即可启用压缩。
-//   - Sandbox：工具安全沙箱（若已配置）。
-//
-// 会话特有的配置（如 MemoryStore、ModelContextResolver，依赖会话级数据）由调用方
-// 在创建会话时额外追加，不应放入此处。
-func (rt *Runtime) SessionConfigs() []session.SessionConfig {
-	opts := []session.SessionConfig{
-		session.WithCompactor(NewCompactor(rt)),
-	}
-	if rt.sandbox != nil {
-		opts = append(opts, session.WithSandbox(rt.sandbox))
-	}
-	return opts
-}
-
-// spawnSubAgent 是创建并运行子智能体的 SpawnFunc 实现。
-// 子智能体在后台通过独立的思考循环运行，结果随后通过 CollectResultsTool 收集。
+// spawn 创建并运行子智能体（实现 tools.SpawnFunc）。
+// 子智能体通过 Runtime.Ask 运行独立思考循环，结果随后通过 CollectResultsTool 收集。
 //
 // 设计决策：
-//   - 每次 spawn 创建唯一会话（不复用会话，一次性任务）。
-//   - 通过 Runtime.Ask() 运行，与主智能体使用相同的思考循环。
+//   - 复用 getOrCreate 缓存的会话：同一 (agentName, projectDir) 始终复用同一会话，
+//     维持对话连续性（而非每次创建新会话）。
+//   - 通过 Runtime.Ask 运行，与主智能体使用相同的思考循环。
 //   - 独立会话意味着与父级上下文完全隔离。
-func (rt *Runtime) spawnSubAgent(ctx context.Context, agentName, task string) (answer string, sessionID string, err error) {
-	if rt.prompt.agentReg != nil {
-		if cfg := rt.prompt.agentReg.Get(agentName); cfg == nil {
+func (m *subAgentManager) spawn(ctx context.Context, agentName, task string) (answer string, sessionID string, err error) {
+	if m.rt.prompt.agentReg != nil {
+		if cfg := m.rt.prompt.agentReg.Get(agentName); cfg == nil {
 			return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
 		}
 	}
 
 	tc := tools.GetToolContext(ctx)
-	sess := rt.getOrCreateSubAgentSession(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
-	rt.logger.Info("sub-agent spawn started",
+	if tc == nil || tc.Session == nil {
+		return "", "", fmt.Errorf("上下文未包含会话")
+	}
+	sess := m.getOrCreate(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
+	if sess == nil {
+		// getOrCreate 已记录失败日志，此处返回错误让调用方感知。
+		return "", "", fmt.Errorf("获取子智能体会话失败: %q", agentName)
+	}
+	m.rt.logger.Info("sub-agent spawn started",
 		"agent_name", agentName,
 		"session_id", sess.ID(),
 	)
 
-	builder := rt.Ask(agentName, task, sess)
+	builder := m.rt.Ask(agentName, task, sess)
 	// 将子智能体的事件转发到父级 EventBus，
 	// 以便订阅父级的客户端能够看到所有智能体事件。
 	if pe, ok := ctx.Value(parentEmitKeyType{}).(func(events.ReactEvent)); ok {

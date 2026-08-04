@@ -21,7 +21,7 @@ import (
 
 // webFetchLargePageLines 是判定页面需要落盘的行数阈值。
 // 超过此行数的页面落盘到 SessionDir/.webfetch/，Agent 用 Read 的 offset/limit 分页读取，
-// 避免一次性塞满上下文。阈值取 500 行：与 Read 的默认行数（read.go:68）一致——
+// 避免一次性塞满上下文。阈值取 500 行：与 Read 的默认行数一致——
 // Read 单次默认最多读 500 行，WebFetch 同样以 500 行作为"直返/落盘"分界，
 // 两端阈值统一，Agent 用 Read 读落盘文件时一次恰好读完一屏，语义对齐。
 const webFetchLargePageLines = 500
@@ -30,7 +30,7 @@ const webFetchLargePageLines = 500
 const webFetchCacheTTL = 24 * time.Hour
 
 // webFetchMaxFileBytes 是落盘文件的最大字节数。
-// 受 Read 工具 MaxSizeBytes=256KB 硬限制约束（read.go:356 在分页前先做大小检查），
+// 受 Read 工具 MaxSizeBytes=256KB 硬限制约束（Read 在分页前先做大小检查），
 // 留 16KB 安全边距，避免 UTF-8 多字节字符在边界处把文件顶过 256KB。
 const webFetchMaxFileBytes = 240 * 1024
 
@@ -148,29 +148,12 @@ func truncateMarkdownToBytes(content string) (string, bool) {
 	return truncated, true
 }
 
-// Execute 执行网页内容获取操作。
-//
-// 处理流程：
-//  1. 验证并规范化 URL（强制 HTTPS）
-//  2. 检查文件缓存（SessionDir/.webfetch/，mtime 判断 24h 过期）
-//  3. 验证 URL 安全性（SSRF 防护）
-//  4. 发送 HTTP GET 请求
-//  5. 处理响应（HTML 转 Markdown 或原样返回）
-//  6. 小页面（≤500 行）直接返回；大页面（>500 行）落盘并返回路径提示
-//
-// 参数：
-//   - ctx: 上下文
-//   - params: 必须包含 "url"
-//
-// 返回：
-//   - string: 格式化的页面内容，或大页面的文件路径提示
-//   - error: URL 无效、访问被拒绝或网络错误时返回错误
-func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+// validateWebFetchURL 提取并规范化 URL 参数（强制 HTTPS）。
+func validateWebFetchURL(params map[string]any) (string, error) {
 	rawURL, err := ValidateRequiredString("WebFetch", params, "url")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-
 	rawURL = strings.TrimSpace(rawURL)
 	if strings.HasPrefix(rawURL, "http://") {
 		rawURL = "https://" + rawURL[7:]
@@ -178,36 +161,31 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	if !strings.HasPrefix(rawURL, "https://") {
 		rawURL = "https://" + rawURL
 	}
+	return rawURL, nil
+}
 
-	// URL 安全校验：沙箱启用时由 CheckURL 统一决策（含 DNS 解析与 SSRF 网段检查）；
-	// 沙箱未启用时回退到旧逻辑（validateURL + isPrivateIP）。
-	// 注意：沙箱 CheckURL 与旧逻辑的网段列表等价（见 sandbox.DefaultDeniedSubnets），
-	// 但沙箱支持 NetworkAllowSubnets 显式放行特定内网服务。
-	// 沙箱 CheckURL 通过后，拨号层 DialContext 拦截器仍会做强制检查（防 DNS rebinding）。
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
+// authorizeWebFetch 对 URL 做 SSRF 安全校验。
+// 沙箱启用时由 CheckURL 统一决策（含 DNS 解析与 SSRF 网段检查）；
+// 沙箱未启用时回退到旧逻辑（validateURL + isPrivateIP）。
+// 注意：沙箱 CheckURL 与旧逻辑的网段列表等价（见 sandbox.DefaultDeniedSubnets），
+// 但沙箱支持 NetworkAllowSubnets 显式放行特定内网服务。
+// 沙箱 CheckURL 通过后，拨号层 DialContext 拦截器仍会做强制检查（防 DNS rebinding）。
+func authorizeWebFetch(ctx context.Context, rawURL string) error {
+	tc := GetToolContext(ctx)
+	if tc != nil && tc.Session != nil {
 		if sb := tc.Session.Sandbox(); sb != nil {
 			dec := sb.CheckURL(rawURL)
 			if dec.Decision == sandbox.DecisionDeny {
-				return nil, fmt.Errorf("%s", dec.Reason)
+				return fmt.Errorf("%s", dec.Reason)
 			}
-		} else if err := validateURL(rawURL); err != nil {
-			return nil, err
+			return nil
 		}
-	} else if err := validateURL(rawURL); err != nil {
-		return nil, err
 	}
+	return validateURL(rawURL)
+}
 
-	// 获取 Session 与落盘路径；logger 从 ToolContext 注入（禁止内部创建日志）。
-	tc := GetToolContext(ctx)
-	var logger logging.Logger
-	if tc != nil {
-		logger = tc.Logger
-	}
-	var filePath, dirPath string
-	if tc != nil && tc.Session != nil {
-		filePath, dirPath = webFetchCachePath(tc.Session.SessionDir(), rawURL)
-	}
-
+// performWebFetch 执行网页内容获取核心逻辑：缓存检查、HTTP 请求、内容处理与输出。
+func performWebFetch(ctx context.Context, t *WebFetchTool, logger logging.Logger, rawURL, filePath, dirPath string) (string, error) {
 	// 文件缓存命中检查：文件存在且 mtime 在 24h 内 → 跳过网络，按行数决定返回形态。
 	if filePath != "" {
 		if info, statErr := os.Stat(filePath); statErr == nil && time.Since(info.ModTime()) < webFetchCacheTTL {
@@ -231,7 +209,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		FollowRedirects: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+		return "", fmt.Errorf("%s（原始错误：%w）", BuildGuide(
 			fmt.Sprintf("尝试获取 URL %q，但网络请求失败", rawURL),
 			WithErrDetail(fmt.Sprintf("向 %q 发起请求时网络连接失败", rawURL), err),
 			"确认网络可达（若目标站点需代理或当前网络受限，应换用其它工具或告知用户）",
@@ -250,7 +228,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 		case resp.StatusCode >= 500:
 			cause = fmt.Sprintf("目标返回了 HTTP %d，服务器异常或过载", resp.StatusCode)
 		}
-		return nil, fmt.Errorf("%s", BuildGuide(
+		return "", fmt.Errorf("%s", BuildGuide(
 			fmt.Sprintf("尝试获取 URL %q，但目标返回了 HTTP %d 状态码", rawURL, resp.StatusCode),
 			cause,
 			"检查 URL 是否正确；若为 404 说明资源不存在，应修正 URL；若为 403/5xx 说明访问受限或服务异常，应稍后重试或告知用户，不要反复请求同一 URL",
@@ -263,7 +241,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
+		return "", fmt.Errorf("%s（原始错误：%w）", BuildGuide(
 			fmt.Sprintf("尝试获取 URL %q，但读取页面内容失败", rawURL),
 			WithErrDetail(fmt.Sprintf("读取 %q 的页面内容时传输中断或响应体异常", rawURL), err),
 			"页面可能在传输过程中中断，稍后重试或更换其他来源",
@@ -296,7 +274,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	// 创建 .webfetch 目录
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return nil, fmt.Errorf("创建 WebFetch 缓存目录失败: %w", err)
+		return "", fmt.Errorf("创建 WebFetch 缓存目录失败: %w", err)
 	}
 
 	// 截断到 240KB（Read 的 256KB 硬限制约束），超限追加注释行说明
@@ -309,7 +287,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	// 写文件（覆盖式，缓存过期后重新抓取直接覆盖）
 	if err := os.WriteFile(filePath, []byte(storedContent), 0644); err != nil {
-		return nil, fmt.Errorf("写入 WebFetch 缓存文件失败: %w", err)
+		return "", fmt.Errorf("写入 WebFetch 缓存文件失败: %w", err)
 	}
 
 	// SessionDir 位于沙箱 AllowedDirs（如 ~/.mindx）子树内，isOutsideWorkspace 默认放行，
@@ -322,6 +300,31 @@ func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any,
 	}
 
 	return formatWebFetchPathOutput(rawURL, filePath, lines, len(storedContent), byteTruncated), nil
+}
+
+// Execute 编排 WebFetch 工具执行流程：validate → authorize → perform。
+func (t *WebFetchTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+	rawURL, err := validateWebFetchURL(params)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := authorizeWebFetch(ctx, rawURL); err != nil {
+		return nil, err
+	}
+
+	// 获取 Session 与落盘路径；logger 从 ToolContext 注入（禁止内部创建日志）。
+	tc := GetToolContext(ctx)
+	var logger logging.Logger
+	if tc != nil {
+		logger = tc.Logger
+	}
+	var filePath, dirPath string
+	if tc != nil && tc.Session != nil {
+		filePath, dirPath = webFetchCachePath(tc.Session.SessionDir(), rawURL)
+	}
+
+	return performWebFetch(ctx, t, logger, rawURL, filePath, dirPath)
 }
 
 // formatWebFetchOutput 格式化小页面（≤500 行）或回退截断场景的输出。
@@ -338,7 +341,7 @@ func formatWebFetchOutput(rawURL, content string, originalLen int, truncated boo
 }
 
 // formatWebFetchPathOutput 生成大页面（>500 行）落盘后的引导输出。
-// 用绝对路径，匹配 ResolveTargetPath 对绝对路径直通的语义（utils.go:478-479）。
+// 用绝对路径，匹配 ResolveTargetPath 对绝对路径直通的语义。
 // 文案保持简洁：WebFetch 只负责落盘并告知路径，分页读法由 Read 的 Prompt 说明，
 // 不在 WebFetch 侧重复，保持工具正交。
 func formatWebFetchPathOutput(rawURL, filePath string, lines, bytes int, byteTruncated bool) string {

@@ -1,25 +1,25 @@
 package rule
 
-// RuleScope defines the applicability scope of a behavior rule.
+// RuleScope 定义行为规则的适用范围。
 type RuleScope string
 
 const (
-	// ScopeGlobal applies to all agents across all sessions.
+	// ScopeGlobal 适用于所有会话中的所有 agent。
 	ScopeGlobal RuleScope = "global"
 
-	// ScopeLocal applies only to the agent it was registered on.
-	// Survives across sessions for that agent.
+	// ScopeLocal 仅适用于注册该规则的 agent。
+	// 对于该 agent，在会话之间持久保留。
 	ScopeLocal RuleScope = "local"
 
-	// ScopeConversation applies only to the current session/conversation.
-	// Cleared when the session ends or the agent switches identity.
+	// ScopeConversation 仅适用于当前会话/对话。
+	// 在会话结束或 agent 切换身份时清除。
 	ScopeConversation RuleScope = "conversation"
 )
 
-// Rule defines a single behavior constraint for an AI agent.
-// Rules are injected into the System Prompt as MUST-follow behavioral norms.
+// Rule 定义 AI agent 的单条行为约束。
+// 规则作为必须遵守的行为规范注入到 System Prompt 中。
 //
-// Example:
+// 示例:
 //
 //	rule := Rule{
 //	    ID:       "no-delete-prod",
@@ -36,15 +36,15 @@ type Rule struct {
 	Enabled  bool      `json:"enabled" yaml:"enabled"`
 }
 
-// RuleRegistry manages behavior rules for an agent.
-// Rules are rendered into the System Prompt's <behavioral_rules> section
-// before each LLM call, allowing dynamic behavior control.
+// RuleRegistry 管理 agent 的行为规则。
+// 规则在每次 LLM 调用前渲染到 System Prompt 的 <behavioral_rules> 段落中，
+// 从而实现动态行为控制。
 //
-// RuleRegistry manages behavioral rules that define WHAT an agent SHOULD do
-// or MUST NOT do. Rules are STATIC constraints (e.g., "always ask before executing
-// destructive commands") that apply regardless of the current Intent or context.
-// This is distinct from IntentRegistry which dynamically classifies WHAT the user
-// WANTS to do — rules define "should/must", intent identifies "wants".
+// RuleRegistry 管理用于定义 agent 应该做什么或禁止做什么的行为规则。
+// 规则是静态约束（例如"执行破坏性命令前必须先询问"），
+// 无论当前 Intent 或上下文如何都适用。
+// 这与 IntentRegistry 不同，后者动态地识别用户想要做什么——
+// 规则定义"应该/必须"，Intent 识别"想要"。
 type RuleRegistry interface {
 	Register(rule Rule) error
 	Unregister(id string)

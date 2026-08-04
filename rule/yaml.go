@@ -9,19 +9,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ruleYAML is the internal structure for YAML rule file parsing.
+// ruleYAML 是 YAML 规则文件解析的内部结构。
 type ruleYAML struct {
 	Rules []Rule `yaml:"rules"`
 }
 
-// YAMLRuleRegistry implements RuleRegistry by loading rules from a YAML file.
-// Thread-safe with read-write locking for concurrent access.
+// YAMLRuleRegistry 通过从 YAML 文件加载规则来实现 RuleRegistry。
+// 通过读写锁保证并发访问的线程安全。
 type YAMLRuleRegistry struct {
 	mu    sync.RWMutex
 	rules []Rule
 }
 
-// NewYAMLRuleRegistry creates a new YAMLRuleRegistry by loading rules from the given YAML file path.
+// NewYAMLRuleRegistry 通过从给定 YAML 文件路径加载规则来创建新的 YAMLRuleRegistry。
 func NewYAMLRuleRegistry(yamlPath string) (*YAMLRuleRegistry, error) {
 	absPath, err := filepath.Abs(yamlPath)
 	if err != nil {
@@ -34,8 +34,8 @@ func NewYAMLRuleRegistry(yamlPath string) (*YAMLRuleRegistry, error) {
 	return reg, nil
 }
 
-// MustYAMLRuleRegistry creates a new YAMLRuleRegistry or panics on error.
-// Useful for initialization in package-level variables.
+// MustYAMLRuleRegistry 创建新的 YAMLRuleRegistry，出错时 panic。
+// 适用于包级变量的初始化场景。
 func MustYAMLRuleRegistry(yamlPath string) *YAMLRuleRegistry {
 	reg, err := NewYAMLRuleRegistry(yamlPath)
 	if err != nil {
@@ -44,8 +44,8 @@ func MustYAMLRuleRegistry(yamlPath string) *YAMLRuleRegistry {
 	return reg
 }
 
-// load reads and parses rules from a YAML file.
-// Validates that all rules have non-empty ID and Intro fields.
+// load 从 YAML 文件读取并解析规则。
+// 校验所有规则的 ID 和 Intro 字段均非空。
 func (r *YAMLRuleRegistry) load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -72,8 +72,8 @@ func (r *YAMLRuleRegistry) load(path string) error {
 	return nil
 }
 
-// Register adds or updates a rule in the registry.
-// If a rule with the same ID exists, it is updated.
+// Register 在注册表中添加或更新一条规则。
+// 若存在相同 ID 的规则，则更新该规则。
 func (r *YAMLRuleRegistry) Register(rule Rule) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -87,8 +87,8 @@ func (r *YAMLRuleRegistry) Register(rule Rule) error {
 	return nil
 }
 
-// Unregister removes a rule from the registry by ID.
-// No-op if the rule doesn't exist.
+// Unregister 按 ID 从注册表中移除一条规则。
+// 若规则不存在则为空操作。
 func (r *YAMLRuleRegistry) Unregister(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,7 +100,7 @@ func (r *YAMLRuleRegistry) Unregister(id string) {
 	}
 }
 
-// Get retrieves a rule by ID. Returns the rule and true if found, nil and false otherwise.
+// Get 按 ID 检索一条规则。找到时返回该规则和 true，否则返回 nil 和 false。
 func (r *YAMLRuleRegistry) Get(id string) (*Rule, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -112,7 +112,7 @@ func (r *YAMLRuleRegistry) Get(id string) (*Rule, bool) {
 	return nil, false
 }
 
-// All returns a copy of all rules in the registry.
+// All 返回注册表中所有规则的副本。
 func (r *YAMLRuleRegistry) All() []Rule {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -121,7 +121,7 @@ func (r *YAMLRuleRegistry) All() []Rule {
 	return out
 }
 
-// GetByScope returns all rules matching the given scope.
+// GetByScope 返回匹配给定范围的所有规则。
 func (r *YAMLRuleRegistry) GetByScope(scope RuleScope) []Rule {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -134,8 +134,8 @@ func (r *YAMLRuleRegistry) GetByScope(scope RuleScope) []Rule {
 	return filtered
 }
 
-// FormatPromptSection formats enabled rules as a Markdown list for inclusion in system prompts.
-// Returns empty string if no rules are defined or all rules are disabled.
+// FormatPromptSection 将已启用的规则格式化为 Markdown 列表，以便嵌入到 system prompts 中。
+// 若未定义任何规则或所有规则都被禁用，则返回空字符串。
 func (r *YAMLRuleRegistry) FormatPromptSection() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

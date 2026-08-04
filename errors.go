@@ -1,5 +1,5 @@
-// Package goharness is the main package for the AI agent framework.
-// It provides unified error definitions aliased from sub-packages for backward compatibility.
+// Package goharness 是 AI 代理框架的主包。
+// 提供从子包别名而来的统一错误定义，用于向后兼容。
 package goharness
 
 import (
@@ -7,24 +7,24 @@ import (
 	"github.com/DotNetAge/goharness/skill"
 )
 
-// Skill errors (aliased here for backward compatibility)
+// 技能错误（此处别名用于向后兼容）
 
-// ErrSkillNotFound is returned when a requested skill doesn't exist in the registry.
+// ErrSkillNotFound 当请求的技能在注册表中不存在时返回。
 var ErrSkillNotFound = skill.ErrSkillNotFound
 
-// ErrSkillExecution is returned when a skill execution fails.
+// ErrSkillExecution 当技能执行失败时返回。
 var ErrSkillExecution = skill.ErrSkillExecution
 
-// ErrSkillCompilation is returned when skill code compilation fails.
+// ErrSkillCompilation 当技能代码编译失败时返回。
 var ErrSkillCompilation = skill.ErrSkillCompilation
 
-// Memory errors (aliased here for backward compatibility)
+// 记忆错误（此处别名用于向后兼容）
 
-// ErrMemoryNotFound is returned when a requested memory record doesn't exist.
+// ErrMemoryNotFound 当请求的记忆记录不存在时返回。
 var ErrMemoryNotFound = memory.ErrMemoryNotFound
 
-// ErrMemoryStorage is returned when a memory storage operation fails.
+// ErrMemoryStorage 当记忆存储操作失败时返回。
 var ErrMemoryStorage = memory.ErrMemoryStorage
 
-// ErrMemoryRetrieval is returned when a memory retrieval operation fails.
+// ErrMemoryRetrieval 当记忆检索操作失败时返回。
 var ErrMemoryRetrieval = memory.ErrMemoryRetrieval

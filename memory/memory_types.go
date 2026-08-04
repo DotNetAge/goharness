@@ -1,6 +1,6 @@
-// Package memory provides interfaces and types for AI agent memory systems.
-// It supports both session-scoped memory (ephemeral, conversation-bound) and
-// long-term memory (persistent knowledge storage) with configurable retrieval options.
+// Package memory 提供 AI agent 记忆系统的接口和类型。
+// 它支持会话级记忆（临时的、与对话绑定的）和长期记忆（持久化知识存储），
+// 并提供可配置的检索选项。
 package memory
 
 import (
@@ -10,17 +10,17 @@ import (
 	"time"
 )
 
-// Filter keys for memory retrieval scoping.
-// These are used as Query.AddFilter keys to scope retrieval to specific agents/sessions.
+// 记忆检索范围过滤的键。
+// 这些键作为 Query.AddFilter 的键，用于将检索范围限定到特定的 agent/会话。
 const (
 	FilterKeyAgentName  = "agent_name"
 	FilterKeySessionID  = "session_id"
 	FilterKeyProjectDir = "project_dir"
 )
 
-// MemoryChunk represents a single memory piece with full metadata.
-// It is the core data structure for the memory system, distinct from
-// the knowledge base (graph) storage.
+// MemoryChunk 表示带有完整元数据的单条记忆。
+// 它是记忆系统的核心数据结构，区别于
+// 知识库（图）存储。
 type MemoryChunk struct {
 	ID         string    `json:"id"`
 	Title      string    `json:"title,omitempty"`
@@ -33,35 +33,35 @@ type MemoryChunk struct {
 	Timestamp  time.Time `json:"timestamp"`
 }
 
-// ErrMemoryNotFound is returned when a requested memory record doesn't exist.
+// ErrMemoryNotFound 在请求的记忆记录不存在时返回。
 var ErrMemoryNotFound = errors.New("记忆未找到")
 
-// ErrMemoryStorage is returned when a memory storage operation fails.
+// ErrMemoryStorage 在记忆存储操作失败时返回。
 var ErrMemoryStorage = errors.New("记忆存储失败")
 
-// ErrMemoryRetrieval is returned when a memory retrieval operation fails.
+// ErrMemoryRetrieval 在记忆检索操作失败时返回。
 var ErrMemoryRetrieval = errors.New("记忆检索失败")
 
-// MemoryType defines the type of memory for retrieval filtering.
+// MemoryType 定义用于检索过滤的记忆类型。
 type MemoryType int
 
 const (
-	// MemoryTypeSession represents ephemeral session-scoped memory.
-	// Cleared when the session ends.
+	// MemoryTypeSession 表示临时的会话级记忆。
+	// 在会话结束时清除。
 	MemoryTypeSession MemoryType = iota
 
-	// MemoryTypeLongTerm represents persistent long-term knowledge.
-	// Survives across sessions.
+	// MemoryTypeLongTerm 表示持久化的长期知识。
+	// 跨会话保留。
 	MemoryTypeLongTerm
 )
 
-// Memory defines the interface for memory storage and retrieval operations.
+// Memory 定义记忆存储和检索操作的接口。
 type Memory interface {
-	// Retrieve searches for memory chunks matching the query with optional filters.
+	// Retrieve 按查询条件搜索匹配的记忆片段，可附带可选过滤器。
 	Retrieve(ctx context.Context, query string, opts ...RetrieveOption) ([]MemoryChunk, error)
-	// Store persists a new memory chunk and returns its ID.
+	// Store 持久化一条新的记忆片段，并返回其 ID。
 	Store(ctx context.Context, chunk MemoryChunk) (string, error)
-	// Delete removes a memory chunk by ID.
+	// Delete 按 ID 移除一条记忆片段。
 	Delete(ctx context.Context, id string) error
 }
 
@@ -78,14 +78,14 @@ type SessionRetriever interface {
 	RetrieveBySession(ctx context.Context, sessionID string, limit int) ([]MemoryChunk, error)
 }
 
-// DefaultRetrieveConfig returns the default configuration for memory retrieval.
+// DefaultRetrieveConfig 返回记忆检索的默认配置。
 func DefaultRetrieveConfig() RetrieveConfig {
 	return RetrieveConfig{Limit: 5}
 }
 
-// FormatMemoryRecords formats memory chunks into a human-readable string
-// suitable for inclusion in AI prompts.
-// Format: - [时间] [标题] - [内容] 。标签:[tag1, tag2, tag3]
+// FormatMemoryRecords 将记忆片段格式化为人类可读的字符串，
+// 适合嵌入到 AI prompts 中。
+// 格式: - [时间] [标题] - [内容] 。标签:[tag1, tag2, tag3]
 func FormatMemoryRecords(chunks []MemoryChunk) string {
 	if len(chunks) == 0 {
 		return ""

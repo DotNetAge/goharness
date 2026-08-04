@@ -2,9 +2,9 @@ package utils
 
 import "strings"
 
-// StripMarkdownCodeBlock removes markdown code block markers (```...```) from content.
-// If the content does not start with ```, it is returned as-is (trimmed).
-// Handles both ```json and bare ``` opening markers.
+// StripMarkdownCodeBlock 移除内容中的 Markdown 代码块标记（```...```）。
+// 若内容不以 ``` 开头，则原样返回（仅去除首尾空白）。
+// 同时处理 ```json 和裸 ``` 开头标记。
 func StripMarkdownCodeBlock(content string) string {
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "```") {

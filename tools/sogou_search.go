@@ -57,24 +57,24 @@ func resolveSogouURL(ctx context.Context, client *stealthClient, href, searchURL
 		return ""
 	}
 
-	// 1) Try to extract URL parameter from /link?url=...
+	// 1) 尝试从 /link?url=... 中提取 URL 参数
 	encodedURL := extractURLParam(href)
 	if strings.HasPrefix(encodedURL, "http://") || strings.HasPrefix(encodedURL, "https://") {
 		return encodedURL
 	}
 
-	// 2) Already absolute
+	// 2) 已是绝对 URL
 	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
 		return href
 	}
 
-	// 3) Relative Sogou redirect — need JS redirect resolution
+	// 3) 相对搜狗重定向 — 需要 JS 重定向解析
 	if strings.HasPrefix(href, "/link?") {
 		fullURL := "https://www.sogou.com" + href
 		if target := resolveSogouJSRedirect(ctx, client, fullURL, searchURL); target != "" {
 			return target
 		}
-		// Fall back to absolute URL (may work if WebFetch follows JS redirect)
+		// 回退到绝对 URL（若 WebFetch 跟随 JS 重定向则可能生效）
 		return fullURL
 	}
 

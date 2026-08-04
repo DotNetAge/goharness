@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	// defaultCollectTimeout is the maximum time to wait for all sub-agents to complete.
+	// defaultCollectTimeout 是等待所有子代理完成的最大超时时间。
 	defaultCollectTimeout = 30 * time.Minute
-	// pollInterval is the time between sub-session polls.
+	// pollInterval 是子 session 轮询之间的间隔时间。
 	pollInterval = 2 * time.Second
 )
 
@@ -77,7 +77,7 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		"deadline_in", defaultCollectTimeout.String(),
 	)
 
-	// Strip caller's timeout to allow waiting for long-running SubAgents
+	// 去除调用方的超时限制，以允许等待长时间运行的子代理完成
 	waitCtx := context.WithoutCancel(ctx)
 
 	deadline := time.Now().Add(defaultCollectTimeout)
