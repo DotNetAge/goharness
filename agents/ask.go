@@ -27,11 +27,33 @@ type AskBuilder struct {
 	// 实现跨智能体的事件可见性。
 	parentEmit func(events.ReactEvent)
 
+	// permissionCh 是子智能体授权冒泡的等待通道。
+	// 子智能体场景下由 subAgentManager 在 spawn 时创建并注入：
+	// 当本执行循环遇到需要授权的工具时（permission_pending），不立即终止循环，
+	// 而是挂起等待主会话（用户）通过该通道送来的授权决策；
+	// 授权到达后执行挂起工具并继续循环，实现「授权后子智能体继续执行」。
+	// 主会话自身的执行循环不设置此通道，保持原有的「结束 → 下一轮魔法词恢复」行为。
+	permissionCh chan permissionSignal
+
+	// permissionSink 是子会话授权请求直达前端的旁路发送器。
+	// 由宿主（如 mindx daemon）注入到派发 ctx，spawn 时复制到 builder：
+	// 子会话触发授权时优先调用它发送授权请求，不依赖父 exec EventBus 的存活——
+	// 父 exec 结束/被取消后其订阅销毁，原 parentEmit 转发链路会静默丢事件，
+	// 导致前端收不到授权弹窗、子会话只能干等到 permission_timeout。
+	// 未注入（如测试环境）时退回原 parentEmit 转发链路，行为保持不变。
+	permissionSink PermissionSink
+
 	resultAnswer            string
 	resultUsage             session.TokenUsage
 	resultIterations        int
 	resultDuration          time.Duration
 	resultTerminationReason string
+}
+
+// permissionSignal 承载外部（主会话）对子智能体权限请求的授权决策。
+type permissionSignal struct {
+	// action 为魔法词动作：tools.PermissionAllow / tools.PermissionAllowSession / tools.PermissionDeny。
+	action string
 }
 
 func (b *AskBuilder) on(typ events.ReactEventType, fn func(data any)) *AskBuilder {
@@ -228,7 +250,7 @@ func (b *AskBuilder) OnTaskSummary(fn func(data events.TaskSummaryData)) *AskBui
 }
 
 // OnUserMessageSaved 注册一个处理器，在真实用户消息追加到会话后立即触发
-//（魔法词不会被追加，因此不会触发）。处理器接收后端消息的 Timestamp，
+// （魔法词不会被追加，因此不会触发）。处理器接收后端消息的 Timestamp，
 // 前端将其存为 backendTimestamp，以支持对刚发送轮次的 session.delete_round
 // 操作——甚至在会话重新加载之前即可执行。
 func (b *AskBuilder) OnUserMessageSaved(fn func(data events.UserMessageSavedData)) *AskBuilder {
@@ -251,7 +273,7 @@ func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)
 }
 
 // OnEvent 注册一个全量处理器，在执行循环发射每个 ReactEvent 时触发
-//（先于类型特定处理器）。处理器接收完整的 ReactEvent，包含 AgentName、
+// （先于类型特定处理器）。处理器接收完整的 ReactEvent，包含 AgentName、
 // SessionID、Type 和 Data。适用于跟踪「哪个智能体产生了事件」等元数据。
 func (b *AskBuilder) OnEvent(fn func(events.ReactEvent)) *AskBuilder {
 	b.onAnyEvent = append(b.onAnyEvent, fn)

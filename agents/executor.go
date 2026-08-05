@@ -136,12 +136,19 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// 这一步发生在追加用户消息之前，这样：
 	//   - Allow 时，工具结果消息（使用原始 tool_call_id）已经存在于会话中，供下一次 LLM 调用。
 	//   - 会话中 "assistant with tool_call" 与 "tool" 消息成对，满足 OpenAI 严格校验。
-	magicHandled := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, logger)
+	magicHandled, magicRouted := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, logger)
 
 	// 魔法词已被消费时清空 b.question（避免下方循环将其作为普通用户消息重新注入 LLM 调用）；
 	// 否则将用户消息追加到会话。用同一个 ts 构造消息和事件，避免两次 time.Now() 跨秒不一致。
 	if magicHandled {
 		b.question = ""
+		// 纯路由到子会话：带目标魔法词只把授权决策转发给子会话（子会话已异步继续执行），
+		// 主会话没有执行任何工具、也没有新信息需要消化。若继续进入 LLM 循环，
+		// 会白跑一次调用且上下文与上一轮完全相同。直接结束本轮 exec。
+		if magicRouted {
+			b.resultTerminationReason = "magicword_consumed"
+			return
+		}
 	} else {
 		ts := time.Now().Unix()
 		if !appendAndAbort(-1, session.Message{
@@ -246,21 +253,44 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// ── 调试：打印完整系统提示词 ──
 		logSystemPromptDebug(rt.logger, sid, iter, msgs)
 
-		// ── 流式调用 LLM ──
-		logger.Info("LLM思想流开始", "session", sid, "iter", iter)
-
-		stream, err := rt.llmClient.Stream(ctx, LLMRequest{
-			Messages:          msgs,
-			Model:             rt.model.Name,
-			Temperature:       rt.model.Temperature,
-			TopP:              rt.model.TopP,
-			TopK:              rt.model.TopK,
-			RepetitionPenalty: rt.model.RepetitionPenalty,
-			FrequencyPenalty:  rt.model.FrequencyPenalty,
-			Tools:             toolDefs,
-			ToolChoice:        "auto",
-			Timeout:           defaultLLMTimeout,
-		})
+		// ── 流式调用 LLM（失败自愈：工具配对错误时截断会话重试一次）──
+		// 正常路径只尝试一次；仅当首次调用返回「工具调用配对不完整」类 400 错误时，
+		// 自动截断会话中的坏轮次并重试一次（最多 2 次尝试），避免整个会话作废。
+		var (
+			stream *gochatcore.Stream
+			err    error
+		)
+		for attempt := 1; ; attempt++ {
+			logger.Info("LLM思想流开始", "session", sid, "iter", iter, "attempt", attempt)
+			stream, err = rt.llmClient.Stream(ctx, LLMRequest{
+				Messages:          msgs,
+				Model:             rt.model.Name,
+				Temperature:       rt.model.Temperature,
+				TopP:              rt.model.TopP,
+				TopK:              rt.model.TopK,
+				RepetitionPenalty: rt.model.RepetitionPenalty,
+				FrequencyPenalty:  rt.model.FrequencyPenalty,
+				Tools:             toolDefs,
+				ToolChoice:        "auto",
+				Timeout:           defaultLLMTimeout,
+			})
+			if err == nil {
+				break
+			}
+			if attempt < 2 && isToolPairingError(err) {
+				logger.Warn("检测到工具调用配对错误，尝试截断会话后重试",
+					"session", sid, "iter", iter, "error", err)
+				if repairToolPairingBreak(ctx, b.session, logger) {
+					// 会话已截断，重新读取窗口并组装消息，进入下一次尝试。
+					window = b.session.Current()
+					msgs = AssembleMessages(callInput.SystemPromptSections, window, question)
+					continue
+				}
+				logger.Warn("会话修复失败或窗口内无配对断裂，不再重试",
+					"session", sid, "iter", iter)
+			}
+			break
+		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				logger.Info("LLM思想流被用户取消", "session", sid, "iter", iter, "elapsed", time.Since(start))
@@ -391,6 +421,22 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Summary:    fmt.Sprintf("请求授权执行工具: %s，等待用户批准...", pending.ToolName),
 				TokenUsage: totalUsage,
 			})
+			// 子智能体授权冒泡：子会话挂起等待主会话（用户）的授权决策，
+			// 授权后执行挂起工具并继续循环，而不是像主会话那样以
+			// permission_pending 终止并等待下一轮魔法词重新进入。
+			// 主会话自身不设置 permissionCh，保持原有行为不变。
+			if b.permissionCh != nil {
+				logger.Info("子智能体循环挂起: 工具需要授权，等待主会话授权",
+					"tool", pending.ToolName, "session", sid)
+				rt.waitForPermissionDecision(ctx, b, pending, toolExec, emit, logger)
+				if b.resultTerminationReason != "" {
+					// 授权等待超时（permission_timeout）或上下文取消（cancelled）
+					setIterResult(iter)
+					return
+				}
+				// 授权决策已消费并执行挂起工具，继续下一轮循环
+				continue
+			}
 			b.resultTerminationReason = "permission_pending"
 			setIterResult(iter)
 			logger.Info("循环暂停: 工具需要授权，等待用户批准", "tool", pending.ToolName)

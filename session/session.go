@@ -400,6 +400,17 @@ func (s *Session) Current() []Message {
 	return copyMessages(s.messages[s.cursor:])
 }
 
+// Cursor 返回活跃窗口的起始偏移量，即完整消息数组中当前窗口的起点索引。
+// 当前窗口定义为 messages[cursor:]。当需要把「基于窗口内容计算出的索引」
+// 转换为对完整消息数组的绝对索引时（如按窗口检测结果执行 Truncate），
+// 必须叠加本方法返回的偏移量。
+func (s *Session) Cursor() int {
+	s.ensureLoaded(context.Background())
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cursor
+}
+
 // loadMessages 从持久化存储加载消息和 cursor。
 // 返回错误表示加载失败，调用方决定是否处理。
 func (s *Session) loadMessages(ctx context.Context) error {
@@ -465,6 +476,12 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 
 	// 从存储恢复追踪的已修改文件（如果有）。
 	s.loadModifyFiles()
+
+	// 从磁盘恢复待处理授权（session-permission.json）。
+	// 主会话授权链依赖此恢复：daemon 每次 user.message 都会 Load 全新 Session，
+	// 上一轮以 permission_pending 终止留下的 pending 必须在此重建，
+	// 否则下一轮魔法词（PermissionAllow/Deny）无法解析。
+	s.loadPendingPermission()
 
 	s.loaded = true
 }
@@ -765,19 +782,40 @@ func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 // 存储在会话上意味着待处理状态可以在 Ask() 边界之间存活 ——
 // 这正是魔法词流程所需的：循环停止，用户输入 "PermissionAllow"，
 // 运行时在同一会话中查找待处理的调用，并通过实际运行工具来恢复。
+//
+// 持久化到 {SessionDir()}/session-permission.json：daemon 每个 user.message
+// 都会 Load 全新 Session 实例，若只在内存保存，魔法词到达时 pending 必然丢失，
+// 主会话授权链就会断裂。落盘失败仅记录日志（尽力而为）。
 func (s *Session) SetPendingPermission(p PendingPermission) {
+	s.ensureLoaded(context.Background())
 	s.pendingMu.Lock()
 	s.pendingPermission = &p
 	s.pendingMu.Unlock()
+	s.persistPendingPermission(&p)
 }
 
 // TakePendingPermission 原子地读取并清除待处理的调用。
 // 当运行时在用户消息中检测到权限魔法词时调用此方法。
 // 如果没有待处理的调用，返回 nil（在这种情况下，魔法词被视为常规用户消息）。
+// 清除时同步删除磁盘上的待处理授权文件，避免残留导致下一轮误恢复。
 func (s *Session) TakePendingPermission() *PendingPermission {
+	s.ensureLoaded(context.Background())
 	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
 	p := s.pendingPermission
 	s.pendingPermission = nil
+	s.pendingMu.Unlock()
+	if p != nil {
+		s.persistPendingPermission(nil)
+	}
 	return p
+}
+
+// HasPendingPermission 报告会话当前是否存在等待用户授权的工具调用。
+// 子智能体授权冒泡场景下，主会话据此判断是否存在挂起等待授权的子会话，
+// 以决定是否将魔法词路由到子智能体。
+func (s *Session) HasPendingPermission() bool {
+	s.ensureLoaded(context.Background())
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	return s.pendingPermission != nil
 }

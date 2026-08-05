@@ -83,9 +83,10 @@ func TestRuntime_SubAgentSession_AutoInjectsSandbox(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()), WithSandbox(sb))
 	store := newFakeSessionStore()
 
-	sess := rt.subAgents.getOrCreate("sub-agent", projectDir, "", store)
-	require.NotNil(t, sess, "子会话应创建成功")
-	assert.Equal(t, sb, sess.Sandbox(), "子会话应自动注入沙箱")
+	st, err := rt.subAgents.getOrCreate(context.Background(), "sub-agent", projectDir, "", store, "")
+	require.NoError(t, err, "子会话应创建成功")
+	require.NotNil(t, st, "子会话状态应非空")
+	assert.Equal(t, sb, st.sess.Sandbox(), "子会话应自动注入沙箱")
 }
 
 // TestRuntime_SubAgentSession_NoSandboxWhenNotSet 验证未配置沙箱时子会话不注入。
@@ -94,9 +95,10 @@ func TestRuntime_SubAgentSession_NoSandboxWhenNotSet(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()))
 	store := newFakeSessionStore()
 
-	sess := rt.subAgents.getOrCreate("sub-agent", projectDir, "", store)
-	require.NotNil(t, sess, "子会话应创建成功")
-	assert.Nil(t, sess.Sandbox(), "未配置沙箱时子会话不应注入沙箱")
+	st, err := rt.subAgents.getOrCreate(context.Background(), "sub-agent", projectDir, "", store, "")
+	require.NoError(t, err, "子会话应创建成功")
+	require.NotNil(t, st, "子会话状态应非空")
+	assert.Nil(t, st.sess.Sandbox(), "未配置沙箱时子会话不应注入沙箱")
 }
 
 // TestRuntime_SubAgentSession_SandboxReusedAcrossSessions 验证同一 Runtime 创建的多个子会话共享同一沙箱实例。
@@ -106,12 +108,14 @@ func TestRuntime_SubAgentSession_SandboxReusedAcrossSessions(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()), WithSandbox(sb))
 	store := newFakeSessionStore()
 
-	sess1 := rt.subAgents.getOrCreate("agent-a", projectDir, "", store)
-	sess2 := rt.subAgents.getOrCreate("agent-b", projectDir, "", store)
-	require.NotNil(t, sess1)
-	require.NotNil(t, sess2)
-	assert.Equal(t, sb, sess1.Sandbox(), "agent-a 会话应注入沙箱")
-	assert.Equal(t, sb, sess2.Sandbox(), "agent-b 会话应注入同一沙箱实例")
+	st1, err1 := rt.subAgents.getOrCreate(context.Background(), "agent-a", projectDir, "", store, "")
+	st2, err2 := rt.subAgents.getOrCreate(context.Background(), "agent-b", projectDir, "", store, "")
+	require.NoError(t, err1)
+	require.NoError(t, err2)
+	require.NotNil(t, st1)
+	require.NotNil(t, st2)
+	assert.Equal(t, sb, st1.sess.Sandbox(), "agent-a 会话应注入沙箱")
+	assert.Equal(t, sb, st2.sess.Sandbox(), "agent-b 会话应注入同一沙箱实例")
 }
 
 // TestRuntime_MainSession_ManualInject 验证主会话通过 rt.Sandbox() 手动注入。

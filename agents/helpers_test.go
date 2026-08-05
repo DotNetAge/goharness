@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/config"
@@ -77,10 +78,36 @@ func (s *fakeSessionStore) SetSlideHandler(_ session.SlideHandler) {}
 
 func (s *fakeSessionStore) Close() error { return nil }
 
-func (s *fakeSessionStore) ListSessions(_ context.Context) ([]session.SessionInfo, error) { return nil, nil }
+func (s *fakeSessionStore) ListSessions(_ context.Context) ([]session.SessionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]session.SessionInfo, 0, len(s.meta))
+	for _, m := range s.meta {
+		if m != nil {
+			out = append(out, *m)
+		}
+	}
+	return out, nil
+}
 
-func (s *fakeSessionStore) Create(_ context.Context, _ string, _ ...session.SessionOption) (*session.SessionInfo, error) {
-	return nil, nil
+func (s *fakeSessionStore) Create(_ context.Context, agentName string, opts ...session.SessionOption) (*session.SessionInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	info := &session.SessionInfo{
+		SessionID:      fmt.Sprintf("sess_%d", time.Now().UnixNano()),
+		AgentName:      agentName,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	for _, opt := range opts {
+		opt(info)
+	}
+	if info.ProjectDir == "" {
+		info.ProjectDir = "/tmp"
+	}
+	s.meta[info.SessionID] = info
+	return info, nil
 }
 
 func (s *fakeSessionStore) GetMeta(_ context.Context, sessionID string) (*session.SessionInfo, error) {
@@ -128,7 +155,16 @@ func (s *fakeSessionStore) UpdateMessages(_ context.Context, _ string, _ int, _ 
 	return nil
 }
 
-func (s *fakeSessionStore) Truncate(_ context.Context, _ string, _ int) error { return nil }
+func (s *fakeSessionStore) Truncate(_ context.Context, sessionID string, keepCount int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs := s.messages[sessionID]
+	if keepCount >= len(msgs) {
+		return nil
+	}
+	s.messages[sessionID] = append([]session.Message(nil), msgs[:keepCount]...)
+	return nil
+}
 
 func (s *fakeSessionStore) ensureMeta(sess *session.Session) {
 	s.mu.Lock()
@@ -196,10 +232,10 @@ func (k *fakeKVStore) ClearSession(_ context.Context, sessionID string) error {
 
 // fakeTool 是可定制的工具实现，用于测试权限、执行和注册逻辑。
 type fakeTool struct {
-	info       *tools.ToolInfo
-	execute    func(ctx context.Context, params map[string]any) (any, error)
-	grant      func(ctx context.Context, params map[string]any) (bool, string)
-	isAsync    bool
+	info        *tools.ToolInfo
+	execute     func(ctx context.Context, params map[string]any) (any, error)
+	grant       func(ctx context.Context, params map[string]any) (bool, string)
+	isAsync     bool
 	invokeCount int
 }
 

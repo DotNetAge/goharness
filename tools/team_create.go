@@ -17,8 +17,10 @@ func NewTeamCreateTool(spawn SpawnFunc) *TeamCreateTool {
 func (t *TeamCreateTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "TeamCreate",
-		Description: "创建一个代理团队来协作完成复杂任务。团队负责人协调工作并委派给团队成员。",
-		Prompt: `创建一个代理团队来协作解决复杂任务。
+		Description: "创建一个代理团队（仅登记团队名称、负责人与成员，不运行任何子代理）。创建后需由你自行使用 SubAgent 将任务分派给成员。",
+		Prompt: `创建一个代理团队，仅登记团队定义（team_name、leader、members 及可选的任务规划条目）。
+
+重要：此工具不会启动或运行任何子代理，也不会自动分派工作。团队成员不会自动开始执行任务。
 
 团队包括：
 - 团队负责人（你或指定的代理）负责协调工作
@@ -27,23 +29,7 @@ func (t *TeamCreateTool) Info() *ToolInfo {
 使用场景：
 - 任务对单个代理来说太复杂
 - 需要多个专业代理协作
-- 你想组织有协调的并行工作流
-
-团队创建是立即的。创建团队后，使用 TaskCreate 创建规划条目，
-使用 SubAgent/Agent 工具将工作分派给成员。
-
-必需参数：
-- team_name：团队的简短唯一名称（kebab-case，例如 "data-analysis-team"）
-- description：团队正在做什么
-- leader：团队负责人代理的名称（通常是你自己）
-- members：将成为团队成员的代理名称数组
-
-可选参数：
-- tasks：为每个成员创建规划条目的任务描述数组
-
-返回：
-- team_name、leader、members 列表
-- 如果创建了任务则返回 task_ids`,
+- 你想组织有协调的并行工作流`,
 		Tags: []string{"team", "create", "swarm", "orchestration", "collaboration"},
 		Parameters: []Parameter{
 			{Name: "team_name", Type: "string", Description: "团队的简短唯一名称（kebab-case）。", Required: true},
@@ -134,12 +120,12 @@ func (t *TeamCreateTool) Execute(ctx context.Context, params map[string]any) (an
 		"team_name": teamName,
 		"leader":    leader,
 		"members":   members,
-		"message":   fmt.Sprintf("团队 %q 已创建，包含 %d 个成员", teamName, len(members)),
+		"message":   fmt.Sprintf("团队 %q 已创建，包含 %d 个成员。下一步：用 TaskCreate 为成员创建规划条目，再用 SubAgent 将任务委派给对应成员——成员不会自动开始工作。", teamName, len(members)),
 	}
 
 	if len(taskIDs) > 0 {
 		result["task_ids"] = taskIDs
-		result["message"] = fmt.Sprintf("团队 %q 已创建，包含 %d 个成员，并创建了 %d 个任务", teamName, len(members), len(taskIDs))
+		result["message"] = fmt.Sprintf("团队 %q 已创建，包含 %d 个成员，并创建了 %d 个任务。下一步：用 SubAgent 将任务委派给对应成员——成员不会自动开始工作。", teamName, len(members), len(taskIDs))
 	}
 
 	return result, nil

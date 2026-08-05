@@ -23,10 +23,6 @@ func (t *TaskListTool) Info() *ToolInfo {
 - 识别被阻塞的任务及其依赖关系
 - 查看哪些任务分配给了谁
 
-可选过滤器：
-- status_filter：仅显示此状态的任务（pending、in_progress、completed、cancelled）
-- owner_filter：仅显示分配给此代理的任务
-
 返回列表包含：
 - task_id：每个任务的唯一标识符
 - subject：简短标题
@@ -35,8 +31,8 @@ func (t *TaskListTool) Info() *ToolInfo {
 - blocked_by：阻塞此任务的任务（如果有）`,
 		Tags: []string{"task", "list", "status", "planning"},
 		Parameters: []Parameter{
-			{Name: "status_filter", Type: "string", Description: "可选：按状态过滤（pending、in_progress、completed、cancelled）。", Required: false},
-			{Name: "owner_filter", Type: "string", Description: "可选：按分配的所有者过滤。", Required: false},
+			{Name: "status_filter", Type: "string", Description: "仅显示此状态的任务（pending、in_progress、completed、cancelled）。", Required: false},
+			{Name: "owner_filter", Type: "string", Description: "仅显示分配给此代理的任务。", Required: false},
 		},
 	}
 }

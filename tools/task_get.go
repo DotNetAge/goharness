@@ -23,9 +23,6 @@ func (t *TaskGetTool) Info() *ToolInfo {
 - 检查哪些任务阻塞此任务（blockedBy）或被此任务阻塞（blocks）
 - 获取需要完成内容的完整描述
 
-必需参数：
-- task_id：任务的唯一标识符（来自 TaskCreate 或 TaskList）
-
 返回：
 - task_id、subject、description、status
 - owner：负责人

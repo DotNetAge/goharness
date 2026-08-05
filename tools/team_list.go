@@ -20,15 +20,7 @@ func (t *TeamListTool) Info() *ToolInfo {
 用途：
 - 查看所有活跃团队
 - 查找用于其他团队操作的团队名称
-- 监控团队组成和任务分配
-
-返回：
-- team_name：团队的唯一标识符
-- leader：团队负责人代理
-- members：团队成员代理列表
-- task_ids：分派给团队的任务
-- status：active 或 completed
-- created_at：团队创建时间`,
+- 监控团队组成和任务分配`,
 		Tags:       []string{"team", "list", "status", "orchestration"},
 		Parameters: []Parameter{},
 	}

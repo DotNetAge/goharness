@@ -64,7 +64,7 @@ func WithTokenUsageStore(store session.TokenUsageStore) RuntimeConfig {
 
 // WithKVStore 设置会话级键值存储后端。
 // 该存储注入到 ToolContext 中，使任务管理工具
-//（TaskCreate/TaskGet/TaskUpdate/TaskList）及其他 KV 感知工具
+// （TaskCreate/TaskGet/TaskUpdate/TaskList）及其他 KV 感知工具
 // 可以持久化会话级状态。若未设置，这些工具在执行时返回
 // "KVStore 不可用"。
 func WithKVStore(kv store.KVStore) RuntimeConfig {
@@ -95,7 +95,7 @@ func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
 
 // WithSearchStrategy 覆盖系统提示词中默认的搜索策略段落。
 // 传入的函数无参数，应返回完整的段落字符串
-//（空字符串则省略整个段落）。
+// （空字符串则省略整个段落）。
 // 为 nil 时（默认），使用内置的 buildSearchPriority。
 func WithSearchStrategy(builder func() string) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.searchStrategyBuilder = builder }

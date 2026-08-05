@@ -136,9 +136,9 @@ type Runtime struct {
 	asyncTimeout time.Duration
 	syncTimeout  time.Duration
 
-	// subAgents 管理子智能体的会话缓存与派生执行（详见 subAgentManager）。
-	// 保证"同一 Agent + 同一 ProjectDir = 同一会话 ID"：同一子智能体在同一项目中复用同一会话，
-	// 以维持对话连续性。
+	// subAgents 管理子智能体的会话登记与派生执行（详见 subAgentManager）。
+	// 以 SessionID 为唯一键定位会话：不传 ID 时每次新建（分身/并行委派），
+	// 传 ID 时复用旧会话（延续对话）。
 	subAgents *subAgentManager
 
 	// tokenUsageStore 持久化大语言模型 token 使用记录，包含分组维度与成本。
@@ -288,16 +288,16 @@ func (rt *Runtime) registerDefaultTools() {
 			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.prompt.skillReg.GetSkill) }),
 			toolOf("SubAgent", func() *tools.SubAgentTool {
 				subAgentTool := tools.NewSubAgentTool(rt.subAgents.spawn)
-				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName string) (string, error) {
+				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName, sessionID string) (string, error) {
 					tc := tools.GetToolContext(ctx)
 					if tc == nil || tc.Session == nil {
 						return "", fmt.Errorf("上下文未包含会话")
 					}
-					sess := rt.subAgents.getOrCreate(agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store())
-					if sess == nil {
-						return "", fmt.Errorf("获取子智能体会话失败: %q", agentName)
+					st, err := rt.subAgents.getOrCreate(ctx, agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store(), sessionID)
+					if err != nil {
+						return "", err
 					}
-					return sess.ID(), nil
+					return st.sess.ID(), nil
 				})
 				return subAgentTool
 			}),

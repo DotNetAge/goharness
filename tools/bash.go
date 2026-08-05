@@ -112,10 +112,7 @@ func (t *BashTool) Info() *ToolInfo {
 - 内容搜索：使用 Grep（不要用 grep）
 - 读取文件：使用 Read（不要用 cat/head/tail）
 - 编辑文件：使用 Edit（不要用 sed/awk）
-- 写入文件：使用 Write（不要用 tee/cat）
-
-- 如果命令将创建新目录或文件，先用 Ls 验证父目录存在。
-- 始终用双引号引用包含空格的文件路径。`,
+- 写入文件：使用 Write（不要用 tee/cat）`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: events.LevelHighRisk,
 		Parameters: []Parameter{

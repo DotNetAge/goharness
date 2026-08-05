@@ -23,14 +23,7 @@ func (t *TeamDeleteTool) Info() *ToolInfo {
 
 删除前：
 - 所有团队成员应已完成其任务
-- 使用 TeamList 验证团队状态
-
-必需参数：
-- team_name：要删除的团队名称
-
-返回：
-- success：团队是否已删除
-- message：状态消息`,
+- 使用 TeamList 验证团队状态`,
 		Tags: []string{"team", "delete", "cleanup", "orchestration"},
 		Parameters: []Parameter{
 			{Name: "team_name", Type: "string", Description: "要删除的团队名称。", Required: true},

@@ -99,21 +99,62 @@ const (
 )
 
 // ClassifyMagicWord 在去除首尾空白后返回用户消息所暗示的魔法词动作，
-// 若该消息不是魔法词则返回 ""。
+// 若该消息不是魔法词则返回零值（Action 为空字符串）。
 //
 // 检测范围被刻意收窄——核心目的是让权限校验流程对 LLM 不可见。
 // 除与 PermissionAllow / PermissionDeny 精确匹配（去除空白、不区分大小写）外，
 // 其他任何内容都被视为普通用户消息。
-func ClassifyMagicWord(msg string) string {
+//
+// 支持可选目标格式："<魔法词>: <session_id>"（如 "PermissionAllow: 9f8b..."）。
+// 目标用于子智能体授权冒泡：多个子会话并发挂起等待授权时，
+// 前端在某个子会话的授权弹窗上点击允许/拒绝，魔法词携带该子会话 ID，
+// 后端据此精确路由，避免先到先服务的决策错位。不携带目标时保持
+// 先到先服务路由（与旧行为完全一致）。
+func ClassifyMagicWord(msg string) PermissionMagicWord {
 	trimmed := strings.TrimSpace(msg)
+	if action, target, ok := parseMagicWordTarget(trimmed); ok {
+		return PermissionMagicWord{Action: action, SessionID: target}
+	}
 	switch {
 	case strings.EqualFold(trimmed, PermissionAllow):
-		return PermissionAllow
+		return PermissionMagicWord{Action: PermissionAllow}
 	case strings.EqualFold(trimmed, PermissionAllowSession):
-		return PermissionAllowSession
+		return PermissionMagicWord{Action: PermissionAllowSession}
 	case strings.EqualFold(trimmed, PermissionDeny):
-		return PermissionDeny
+		return PermissionMagicWord{Action: PermissionDeny}
 	default:
-		return ""
+		return PermissionMagicWord{}
 	}
+}
+
+// PermissionMagicWord 是解析后的魔法词及其可选目标。
+type PermissionMagicWord struct {
+	// Action 为 PermissionAllow / PermissionAllowSession / PermissionDeny。
+	Action string
+	// SessionID 为可选目标子会话 ID（子智能体授权冒泡）；
+	// 空表示无精确目标，由运行时按先到先服务路由。
+	SessionID string
+}
+
+// parseMagicWordTarget 解析 "<魔法词>: <session_id>" 格式的带目标魔法词。
+// 前缀必须精确匹配魔法词（去空白、不区分大小写），目标必须非空。
+func parseMagicWordTarget(trimmed string) (action, target string, ok bool) {
+	idx := strings.Index(trimmed, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	prefix := strings.TrimSpace(trimmed[:idx])
+	target = strings.TrimSpace(trimmed[idx+1:])
+	if target == "" {
+		return "", "", false
+	}
+	switch {
+	case strings.EqualFold(prefix, PermissionAllow):
+		return PermissionAllow, target, true
+	case strings.EqualFold(prefix, PermissionAllowSession):
+		return PermissionAllowSession, target, true
+	case strings.EqualFold(prefix, PermissionDeny):
+		return PermissionDeny, target, true
+	}
+	return "", "", false
 }

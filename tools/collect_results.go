@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/DotNetAge/goharness/session"
@@ -14,6 +15,20 @@ const (
 	defaultCollectTimeout = 30 * time.Minute
 	// pollInterval 是子 session 轮询之间的间隔时间。
 	pollInterval = 2 * time.Second
+
+	// SubAgentTerminatedPrefix 是子智能体无最终答案终止时的标记前缀。
+	// subAgentManager.spawn 在子会话无最终答案（授权超时、上下文取消、执行错误等）
+	// 时追加一条以该前缀开头的 assistant 消息，
+	// CollectResults 据此快速判定失败，避免死等到默认 30 分钟收集超时。
+	SubAgentTerminatedPrefix = "[sub-agent-terminated]"
+
+	// SubAgentTaskStartPrefix 是子智能体任务开始标记的前缀。
+	// subAgentManager.spawn 在复用已有会话（延续上下文）时，于新任务的问题消息之前
+	// 追加一条以该前缀开头的 user 消息，标记新任务的起点。
+	// findFinalAnswer 据此划定任务边界：该消息（及更早的 user 消息）之前的
+	// assistant 消息属于历史任务，不得作为当前任务的结果——
+	// 否则会话复用后 CollectResults 会提前命中旧任务的答案或终止标记。
+	SubAgentTaskStartPrefix = "[sub-agent-task-start]"
 )
 
 // CollectResultsTool 收集子代理任务的结果。
@@ -158,8 +173,9 @@ func (t *CollectResultsTool) pollForResult(ctx context.Context, tc *ToolContext,
 			continue
 		}
 
-		// 查找 FinalAnswer
-		if answer := findFinalAnswer(subMsgs); answer != "" {
+		// 查找执行结果：正常最终答案，或终止标记（无最终答案的失败终止）。
+		answer, termReason := findFinalAnswer(subMsgs)
+		if answer != "" {
 			agentName := lookupSubAgentName(ctx, tc, sessionID)
 			logger.Info("collect_results: found FinalAnswer in sub-session",
 				"session_id", sessionID,
@@ -173,6 +189,24 @@ func (t *CollectResultsTool) pollForResult(ctx context.Context, tc *ToolContext,
 				"agent_name": agentName,
 				"status":     "completed",
 				"result":     answer,
+			}
+		}
+		if termReason != "" {
+			// 子会话已终止但未产生最终答案（授权超时、上下文取消等）：
+			// 立即判定失败返回，不再继续轮询。
+			agentName := lookupSubAgentName(ctx, tc, sessionID)
+			logger.Warn("collect_results: sub-session terminated without FinalAnswer",
+				"session_id", sessionID,
+				"agent_name", agentName,
+				"poll_count", pollCount,
+				"elapsed_ms", time.Since(startedAt).Milliseconds(),
+				"reason", termReason,
+			)
+			return map[string]string{
+				"session_id": sessionID,
+				"agent_name": agentName,
+				"status":     "failed",
+				"error":      "子代理已终止但未产生最终答案: " + termReason,
 			}
 		}
 
@@ -222,14 +256,36 @@ func extractAgentNameFromMessages(tc *ToolContext, sessionID string) string {
 	return ""
 }
 
-// findFinalAnswer 在子 session 的消息中查找 FinalAnswer。
-// FinalAnswer 是最后一条没有 tool_calls 的 assistant 消息。
-func findFinalAnswer(msgs []session.Message) string {
+// findFinalAnswer 在子 session 的消息中查找执行结果。
+// 返回两个值：
+//   - answer：子会话正常完成时的最终答案（当前任务段内最后一条无 tool_calls 的 assistant 消息内容）。
+//   - termReason：若当前任务段内最后一条无 tool_calls 的 assistant 消息是终止标记
+//     （子会话无最终答案即终止，如授权超时、上下文取消），返回标记携带的终止原因。
+//
+// 终止标记消息同时满足 assistant / 无 tool_calls / 内容非空 三个条件，
+// 因此必须先识别标记再按正常答案处理，避免把标记误判为最终答案。
+//
+// 任务边界（会话复用）：子会话会被复用（同 Agent + ProjectDir + Sponsor 的空闲会话
+// 延续上下文），历史任务的最终答案与终止标记仍保留在会话消息中。若不加边界判断，
+// 新任务尚未完成时 CollectResults 会提前命中旧任务的结果。因此：
+//   - spawn 复用会话时追加一条 user 角色任务开始标记（SubAgentTaskStartPrefix）；
+//   - 本函数从后向前扫描，遇到最近的 user 消息（任务开始标记、任务问题或图片消息）
+//     即停止——该消息属于当前任务的起点及边界，之前的 assistant 消息属于历史任务，
+//     一律不计入当前任务结果，返回空结果让调用方继续轮询。
+func findFinalAnswer(msgs []session.Message) (answer, termReason string) {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
+		if m.Role == "user" {
+			// 任务边界：此消息（含）之后才可能属于当前任务。
+			return "", ""
+		}
 		if m.Role == "assistant" && len(m.ToolCalls) == 0 && m.Content != "" {
-			return m.Content
+			if strings.HasPrefix(m.Content, SubAgentTerminatedPrefix) {
+				reason := strings.TrimSpace(strings.TrimPrefix(m.Content, SubAgentTerminatedPrefix))
+				return "", reason
+			}
+			return m.Content, ""
 		}
 	}
-	return ""
+	return "", ""
 }

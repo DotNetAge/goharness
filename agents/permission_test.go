@@ -234,7 +234,7 @@ func TestResolvePermissionMagicWordAllow(t *testing.T) {
 	})
 
 	b := rt.Ask("test-agent", tools.PermissionAllow, sess)
-	consumed := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.True(t, consumed)
 	assert.Nil(t, sess.TakePendingPermission())
 
@@ -257,7 +257,7 @@ func TestResolvePermissionMagicWordDeny(t *testing.T) {
 	})
 
 	b := rt.Ask("test-agent", tools.PermissionDeny, sess)
-	consumed := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.True(t, consumed)
 	assert.Nil(t, sess.TakePendingPermission())
 
@@ -301,7 +301,7 @@ func TestResolvePermissionMagicWordAllowWithImage(t *testing.T) {
 	})
 
 	b := rt.Ask("test-agent", tools.PermissionAllow, sess)
-	consumed := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.True(t, consumed)
 
 	msgs := sess.All()
@@ -323,7 +323,7 @@ func TestResolvePermissionMagicWordNoPending(t *testing.T) {
 	rt := newTestRuntime(t)
 	sess := newTestSession(t)
 	b := rt.Ask("test-agent", tools.PermissionAllow, sess)
-	consumed := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.False(t, consumed)
 }
 
@@ -332,7 +332,7 @@ func TestResolvePermissionMagicWordRegularMessage(t *testing.T) {
 	rt := newTestRuntime(t)
 	sess := newTestSession(t)
 	b := rt.Ask("test-agent", "hello", sess)
-	consumed := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.False(t, consumed)
 }
 
@@ -374,7 +374,7 @@ func TestResolvePermissionMagicWordReadAllowSession(t *testing.T) {
 		tools.WithSessionStore(rt.sessionStore),
 	)
 	b2 := rt.Ask("test-agent", tools.PermissionAllowSession, sess)
-	consumed := rt.resolvePermissionMagicWord(context.Background(), b2, toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b2, toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	require.True(t, consumed)
 
 	// 3. 白名单已写入：同一路径再次 Grant → 直接放行

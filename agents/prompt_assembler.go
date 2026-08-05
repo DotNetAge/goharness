@@ -29,7 +29,7 @@ const microCompactMaxContextThreshold = 250 * 1024
 //   - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
 //
 // 该条件在 executor.go（控制 TryMicroCompact 调用）与 prompt_assembler.go
-//（控制压缩内容占位符插入）两处共用，集中此处避免修改时遗漏其一。
+// （控制压缩内容占位符插入）两处共用，集中此处避免修改时遗漏其一。
 func shouldEnableMicroCompact(ctxLen int64) bool {
 	return ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold
 }

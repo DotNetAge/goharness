@@ -19,16 +19,18 @@ var subagentSem = make(chan struct{}, 20)
 //   - ctx: 上下文
 //   - agentName: 子代理名称/角色
 //   - task: 任务描述
+//   - sessionID: 要复用的子代理会话 ID。非空时延续该会话上下文，为空时新建会话（分身）。
 //
 // 返回：
 //   - string: 子代理的执行结果
 //   - string: 子代理的会话 ID（用于持久化加载）
 //   - error: 执行过程中的错误
-type SpawnFunc func(ctx context.Context, agentName, task string) (result string, sessionID string, err error)
+type SpawnFunc func(ctx context.Context, agentName, task, sessionID string) (result string, sid string, err error)
 
 // EnsureSubAgentSessionFunc 用于同步获取或创建子代理 session 的 ID。
 // 在 SubAgent.Execute() 的 goroutine 之前调用，确保 session_id 可同步返回。
-type EnsureSubAgentSessionFunc func(ctx context.Context, agentName string) (string, error)
+// sessionID 为调用方显式传入的复用目标；非空时返回该会话 ID，为空时创建新会话。
+type EnsureSubAgentSessionFunc func(ctx context.Context, agentName, sessionID string) (string, error)
 
 // SubAgentTool 实现了子代理调度工具。
 // 允许 LLM 生成子代理来处理委派的任务。
@@ -79,6 +81,7 @@ func (t *SubAgentTool) Info() *ToolInfo {
 		Parameters: []Parameter{
 			{Name: "agent_name", Type: "string", Description: "要生成的子代理名称。", Required: true},
 			{Name: "task", Type: "string", Description: "子代理的任务描述。", Required: true},
+			{Name: "session_id", Type: "string", Description: "要复用的子代理会话 ID。传入后将延续该会话之前的对话上下文；不传时系统自动延续该子代理最近一次的空闲会话（主从对话连贯），被占用时新建独立会话。", Required: false},
 		},
 	}
 }
@@ -99,7 +102,7 @@ func (t *SubAgentTool) Info() *ToolInfo {
 //   - params: 必须包含 "agent_name" 和 "task"
 //
 // 返回：
-//   - map[string]any: 包含 status, agent_name, session_id
+//   - map[string]any: 包含 status, agent_name, session_id, notes（session_id 用法说明）
 //   - error: 参数缺失或配置不完整时返回错误
 func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any, error) {
 	rawAgentName, ok := GetParam(params, "agent_name")
@@ -119,6 +122,14 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		return nil, fmt.Errorf("%s", GuideMissingParam("SubAgent", "task"))
 	}
 
+	// 可选参数：session_id —— 显式复用已有子代理会话（延续对话上下文）。
+	// 不传时新建独立会话（分身），传时由 ensureSession/spawn 复用该会话。
+	rawSessionID, ok := GetParam(params, "session_id")
+	reqSessionID := ""
+	if ok {
+		reqSessionID, _ = rawSessionID.(string)
+	}
+
 	logger := getLogger(ctx)
 
 	tc := GetToolContext(ctx)
@@ -135,11 +146,12 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	)
 
 	// === 同步阶段：获取子 session ID（存根）===
-	// session 由 (agentName, sponsor, projectDir) 三元组标识
-	// 在 goroutine 前调用，确保 session_id 可同步返回给 spawn 结果
-	var sessionID string
+	// 会话由 SessionID 唯一定位（1 ProjectDir → N Session 分身模型）：
+	// 不传 session_id 时新建会话，传时复用该会话。
+	// 在 goroutine 前调用，确保 session_id 可同步返回给 spawn 结果。
+	sessionID := reqSessionID
 	if t.ensureSession != nil {
-		sid, err := t.ensureSession(ctx, agentName)
+		sid, err := t.ensureSession(ctx, agentName, reqSessionID)
 		if err != nil {
 			return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide("获取子代理 session 时失败", WithErrDetail("子代理 session 的创建或持久化失败", err), "先自查：我传入的子代理名称是否符合命名要求？若配置无误仍失败，应告知用户检查会话持久化配置"), err)
 		}
@@ -166,7 +178,7 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		startedAt := time.Now()
 		defer func() { <-subagentSem }()
 
-		result, _, err := t.spawn(ctx, agentName, task)
+		result, _, err := t.spawn(ctx, agentName, task, sessionID)
 
 		completedAt := time.Now()
 
@@ -211,9 +223,20 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		})
 	}()
 
+	// 会话来源软性说明：主 Agent 与子 Agent 的对话是连贯的——
+	// 未显式传 session_id 时，系统自动延续该子代理最近一次的空闲会话
+	// （被占用才新建）。明确告知 LLM「返回相同 session_id = 对话在延续」，
+	// 它无需为每次任务新建会话。
+	var notes string
+	if reqSessionID != "" {
+		notes = "已延续与 " + agentName + " 的既有对话（会话 " + sessionID + "）。"
+	} else {
+		notes = "主从 Agent 对话连贯：本次已自动延续与 " + agentName + " 的对话上下文（会话 " + sessionID + "，优先复用其最近空闲会话，被占用则新建）。"
+	}
 	return map[string]any{
 		"status":     "running",
 		"agent_name": agentName,
 		"session_id": sessionID,
+		"notes":      notes,
 	}, nil
 }

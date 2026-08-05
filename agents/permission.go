@@ -15,6 +15,24 @@ import (
 	"github.com/google/uuid"
 )
 
+// permissionSinkKeyType 用于在 context 中传递子会话授权请求的旁路发送器。
+// 子会话（b.permissionCh != nil）触发授权时，优先调用该发送器将授权请求
+// 直达前端，而不依赖父 exec EventBus 的存活——
+// 父 exec 结束/被取消后其 EventBus 订阅已销毁，原 parentEmit 转发链路会静默丢事件，
+// 导致前端收不到授权弹窗、子会话只能干等到 permission_timeout。
+type permissionSinkKeyType struct{}
+
+// PermissionSink 是子会话授权请求直达前端的发送器类型。
+// 由宿主（如 mindx daemon）注入：接收子会话的授权请求数据，
+// 负责将渲染所需信息（工具名、原因、安全级别、参数、发起会话 ID）发送给前端。
+// 返回后调用方仍会执行挂起等待逻辑（waitForPermissionDecision），授权决策路径不变。
+type PermissionSink func(data events.PermissionPendingData)
+
+// WithPermissionSink 将授权请求旁路发送器注入 ctx。
+func WithPermissionSink(ctx context.Context, sink PermissionSink) context.Context {
+	return context.WithValue(ctx, permissionSinkKeyType{}, sink)
+}
+
 // securityLevelString 将 events.SecurityLevel 转换为稳定、可读的字符串
 // （"safe" / "sensitive" / "high_risk"），便于存储在 session.PendingPermission 上。
 // 字符串形式比原始 int 更利于人工审计。
@@ -93,13 +111,33 @@ func (rt *Runtime) checkPermissionGrants(
 			SecurityLevel: securityLevelString(info.SecurityLevel),
 		}
 		b.session.SetPendingPermission(*pending)
-		emit(events.PermissionPending, events.PermissionPendingData{
+		// 子智能体授权冒泡：仅子会话携带发起授权请求的会话 ID（子会话 ID）。
+		// 前端在子会话授权弹窗点击允许/拒绝时据此发送带目标魔法词，
+		// 后端精确路由，避免多个子会话并发挂起时决策错位。
+		// 主会话自身的授权请求不设置（为空），保持旧行为——
+		// 否则主会话授权弹窗的响应会被前端误判为子会话事件。
+		permissionData := events.PermissionPendingData{
 			TickID:        uuid.New().String(),
 			ToolName:      inv.Name,
 			Params:        inv.Arguments,
 			Reason:        reason,
 			SecurityLevel: info.SecurityLevel,
-		})
+		}
+		if b.permissionCh != nil {
+			permissionData.SessionID = b.session.ID()
+			// 子智能体授权冒泡：授权请求优先经旁路发送器直达前端，
+			// 不依赖父 exec EventBus 的存活（父 exec 被取消/结束后订阅销毁，
+			// 原 parentEmit 转发链路会静默丢事件，前端收不到授权弹窗）。
+			// 未注入旁路（如测试环境）时退回原转发链路，行为保持不变。
+			if sink := b.permissionSink; sink != nil {
+				sink(permissionData)
+			} else {
+				emit(events.PermissionPending, permissionData)
+			}
+		} else {
+			// 主会话自身的授权请求不设置 SessionID（为空），保持旧行为。
+			emit(events.PermissionPending, permissionData)
+		}
 		logger.Info("需要授权",
 			"tool", inv.Name,
 			"reason", reason,
@@ -114,32 +152,84 @@ func (rt *Runtime) checkPermissionGrants(
 // "PermissionDeny" 魔法词且会话存在待处理授权，则解析该授权并将相应工具结果追加到会话。
 // 用户消息本身不会被追加 —— 大模型只能看到工具结果。
 //
-// 返回 true 表示魔法词已被消费（调用方应跳过自己的用户消息追加）；
-// 返回 false 表示：用户消息不是魔法词，或虽是魔法词但没有待处理授权。
+// 返回值：
+//   - consumed：魔法词已被消费（调用方应跳过自己的用户消息追加）；
+//     false 表示用户消息不是魔法词，或虽是魔法词但没有待处理授权。
+//   - routedToSub：魔法词仅被转发到子会话（纯路由，主会话没有执行任何工具，
+//     也没有新的工具结果追加）。调用方应直接结束本轮 exec，避免白跑一次 LLM 调用。
 func (rt *Runtime) resolvePermissionMagicWord(
 	ctx context.Context,
 	b *AskBuilder,
 	toolExec tools.ToolExecutor,
 	emit func(events.ReactEventType, any),
 	logger logging.Logger,
-) bool {
-	action := tools.ClassifyMagicWord(b.question)
-	if action == "" {
-		return false
+) (consumed bool, routedToSub bool) {
+	mw := tools.ClassifyMagicWord(b.question)
+	if mw.Action == "" {
+		return false, false
 	}
+
+	// 带目标的魔法词必然来自子会话授权弹窗（前端点击对应子会话的允许/拒绝）：
+	// 直接精确路由到目标子会话，且绝不触碰本会话（主会话）的挂起授权——
+	// 否则主会话自身有 pending 时，取走 pending 会导致其授权丢失。
+	// 无论目标子会话是否仍挂起，主会话都无需 LLM 响应，一律静默消费。
+	if mw.SessionID != "" {
+		if rt.subAgents != nil && rt.subAgents.dispatchPermission(mw.Action, mw.SessionID) {
+			logger.Info("魔法词已路由到子智能体",
+				"action", mw.Action, "session", b.session.ID(), "target", mw.SessionID)
+		} else {
+			// 目标子会话可能已授权超时或结束：静默消费，不追加到本会话，
+			// 避免污染主会话上下文。
+			logger.Info("带目标的魔法词无匹配的子会话，静默消费",
+				"action", mw.Action, "session", b.session.ID(), "target", mw.SessionID)
+		}
+		return true, true
+	}
+
+	// 无目标魔法词：优先解析本会话（主会话）的挂起授权，否则按先到先服务
+	// 路由到最早挂起的子会话（与旧行为一致）。
 	pending := b.session.TakePendingPermission()
 	if pending == nil {
+		if rt.subAgents != nil && rt.subAgents.dispatchPermission(mw.Action, "") {
+			logger.Info("魔法词已路由到子智能体",
+				"action", mw.Action, "session", b.session.ID())
+			// 主会话无 pending，魔法词被转发给子会话：同样无需 LLM 响应。
+			return true, true
+		}
 		// 魔法词但没有待处理授权 —— 按普通用户轮次处理。
-		return false
+		return false, false
 	}
 
 	logger.Info("接收到授权回应",
-		"action", action,
+		"action", mw.Action,
 		"tool", pending.ToolName,
 		"tool_call_id", pending.ToolCallID,
 		"session", b.session.ID(),
 	)
 
+	rt.applyPermissionAction(ctx, b, pending, mw.Action, toolExec, emit, logger)
+	// 授权动作执行了工具或合成拒绝结果并追加到会话，主会话需继续 LLM 循环
+	// 消化新信息。
+	return true, false
+}
+
+// applyPermissionAction 根据用户授权动作执行挂起工具或合成拒绝结果。
+// 三种动作：
+//   - PermissionAllow：直接执行挂起工具并追加结果。
+//   - PermissionAllowSession：先加入会话白名单再执行挂起工具。
+//   - PermissionDeny：合成"权限被拒绝"工具结果。
+//
+// 主会话魔法词路径与子智能体授权冒泡路径（waitForPermissionDecision）共用此逻辑，
+// 保证两种场景下授权工具的执行与拒绝文案完全一致。
+func (rt *Runtime) applyPermissionAction(
+	ctx context.Context,
+	b *AskBuilder,
+	pending *session.PendingPermission,
+	action string,
+	toolExec tools.ToolExecutor,
+	emit func(events.ReactEventType, any),
+	logger logging.Logger,
+) {
 	switch action {
 	case tools.PermissionAllow:
 		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
@@ -154,7 +244,68 @@ func (rt *Runtime) resolvePermissionMagicWord(
 	case tools.PermissionDeny:
 		rt.appendDeniedResult(ctx, b, pending)
 	}
-	return true
+}
+
+// permissionWaitTimeout 是子智能体等待主会话授权决策的超时时间。
+// 超时后子会话以 permission_timeout 终止并写入终止标记，
+// CollectResults 据此快速判定失败，而不是死等到默认 30 分钟收集超时。
+const permissionWaitTimeout = 10 * time.Minute
+
+// waitForPermissionDecision 挂起子智能体的执行循环，等待主会话（用户）的授权决策。
+//
+// 子智能体授权冒泡的核心：子会话遇到需要授权的工具时，不在本会话内以
+// permission_pending 终止（那样子会话就结束了，主会话的授权无处可去），
+// 而是通过 permissionCh 挂起，并由 subAgentManager 登记到挂起队列。
+// 主会话收到用户魔法词后经 dispatchPermission 将授权决策送入本通道。
+//
+// 授权到达后执行挂起工具（Allow / AllowSession）或合成拒绝结果（Deny），
+// 子会话继续执行循环；超时则以 permission_timeout 终止，避免无限挂起。
+func (rt *Runtime) waitForPermissionDecision(
+	ctx context.Context,
+	b *AskBuilder,
+	pending *session.PendingPermission,
+	toolExec tools.ToolExecutor,
+	emit func(events.ReactEventType, any),
+	logger logging.Logger,
+) {
+	// 登记挂起：主会话的魔法词解析据此定位本子会话并路由授权决策。
+	rt.subAgents.registerPermissionWait(b.session.ID(), b.permissionCh)
+	defer rt.subAgents.clearPermissionWait(b.session.ID(), b.permissionCh)
+
+	// 清除会话级待处理授权：pending 已由本函数接管（授权决策经 permissionCh 送达）。
+	// 不清理则子会话在授权后残留旧 pending——主会话路径由 resolvePermissionMagicWord
+	// 的 TakePendingPermission 清除，子会话冒泡路径必须同样清除，
+	// 否则会话被复用（延续上下文）后状态不清，且若新任务问题恰好是魔法词会被误消费。
+	b.session.TakePendingPermission()
+
+	timeout := time.NewTimer(permissionWaitTimeout)
+	defer timeout.Stop()
+
+	logger.Info("子智能体循环挂起: 等待主会话授权",
+		"session", b.session.ID(),
+		"tool", pending.ToolName,
+		"timeout", permissionWaitTimeout.String(),
+	)
+
+	select {
+	case <-ctx.Done():
+		b.resultErr = ctx.Err()
+		b.resultTerminationReason = "cancelled"
+	case sig := <-b.permissionCh:
+		logger.Info("子智能体收到授权决策",
+			"session", b.session.ID(),
+			"action", sig.action,
+			"tool", pending.ToolName,
+		)
+		rt.applyPermissionAction(ctx, b, pending, sig.action, toolExec, emit, logger)
+	case <-timeout.C:
+		logger.Warn("子智能体授权等待超时，终止执行",
+			"session", b.session.ID(),
+			"tool", pending.ToolName,
+			"timeout", permissionWaitTimeout.String(),
+		)
+		b.resultTerminationReason = "permission_timeout"
+	}
 }
 
 // buildWhitelistEntry 根据工具名称和参数构造白名单条目值。
