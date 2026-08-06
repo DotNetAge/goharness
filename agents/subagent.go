@@ -337,7 +337,14 @@ func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID 
 	// 追加终止标记，供 CollectResults 快速判定失败，避免轮询死等到默认 30 分钟超时。
 	// 错误场景同样写入标记（如 llm_error / cancelled），否则 CollectResults 无法区分
 	// "子会话还在运行" 与 "已静默终止"，会死等轮询。
-	if result.Answer == "" {
+	//
+	// 例外：AskUser 阻塞（ask_user_pending）不追加标记——子会话并非失败终止，
+	// 而是在等待用户在子会话 Tab 回答（用户回答后由 daemon 启动下一次 exec 恢复循环）。
+	// 若追加标记，CollectResults 的 findFinalAnswer 会把它识别为终止原因并立即判定失败，
+	// 而子会话实际还在等待回答，导致主 Agent 误判子任务失败。
+	// 不追加标记时 findFinalAnswer 从后向前扫描到任务的 user 边界即返回空，继续轮询，
+	// 直到用户回答后的最终答案出现。
+	if result.Answer == "" && result.TerminationReason != "ask_user_pending" {
 		marker := session.Message{
 			Role:      "assistant",
 			Content:   tools.SubAgentTerminatedPrefix + " " + result.TerminationReason,

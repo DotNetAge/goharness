@@ -368,6 +368,49 @@ func (m *mockMemoryStoreImpl) Retrieve(_ context.Context, _ string, _ string, _ 
 
 // ── 性能测试 ─────────────────────────────────────────────────────────────
 
+// TestSession_DeleteRound_TimestampCollisionWithTool 回归测试：
+// 上一轮工具结果与下一轮用户消息并发保存于同一 Unix 秒（tool 在前、user 在后）
+// 时，DeleteRound 必须定位到 user 消息所在轮次，不能误命中更早的 tool 消息
+// 而报 "cursor points to tool message"。
+func TestSession_DeleteRound_TimestampCollisionWithTool(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	s := newTestSession("session-delete-round-collision", "agent", newMockStore())
+
+	// 第一轮：user → assistant（携带 tool_calls）→ tool 结果（与第二轮 user 同秒）
+	tsUser1 := int64(1786001596)
+	if err := s.Append(ctx, Message{Role: "user", Content: "第一轮", Timestamp: tsUser1}); err != nil {
+		t.Fatalf("Append 第一轮 user 失败: %v", err)
+	}
+	collidedTS := int64(1786002227)
+	if err := s.Append(ctx,
+		Message{Role: "assistant", Content: "", Timestamp: 1786001600,
+			ToolCalls: []ToolCall{{ID: "call-1", Name: "CollectResults", Arguments: "{}"}}},
+		Message{Role: "tool", Content: "工具结果", ToolCallID: "call-1", Timestamp: collidedTS},
+	); err != nil {
+		t.Fatalf("Append 第一轮 assistant/tool 失败: %v", err)
+	}
+
+	// 第二轮 user：时间戳与上一条 tool 相同，且排在 tool 之后
+	if err := s.Append(ctx, Message{Role: "user", Content: "继续", Timestamp: collidedTS}); err != nil {
+		t.Fatalf("Append 第二轮 user 失败: %v", err)
+	}
+
+	// 删除第二轮：即使时间戳与 tool 冲突，也应命中 user 消息而非 tool
+	if err := s.DeleteRound(ctx, collidedTS); err != nil {
+		t.Fatalf("DeleteRound 时间戳冲突场景失败: %v", err)
+	}
+
+	all := s.All()
+	if len(all) != 3 {
+		t.Fatalf("DeleteRound 后消息数 = %d, 期望 3（保留第一轮）", len(all))
+	}
+	if all[0].Role != "user" || all[0].Timestamp != tsUser1 {
+		t.Errorf("保留消息[0] = %+v, 期望第一轮 user", all[0])
+	}
+}
+
 func BenchmarkSession_Append(b *testing.B) {
 	s := newTestSession("bench-session", "agent", newMockStore())
 	msg := Message{Role: "user", Content: "benchmark message", Timestamp: time.Now().Unix()}

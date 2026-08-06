@@ -653,9 +653,18 @@ func (s *Session) GetRound(ctx context.Context, cursor int) ([]Message, error) {
 	return out, nil
 }
 
-// findMessageIndexByTimestamp 在消息切片中查找指定时间戳的消息索引。
-// 返回 -1 表示未找到。
+// findMessageIndexByTimestamp 在消息切片中定位指定时间戳对应的消息索引。
+//
+// 优先从后向前匹配 user 消息：同一秒内并发保存的消息（如上一轮工具结果
+// 与下一轮用户消息）可能共享 Unix 秒级时间戳，顺序查找会误命中更早的
+// tool 消息，导致 DeleteRound 报 "cursor points to tool message"。
+// user 消息时间戳在单会话内唯一，从后向前可稳定命中目标 user 消息。
 func findMessageIndexByTimestamp(msgs []Message, timestamp int64) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && msgs[i].Timestamp == timestamp {
+			return i
+		}
+	}
 	for i, m := range msgs {
 		if m.Timestamp == timestamp {
 			return i
@@ -818,4 +827,14 @@ func (s *Session) HasPendingPermission() bool {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	return s.pendingPermission != nil
+}
+
+// PendingPermission 非破坏性地读取当前挂起的授权请求；无挂起时返回 nil。
+// 与 TakePendingPermission（读取并清除）不同，此方法供断连恢复补发等
+// 只读场景使用，不会清除待处理状态。
+func (s *Session) PendingPermission() *PendingPermission {
+	s.ensureLoaded(context.Background())
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	return s.pendingPermission
 }

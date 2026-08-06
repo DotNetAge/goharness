@@ -138,7 +138,8 @@ func TestForceCompact_MemNil_SkipsCompactor(t *testing.T) {
 
 func TestForceCompact_CompactorNil_SkipsSummary(t *testing.T) {
 	// 未注入 compactor，但 mem 非 nil
-	// ForceCompact 超过 100K 时进入 doCompact，compactor==nil 跳过摘要，但仍移动 cursor
+	// ForceCompact 超过 100K 时进入 doCompact，compactor==nil 跳过摘要生成，
+	// 视为压缩失败：cursor 不得移动（避免「压缩成功但零记忆落盘」的假成功）
 	s := newTestSession("fc-nocomp", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
 		WithMemory(newInMemoryMemory()),
@@ -153,9 +154,9 @@ func TestForceCompact_CompactorNil_SkipsSummary(t *testing.T) {
 
 	s.ForceCompact(context.Background())
 
-	// compactor 为 nil 时跳过摘要生成，但不失败；cursor 仍移动（compactionFailed=false）
-	if got := len(s.Current()); got != 0 {
-		t.Errorf("compactor 为 nil 时 cursor 仍应移动，活跃窗口应为空, got %d 条", got)
+	// compactor 为 nil 时跳过摘要生成，视为失败；cursor 不应移动，活跃窗口保留原消息
+	if got := len(s.Current()); got != 1 {
+		t.Errorf("compactor 为 nil 时 cursor 不应移动，活跃窗口应保留原消息, got %d 条", got)
 	}
 }
 

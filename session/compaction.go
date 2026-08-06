@@ -290,7 +290,11 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 			}
 		}
 	} else if s.compactor == nil {
-		s.logInfo(operation+": 未配置压缩器，跳过摘要生成", "session_id", s.id)
+		// 未装配压缩器视为压缩失败：不允许 cursor 照常移动。
+		// 否则会出现「压缩成功但零记忆落盘」的假成功（摘要预期被持久化）。
+		s.logError(operation+": 未配置压缩器，跳过摘要生成，视为压缩失败",
+			fmt.Errorf("compactor 未装配"), "session_id", s.id)
+		compactionFailed = true
 	}
 
 	if !compactionFailed {

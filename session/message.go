@@ -46,5 +46,6 @@ type Message struct {
 }
 
 // GetID 返回此消息的唯一标识符。
-// Timestamp（基于 ULID 的 int64）保证在会话内唯一。
+// 注意：Timestamp 为 Unix 秒级时间戳，并发保存时可能与其他消息相同，
+// 定位消息时（如 DeleteRound）需结合 Role 判断，不能假定其全局唯一。
 func (m Message) GetID() int64 { return m.Timestamp }

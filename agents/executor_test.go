@@ -410,7 +410,7 @@ func TestExecHookAbort(t *testing.T) {
 	}
 }
 
-// TestExecLLMStreamError 验证 LLM 流返回错误时以 llm_error 终止。
+// TestExecLLMStreamError 验证 LLM 流返回普通错误时以 llm_error 终止并发送 Error 事件。
 func TestExecLLMStreamError(t *testing.T) {
 	t.Parallel()
 	rt := newTestRuntimeWithTools(t, nil)
@@ -431,6 +431,33 @@ func TestExecLLMStreamError(t *testing.T) {
 	}
 	if result.TerminationReason != "llm_error" {
 		t.Fatalf("期望终止原因 llm_error，得到: %s", result.TerminationReason)
+	}
+	if !rec.has(events.Error) {
+		t.Fatal("期望收到 Error 事件")
+	}
+}
+
+// TestExecLLMStreamTimeout 验证 LLM 流真实超时（DeadlineExceeded）时以 llm_timeout 终止并发送 LLMTimeout 事件。
+func TestExecLLMStreamTimeout(t *testing.T) {
+	t.Parallel()
+	rt := newTestRuntimeWithTools(t, nil)
+	sess := newTestSession(t)
+
+	errStream := mockStream([]gochatcore.StreamEvent{
+		{Type: gochatcore.EventError, Err: context.DeadlineExceeded},
+	})
+	rt.llmClient = newMockLLMClient(errStream)
+
+	rec := &eventRecorder{}
+	result, err := rt.Ask("test-agent", "问题", sess).
+		OnEvent(rec.record).
+		Run()
+
+	if err == nil {
+		t.Fatal("期望返回错误")
+	}
+	if result.TerminationReason != "llm_timeout" {
+		t.Fatalf("期望终止原因 llm_timeout，得到: %s", result.TerminationReason)
 	}
 	if !rec.has(events.LLMTimeout) {
 		t.Fatal("期望收到 LLMTimeout 事件")

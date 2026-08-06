@@ -92,8 +92,10 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		"deadline_in", defaultCollectTimeout.String(),
 	)
 
-	// 去除调用方的超时限制，以允许等待长时间运行的子代理完成
-	waitCtx := context.WithoutCancel(ctx)
+	// 仅剥离单次工具执行的超时截止时间，保留父 context 的取消信号：
+	// 用户点击停止按钮（message.cancel）必须能中断此处的轮询等待，
+	// 否则会话队列会被一直占住，后续消息全部排队、取消形同虚设。
+	waitCtx := withoutDeadline(ctx)
 
 	deadline := time.Now().Add(defaultCollectTimeout)
 
@@ -121,6 +123,21 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	}
 	return string(out), nil
 }
+
+// withoutDeadline 返回剥离截止时间、但保留取消信号与上下文值的 context。
+// 用于让长耗时轮询工具（CollectResults）突破单次工具执行超时，
+// 同时仍能响应上级取消（如 message.cancel 停止按钮）。
+func withoutDeadline(ctx context.Context) context.Context {
+	return &noDeadlineContext{Context: ctx}
+}
+
+// noDeadlineContext 内嵌父 context，仅重写 Deadline() 使其不再返回截止时间；
+// Done()/Err()/Value() 均委托给父 context，取消信号与上下文值依然有效。
+type noDeadlineContext struct {
+	context.Context
+}
+
+func (*noDeadlineContext) Deadline() (time.Time, bool) { return time.Time{}, false }
 
 // pollForResult 轮询等待单个子 session 的结果。
 // 直接通过 session_id 加载子 session → 查找 FinalAnswer。

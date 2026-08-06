@@ -182,6 +182,11 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		if err := ctx.Err(); err != nil {
 			b.resultErr = err
 			b.resultTerminationReason = "cancelled"
+			// 与流式调用中取消保持一致的取消事件，保证前端停止按钮有收尾事件
+			emit(events.LLMCancelled, events.LLMCancelledData{
+				SessionID: sid,
+				Elapsed:   time.Since(start),
+			})
 			setIterResult(iter)
 			return
 		}
@@ -299,15 +304,20 @@ func (rt *Runtime) exec(b *AskBuilder) {
 					Elapsed:   time.Since(start),
 				})
 				b.resultTerminationReason = "cancelled"
-			} else {
-				logger.Error("LLM思想流失败", err, "session", sid, "iter", iter)
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				logger.Error("LLM思想流超时", err, "session", sid, "iter", iter)
 				emit(events.LLMTimeout, events.LLMTimeoutData{
 					SessionID: sid,
 					Timeout:   defaultLLMTimeout,
 					Elapsed:   time.Since(start),
 					Error:     err.Error(),
 				})
-				b.resultErr = fmt.Errorf("LLM思想流失败: %w", err)
+				b.resultErr = fmt.Errorf("LLM思想流超时: %w", err)
+				b.resultTerminationReason = "llm_timeout"
+			} else {
+				logger.Error("LLM思想流失败", err, "session", sid, "iter", iter)
+				emit(events.Error, fmt.Sprintf("LLM思想流失败: %v", err))
+				b.resultErr = err
 				b.resultTerminationReason = "llm_error"
 			}
 			setIterResult(iter)
@@ -317,7 +327,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// 流式读取并收集响应（content/reasoning/finishReason/错误）。
 		// 工具调用由下方在确认无错误后通过 stream.ToolCalls() 获取，
 		// 保持「错误时不收集工具调用」的原有行为。
-		content, reasoning, finishReason, streamErr := collectStreamResponse(stream, emit)
+		content, reasoning, finishReason, streamErr := collectStreamResponse(ctx, stream, emit)
 
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) {
@@ -327,13 +337,19 @@ func (rt *Runtime) exec(b *AskBuilder) {
 					Elapsed:   time.Since(start),
 				})
 				b.resultTerminationReason = "cancelled"
-			} else {
+			} else if errors.Is(streamErr, context.DeadlineExceeded) {
+				logger.Error("LLM思想流超时", streamErr, "session", sid, "iter", iter)
 				emit(events.LLMTimeout, events.LLMTimeoutData{
 					SessionID: sid,
 					Timeout:   defaultLLMTimeout,
 					Elapsed:   time.Since(start),
 					Error:     streamErr.Error(),
 				})
+				b.resultErr = streamErr
+				b.resultTerminationReason = "llm_timeout"
+			} else {
+				logger.Error("LLM思想流失败", streamErr, "session", sid, "iter", iter)
+				emit(events.Error, fmt.Sprintf("LLM思想流失败: %v", streamErr))
 				b.resultErr = streamErr
 				b.resultTerminationReason = "llm_error"
 			}
@@ -448,7 +464,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			executed[inv.ID] = struct{}{}
 		}
 
-		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec)
+		toolResults := rt.executeTools(ctx, sid, invocs, emit, toolExec, callUsage)
 		prevToolResults = toolResults
 
 		// 持久化工具结果（完整内容，不做截断）：含重复错误引导与图片视觉消息。
@@ -550,9 +566,18 @@ func buildAllToolDefinitions(registry tools.ToolRegistry, exclude map[string]boo
 //
 // 设计说明：工具调用（stream.ToolCalls()）刻意不在此函数内收集，而由调用方在
 // 确认无错误后自行获取，以保持「流式出错时不收集工具调用」的原有行为。
-func collectStreamResponse(stream *gochatcore.Stream, emit func(events.ReactEventType, any)) (content, reasoning, finishReason string, streamErr error) {
+func collectStreamResponse(ctx context.Context, stream *gochatcore.Stream, emit func(events.ReactEventType, any)) (content, reasoning, finishReason string, streamErr error) {
 	var contentBuf, reasoningBuf strings.Builder
-	for stream.Next() {
+	for {
+		// 优先响应 ctx 取消：HTTP 流被中断时流可能静默关闭（未携带 EventError），
+		// 此处显式检查取消状态，确保停止按钮能及时终止本轮，而非以半截答案正常收尾。
+		if err := ctx.Err(); err != nil {
+			stream.Close()
+			return contentBuf.String(), reasoningBuf.String(), "", err
+		}
+		if !stream.Next() {
+			break
+		}
 		ev := stream.Event()
 		switch ev.Type {
 		case gochatcore.EventContent:
@@ -987,6 +1012,7 @@ func (rt *Runtime) executeTools(
 	invocs []hooks.ToolCallInvocation,
 	emit func(events.ReactEventType, any),
 	toolExec tools.ToolExecutor,
+	usage *session.TokenUsage,
 ) []hooks.ToolResult {
 	if len(invocs) == 0 {
 		return nil
@@ -1002,13 +1028,13 @@ func (rt *Runtime) executeTools(
 			i, inv := i, inv
 			go func() {
 				defer wg.Done()
-				tr := rt.executeSingleTool(ctx, sessionID, inv, emit, toolExec, rt.asyncTimeout)
+				tr := rt.executeSingleTool(ctx, sessionID, inv, emit, toolExec, rt.asyncTimeout, usage)
 				mu.Lock()
 				results[i] = tr
 				mu.Unlock()
 			}()
 		} else {
-			tr := rt.executeSingleTool(ctx, sessionID, inv, emit, toolExec, rt.syncTimeout)
+			tr := rt.executeSingleTool(ctx, sessionID, inv, emit, toolExec, rt.syncTimeout, usage)
 			results[i] = tr
 		}
 	}
@@ -1043,6 +1069,7 @@ func (rt *Runtime) executeSingleTool(
 	emit func(events.ReactEventType, any),
 	toolExec tools.ToolExecutor,
 	timeout time.Duration,
+	usage *session.TokenUsage,
 ) hooks.ToolResult {
 	start := time.Now()
 
@@ -1056,13 +1083,13 @@ func (rt *Runtime) executeSingleTool(
 			})
 			result := *hr.SkipWithResult
 			result.ToolCallID = inv.ID
-			emit(events.ToolExecEnd, events.ToolExecEndData{
+			emit(events.ToolExecEnd, withToolUsage(events.ToolExecEndData{
 				ToolName:   result.ToolName,
 				ToolCallID: result.ToolCallID,
 				Duration:   result.Duration,
 				Success:    result.Success,
 				Result:     result.Result,
-			})
+			}, usage))
 			return result
 		}
 		if hr.Abort {
@@ -1098,13 +1125,27 @@ func (rt *Runtime) executeSingleTool(
 		}
 	}
 
-	emit(events.ToolExecEnd, events.ToolExecEndData{
+	emit(events.ToolExecEnd, withToolUsage(events.ToolExecEndData{
 		ToolName:   tr.ToolName,
 		ToolCallID: tr.ToolCallID,
 		Duration:   time.Since(start),
 		Success:    tr.Success,
 		Result:     tr.Result,
 		Error:      tr.Error,
-	})
+	}, usage))
 	return tr
+}
+
+// withToolUsage 将工具调用所在轮次 LLM 调用的实际 usage 回填到 ToolExecEnd 事件，
+// 供前端「查看结果」展示真实 token 消耗。usage 为 nil（如授权后补执行的挂起工具，
+// 无法归属到明确的 LLM 轮次）时保持零值不填充。
+func withToolUsage(ed events.ToolExecEndData, usage *session.TokenUsage) events.ToolExecEndData {
+	if usage == nil {
+		return ed
+	}
+	ed.PromptTokens = usage.PromptTokens
+	ed.CompletionTokens = usage.CompletionTokens
+	ed.TotalTokens = usage.TotalTokens
+	ed.CachedTokens = usage.CachedTokens
+	return ed
 }

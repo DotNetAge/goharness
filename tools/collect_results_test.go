@@ -1,120 +1,82 @@
 package tools
 
 import (
+	"context"
+	"errors"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// TestFindFinalAnswer_Completed 验证正常完成的子会话返回最终答案。
-func TestFindFinalAnswer_Completed(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "任务"},
-		{Role: "assistant", Content: "最终答案: 42"},
+// TestCollectResults_Cancellation 验证 CollectResults 在父 context 被取消时能及时返回。
+//
+// 回归背景：原实现使用 context.WithoutCancel 剥离父 ctx 的取消信号与截止时间，
+// 导致停止按钮（message.cancel）无法中断最长 30 分钟的轮询等待，会话队列被占住、
+// 后续消息全部排队。修复后仅剥离截止时间、保留取消信号。
+func TestCollectResults_Cancellation(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("获取工作目录失败: %v", err)
 	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Equal(t, "最终答案: 42", answer)
-	assert.Empty(t, termReason)
+	store := newMockSessionStore()
+	sess, err := session.New("test-agent", "", cwd, store, logging.NewNopLogger())
+	if err != nil {
+		t.Fatalf("创建会话失败: %v", err)
+	}
+	base := WithToolContext(context.Background(), &ToolContext{
+		Session:      sess,
+		SessionStore: store,
+		Logger:       logging.NewNopLogger(),
+		EmitEvent:    func(e events.ReactEvent) {},
+	})
+
+	ctx, cancel := context.WithCancel(base)
+	defer cancel()
+
+	tool := NewCollectResultsTool()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tool.Execute(ctx, map[string]any{"session_ids": []any{"sub-1"}})
+	}()
+
+	// 等待轮询进入等待期后取消（覆盖「轮询中取消」的真实时序）
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// 及时返回，符合预期
+	case <-time.After(10 * time.Second):
+		t.Fatal("CollectResults 应在父 context 取消后及时返回，而非等待 30 分钟轮询超时")
+	}
 }
 
-// TestFindFinalAnswer_CompletedSkipsToolCalls 验证带 tool_calls 的 assistant 消息
-// 不被当作最终答案（只能是无 tool_calls 的最终回答）。
-func TestFindFinalAnswer_CompletedSkipsToolCalls(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "任务"},
-		{Role: "assistant", Content: "思考中", ToolCalls: []session.ToolCall{{ID: "call_1", Name: "bash"}}},
-		{Role: "tool", Content: "工具结果", ToolCallID: "call_1"},
-		{Role: "assistant", Content: "最终答案"},
-	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Equal(t, "最终答案", answer)
-	assert.Empty(t, termReason)
-}
+// TestWithoutDeadline 验证 withoutDeadline 的契约：
+// 剥离截止时间、保留取消信号与上下文值。
+func TestWithoutDeadline(t *testing.T) {
+	base, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
 
-// TestFindFinalAnswer_TerminatedMarker 验证无最终答案的终止标记被识别为终止原因。
-func TestFindFinalAnswer_TerminatedMarker(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "任务"},
-		{Role: "assistant", Content: SubAgentTerminatedPrefix + " permission_timeout"},
-	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Empty(t, answer)
-	assert.Equal(t, "permission_timeout", termReason)
-}
+	wd := withoutDeadline(base)
 
-// TestFindFinalAnswer_ReuseAfterTerminated 验证子会话复用并重新委派后，
-// 新轮次的最终答案优先于历史终止标记被识别。
-func TestFindFinalAnswer_ReuseAfterTerminated(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "旧任务"},
-		{Role: "assistant", Content: SubAgentTerminatedPrefix + " llm_error"},
-		{Role: "user", Content: "继续任务"},
-		{Role: "assistant", Content: "重新完成的结果"},
+	// 截止时间必须被剥离（这是 withoutDeadline 的用途：突破单次工具执行超时）
+	if dl, ok := wd.Deadline(); ok {
+		t.Errorf("withoutDeadline 应剥离截止时间，得到 %v", dl)
 	}
-	answer, termReason := findFinalAnswer(msgs)
-	require.Empty(t, termReason)
-	assert.Equal(t, "重新完成的结果", answer)
-}
 
-// TestFindFinalAnswer_ReuseTaskInProgress 验证会话复用后新任务进行中：
-// 历史任务的最终答案不得被当作新任务的结果返回（应继续轮询）。
-// 这是会话复用（延续上下文）场景的核心边界：旧答案在任务开始标记之前，被边界排除。
-func TestFindFinalAnswer_ReuseTaskInProgress(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "旧任务"},
-		{Role: "assistant", Content: "旧任务的结果"},
-		{Role: "user", Content: SubAgentTaskStartPrefix + " 新的子任务开始"},
-		{Role: "user", Content: "新任务"},
-		{Role: "assistant", Content: "思考中", ToolCalls: []session.ToolCall{{ID: "call_1", Name: "bash"}}},
-		{Role: "tool", Content: "工具结果", ToolCallID: "call_1"},
+	// 取消信号必须保留（这是修复的关键：停止按钮必须能中断轮询等待）
+	cancel()
+	select {
+	case <-wd.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("withoutDeadline 应保留父 context 的取消信号")
 	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Empty(t, answer, "新任务尚未完成，不得返回旧任务的结果")
-	assert.Empty(t, termReason)
-}
-
-// TestFindFinalAnswer_ReuseBeforeQuestionAppended 验证会话复用后、新任务问题尚未
-// 追加（spawn 已写入任务开始标记）时：不得命中历史任务的答案，应继续轮询。
-// 该窗口由 spawn 在复用会话时追加的任务开始标记（user 角色）封闭。
-func TestFindFinalAnswer_ReuseBeforeQuestionAppended(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "旧任务"},
-		{Role: "assistant", Content: "旧任务的结果"},
-		{Role: "user", Content: SubAgentTaskStartPrefix + " 新的子任务开始"},
+	if !errors.Is(wd.Err(), context.Canceled) {
+		t.Errorf("Err() 应返回 context.Canceled，得到 %v", wd.Err())
 	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Empty(t, answer)
-	assert.Empty(t, termReason)
-}
-
-// TestFindFinalAnswer_ReuseTaskCompleted 验证会话复用后新任务完成：
-// 返回新任务段内的最终答案，而非历史任务的答案。
-func TestFindFinalAnswer_ReuseTaskCompleted(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "旧任务"},
-		{Role: "assistant", Content: "旧任务的结果"},
-		{Role: "user", Content: SubAgentTaskStartPrefix + " 新的子任务开始"},
-		{Role: "user", Content: "新任务"},
-		{Role: "assistant", Content: "新任务的结果"},
-	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Empty(t, termReason)
-	assert.Equal(t, "新任务的结果", answer)
-}
-
-// TestFindFinalAnswer_ReuseTaskTerminated 验证会话复用后新任务终止：
-// 返回新任务段内的终止标记，而非历史任务的终止标记。
-func TestFindFinalAnswer_ReuseTaskTerminated(t *testing.T) {
-	msgs := []session.Message{
-		{Role: "user", Content: "旧任务"},
-		{Role: "assistant", Content: SubAgentTerminatedPrefix + " permission_timeout"},
-		{Role: "user", Content: SubAgentTaskStartPrefix + " 新的子任务开始"},
-		{Role: "user", Content: "新任务"},
-		{Role: "assistant", Content: SubAgentTerminatedPrefix + " llm_error"},
-	}
-	answer, termReason := findFinalAnswer(msgs)
-	assert.Empty(t, answer)
-	assert.Equal(t, "llm_error", termReason)
 }

@@ -169,7 +169,21 @@ func (rt *Runtime) resolvePermissionMagicWord(
 		return false, false
 	}
 
-	// 带目标的魔法词必然来自子会话授权弹窗（前端点击对应子会话的允许/拒绝）：
+	// 带目标的魔法词：目标即本会话时，是本会话授权弹窗的响应
+	// （前端可能因历史兜底逻辑误加 ": <本会话ID>" 后缀），按本会话挂起授权解析，
+	// 而非当作子会话路由静默消费——否则主会话授权链会断裂。
+	if mw.SessionID != "" && mw.SessionID == b.session.ID() {
+		pending := b.session.TakePendingPermission()
+		if pending == nil {
+			logger.Warn("带目标的魔法词目标为本会话，但无挂起授权，静默消费",
+				"action", mw.Action, "session", b.session.ID())
+			return true, true
+		}
+		rt.applyPermissionAction(ctx, b, pending, mw.Action, toolExec, emit, logger)
+		return true, false
+	}
+
+	// 带目标的魔法词（目标为子会话）必然来自子会话授权弹窗（前端点击对应子会话的允许/拒绝）：
 	// 直接精确路由到目标子会话，且绝不触碰本会话（主会话）的挂起授权——
 	// 否则主会话自身有 pending 时，取走 pending 会导致其授权丢失。
 	// 无论目标子会话是否仍挂起，主会话都无需 LLM 响应，一律静默消费。
