@@ -11,12 +11,8 @@ import (
 // ── 身份信息 ────────────────────────────────────────────────────────────────
 
 func buildIdentity(name, role, description, introduction string) string {
-	if role == "" {
-		return fmt.Sprintf("- 名称: %s\n- 职责: %s\n\n%s",
-			name, description, introduction)
-	}
-	return fmt.Sprintf("你是 %s。\n- 名称: %s\n- 职责: %s\n\n%s",
-		role, name, description, introduction)
+	return fmt.Sprintf("## 角色定义 \n 我叫 %s 是一名 %s, %s\n\n%s",
+		name, role, description, introduction)
 }
 
 // ── 技能目录 ──────────────────────────────────────────────────────────────────

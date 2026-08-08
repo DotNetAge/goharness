@@ -99,7 +99,7 @@ func DefaultAllowedCommands() []string {
 		"docker", "docker-compose", "kubectl", "helm",
 		"curl", "wget", "ssh", "scp", "rsync",
 		"ps", "top", "htop", "kill", "killall", "pgrep", "pkill",
-		"df", "du", "free", "uname", "date", "whoami", "id",
+		"df", "du", "free", "uname", "date", "whoami", "id", "mindx", "mrag",
 		"env", "export", "source", "alias", "which", "type", "file",
 		"sort", "uniq", "cut", "tr", "tee", "xargs",
 		"grep", "rg", "find", "diff", "comm",
