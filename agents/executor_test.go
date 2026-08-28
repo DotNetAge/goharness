@@ -464,6 +464,40 @@ func TestExecLLMStreamTimeout(t *testing.T) {
 	}
 }
 
+// TestLLMTimeoutFromCtx 验证超时跟随 ctx 截止时间：有截止时间时返回剩余时长，
+// 无截止时间时回退默认值。
+func TestLLMTimeoutFromCtx(t *testing.T) {
+	t.Parallel()
+	fallback := 4 * time.Minute
+
+	t.Run("ctx 带截止时间返回剩余时长", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		got := llmTimeoutFromCtx(ctx, fallback)
+		if got <= 0 || got > 10*time.Minute {
+			t.Fatalf("期望返回 ctx 剩余时长（约 10 分钟），得到: %v", got)
+		}
+		if got == fallback {
+			t.Fatalf("ctx 有截止时间时不应回退默认值: %v", got)
+		}
+	})
+
+	t.Run("ctx 无截止时间回退默认值", func(t *testing.T) {
+		ctx := context.Background()
+		if got := llmTimeoutFromCtx(ctx, fallback); got != fallback {
+			t.Fatalf("期望回退默认值 %v，得到: %v", fallback, got)
+		}
+	})
+
+	t.Run("截止时间已过期回退默认值", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		if got := llmTimeoutFromCtx(ctx, fallback); got != fallback {
+			t.Fatalf("截止时间已过期应回退默认值 %v，得到: %v", fallback, got)
+		}
+	})
+}
+
 // TestExecBackfillToolCallID 验证缺失 tool_call_id 时会话消息仍然配对。
 func TestExecBackfillToolCallID(t *testing.T) {
 	t.Parallel()

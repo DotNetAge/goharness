@@ -16,6 +16,20 @@ import (
 	"github.com/DotNetAge/goharness/tools"
 )
 
+// llmTimeoutFromCtx 计算单次 LLM 调用的超时预算。
+// - 若 ctx 携带截止时间（调用方显式设置了整体超时，如 mindx 按模型配置的 request_timeout），
+//   返回剩余时长，使 gochat 的 http.Client.Timeout 与 ctx 截止时间对齐，避免固定默认值
+//   （defaultLLMTimeout = 4 分钟）在慢模型场景下先于 ctx 一刀切。
+// - 否则返回 fallback 兜底，保持原有行为。
+func llmTimeoutFromCtx(ctx context.Context, fallback time.Duration) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			return remaining
+		}
+	}
+	return fallback
+}
+
 // exec 是 Runtime 的核心思考循环（ReAct：推理 + 行动）。
 //
 // 每一轮循环：
@@ -262,6 +276,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// ── 流式调用 LLM（失败自愈：工具配对错误时截断会话重试一次）──
 		// 正常路径只尝试一次；仅当首次调用返回「工具调用配对不完整」类 400 错误时，
 		// 自动截断会话中的坏轮次并重试一次（最多 2 次尝试），避免整个会话作废。
+		// 超时跟随 ctx 截止时间（调用方按模型配置设置整体预算），无截止时间时回退默认值。
+		llmTimeout := llmTimeoutFromCtx(ctx, defaultLLMTimeout)
 		var (
 			stream *gochatcore.Stream
 			err    error
@@ -278,7 +294,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				FrequencyPenalty:  rt.model.FrequencyPenalty,
 				Tools:             toolDefs,
 				ToolChoice:        "auto",
-				Timeout:           defaultLLMTimeout,
+				Timeout:           llmTimeout,
 			})
 			if err == nil {
 				break
@@ -309,7 +325,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				logger.Error("LLM思想流超时", err, "session", sid, "iter", iter)
 				emit(events.LLMTimeout, events.LLMTimeoutData{
 					SessionID: sid,
-					Timeout:   defaultLLMTimeout,
+					Timeout:   llmTimeout,
 					Elapsed:   time.Since(start),
 					Error:     err.Error(),
 				})
@@ -342,7 +358,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				logger.Error("LLM思想流超时", streamErr, "session", sid, "iter", iter)
 				emit(events.LLMTimeout, events.LLMTimeoutData{
 					SessionID: sid,
-					Timeout:   defaultLLMTimeout,
+					Timeout:   llmTimeout,
 					Elapsed:   time.Since(start),
 					Error:     streamErr.Error(),
 				})

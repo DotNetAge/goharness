@@ -3,7 +3,7 @@ module github.com/DotNetAge/goharness
 go 1.26
 
 require (
-	github.com/DotNetAge/gochat v0.2.9
+	github.com/DotNetAge/gochat v0.2.10
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/bogdanfinn/fhttp v0.6.8
