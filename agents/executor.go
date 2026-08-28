@@ -16,18 +16,20 @@ import (
 	"github.com/DotNetAge/goharness/tools"
 )
 
-// llmTimeoutFromCtx 计算单次 LLM 调用的超时预算。
-// - 若 ctx 携带截止时间（调用方显式设置了整体超时，如 mindx 按模型配置的 request_timeout），
-//   返回剩余时长，使 gochat 的 http.Client.Timeout 与 ctx 截止时间对齐，避免固定默认值
-//   （defaultLLMTimeout = 4 分钟）在慢模型场景下先于 ctx 一刀切。
-// - 否则返回 fallback 兜底，保持原有行为。
-func llmTimeoutFromCtx(ctx context.Context, fallback time.Duration) time.Duration {
+// llmCallTimeout 决定单次 LLM 调用的超时预算，优先级从高到低：
+//  1. 模型配置的 RequestTimeout（秒）：按模型显式配置，适配慢模型（思考/首 token 耗时远超默认值）；
+//  2. 否则跟随 ctx 截止时间的剩余时长（调用方设置的整体预算）；
+//  3. 否则回退默认 defaultLLMTimeout（4 分钟）。
+func llmCallTimeout(requestTimeoutSec int64, ctx context.Context) time.Duration {
+	if requestTimeoutSec > 0 {
+		return time.Duration(requestTimeoutSec) * time.Second
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
 			return remaining
 		}
 	}
-	return fallback
+	return defaultLLMTimeout
 }
 
 // exec 是 Runtime 的核心思考循环（ReAct：推理 + 行动）。
@@ -276,15 +278,19 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// ── 流式调用 LLM（失败自愈：工具配对错误时截断会话重试一次）──
 		// 正常路径只尝试一次；仅当首次调用返回「工具调用配对不完整」类 400 错误时，
 		// 自动截断会话中的坏轮次并重试一次（最多 2 次尝试），避免整个会话作废。
-		// 超时跟随 ctx 截止时间（调用方按模型配置设置整体预算），无截止时间时回退默认值。
-		llmTimeout := llmTimeoutFromCtx(ctx, defaultLLMTimeout)
+		// 超时按模型配置的 request_timeout 计算（未配置时跟随 ctx / 回退默认值）。
+		// 使用单次调用独立截止时间：父 ctx 承载整个会话执行（多次迭代），
+		// 不能把整体预算当作单次调用超时；同时超时到期后 collectStreamResponse 可立即感知并终止。
+		llmTimeout := llmCallTimeout(rt.model.RequestTimeout, ctx)
+		callCtx, callCancel := context.WithTimeout(ctx, llmTimeout)
+		defer callCancel()
 		var (
 			stream *gochatcore.Stream
 			err    error
 		)
 		for attempt := 1; ; attempt++ {
 			logger.Info("LLM思想流开始", "session", sid, "iter", iter, "attempt", attempt)
-			stream, err = rt.llmClient.Stream(ctx, LLMRequest{
+			stream, err = rt.llmClient.Stream(callCtx, LLMRequest{
 				Messages:          msgs,
 				Model:             rt.model.Name,
 				Temperature:       rt.model.Temperature,
@@ -344,7 +350,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// 流式读取并收集响应（content/reasoning/finishReason/错误）。
 		// 工具调用由下方在确认无错误后通过 stream.ToolCalls() 获取，
 		// 保持「错误时不收集工具调用」的原有行为。
-		content, reasoning, finishReason, streamErr := collectStreamResponse(ctx, stream, emit)
+		// 使用 callCtx：单次调用超时到期后立即终止读取，而非继续阻塞。
+		content, reasoning, finishReason, streamErr := collectStreamResponse(callCtx, stream, emit)
 
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) {

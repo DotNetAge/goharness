@@ -74,6 +74,11 @@ type ModelConfig struct {
 	// MaxTurns 限制了单轮对话的最大交互次数，用于控制会话长度和成本。
 	MaxTurns int `json:"max_turns" yaml:"max_turns"`
 
+	// RequestTimeout 是单次 LLM 调用的最大等待时长（秒）。
+	// 0 表示未配置，回退到 ctx 截止时间或默认超时（4 分钟）。
+	// 用于慢模型：模型思考/首 token 生成可能远超默认值，按模型配置放宽。
+	RequestTimeout int64 `json:"request_timeout,omitempty" yaml:"request_timeout,omitempty"`
+
 	// CostPer1MIn 是每百万输入 token 的费用（¥）。
 	CostPer1MIn float64 `json:"cost_per_1m_in" yaml:"cost_per_1m_in"`
 

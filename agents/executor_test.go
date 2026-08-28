@@ -464,16 +464,24 @@ func TestExecLLMStreamTimeout(t *testing.T) {
 	}
 }
 
-// TestLLMTimeoutFromCtx 验证超时跟随 ctx 截止时间：有截止时间时返回剩余时长，
-// 无截止时间时回退默认值。
+// TestLLMTimeoutFromCtx 验证单次 LLM 调用超时计算：模型配置优先，其次 ctx 截止时间，
+// 最后回退默认值。
 func TestLLMTimeoutFromCtx(t *testing.T) {
 	t.Parallel()
-	fallback := 4 * time.Minute
+	fallback := defaultLLMTimeout
+
+	t.Run("模型配置 request_timeout 优先", func(t *testing.T) {
+		ctx := context.Background()
+		got := llmCallTimeout(10*60, ctx) // 10 分钟
+		if got != 10*time.Minute {
+			t.Fatalf("期望 10 分钟，得到: %v", got)
+		}
+	})
 
 	t.Run("ctx 带截止时间返回剩余时长", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		got := llmTimeoutFromCtx(ctx, fallback)
+		got := llmCallTimeout(0, ctx)
 		if got <= 0 || got > 10*time.Minute {
 			t.Fatalf("期望返回 ctx 剩余时长（约 10 分钟），得到: %v", got)
 		}
@@ -482,9 +490,9 @@ func TestLLMTimeoutFromCtx(t *testing.T) {
 		}
 	})
 
-	t.Run("ctx 无截止时间回退默认值", func(t *testing.T) {
+	t.Run("均未配置回退默认值", func(t *testing.T) {
 		ctx := context.Background()
-		if got := llmTimeoutFromCtx(ctx, fallback); got != fallback {
+		if got := llmCallTimeout(0, ctx); got != fallback {
 			t.Fatalf("期望回退默认值 %v，得到: %v", fallback, got)
 		}
 	})
@@ -492,7 +500,7 @@ func TestLLMTimeoutFromCtx(t *testing.T) {
 	t.Run("截止时间已过期回退默认值", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		if got := llmTimeoutFromCtx(ctx, fallback); got != fallback {
+		if got := llmCallTimeout(0, ctx); got != fallback {
 			t.Fatalf("截止时间已过期应回退默认值 %v，得到: %v", fallback, got)
 		}
 	})
