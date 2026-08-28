@@ -8,7 +8,7 @@ import (
 // Defaults 返回 Think-Act 循环的默认循环钩子集合。
 // 钩子按优先级顺序返回（数值越小越先执行）。
 //
-// 所有生命周期事件（CycleEnd、FinalAnswer、ExecutionSummary、LLMTimeout、
+// 所有生命周期事件（LoopEnd、FinalAnswer、ExecutionSummary、LLMTimeout、
 // MaxTurnsReached 等）由 Runtime.exec() 直接发射。
 // 此处不需要也不包含事件发射钩子。
 //

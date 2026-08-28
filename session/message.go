@@ -42,7 +42,12 @@ type Message struct {
 	Timestamp        int64       `json:"timestamp" yaml:"timestamp"`
 	ToolCallID       string      `json:"tool_call_id,omitempty" yaml:"tool_call_id,omitempty"` // 用于 role="tool" 消息
 	ToolCalls        []ToolCall  `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`     // 用于 role="assistant" 消息
-	Usage            *TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"`   // token 消耗（仅助手消息）
+	// FinishReason 记录本次 LLM 调用（assistant 消息）的终止原因，取 OpenAI 协议原值：
+	// "stop"（最终回答）| "tool_calls"（需继续循环）| "length" | "content_filter"。
+	// 这是协议内建的「答案边界」信号：前端恢复历史时据此精确区分过程 content 与最终答案，
+	// 无需依赖「最后一条无 tool_calls 的 assistant」这类位置启发式。
+	FinishReason string      `json:"finish_reason,omitempty" yaml:"finish_reason,omitempty"`
+	Usage        *TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"`       // token 消耗（仅助手消息）
 }
 
 // GetID 返回此消息的唯一标识符。

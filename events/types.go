@@ -56,8 +56,10 @@ const (
 	// 与 LLMTimeout（真实超时）不同，这是用户主动发起的中断。
 	LLMCancelled ReactEventType = "llm_cancelled"
 
-	// CycleEnd 表示一个完整的 Think-Act 循环已结束。
-	CycleEnd ReactEventType = "cycle_end"
+	// LoopEnd 表示一个完整的 Think-Act 循环已结束。
+	// 命名取 loop 而非 cycle：cycle 在计算原语中易与「死循环」混淆，
+	// loop 更准确地表达 agent 的「思考-行动循环」语义。
+	LoopEnd ReactEventType = "loop_end"
 
 	// TaskSummary 表示已完成任务的自然语言摘要。
 	// 这是在 Think-Act 循环结束后为非平凡任务发出的事件。

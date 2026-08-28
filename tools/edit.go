@@ -11,6 +11,7 @@ import (
 
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
+	"github.com/DotNetAge/goharness/tools/diffutil"
 	"github.com/DotNetAge/goharness/tools/filestate"
 )
 
@@ -363,6 +364,12 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 		"replace_count", replaceCount,
 	)
 
+	// 生成 unified diff（与 write.go 的截断策略一致），供前端展示 +/- 行数与 diff 视图
+	var diffStr string
+	if len(fileContent) > 0 && len(fileContent) <= 8*1024 {
+		_, diffStr = diffutil.GenerateDiff(fileContent, updatedContent)
+	}
+
 	return &EditResult{
 		Success:      true,
 		FilePath:     resolvedPath,
@@ -370,6 +377,7 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 		ReplaceCount: replaceCount,
 		TotalMatches: totalMatches,
 		ReplaceMode:  replaceMode,
+		Diff:         diffStr,
 	}, nil
 }
 

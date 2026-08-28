@@ -184,6 +184,27 @@ func (m *ModelRegistry) Save(cfg *ModelConfig) error {
 	return m.saveAll()
 }
 
+// Delete 从内存注册表和 models.yml 磁盘文件中删除指定名称的模型。
+// 若该名称不存在于注册表，返回 ErrModelNotFound。
+// Provider 配置由独立的 providers.yml 管理，不受此方法影响。
+//
+// 该方法是线程安全的。
+func (m *ModelRegistry) Delete(name string) error {
+	if name == "" {
+		return fmt.Errorf("model name cannot be empty")
+	}
+
+	m.mu.Lock()
+	if _, ok := m.models[name]; !ok {
+		m.mu.Unlock()
+		return ErrModelNotFound
+	}
+	delete(m.models, name)
+	m.mu.Unlock()
+
+	return m.saveAll()
+}
+
 // saveAll 将当前注册表中的所有模型配置序列化并写入磁盘文件。
 // 这是 ModelRegistry 的内部方法，用于持久化配置变更。
 // 注意：Provider 配置由独立的 providers.yml 管理，不使用此方法。

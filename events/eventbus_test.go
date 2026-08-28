@@ -218,7 +218,7 @@ func TestReactEventTypes(t *testing.T) {
 		SubtaskCompleted: false,
 		FinalAnswer:      false,
 		Error:            false,
-		CycleEnd:         false,
+		LoopEnd:          false,
 	}
 
 	for typ := range types {

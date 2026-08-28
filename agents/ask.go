@@ -233,8 +233,8 @@ func (b *AskBuilder) OnLLMCancelled(fn func(data events.LLMCancelledData)) *AskB
 	})
 }
 
-func (b *AskBuilder) OnCycleEnd(fn func(data events.CycleInfo)) *AskBuilder {
-	return b.on(events.CycleEnd, func(d any) {
+func (b *AskBuilder) OnLoopEnd(fn func(data events.CycleInfo)) *AskBuilder {
+	return b.on(events.LoopEnd, func(d any) {
 		if v, ok := d.(events.CycleInfo); ok {
 			fn(v)
 		}

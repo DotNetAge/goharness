@@ -256,7 +256,8 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		msgs := AssembleMessages(callInput.SystemPromptSections, window, question)
 
 		// ── 调试：打印完整系统提示词 ──
-		logSystemPromptDebug(rt.logger, sid, iter, msgs)
+		// 调试时开启，生产时关闭，不要删除此代码。
+		// logSystemPromptDebug(rt.logger, sid, iter, msgs)
 
 		// ── 流式调用 LLM（失败自愈：工具配对错误时截断会话重试一次）──
 		// 正常路径只尝试一次；仅当首次调用返回「工具调用配对不完整」类 400 错误时，
@@ -401,13 +402,15 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// 持久化助手消息（content + reasoning + tool_calls）；缺少 ID 的工具调用会被回填合成 ID，
 		// 以满足 OpenAI 严格的 tool_call/tool 消息配对要求。详见 buildAssistantMessage。
-		assistantMsg := buildAssistantMessage(content, reasoning, callUsage, streamToolCalls, logger, sid, iter)
+		// finishReason 一并持久化：这是协议内建的「答案边界」信号（stop=最终回答 / tool_calls=继续循环），
+		// 供前端恢复历史时精确区分过程 content 与最终答案。
+		assistantMsg := buildAssistantMessage(content, reasoning, finishReason, callUsage, streamToolCalls, logger, sid, iter)
 		if !appendAndAbort(iter, assistantMsg, "助手消息") {
 			return
 		}
 
 		lastIteration = iter + 1
-		emit(events.CycleEnd, events.CycleInfo{
+		emit(events.LoopEnd, events.CycleInfo{
 			Iteration: lastIteration, Duration: time.Since(start),
 		})
 
@@ -688,11 +691,12 @@ func (t dupErrorTracker) maybeGuide(tr hooks.ToolResult) (guide string, count in
 // 合成 ID；该 ID 随后被 parseToolInvocations 和 executeTools 使用，故 pair 始终匹配。
 //
 // 注意：streamToolCalls 的 ID 回填会通过共享底层数组反映到调用方切片。
-func buildAssistantMessage(content, reasoning string, usage *session.TokenUsage, streamToolCalls []gochatcore.ToolCall, logger logging.Logger, sid string, iter int) session.Message {
+func buildAssistantMessage(content, reasoning, finishReason string, usage *session.TokenUsage, streamToolCalls []gochatcore.ToolCall, logger logging.Logger, sid string, iter int) session.Message {
 	msg := session.Message{
 		Role:             "assistant",
 		Content:          content,
 		ReasoningContent: reasoning,
+		FinishReason:     finishReason,
 		Timestamp:        time.Now().Unix(),
 		Usage:            usage,
 	}

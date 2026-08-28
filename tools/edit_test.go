@@ -400,3 +400,51 @@ func TestEditMissingPath(t *testing.T) {
 		t.Fatal("expected error when path is missing")
 	}
 }
+
+// TestEditResultContainsDiff 验证 Edit 成功后返回的 EditResult 包含 unified diff，
+// 供前端展示 +/- 行数与 diff 视图（回归：修复前 Diff 字段为空导致前端无法解析）。
+func TestEditResultContainsDiff(t *testing.T) {
+	dir, err := os.MkdirTemp(".", "edit_diff_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	filePath := filepath.Join(dir, "diff.txt")
+	content := "line 1\nline 2\nline 3\n"
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+
+	edit := &EditTool{}
+	ctx := testCtx(t)
+
+	// 编辑前必须先读取文件
+	read := NewReadTool()
+	if _, err := read.Execute(ctx, map[string]any{"filePath": filePath}); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	result, err := edit.Execute(ctx, map[string]any{
+		"filePath":   filePath,
+		"old_string": "line 2",
+		"new_string": "line 2 replaced",
+	})
+	if err != nil {
+		t.Fatalf("replace failed: %v", err)
+	}
+
+	editResult, ok := result.(*EditResult)
+	if !ok {
+		t.Fatalf("expected *EditResult, got %T", result)
+	}
+	if editResult.Diff == "" {
+		t.Fatal("expected Diff to be non-empty")
+	}
+	if !strings.Contains(editResult.Diff, "@@") {
+		t.Errorf("Diff 应包含 unified diff 的 hunk 头（@@），got: %q", editResult.Diff)
+	}
+	if !strings.Contains(editResult.Diff, "-line 2") || !strings.Contains(editResult.Diff, "+line 2 replaced") {
+		t.Errorf("Diff 应包含变更行的 +/- 标记，got: %q", editResult.Diff)
+	}
+}
