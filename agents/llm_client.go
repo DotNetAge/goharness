@@ -59,7 +59,57 @@ func (c *gochatLLMClient) isOllama() bool {
 	return strings.EqualFold(c.provider, "ollama")
 }
 
+// maxStreamRetryAttempts 表示建流失败时的额外指数退避重试次数（不含首次请求）。
+// 仅对可重试错误（429 限流 / 408 / 5xx / 网络 / 超时）重试；请求方错误（4xx 客户端错误）直接透传。
+const maxStreamRetryAttempts = 3
+
+// Stream 根据请求向 LLM 发起流式调用，并对建流阶段的可重试错误做指数退避重试。
+// 流式特例：只对「建流请求失败（GetStream 返回 error）」重试；流一旦建立，其内部的错误由
+// 上层通过事件消费，不再重连。
 func (c *gochatLLMClient) Stream(ctx context.Context, req LLMRequest) (*gochatcore.Stream, error) {
+	return retryStream(ctx, func() (*gochatcore.Stream, error) {
+		return c.buildStream(ctx, req)
+	})
+}
+
+// retryStream 对 build 返回的可重试错误做指数退避重试（最多 maxStreamRetryAttempts 次额外尝试）。
+// 非可重试错误（请求方 4xx 客户端错误）与 ctx 取消直接透传。
+func retryStream(ctx context.Context, build func() (*gochatcore.Stream, error)) (*gochatcore.Stream, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxStreamRetryAttempts; attempt++ {
+		if attempt > 0 {
+			if err := waitRetry(ctx, attempt-1); err != nil {
+				return nil, err
+			}
+		}
+		st, err := build()
+		if err == nil {
+			return st, nil
+		}
+		// 非可重试错误或上下文已取消（用户停止），不再重试
+		if !gochatcore.IsRetryableError(err) || ctx.Err() != nil {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// waitRetry 按指数退避（含抖动）等待；等待期间 ctx 取消则直接返回。
+func waitRetry(ctx context.Context, attempt int) error {
+	delay := gochatcore.ExponentialBackoff(attempt, 500*time.Millisecond)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// buildStream 构造 gochat 客户端并返回事件流；失败时返回可判定重试性的 core.Error。
+func (c *gochatLLMClient) buildStream(ctx context.Context, req LLMRequest) (*gochatcore.Stream, error) {
 	baseURL := c.baseURL
 	if c.isOllama() {
 		// ollama 原生 /api/chat 接口不使用 /v1 前缀。
