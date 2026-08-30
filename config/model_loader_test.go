@@ -112,3 +112,44 @@ models:
 		t.Fatal("测试执行超时")
 	}
 }
+
+func TestLoadModels_CompositeDeleteKeepsSibling(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		path, cleanup := writeModelsYAML(t, collisionYAML)
+		defer cleanup()
+
+		reg, err := LoadModels(path)
+		if err != nil {
+			t.Fatalf("LoadModels 失败: %v", err)
+		}
+
+		// 按组合键删除 openai/gpt-4o，应只移除 openai 实例，zhipu 实例保留
+		if err := reg.Delete("openai/gpt-4o"); err != nil {
+			t.Fatalf("Delete 失败: %v", err)
+		}
+		if got := reg.Get("openai/gpt-4o"); got != nil {
+			t.Fatalf("删除后 openai/gpt-4o 应不存在，实际 %v", got)
+		}
+		if got := reg.Get("zhipu/gpt-4o"); got == nil || got.Provider != "zhipu" {
+			t.Fatalf("删除 openai 后 zhipu/gpt-4o 应保留，实际 %v", got)
+		}
+
+		// 组合键注册应与已有同名模型共存，且不覆盖
+		reg.Register("gpt-4o", &ModelConfig{Name: "gpt-4o", Provider: "openai", BaseURL: "https://new/v1"})
+		if got := reg.Get("openai/gpt-4o"); got == nil || got.Provider != "openai" {
+			t.Fatalf("重注册 openai/gpt-4o 应命中新实例，实际 %v", got)
+		}
+		if got := reg.Get("zhipu/gpt-4o"); got == nil {
+			t.Fatalf("重注册 openai 后 zhipu/gpt-4o 应保留，实际为 nil")
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("测试执行超时")
+	}
+}
