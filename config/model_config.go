@@ -82,6 +82,11 @@ type ModelConfig struct {
 	// CostPer1MIn 是每百万输入 token 的费用（¥）。
 	CostPer1MIn float64 `json:"cost_per_1m_in" yaml:"cost_per_1m_in"`
 
+	// CostPer1MInCache 是每百万缓存命中输入 token 的费用（¥）。
+	// 部分提供商（如 DeepSeek、Anthropic 等）对缓存命中的输入 token 单独计费，
+	// 价格通常低于普通输入价格。
+	CostPer1MInCache float64 `json:"cost_per_1m_in_cache" yaml:"cost_per_1m_in_cache"`
+
 	// CostPer1MOut 是每百万输出 token 的费用（¥）。
 	CostPer1MOut float64 `json:"cost_per_1m_out" yaml:"cost_per_1m_out"`
 }
