@@ -20,13 +20,13 @@ type ModelConfig struct {
 	Provider string `json:"provider" yaml:"provider"`
 
 	// BaseURL 定义了模型 API 的基础 URL 地址，如果为空则从 Provider 继承。
-	BaseURL string `json:"base_url" yaml:"base_url"`
+	BaseURL string `json:"base_url" yaml:"-"`
 
 	// APIKey 存储了访问模型 API 的密钥凭证，如果为空则从 Provider 继承。
-	APIKey string `json:"api_key" yaml:"api_key"`
+	APIKey string `json:"api_key" yaml:"-"`
 
 	// AuthToken 存储了额外的认证令牌，用于 OAuth 或其他认证机制，如果为空则从 Provider 继承。
-	AuthToken string `json:"auth_token" yaml:"auth_token"`
+	AuthToken string `json:"auth_token" yaml:"-"`
 
 	// ContextLength 定义了模型支持的最大上下文窗口大小（token 数）。
 	ContextLength int64 `json:"context_length" yaml:"context_length"`
@@ -84,6 +84,24 @@ type ModelConfig struct {
 
 	// CostPer1MOut 是每百万输出 token 的费用（¥）。
 	CostPer1MOut float64 `json:"cost_per_1m_out" yaml:"cost_per_1m_out"`
+}
+
+// modelKey 构造模型在注册表中的组合标识键：Provider + "/" + Name。
+// 当 Provider 为空时退化为仅 Name（本地模型或未绑定供应商的历史配置）。
+// 该格式同时是注册与查询的唯一依据，用于在多家供应商提供同名模型时消除歧义。
+func modelKey(provider, name string) string {
+	if provider == "" {
+		return name
+	}
+	return provider + "/" + name
+}
+
+// Key 返回当前模型在注册表中的组合标识键，格式与 modelKey 保持一致。
+func (m *ModelConfig) Key() string {
+	if m == nil {
+		return ""
+	}
+	return modelKey(m.Provider, m.Name)
 }
 
 // Config 将 ModelConfig 转换为 gochat.Config 格式，

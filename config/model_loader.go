@@ -61,7 +61,9 @@ func LoadModels(path string) (*ModelRegistry, error) {
 		if cfg.Name == "" {
 			return nil, fmt.Errorf("模型配置缺少名称")
 		}
-		reg.models[cfg.Name] = cfg
+		// 以提供商+模型名（Provider/Name）作为唯一键注册，允许不同供应商提供同名模型共存；
+		// 不再因 map 键相同而静默覆盖先加载的模型。
+		reg.models[cfg.Key()] = cfg
 	}
 
 	return reg, nil
@@ -93,6 +95,30 @@ func (m *ModelRegistry) resolveProvider(cfg *ModelConfig) *ModelConfig {
 	return &resolved
 }
 
+// indexName 在调用方持有的锁内，按名称（name）解析模型配置。
+// 它优先按组合键（Provider/Name）精确匹配；若传入的是裸模型名，
+// 则仅当该名称在没有跨供应商冲突（唯一）时才返回对应模型，
+// 存在多个同名模型时返回 nil，调用方应改用组合键精确寻址。
+// 调用前必须持有 m.mu 的读锁或写锁。返回的是原始配置（未经 Provider 解析）。
+func (m *ModelRegistry) indexName(name string) *ModelConfig {
+	if name == "" {
+		return nil
+	}
+	if mc, ok := m.models[name]; ok {
+		return mc
+	}
+	var found *ModelConfig
+	for _, mc := range m.models {
+		if mc.Name == name {
+			if found != nil {
+				return nil // 存在多个同名模型，无法按裸名消歧
+			}
+			found = mc
+		}
+	}
+	return found
+}
+
 // Get 根据模型名称查找并返回已注册的模型配置（已解析 Provider）。
 // 如果未找到对应名称的模型，返回 nil。
 //
@@ -100,7 +126,7 @@ func (m *ModelRegistry) resolveProvider(cfg *ModelConfig) *ModelConfig {
 // 连接参数，会自动从关联的 Provider 继承。该方法是并发安全的。
 func (m *ModelRegistry) Get(name string) *ModelConfig {
 	m.mu.RLock()
-	mc := m.models[name]
+	mc := m.indexName(name)
 	m.mu.RUnlock()
 	if mc == nil {
 		return nil
@@ -131,7 +157,7 @@ func (m *ModelRegistry) List() []*ModelConfig {
 func (m *ModelRegistry) GetRaw(name string) *ModelConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.models[name]
+	return m.indexName(name)
 }
 
 // ListRaw 返回所有已注册的原始模型配置列表（未经 Provider 解析）。
@@ -162,7 +188,7 @@ func (m *ModelRegistry) Register(name string, cfg *ModelConfig) {
 	if cfg.Name == "" {
 		cfg.Name = name
 	}
-	m.models[name] = cfg
+	m.models[modelKey(cfg.Provider, name)] = cfg
 }
 
 // Save 将模型配置保存到内存注册表，并将完整配置写入 models.yml 磁盘文件。
@@ -178,7 +204,7 @@ func (m *ModelRegistry) Save(cfg *ModelConfig) error {
 	if m.models == nil {
 		m.models = make(map[string]*ModelConfig)
 	}
-	m.models[cfg.Name] = cfg
+	m.models[cfg.Key()] = cfg
 	m.mu.Unlock()
 
 	return m.saveAll()
@@ -195,11 +221,12 @@ func (m *ModelRegistry) Delete(name string) error {
 	}
 
 	m.mu.Lock()
-	if _, ok := m.models[name]; !ok {
+	raw := m.indexName(name)
+	if raw == nil {
 		m.mu.Unlock()
 		return ErrModelNotFound
 	}
-	delete(m.models, name)
+	delete(m.models, raw.Key())
 	m.mu.Unlock()
 
 	return m.saveAll()
