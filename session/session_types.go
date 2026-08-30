@@ -39,17 +39,21 @@ func (u TokenUsage) ActualTokens() int {
 type PricingUnit struct {
 	InputPricePer1M  float64
 	OutputPricePer1M float64
+	// CachePricePer1M 每百万缓存命中输入 token 的价格（¥）。
+	// 为 0 时表示缓存免费，按旧口径（缓存减少可计费输入）计费。
+	CachePricePer1M float64
 }
 
 // Cost 使用给定定价计算费用。
 // 与 mindx/internal/core.CalculateCost 一致 — 标准定价算法。
-// 缓存 token 减少可计费输入，而非单独计费。
+// 缓存命中输入 token 按 CachePricePer1M 单独计费（为 0 时免费）；其余输入按 InputPricePer1M。
 func (u TokenUsage) Cost(p PricingUnit) float64 {
 	netInput := u.PromptTokens - u.CachedTokens
 	if netInput < 0 {
 		netInput = 0
 	}
 	return float64(netInput)/1_000_000*p.InputPricePer1M +
+		float64(u.CachedTokens)/1_000_000*p.CachePricePer1M +
 		float64(u.CompletionTokens)/1_000_000*p.OutputPricePer1M
 }
 
