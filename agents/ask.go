@@ -13,6 +13,7 @@ type AskBuilder struct {
 	cancel    context.CancelFunc
 	agentName string
 	question  string
+	images    []session.ImageBlock // 随本次用户问题附加的图片内容块（可含 Path 引用或内联 base64）
 	session   *session.Session
 	runtime   *Runtime
 	onEvent   map[events.ReactEventType][]func(data any)
@@ -233,6 +234,18 @@ func (b *AskBuilder) OnLLMCancelled(fn func(data events.LLMCancelledData)) *AskB
 	})
 }
 
+// OnLLMRetry 注册 LLM 建流重试事件的处理器。
+// 服务商限流（429）/ 5xx 等可预知错误触发退避重试时触发（Phase=retry），
+// 重试成功建流后再次触发（Phase=recovered，前端应消除重试警告）。
+// 重试耗尽仍失败时走 OnError 收尾。
+func (b *AskBuilder) OnLLMRetry(fn func(data events.LLMRetryData)) *AskBuilder {
+	return b.on(events.LLMRetry, func(d any) {
+		if v, ok := d.(events.LLMRetryData); ok {
+			fn(v)
+		}
+	})
+}
+
 func (b *AskBuilder) OnLoopEnd(fn func(data events.CycleInfo)) *AskBuilder {
 	return b.on(events.LoopEnd, func(d any) {
 		if v, ok := d.(events.CycleInfo); ok {
@@ -304,6 +317,17 @@ func (b *AskBuilder) OnMaxTurnsReached(fn func(data events.MaxTurnsReachedData))
 // Cancel() 不会取消自定义 context——调用方应自行取消。
 func (b *AskBuilder) WithContext(ctx context.Context) *AskBuilder {
 	b.ctx = ctx
+	return b
+}
+
+// WithImages 为本次用户问题附加图片内容块。
+// 每个块可为文件路径引用（Path，组装 LLM 消息时才读文件转 base64）
+// 或内联数据（MediaType + Base64Data）。图片将随用户消息持久化，
+// 并以 image_url 内容块进入 LLM 上下文。
+func (b *AskBuilder) WithImages(imgs []session.ImageBlock) *AskBuilder {
+	if len(imgs) > 0 {
+		b.images = append(b.images, imgs...)
+	}
 	return b
 }
 

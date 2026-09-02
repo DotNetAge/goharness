@@ -56,6 +56,16 @@ const (
 	// 与 LLMTimeout（真实超时）不同，这是用户主动发起的中断。
 	LLMCancelled ReactEventType = "llm_cancelled"
 
+	// LLMRetry 表示 LLM 建流请求失败后进入退避重试（如服务商限流 429 / 5xx）。
+	// 这是可预知的等待，必须冒泡给用户而非静默处理——否则前端会一直
+	// 显示「正在处理」，用户无从得知服务端正在重试、还要等多久。
+	//
+	// Phase 为 "retry"（即将退避等待后重试）或 "recovered"（重试后成功建流，
+	// 前端收到后应自动消除重试警告）。重试耗尽仍失败时走 Error 事件收尾。
+	//
+	// 数据：LLMRetryData
+	LLMRetry ReactEventType = "llm_retry"
+
 	// LoopEnd 表示一个完整的 Think-Act 循环已结束。
 	// 命名取 loop 而非 cycle：cycle 在计算原语中易与「死循环」混淆，
 	// loop 更准确地表达 agent 的「思考-行动循环」语义。

@@ -168,7 +168,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	} else {
 		ts := time.Now().Unix()
 		if !appendAndAbort(-1, session.Message{
-			Role: "user", Content: b.question, Timestamp: ts,
+			Role: "user", Content: b.question, Images: b.images, Timestamp: ts,
 		}, "用户消息") {
 			return
 		}
@@ -289,7 +289,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 			err    error
 		)
 		for attempt := 1; ; attempt++ {
-			logger.Info("LLM思想流开始", "session", sid, "iter", iter, "attempt", attempt)
+			logger.Info("LLM调用开始", "session", sid, "iter", iter, "attempt", attempt)
 			stream, err = rt.llmClient.Stream(callCtx, LLMRequest{
 				Messages:          msgs,
 				Model:             rt.model.Name,
@@ -301,6 +301,37 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				Tools:             toolDefs,
 				ToolChoice:        "auto",
 				Timeout:           llmTimeout,
+				// 建流重试必须冒泡：限流/5xx 等可预知错误若静默重试，
+				// 前端会一直显示「正在处理」，用户无从得知还要等多久。
+				OnRetry: func(n LLMRetryNotice) {
+					if n.Phase == LLMRetryPhaseRecovered {
+						logger.Info("LLM建流重试成功", "session", sid, "iter", iter, "retries", n.Attempt)
+						emit(events.LLMRetry, events.LLMRetryData{
+							SessionID:   sid,
+							Provider:    n.Provider,
+							Model:       n.Model,
+							Attempt:     n.Attempt,
+							MaxAttempts: n.MaxAttempts,
+							Phase:       events.LLMRetryPhaseRecovered,
+						})
+						return
+					}
+					logger.Warn("LLM建流失败，进入退避重试",
+						"session", sid, "iter", iter,
+						"attempt", n.Attempt, "max_attempts", n.MaxAttempts,
+						"status_code", n.StatusCode, "retry_after", n.Delay.String(), "error", n.Err)
+					emit(events.LLMRetry, events.LLMRetryData{
+						SessionID:   sid,
+						Provider:    n.Provider,
+						Model:       n.Model,
+						StatusCode:  n.StatusCode,
+						Attempt:     n.Attempt,
+						MaxAttempts: n.MaxAttempts,
+						RetryAfter:  n.Delay,
+						Error:       n.Err.Error(),
+						Phase:       events.LLMRetryPhaseRetry,
+					})
+				},
 			})
 			if err == nil {
 				break
@@ -328,18 +359,34 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				})
 				b.resultTerminationReason = "cancelled"
 			} else if errors.Is(err, context.DeadlineExceeded) {
-				logger.Error("LLM思想流超时", err, "session", sid, "iter", iter)
+				logger.Error("LLM调用超时", err, "session", sid, "iter", iter)
 				emit(events.LLMTimeout, events.LLMTimeoutData{
 					SessionID: sid,
 					Timeout:   llmTimeout,
 					Elapsed:   time.Since(start),
 					Error:     err.Error(),
 				})
-				b.resultErr = fmt.Errorf("LLM思想流超时: %w", err)
+				b.resultErr = fmt.Errorf("LLM调用超时: %w", err)
 				b.resultTerminationReason = "llm_timeout"
 			} else {
-				logger.Error("LLM思想流失败", err, "session", sid, "iter", iter)
-				emit(events.Error, fmt.Sprintf("LLM思想流失败: %v", err))
+				// 401 认证失败时输出实际请求的 url 与 Authorization，便于排查
+				// 「配置了 key 却报 API Key not exists」类问题（常见根因：
+				// 配置里写的是环境变量名，而 daemon 进程读不到该变量）。
+				// 调试信息含 Key 明文，仅写入本地日志，不进入用户可见的事件流。
+				if IsUnauthorizedLLMError(err) {
+					logger.Error("LLM认证失败(401)调试信息", err, "session", sid, "iter", iter, "debug", llmAuthDebugInfo(rt.llmClient))
+				}
+				// 402 欠费：可预知的终止性错误，必须给出明确的人话提示而非笼统的「LLM调用失败」。
+				if IsPaymentRequiredLLMError(err) {
+					logger.Error("LLM服务商返回402（账户欠费）", err, "session", sid, "iter", iter, "provider", rt.model.Provider)
+					emit(events.Error, fmt.Sprintf("服务商「%s」返回 402（账户欠费或余额不足），请充值或更换服务商后重试", rt.model.Provider))
+					b.resultErr = err
+					b.resultTerminationReason = "llm_error"
+					setIterResult(iter)
+					return
+				}
+				logger.Error("LLM调用失败", err, "session", sid, "iter", iter)
+				emit(events.Error, fmt.Sprintf("LLM调用失败: %v", err))
 				b.resultErr = err
 				b.resultTerminationReason = "llm_error"
 			}
@@ -355,14 +402,14 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) {
-				logger.Info("LLM思想流被用户取消", "session", sid, "iter", iter, "elapsed", time.Since(start))
+				logger.Info("LLM调用被用户取消", "session", sid, "iter", iter, "elapsed", time.Since(start))
 				emit(events.LLMCancelled, events.LLMCancelledData{
 					SessionID: sid,
 					Elapsed:   time.Since(start),
 				})
 				b.resultTerminationReason = "cancelled"
 			} else if errors.Is(streamErr, context.DeadlineExceeded) {
-				logger.Error("LLM思想流超时", streamErr, "session", sid, "iter", iter)
+				logger.Error("LLM调用超时", streamErr, "session", sid, "iter", iter)
 				emit(events.LLMTimeout, events.LLMTimeoutData{
 					SessionID: sid,
 					Timeout:   llmTimeout,
@@ -372,8 +419,17 @@ func (rt *Runtime) exec(b *AskBuilder) {
 				b.resultErr = streamErr
 				b.resultTerminationReason = "llm_timeout"
 			} else {
-				logger.Error("LLM思想流失败", streamErr, "session", sid, "iter", iter)
-				emit(events.Error, fmt.Sprintf("LLM思想流失败: %v", streamErr))
+				// 402 欠费：与建流失败分支同样的人话提示。
+				if IsPaymentRequiredLLMError(streamErr) {
+					logger.Error("LLM服务商返回402（账户欠费）", streamErr, "session", sid, "iter", iter, "provider", rt.model.Provider)
+					emit(events.Error, fmt.Sprintf("服务商「%s」返回 402（账户欠费或余额不足），请充值或更换服务商后重试", rt.model.Provider))
+					b.resultErr = streamErr
+					b.resultTerminationReason = "llm_error"
+					setIterResult(iter)
+					return
+				}
+				logger.Error("LLM调用失败", streamErr, "session", sid, "iter", iter)
+				emit(events.Error, fmt.Sprintf("LLM调用失败: %v", streamErr))
 				b.resultErr = streamErr
 				b.resultTerminationReason = "llm_error"
 			}

@@ -19,9 +19,12 @@ type CompactedMeta struct {
 // ImageBlock 是嵌入消息中的图片内容块。
 // 图片以 image_url 消息的形式进入上下文（而非混入工具结果的文本内容）：
 // 发送前会拼接为 data:<media_type>;base64,<data> 的 data URI。
+// Path 与 Base64Data 二选一：Path 非空时按文件路径引用（组装时才读文件转 base64），
+// 使持久化消息只存路径引用而不膨胀存储；Base64Data 用于内联场景（如工具结果图片）。
 type ImageBlock struct {
 	MediaType  string `json:"media_type" yaml:"media_type"`     // MIME 类型，如 image/png、image/jpeg
-	Base64Data string `json:"base64_data" yaml:"base64_data"`   // base64 编码的图片数据
+	Base64Data string `json:"base64_data,omitempty" yaml:"base64_data,omitempty"` // base64 编码的图片数据（与 Path 二选一）
+	Path       string `json:"path,omitempty" yaml:"path,omitempty"`               // 图片文件绝对路径（与 Base64Data 二选一）
 	AltText    string `json:"alt_text,omitempty" yaml:"alt_text,omitempty"` // 图片说明（如尺寸、来源）
 }
 

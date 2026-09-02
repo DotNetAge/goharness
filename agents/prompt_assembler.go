@@ -1,6 +1,9 @@
 package agents
 
 import (
+	"encoding/base64"
+	"fmt"
+	"os"
 	"strings"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
@@ -191,11 +194,16 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 					})
 				}
 				for _, img := range m.Images {
-					msg.Content = append(msg.Content, gochatcore.ContentBlock{
-						Type:      gochatcore.ContentTypeImage,
-						MediaType: img.MediaType,
-						Data:      img.Base64Data,
-					})
+					block, ok := resolveImageBlock(img)
+					if !ok {
+						// 图片文件缺失或为空引用：降级为文本占位，不阻断对话。
+						msg.Content = append(msg.Content, gochatcore.ContentBlock{
+							Type: gochatcore.ContentTypeText,
+							Text: fmt.Sprintf("[图片已失效: %s]", img.Path),
+						})
+						continue
+					}
+					msg.Content = append(msg.Content, block)
 				}
 				msgs = append(msgs, msg)
 			} else {
@@ -232,6 +240,33 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 	}
 
 	return msgs
+}
+
+// resolveImageBlock 将持久化的图片块解析为 gochat 内容块。
+// 优先使用内联 base64 数据（工具结果图片场景）；
+// Path 引用场景在组装时才读文件转 base64，使持久化消息只存路径引用。
+// 读取失败或引用为空时返回 false，由调用方降级处理。
+func resolveImageBlock(img session.ImageBlock) (gochatcore.ContentBlock, bool) {
+	data := img.Base64Data
+	if data == "" && img.Path != "" {
+		raw, err := os.ReadFile(img.Path)
+		if err != nil || len(raw) == 0 {
+			return gochatcore.ContentBlock{}, false
+		}
+		data = base64.StdEncoding.EncodeToString(raw)
+	}
+	if data == "" {
+		return gochatcore.ContentBlock{}, false
+	}
+	mediaType := img.MediaType
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return gochatcore.ContentBlock{
+		Type:      gochatcore.ContentTypeImage,
+		MediaType: mediaType,
+		Data:      data,
+	}, true
 }
 
 // AgentExcludeTools 返回指定 Agent 配置中声明要排除的工具集合。
