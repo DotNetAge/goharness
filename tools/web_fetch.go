@@ -165,23 +165,20 @@ func validateWebFetchURL(params map[string]any) (string, error) {
 }
 
 // authorizeWebFetch 对 URL 做 SSRF 安全校验。
-// 沙箱启用时由 CheckURL 统一决策（含 DNS 解析与 SSRF 网段检查）；
-// 沙箱未启用时回退到旧逻辑（validateURL + isPrivateIP）。
-// 注意：沙箱 CheckURL 与旧逻辑的网段列表等价（见 sandbox.DefaultDeniedSubnets），
-// 但沙箱支持 NetworkAllowSubnets 显式放行特定内网服务。
+// SSRF 网段策略统一由沙箱 CheckURL 决策（含 DNS 解析与 SSRF 网段检查）；
+// 沙箱支持 NetworkAllowSubnets 显式放行特定内网服务。
 // 沙箱 CheckURL 通过后，拨号层 DialContext 拦截器仍会做强制检查（防 DNS rebinding）。
+// 未注入沙箱时拒绝执行（安全决策统一收口到沙箱，工具自身不做授权检查）。
 func authorizeWebFetch(ctx context.Context, rawURL string) error {
-	tc := GetToolContext(ctx)
-	if tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			dec := sb.CheckURL(rawURL)
-			if dec.Decision == sandbox.DecisionDeny {
-				return fmt.Errorf("%s", dec.Reason)
-			}
-			return nil
-		}
+	sb, err := requireSandbox(ctx, "WebFetch")
+	if err != nil {
+		return err
 	}
-	return validateURL(rawURL)
+	dec := sb.CheckURL(rawURL)
+	if dec.Decision == sandbox.DecisionDeny {
+		return fmt.Errorf("%s", dec.Reason)
+	}
+	return nil
 }
 
 // performWebFetch 执行网页内容获取核心逻辑：缓存检查、HTTP 请求、内容处理与输出。

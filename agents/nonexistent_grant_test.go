@@ -9,6 +9,7 @@ import (
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/tools"
 	"github.com/stretchr/testify/assert"
@@ -80,7 +81,15 @@ func TestReadGrant_ExistingFile_OutsideWorkspace(t *testing.T) {
 
 	rt := newTestRuntimeWithTools(t, []tools.FuncTool{tools.NewReadTool()})
 	store := newFakeSessionStore()
-	sess, err := session.New("test-agent", "", projectDir, store, logging.NewNopLogger())
+	// 安全决策统一收口到沙箱：注入沙箱后越界文件才会触发授权流程。
+	sb, err := sandbox.NewSandbox(&sandbox.SandboxPolicy{
+		AllowedDirs:       []string{projectDir},
+		DeniedFileGlobs:   sandbox.DefaultDeniedFileGlobs(),
+		DeniedDirGlobs:    sandbox.DefaultDeniedDirGlobs(),
+		DeniedDevicePaths: sandbox.DefaultDeniedDevicePaths(),
+	}, logging.NewNopLogger())
+	require.NoError(t, err)
+	sess, err := session.New("test-agent", "", projectDir, store, logging.NewNopLogger(), session.WithSandbox(sb))
 	require.NoError(t, err)
 	store.ensureMeta(sess)
 

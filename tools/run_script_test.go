@@ -113,6 +113,7 @@ func (m *mockScriptExecutor) Execute(_ context.Context, _, _ string, _ []string)
 }
 
 func TestRunScript_ExecuteWithMockExecutor(t *testing.T) {
+	projectDir := t.TempDir()
 	tool := &RunScript{
 		info: NewRunScriptTool().Info(),
 		scriptExecutor: &mockScriptExecutor{
@@ -124,9 +125,10 @@ func TestRunScript_ExecuteWithMockExecutor(t *testing.T) {
 		},
 	}
 
-	result, err := tool.Execute(ctxWithLogger(), map[string]any{
+	// 安全决策统一收口到沙箱：Execute 必须在注入沙箱的上下文中运行。
+	result, err := tool.Execute(newSandboxCtx(t, projectDir, nil), map[string]any{
 		"command":     "python scripts/test.py",
-		"working_dir": "/tmp/skill",
+		"working_dir": projectDir,
 	})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)

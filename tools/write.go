@@ -94,31 +94,19 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 	// 沙箱启用时，由沙箱统一做文件安全决策。
 	// 注意：Write 语义是"创建或覆盖"，沙箱 CheckFile 对不存在的文件返回 Allow
 	// （让 Execute 走创建路径），对存在的越界文件返回 AskUser。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
-		switch dec.Decision {
-		case sandbox.DecisionAllow:
-			return true, ""
-		case sandbox.DecisionDeny:
-			return false, dec.Reason
-		case sandbox.DecisionAskUser:
-			for _, dir := range w.whitelist {
-				if pathWithinScope(dir, resolved) {
-					return true, ""
-				}
-			}
-			if tc.SessionWhitelist != nil {
-				for _, allowed := range tc.SessionWhitelist.Write {
-					if pathWithinScope(allowed, resolved) {
-						return true, ""
-					}
-				}
-			}
-			return false, dec.Reason
-		}
+	// 未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
+	sb := tc.Session.Sandbox()
+	if sb == nil {
+		return true, ""
 	}
 
-	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+	dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+	switch dec.Decision {
+	case sandbox.DecisionAllow:
+		return true, ""
+	case sandbox.DecisionDeny:
+		return false, dec.Reason
+	case sandbox.DecisionAskUser:
 		for _, dir := range w.whitelist {
 			if pathWithinScope(dir, resolved) {
 				return true, ""
@@ -131,7 +119,7 @@ func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string)
 				}
 			}
 		}
-		return false, GuideWriteOutsideWorkspace(filePath, resolved, err)
+		return false, dec.Reason
 	}
 	return true, ""
 }
@@ -172,17 +160,23 @@ func validateWriteParams(params map[string]any) (writeParams, error) {
 	return writeParams{filePath: filePath, content: content, appendMode: appendMode}, nil
 }
 
-// authorizeWrite 解析文件路径并执行沙箱/敏感文件安全检查。
-func authorizeWrite(ctx context.Context, filePath string) (resolvedPath string, scope PathScope, err error) {
+// authorizeWrite 解析文件路径并执行沙箱强制安全检查。
+func (w *Write) authorizeWrite(ctx context.Context, filePath string) (resolvedPath string, scope PathScope, err error) {
 	tc := GetToolContext(ctx)
 	resolvedPath, scope = ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
-	// 安全校验：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return "", "", err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// 安全校验：工作区边界、敏感文件等策略统一由沙箱 EnforceFile 强制检查
+	// （含符号链接解析，防 TOCTOU）。未注入沙箱时拒绝执行。
+	sb, err := requireSandbox(ctx, "Write")
+	if err != nil {
+		return "", "", err
+	}
+	// 透传工具白名单 + 会话白名单：授权（PermissionAllowSession）与
+	// 工具白名单（AddWhiteList）放行的写入在 Execute 阶段同样豁免边界检查。
+	extra := make([]string, 0, len(w.whitelist)+2)
+	extra = append(extra, w.whitelist...)
+	extra = append(extra, sessionWhitelistDirs(ctx, "write")...)
+	if err := sb.EnforceFileWithWhitelist(resolvedPath, tc.Session.ProjectDir(), extra); err != nil {
 		return "", "", err
 	}
 	return resolvedPath, scope, nil
@@ -332,7 +326,7 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		return nil, err
 	}
 
-	resolvedPath, scope, err := authorizeWrite(ctx, p.filePath)
+	resolvedPath, scope, err := w.authorizeWrite(ctx, p.filePath)
 	if err != nil {
 		return nil, err
 	}

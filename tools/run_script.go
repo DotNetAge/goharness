@@ -24,9 +24,8 @@ import (
 type Platform string
 
 const (
-	PlatformWindows Platform = "windows"
-	PlatformLinux   Platform = "linux"
-	PlatformMacOS   Platform = "darwin"
+	PlatformLinux Platform = "linux"
+	PlatformMacOS Platform = "darwin"
 )
 
 // CurrentPlatform 返回运行时操作系统。
@@ -34,21 +33,16 @@ func CurrentPlatform() Platform {
 	return Platform(runtime.GOOS)
 }
 
-// IsWindows、IsMacOS、IsLinux 辅助方法。
-func (p Platform) IsWindows() bool { return p == PlatformWindows }
-func (p Platform) IsMacOS() bool   { return p == PlatformMacOS }
-func (p Platform) IsLinux() bool   { return p == PlatformLinux }
+// IsMacOS、IsLinux 辅助方法。
+func (p Platform) IsMacOS() bool { return p == PlatformMacOS }
+func (p Platform) IsLinux() bool { return p == PlatformLinux }
 
 // Shell 返回该平台的默认 shell 可执行文件。
 func (p Platform) Shell() string {
-	switch p {
-	case PlatformWindows:
-		return "cmd.exe"
-	case PlatformMacOS:
+	if p.IsMacOS() {
 		return "/bin/zsh"
-	default:
-		return "/bin/bash"
 	}
+	return "/bin/bash"
 }
 
 // ScriptExtensions 返回该平台支持的所有脚本文件扩展名。
@@ -62,13 +56,6 @@ func (p Platform) ScriptExtensions() map[string]string {
 		".rb":   "ruby",
 		".pl":   "perl",
 		".php":  "php",
-	}
-	if p.IsWindows() {
-		exts[".bat"] = "batch"
-		exts[".cmd"] = "batch"
-		exts[".ps1"] = "powershell"
-		exts[".vbs"] = "vbscript"
-		exts[".exe"] = "executable"
 	}
 	if p.IsMacOS() {
 		exts[".scpt"] = "applescript"
@@ -87,12 +74,6 @@ func (p Platform) SupportedInterpreters() map[string]bool {
 		"php":  true,
 	}
 	switch p {
-	case PlatformWindows:
-		interpreters["cmd"] = true
-		interpreters["powershell"] = true
-		interpreters["pwsh"] = true
-		interpreters["cscript"] = true
-		interpreters["wscript"] = true
 	case PlatformMacOS:
 		interpreters["osascript"] = true
 		interpreters["bash"] = true
@@ -188,16 +169,8 @@ func (e *platformScriptExecutor) Execute(ctx context.Context, skillRoot, scriptP
 		return e.executeRuby(ctx, skillRoot, scriptPath, args)
 	case ".js":
 		return e.executeNode(ctx, skillRoot, scriptPath, args)
-	case ".bat", ".cmd":
-		return e.executeBatch(ctx, skillRoot, scriptPath, args)
-	case ".ps1":
-		return e.executePowerShell(ctx, skillRoot, scriptPath, args)
-	case ".vbs":
-		return e.executeVBScript(ctx, skillRoot, scriptPath, args)
 	case ".scpt", ".applescript":
 		return e.executeAppleScript(ctx, skillRoot, scriptPath, args)
-	case ".exe":
-		return e.executeExecutable(ctx, skillRoot, scriptPath, args)
 	default:
 		return e.executeGeneric(ctx, skillRoot, scriptPath, args)
 	}
@@ -209,9 +182,6 @@ func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, s
 	// 可以复用它们自己的 Python 环境。
 	if e.pythonVenvDir != "" {
 		pythonBin := filepath.Join(e.pythonVenvDir, "bin", "python")
-		if _, err := os.Stat(pythonBin); os.IsNotExist(err) {
-			pythonBin = filepath.Join(e.pythonVenvDir, "Scripts", "python.exe")
-		}
 		absScript, _ := filepath.Abs(scriptPath)
 		fullArgs := append([]string{absScript}, args...)
 		cmd := exec.CommandContext(ctx, pythonBin, fullArgs...)
@@ -234,9 +204,6 @@ func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, s
 	}
 
 	pythonBin := filepath.Join(vm.venvPath, "bin", "python")
-	if _, err := os.Stat(pythonBin); os.IsNotExist(err) {
-		pythonBin = filepath.Join(vm.venvPath, "Scripts", "python.exe")
-	}
 
 	absScript, _ := filepath.Abs(scriptPath)
 	fullArgs := append([]string{absScript}, args...)
@@ -247,40 +214,9 @@ func (e *platformScriptExecutor) executePython(ctx context.Context, skillRoot, s
 }
 
 func (e *platformScriptExecutor) executeShell(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	var cmd *exec.Cmd
-
-	if e.platform.IsWindows() {
-		bashPaths := []string{
-			`C:\Program Files\Git\bin\bash.exe`,
-			`C:\Program Files (x86)\Git\bin\bash.exe`,
-			`C:\Windows\System32\bash.exe`,
-		}
-		bashBin := ""
-		for _, p := range bashPaths {
-			if _, err := os.Stat(p); err == nil {
-				bashBin = p
-				break
-			}
-		}
-		if bashBin == "" {
-			if found, err := exec.LookPath("bash"); err == nil {
-				bashBin = found
-			}
-		}
-		if bashBin != "" {
-			cmd = exec.CommandContext(ctx, bashBin, scriptPath)
-			cmd.Args = append(cmd.Args, args...)
-		} else {
-			shell := e.platform.Shell()
-			cmd = exec.CommandContext(ctx, shell, "/c", scriptPath)
-			cmd.Args = append(cmd.Args, args...)
-		}
-	} else {
-		shell := e.platform.Shell()
-		cmd = exec.CommandContext(ctx, shell, scriptPath)
-		cmd.Args = append(cmd.Args, args...)
-	}
-
+	shell := e.platform.Shell()
+	cmd := exec.CommandContext(ctx, shell, scriptPath)
+	cmd.Args = append(cmd.Args, args...)
 	cmd.Dir = skillRoot
 	return runScriptCommand(cmd)
 }
@@ -321,54 +257,11 @@ func (e *platformScriptExecutor) executeNode(ctx context.Context, skillRoot, scr
 	return runScriptCommand(cmd)
 }
 
-func (e *platformScriptExecutor) executeBatch(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	cmd := exec.CommandContext(ctx, "cmd.exe", "/c", scriptPath)
-	cmd.Args = append(cmd.Args, args...)
-	e.setProjectDir(ctx, cmd)
-
-	return runScriptCommand(cmd)
-}
-
-func (e *platformScriptExecutor) executePowerShell(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	psBin := "pwsh"
-	if _, err := exec.LookPath("pwsh"); err != nil {
-		psBin = "powershell"
-	}
-
-	cmd := exec.CommandContext(ctx, psBin, "-ExecutionPolicy", "Bypass", "-File", scriptPath)
-	cmd.Args = append(cmd.Args, args...)
-	e.setProjectDir(ctx, cmd)
-
-	return runScriptCommand(cmd)
-}
-
-func (e *platformScriptExecutor) executeVBScript(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	wscriptBin := "cscript"
-	if _, err := exec.LookPath("cscript"); err != nil {
-		wscriptBin = "wscript"
-	}
-
-	absScript, _ := filepath.Abs(scriptPath)
-	fullArgs := append([]string{"//Nologo", absScript}, args...)
-	cmd := exec.CommandContext(ctx, wscriptBin, fullArgs...)
-	cmd.Dir = skillRoot
-
-	return runScriptCommand(cmd)
-}
-
 func (e *platformScriptExecutor) executeAppleScript(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
 	absScript, _ := filepath.Abs(scriptPath)
 	fullArgs := append([]string{absScript}, args...)
 	cmd := exec.CommandContext(ctx, "osascript", fullArgs...)
 	cmd.Dir = skillRoot
-
-	return runScriptCommand(cmd)
-}
-
-func (e *platformScriptExecutor) executeExecutable(ctx context.Context, skillRoot, scriptPath string, args []string) (*scriptResult, error) {
-	absScript, _ := filepath.Abs(scriptPath)
-	cmd := exec.CommandContext(ctx, absScript, args...)
-	e.setProjectDir(ctx, cmd)
 
 	return runScriptCommand(cmd)
 }
@@ -479,9 +372,6 @@ func (m *venvManager) createVenv() error {
 
 func (m *venvManager) installRequirements(ctx context.Context, reqFile string) error {
 	pipBin := filepath.Join(m.venvPath, "bin", "pip")
-	if _, err := os.Stat(pipBin); os.IsNotExist(err) {
-		pipBin = filepath.Join(m.venvPath, "Scripts", "pip.exe")
-	}
 
 	cmd := exec.CommandContext(ctx, pipBin, "install", "-r", reqFile)
 	cmd.Dir = m.skillRoot
@@ -559,7 +449,6 @@ func buildRunScriptInfo(platform Platform) *ToolInfo {
 
 平台特定：
 - macOS 还支持：AppleScript (.scpt, .applescript) — 通过 osascript 运行
-- Windows 还支持：Batch (.bat, .cmd)、PowerShell (.ps1)、VBScript (.vbs)、可执行文件 (.exe)
 
 用法：
 - 按照技能指令中的规定准确传递命令。
@@ -601,16 +490,16 @@ func buildRunScriptInfo(platform Platform) *ToolInfo {
 	}
 }
 
-// Grant 实现了 tools.PermissionRequired。RunScript 比较特殊：它
-// 已在 executePlatformExecutor 中强制执行了路径穿越拦截
-// （"脚本路径位于技能根目录之外"），但该拦截是在我们被调用之后才触发的。
-// 对于权限流程，我们只希望在脚本位于工作目录之外时询问用户
-// （即用户被要求批准一个不在活动项目/技能根目录中的脚本）。
-// 工作目录内的脚本与项目内其他任何代码执行一样——
-// 它们照常通过。
+// Grant 实现了 tools.PermissionRequired。
 //
-// 硬性阻断（例如格式错误的命令）是 Execute 层的错误，不是
-// Grant 关注的范畴。
+// 安全决策（工作区边界、敏感文件拦截）统一由沙箱 CheckFile 负责（边界为 workingDir）：
+//   - Allow → 放行
+//   - Deny → 拒绝
+//   - AskUser（越界）→ 会话白名单命中则放行，否则触发授权流程
+//     （返回 granted=false，运行时挂起思考循环等待用户回应）。
+//
+// 会话未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
+// 硬性阻断（例如格式错误的命令）是 Execute 层的错误，不是 Grant 关注的范畴。
 func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	rawCommand, ok := GetParam(params, "command")
 	command := ""
@@ -656,53 +545,27 @@ func (t *RunScript) Grant(ctx context.Context, params map[string]any) (bool, str
 	}
 	absWork = filepath.Clean(absWork)
 
-	// 沙箱启用时，由沙箱统一做文件安全决策（边界为 workingDir）
-	if tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			dec := sb.CheckFile(cleanScript, absWork)
-			switch dec.Decision {
-			case sandbox.DecisionAllow:
-				return true, ""
-			case sandbox.DecisionDeny:
-				return false, dec.Reason
-			case sandbox.DecisionAskUser:
-				if tc.SessionWhitelist != nil {
-					for _, allowed := range tc.SessionWhitelist.RunScript {
-						if pathWithinScope(allowed, cleanScript) {
-							return true, ""
-						}
-					}
+	// 安全决策（工作区边界、敏感文件拦截）统一由沙箱 CheckFile 负责（边界为 workingDir）。
+	// 未注入沙箱时放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
+	if tc == nil || tc.Session == nil || tc.Session.Sandbox() == nil {
+		return true, ""
+	}
+	dec := tc.Session.Sandbox().CheckFile(cleanScript, absWork)
+	switch dec.Decision {
+	case sandbox.DecisionAllow:
+		return true, ""
+	case sandbox.DecisionDeny:
+		return false, dec.Reason
+	default: // DecisionAskUser：先查会话白名单（用户此前选择"记住本次会话"的授权）
+		if tc.SessionWhitelist != nil {
+			for _, allowed := range tc.SessionWhitelist.RunScript {
+				if pathWithinScope(allowed, cleanScript) {
+					return true, ""
 				}
-				return false, dec.Reason
 			}
 		}
+		return false, dec.Reason
 	}
-
-	// 脚本不存在或无法访问时跳过授权：
-	// ENOTDIR、EACCES 等场景脚本同样不可能正常执行，
-	// 授权后 Execute 同样会失败，直接放行让 Execute 报错，避免浪费一轮用户交互。
-	if _, statErr := os.Stat(cleanScript); statErr != nil {
-		return true, ""
-	}
-
-	// 在工作目录内？没问题。
-	if cleanScript == absWork ||
-		strings.HasPrefix(cleanScript, absWork+string(filepath.Separator)) {
-		return true, ""
-	}
-
-	// 在工作目录之外 → 询问用户。实际执行器仍会再次检查，
-	// 因此即使 Grant 被绕过，我们也绝不会运行目录外的脚本。
-	//
-	// 在提示之前，先检查会话白名单。
-	if tc != nil && tc.SessionWhitelist != nil {
-		for _, allowed := range tc.SessionWhitelist.RunScript {
-			if pathWithinScope(allowed, cleanScript) {
-				return true, ""
-			}
-		}
-	}
-	return false, GuideRunScriptOutsideWorkspace(cleanScript, absWork)
 }
 
 func (t *RunScript) Info() *ToolInfo {
@@ -743,18 +606,19 @@ func (t *RunScript) Execute(ctx context.Context, params map[string]any) (any, er
 	}
 
 	// Execute 阶段强制安全检查（防 TOCTOU）：Grant 后脚本可能被替换为符号链接指向敏感文件。
-	// 沙箱启用时由 EnforceFile 统一检查（含符号链接解析）；沙箱未启用时跳过（Grant 已用旧逻辑检查）。
-	// 边界为 workingDir（与 Grant 阶段 absWork 一致）。
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			absScript, err := filepath.Abs(scriptPath)
-			if err == nil {
-				cleanScript := filepath.Clean(absScript)
-				if err := sb.EnforceFile(cleanScript, workingDir); err != nil {
-					return nil, err
-				}
-			}
-		}
+	// 工作区边界、敏感文件等策略统一由沙箱 EnforceFile 强制检查（含符号链接解析），
+	// 边界为 workingDir（与 Grant 阶段一致）。未注入沙箱时拒绝执行。
+	sb, err := requireSandbox(ctx, "RunScript")
+	if err != nil {
+		return nil, err
+	}
+	absScript, absErr := filepath.Abs(scriptPath)
+	if absErr != nil {
+		return nil, fmt.Errorf("%s", WithErrDetail(fmt.Sprintf("尝试解析脚本路径 %q 的绝对路径", scriptPath), absErr))
+	}
+	// 透传会话白名单：授权（PermissionAllowSession）后的脚本执行可真正运行。
+	if err := sb.EnforceFileWithWhitelist(filepath.Clean(absScript), workingDir, sessionWhitelistDirs(ctx, "run_script")); err != nil {
+		return nil, err
 	}
 
 	logger.Info("executing script",

@@ -121,7 +121,8 @@ func WithLLMClient(client LLMClient) RuntimeConfig {
 //	// 主会话创建时注入：
 //	sess, _ := session.New(..., session.WithSandbox(rt.Sandbox()))
 //
-// 沙箱未设置（nil）时，所有工具回退到旧逻辑（detectDangerousCommand 等）。
+// 沙箱未设置（nil）时，所有工具拒绝执行（安全决策统一收口到沙箱，
+// 工具自身不做任何授权检查；调用方必须通过本选项注入沙箱实例）。
 func WithSandbox(sb *sandbox.Sandbox) RuntimeConfig {
 	return func(r *Runtime) { r.sandbox = sb }
 }

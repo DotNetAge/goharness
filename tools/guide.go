@@ -54,14 +54,14 @@ func WithErrDetail(cause string, err error) string {
 	return fmt.Sprintf("%s（底层错误：%s）", cause, detail)
 }
 
-// ── 通用敏感文件引导（Read / Ls / Edit / Write 共用）───────────────
+// ── 通用沙箱未注入引导（所有工具共用）─────────────────────────────
 
-// GuideSensitiveFile 目标为敏感文件（硬性安全边界，授权不可覆盖）。
-func GuideSensitiveFile(path string) string {
+// GuideSandboxRequired 会话未注入沙箱，工具拒绝执行（安全决策统一收口到沙箱）。
+func GuideSandboxRequired(toolName string) string {
 	return BuildGuide(
-		fmt.Sprintf("尝试访问敏感文件 %q", path),
-		"该文件（如 .env、SSH 私钥等）属于敏感文件，出于安全原因禁止访问",
-		"不要访问敏感文件；如需要相关配置信息，应询问用户或使用其它安全渠道获取",
+		fmt.Sprintf("尝试调用 %s 工具，但会话未注入沙箱", toolName),
+		"安全决策（工作区边界、敏感文件拦截、危险命令检测、命令白名单、网络预检）已统一收口到沙箱（sandbox.Sandbox），工具自身不做任何授权检查，未注入沙箱时一律拒绝执行",
+		"创建会话时通过 session.WithSandbox(sb) 注入沙箱实例后重试；这是调用方配置错误，授权（PermissionAllow）无法解除",
 	)
 }
 
@@ -270,15 +270,6 @@ func GuideWriteOutsideWorkspace(filePath, resolved string, err error) string {
 	return guideOutsideWorkspace(
 		fmt.Sprintf("我需要写入位于工作区之外的文件 %q（解析为 %q）", filePath, resolved),
 		err,
-	)
-}
-
-// GuideRunScriptOutsideWorkspace 构造越界执行脚本的授权请求文案（Grant reason）。
-// 脚本本身不在工作目录内（workingDir 之外），触发授权流程。
-func GuideRunScriptOutsideWorkspace(scriptPath, workingDir string) string {
-	return guideOutsideWorkspace(
-		fmt.Sprintf("我需要执行位于工作目录 %q 之外的脚本 %q", workingDir, scriptPath),
-		nil,
 	)
 }
 

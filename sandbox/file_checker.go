@@ -105,6 +105,22 @@ func (s *Sandbox) CheckFileAllowOrDeny(path string, projectDir string) FileDecis
 //
 // 调用时机：工具的 Execute 在真正读写前调用。
 func (s *Sandbox) EnforceFile(path string, projectDir string) error {
+	return s.enforceFile(path, projectDir, nil)
+}
+
+// EnforceFileWithWhitelist 在 Execute 阶段做最终强制检查，并感知会话级白名单。
+//
+// extraAllowedDirs 是用户此前通过授权（PermissionAllowSession）记录的越界范围，
+// 仅豁免目录边界检查；设备文件、敏感文件、敏感目录段等硬性禁止不豁免——
+// 用户授权解决的是"越界"，不能解锁"危险"。
+//
+// 调用时机：与 EnforceFile 相同，区别仅在于工具需要透传会话白名单
+// （例如 Read 对应 SessionWhitelist.Read），保证授权后 Execute 能真正执行。
+func (s *Sandbox) EnforceFileWithWhitelist(path string, projectDir string, extraAllowedDirs []string) error {
+	return s.enforceFile(path, projectDir, extraAllowedDirs)
+}
+
+func (s *Sandbox) enforceFile(path string, projectDir string, extraAllowedDirs []string) error {
 	p := s.policy.Load()
 
 	// 解析符号链接，获取真实路径
@@ -164,6 +180,20 @@ func (s *Sandbox) EnforceFile(path string, projectDir string) error {
 				realPolicy = &tmp
 			}
 		}
+	}
+	// 会话白名单目录并入边界检查：path 已归一化时白名单同步归一化，
+	// 否则保留原始路径（与 realPath / projectDir 的处理方式保持一致）。
+	if len(extraAllowedDirs) > 0 {
+		extraReal := make([]string, 0, len(extraAllowedDirs))
+		for _, dir := range extraAllowedDirs {
+			if pathResolved {
+				dir = resolveSymlinks(dir)
+			}
+			extraReal = append(extraReal, dir)
+		}
+		tmp := *realPolicy
+		tmp.AllowedDirs = append(append([]string{}, realPolicy.AllowedDirs...), extraReal...)
+		realPolicy = &tmp
 	}
 	if s.isOutsideWorkspace(realPath, realProjectDir, realPolicy) {
 		return s.outsideError(realPath, realProjectDir)

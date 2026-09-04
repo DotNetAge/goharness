@@ -23,7 +23,7 @@ import (
 //  4. Bash 沙箱启用 - 会话级白名单命中 Grant 放行
 //  5. Bash 沙箱启用 - Execute 阶段拦截危险命令（Grant 被绕过兜底）
 //  6. Bash 沙箱启用 - 网络命令 URL 预检拒绝 SSRF
-//  7. Bash 沙箱未启用 - 回退旧逻辑
+//  7. Bash 沙箱未注入 - 拒绝执行（安全决策统一收口到沙箱）
 //  8. WebFetch 沙箱启用 - SSRF URL 拒绝
 //  9. WebFetch 沙箱未启用 - 回退旧逻辑
 // 10. RunScript 沙箱启用 - Execute EnforceFile 拦截敏感脚本（TOCTOU 防护）
@@ -170,19 +170,23 @@ func TestBash_Sandbox_NetworkCommand_PublicURL_Allows(t *testing.T) {
 	assert.True(t, granted, "沙箱启用时 curl 公网 URL 应放行")
 }
 
-// TestBash_Sandbox_Disabled_FallbackToOldLogic 验证沙箱未启用时回退旧逻辑。
-func TestBash_Sandbox_Disabled_FallbackToOldLogic(t *testing.T) {
+// TestBash_Sandbox_Disabled_RefusesExecution 验证沙箱未注入时拒绝执行。
+// 安全决策统一收口到沙箱：Grant 放行（授权无意义），Execute 拒绝执行。
+func TestBash_Sandbox_Disabled_RefusesExecution(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := newGrantCtx(t, projectDir) // 不注入沙箱
 	bash := NewBashTool().(*BashTool)
 
-	// 危险命令应被旧逻辑拒绝
-	granted, _ := bash.Grant(ctx, map[string]any{"command": "rm -rf /"})
-	assert.False(t, granted, "沙箱未启用时 rm -rf / 应被旧逻辑拒绝")
+	// Grant 放行（授权无意义，Execute 阶段拒绝）
+	granted, _ := bash.Grant(ctx, map[string]any{"command": "ls"})
+	assert.True(t, granted, "沙箱未注入时 Grant 放行（授权无意义）")
 
-	// 白名单内命令应放行
-	granted, _ = bash.Grant(ctx, map[string]any{"command": "ls"})
-	assert.True(t, granted, "沙箱未启用时 ls 应放行（旧逻辑）")
+	// Execute 拒绝执行（以阻塞结果返回，exit_code=126）
+	result, err := bash.Execute(ctx, map[string]any{"command": "ls"})
+	require.NoError(t, err, "拒绝以阻塞结果返回而非 error")
+	m := result.(map[string]any)
+	assert.Equal(t, false, m["success"])
+	assert.Contains(t, m["error"].(string), "未注入沙箱")
 }
 
 // TestBash_Sandbox_NetworkAllowSubnets_OverridesDeny 验证 NetworkAllowSubnets 放行特定内网。
@@ -214,15 +218,18 @@ func TestWebFetch_Sandbox_SSRF_Denies(t *testing.T) {
 	require.Error(t, err, "沙箱启用时 127.0.0.1 应被 CheckURL 拒绝")
 }
 
-// TestWebFetch_Sandbox_Disabled_Fallback 验证沙箱未启用时回退旧逻辑。
-func TestWebFetch_Sandbox_Disabled_Fallback(t *testing.T) {
+// TestWebFetch_Sandbox_Disabled_Reject 验证沙箱未注入时 WebFetch 拒绝执行。
+// 安全决策统一收口到沙箱：未注入沙箱不再回退到工具内旧 SSRF 逻辑，
+// 而是直接拒绝执行（调用方配置错误，授权无法解除）。
+func TestWebFetch_Sandbox_Disabled_Reject(t *testing.T) {
 	projectDir := t.TempDir()
 	wf := NewWebFetchTool(logging.NewNopLogger())
 
 	_, err := wf.Execute(newGrantCtx(t, projectDir), map[string]any{
 		"url": "http://127.0.0.1/",
 	})
-	require.Error(t, err, "沙箱未启用时 127.0.0.1 应被旧 isPrivateIP 拒绝")
+	require.Error(t, err, "沙箱未注入时应拒绝执行")
+	assert.Contains(t, err.Error(), "未注入沙箱")
 }
 
 // ----- RunScript 工具 Execute EnforceFile 测试 -----

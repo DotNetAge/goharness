@@ -142,16 +142,16 @@ var mdConverter = md.NewConverter("", true, nil)
 // 重试退避；沙箱 SSRF 预检在此保留（拨号层防护由 stealthClient 的 ssrfDialContext 提供）。
 // 供需要原始 HTML 的适配器使用（如 360 适配器需提取 data-mdurl 里的真实 URL）。
 func fetchBody(ctx context.Context, client *stealthClient, reqURL string, extraHeaders map[string]string) (string, error) {
-	// 沙箱启用时，用 CheckURL 做 SSRF 预检（含 DNS 解析与网段检查）。
-	// 搜索引擎 URL 是固定域名（如 https://www.sogou.com/web?...），解析到公网 IP 时 CheckURL 放行；
-	// 若沙箱策略禁止了该搜索引擎的网段则拒绝。沙箱未启用时跳过，由旧逻辑兜底。
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			dec := sb.CheckURL(reqURL)
-			if dec.Decision == sandbox.DecisionDeny {
-				return "", fmt.Errorf("%s", dec.Reason)
-			}
-		}
+	// SSRF 预检统一由沙箱 CheckURL 决策（含 DNS 解析与网段检查）。搜索引擎 URL 是
+	// 固定公网域名（如 https://www.sogou.com/web?...），正常放行；拨号层防护由
+	// stealthClient 的 ssrfDialContext 提供（防 DNS rebinding，双层 SSRF 防护的第二层）。
+	// 未注入沙箱时拒绝执行（安全决策统一收口到沙箱，工具自身不做授权检查）。
+	sb, err := requireSandbox(ctx, "WebSearch")
+	if err != nil {
+		return "", err
+	}
+	if dec := sb.CheckURL(reqURL); dec.Decision == sandbox.DecisionDeny {
+		return "", fmt.Errorf("%s", dec.Reason)
 	}
 
 	headers := make(map[string][]string, len(extraHeaders))

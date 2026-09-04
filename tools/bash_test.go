@@ -103,23 +103,15 @@ func TestExtractCommands_NoFalsePositiveValue(t *testing.T) {
 			t.Errorf("extractCommands(%q) 错误地将 VALUE 提取为命令名：%#v", cmd, cmds)
 		}
 	}
-
-	// 验证白名单检查通过
-	tool := NewBashTool().(*BashTool)
-	allowed, failed := tool.isCommandWhitelisted(cmd)
-	if !allowed {
-		t.Errorf("isCommandWhitelisted(%q) 应该通过白名单检查，但失败于命令 %q", cmd, failed)
-	}
 }
 
-func TestExtractCommands_EdgeCaseWhitelist(t *testing.T) {
-	// 极端情况测试：确保带引号字符串、路径的连续指令能正确解析并通过白名单
+func TestExtractCommands_EdgeCases(t *testing.T) {
+	// 极端情况测试：确保带引号字符串、路径的连续指令能正确解析
 	edgeCases := []string{
 		`which python && python -m "print('hello world')"`,
 		`cp "/tmp/src" "/tmp/dst" && cd /tmp/dst && ls .`,
 		`node "console.log('hello'); process.exit(0)"`,
 	}
-	tool := NewBashTool().(*BashTool)
 	for _, cmd := range edgeCases {
 		// 验证 extractCommands 不会错误提取引号内的内容作为命令名
 		extracted := extractCommands(cmd)
@@ -128,16 +120,12 @@ func TestExtractCommands_EdgeCaseWhitelist(t *testing.T) {
 				t.Errorf("extractCommands(%q) 错误地将引号内的代码提取为命令名：%#v", cmd, extracted)
 			}
 		}
-		// 验证白名单检查通过
-		allowed, failed := tool.isCommandWhitelisted(cmd)
-		if !allowed {
-			t.Errorf("isCommandWhitelisted(%q) 应该通过白名单检查，但失败于命令 %q", cmd, failed)
-		}
 	}
 }
 
-func TestDetectDangerousCommand_SubshellNotBlocked(t *testing.T) {
-	// 回归测试：$() 和反引号是正常的 shell 变量捕获，不应被危险命令拦截
+func TestBashGrant_SubshellNotBlocked(t *testing.T) {
+	// 回归测试：$() 和反引号是正常的 shell 变量捕获，不应被沙箱危险模式拦截。
+	// 命令安全决策统一由沙箱 CheckCommand 负责（工具自身不做授权检查）。
 	cmds := []string{
 		`result=$(go run ./cmd/ 2>&1)`,
 		`echo "$(echo hello | head -1)"`,
@@ -145,8 +133,9 @@ func TestDetectDangerousCommand_SubshellNotBlocked(t *testing.T) {
 		`cd /tmp && for v in v1.0; do result=$(go run .) && echo "$result"; done`,
 	}
 	for _, cmd := range cmds {
-		if blocked := detectDangerousCommand(cmd); blocked != "" {
-			t.Errorf("detectDangerousCommand(%q) 不应阻止正常命令，但被阻止：%s", cmd, blocked)
+		granted, reason := NewBashTool().(*BashTool).Grant(newSandboxCtx(t, t.TempDir(), nil), map[string]any{"command": cmd})
+		if !granted {
+			t.Errorf("Grant(%q) 不应被沙箱拦截，但被拒绝：%s", cmd, reason)
 		}
 	}
 }

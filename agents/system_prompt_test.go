@@ -42,8 +42,8 @@ func TestBuildSystemPromptsWithAgent(t *testing.T) {
 
 	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
 	text := msgText(t, msgs[0])
-	assert.Contains(t, text, "你是 测试助手。")
-	assert.Contains(t, text, "用于测试")
+	// 身份模板格式："我叫 {name} 是一名 {role}, {description}"
+	assert.Contains(t, text, "我叫 test-agent 是一名 测试助手, 用于测试")
 	assert.Contains(t, text, "你好，我是测试助手。")
 }
 

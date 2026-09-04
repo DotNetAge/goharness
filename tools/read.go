@@ -116,28 +116,44 @@ func (r *Read) SetImageReading(enabled bool) {
 }
 
 // CheckSafety 执行与 Execute 前置校验一致的安全预检：
-//   - validateReadPath：设备文件黑名单、二进制扩展名拦截
-//   - checkSensitiveFiles：敏感文件硬性拦截
+//   - validateReadPath：设备文件黑名单、二进制扩展名拦截（功能保护，非安全策略）
+//   - 沙箱 EnforceFile：工作区边界、敏感文件等安全策略统一由沙箱强制检查
 //
 // 项目边界检查由 Grant()（PermissionRequired）负责，Execute 侧不再重复校验，
 // 避免授权（PermissionAllow / AllowSession）或白名单放行后执行被再次拦截。
+// 会话未注入沙箱时返回错误（安全决策统一收口到沙箱，工具自身不做授权检查）。
 // 供增强版工具（如 mindx 的 ReadPro）在自行实现大文件读取分支时复用。
-func (r *Read) CheckSafety(resolvedPath string) error {
+func (r *Read) CheckSafety(ctx context.Context, resolvedPath string) error {
 	if err := validateReadPath(resolvedPath); err != nil {
 		return err
 	}
-	return checkSensitiveFiles(resolvedPath)
+	sb, err := requireSandbox(ctx, "Read")
+	if err != nil {
+		return err
+	}
+	// 透传工具白名单 + 会话白名单：授权（PermissionAllowSession）与
+	// 工具白名单（AddWhiteList）放行的读取在 Execute 阶段同样豁免边界检查。
+	extra := r.appendReadWhitelists(ctx)
+	return sb.EnforceFileWithWhitelist(resolvedPath, GetToolContext(ctx).Session.ProjectDir(), extra)
+}
+
+// appendReadWhitelists 合并工具白名单（AddWhiteList）与会话白名单，供 Execute 阶段
+// 的沙箱边界检查豁免。返回新切片，避免修改白名单内部共享切片。
+func (r *Read) appendReadWhitelists(ctx context.Context) []string {
+	extra := make([]string, 0, len(r.whitelist)+2)
+	extra = append(extra, r.whitelist...)
+	return append(extra, sessionWhitelistDirs(ctx, "read")...)
 }
 
 // Grant 实现 tools.PermissionRequired 接口。
 //
-// 与 Edit / Bash 保持一致的授权语义：目标路径超出项目边界（ValidateFileSafety 失败）
-// 时，先放行工具白名单（AddWhiteList）与会话级白名单（PermissionAllowSession 记忆）
-// 内的路径，其余越界读取触发授权流程（返回 granted=false，运行时挂起思考循环等待
+// 与 Edit / Bash 保持一致的授权语义：文件安全决策（工作区边界、敏感文件拦截）
+// 统一由沙箱 CheckFile 负责。越界访问（AskUser）时先放行工具白名单
+// （AddWhiteList）与会话级白名单（PermissionAllowSession 记忆）内的路径，
+// 其余越界读取触发授权流程（返回 granted=false，运行时挂起思考循环等待
 // 用户通过 PermissionAllow / PermissionAllowSession / PermissionDeny 魔法词回应）。
 //
-// 敏感文件（.env / .ssh 等）虽是硬性错误，但为了与 Edit 保持一致，
-// 同样经 Grant 表达原因，Execute 侧仍会以 checkSensitiveFiles 硬性拦截。
+// 会话未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
 func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	raw, _ := GetParam(params, "filePath")
 	filePath, _ := raw.(string)
@@ -155,42 +171,21 @@ func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) 
 		return true, ""
 	}
 
-	// 沙箱启用时，由沙箱统一做文件安全决策
-	if sb := tc.Session.Sandbox(); sb != nil {
-		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
-		switch dec.Decision {
-		case sandbox.DecisionAllow:
-			return true, ""
-		case sandbox.DecisionDeny:
-			return false, dec.Reason
-		case sandbox.DecisionAskUser:
-			// 越界访问，检查白名单
-			for _, dir := range r.whitelist {
-				if pathWithinScope(dir, resolved) {
-					return true, ""
-				}
-			}
-			if tc.SessionWhitelist != nil {
-				for _, allowed := range tc.SessionWhitelist.Read {
-					if pathWithinScope(allowed, resolved) {
-						return true, ""
-					}
-				}
-			}
-			return false, dec.Reason
-		}
-	}
-
-	// 文件不存在或无法访问时跳过授权：
-	// - ENOENT：文件确实不存在
-	// - ENOTDIR：路径中间段是文件而非目录（文件不可能存在）
-	// - EACCES：无权限 stat 父目录（授权后 Execute 同样会失败）
-	// 对这些情况请求授权没有意义，直接放行让 Execute 报错，避免浪费一轮用户交互。
-	if _, statErr := os.Stat(resolved); statErr != nil {
+	// 沙箱启用时，由沙箱统一做文件安全决策；
+	// 未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
+	sb := tc.Session.Sandbox()
+	if sb == nil {
 		return true, ""
 	}
 
-	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+	dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+	switch dec.Decision {
+	case sandbox.DecisionAllow:
+		return true, ""
+	case sandbox.DecisionDeny:
+		return false, dec.Reason
+	case sandbox.DecisionAskUser:
+		// 越界访问，检查白名单
 		for _, dir := range r.whitelist {
 			if pathWithinScope(dir, resolved) {
 				return true, ""
@@ -203,13 +198,13 @@ func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) 
 				}
 			}
 		}
-		return false, GuideReadOutsideWorkspace(filePath, resolved, err)
+		return false, dec.Reason
 	}
 	return true, ""
 }
 
-// authorizeRead 解析文件路径并执行前置校验（设备/二进制）和安全检查（沙箱/敏感文件）。
-func authorizeRead(ctx context.Context, path string) (resolvedPath string, scope PathScope, err error) {
+// authorizeRead 解析文件路径并执行前置校验（设备/二进制）与沙箱强制检查。
+func (r *Read) authorizeRead(ctx context.Context, path string) (resolvedPath string, scope PathScope, err error) {
 	tc := GetToolContext(ctx)
 	resolvedPath, scope = ResolveTargetPath(path, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
@@ -219,14 +214,15 @@ func authorizeRead(ctx context.Context, path string) (resolvedPath string, scope
 		return "", "", err
 	}
 
-	// 安全校验：敏感文件硬性拦截。
-	// 沙箱启用时由 EnforceFile 统一做强制检查（含符号链接解析，防 TOCTOU）；
-	// 沙箱未启用时走旧的 checkSensitiveFiles。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return "", "", err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// B. 安全校验：工作区边界、敏感文件等策略统一由沙箱 EnforceFile 强制检查
+	// （含符号链接解析，防 TOCTOU）。未注入沙箱时拒绝执行。
+	sb, err := requireSandbox(ctx, "Read")
+	if err != nil {
+		return "", "", err
+	}
+	// 透传工具白名单 + 会话白名单：授权（PermissionAllowSession）与
+	// 工具白名单（AddWhiteList）放行的读取在 Execute 阶段同样豁免边界检查。
+	if err := sb.EnforceFileWithWhitelist(resolvedPath, tc.Session.ProjectDir(), r.appendReadWhitelists(ctx)); err != nil {
 		return "", "", err
 	}
 	return resolvedPath, scope, nil
@@ -398,7 +394,7 @@ func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) 
 		return nil, err
 	}
 
-	resolvedPath, scope, err := authorizeRead(ctx, path)
+	resolvedPath, scope, err := r.authorizeRead(ctx, path)
 	if err != nil {
 		return nil, err
 	}

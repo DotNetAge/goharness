@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/DotNetAge/goharness/events"
@@ -25,7 +24,7 @@ import (
 //   5. 沙箱启用 - 工具白名单内越界 → Grant 放行
 //   6. 沙箱启用 - 会话级白名单内越界 → Grant 放行
 //   7. 沙箱启用 - Execute 阶段 EnforceFile 拒绝敏感文件
-//   8. 沙箱未启用 - 回退到旧逻辑（向后兼容）
+//   8. 沙箱未注入 - 所有工具拒绝执行（安全决策统一收口到沙箱）
 //   9. Glob 工具沙箱启用 - 越界直接 Deny（Execute 返回 error）
 //
 // 工具覆盖：Read / Edit / Write / Ls / Glob / RunScript。
@@ -151,19 +150,21 @@ func TestRead_Sandbox_Execute_EnforceSensitiveFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "敏感")
 }
 
-// TestRead_Sandbox_Disabled_FallbackToOldLogic 验证沙箱未启用时回退到旧逻辑。
-// 与现有 TestRead_Grant 行为等价：越界触发授权。
-func TestRead_Sandbox_Disabled_FallbackToOldLogic(t *testing.T) {
+// TestRead_Sandbox_Disabled_RefusesExecution 验证沙箱未注入时拒绝执行。
+// 安全决策统一收口到沙箱：Grant 放行（授权无意义），Execute 拒绝执行。
+func TestRead_Sandbox_Disabled_RefusesExecution(t *testing.T) {
 	projectDir := t.TempDir()
-	outsideDir := t.TempDir()
-	outsideFile := filepath.Join(outsideDir, "outside.txt")
-	require.NoError(t, os.WriteFile(outsideFile, []byte("hi"), 0644))
+	inWorkspace := filepath.Join(projectDir, "a.txt")
+	require.NoError(t, os.WriteFile(inWorkspace, []byte("hi"), 0644))
 
-	// newGrantCtx 不注入沙箱，等价于沙箱未启用
+	// newGrantCtx 不注入沙箱，等价于沙箱未注入
 	read := NewReadTool()
-	granted, reason := read.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": outsideFile})
-	assert.False(t, granted, "沙箱未启用时越界文件应触发授权（旧逻辑）")
-	assert.Contains(t, reason, "工作区之外")
+	granted, _ := read.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": inWorkspace})
+	assert.True(t, granted, "沙箱未注入时 Grant 放行（授权无意义）")
+
+	_, err := read.Execute(newGrantCtx(t, projectDir), map[string]any{"filePath": inWorkspace})
+	require.Error(t, err, "沙箱未注入时应拒绝执行")
+	assert.Contains(t, err.Error(), "未注入沙箱")
 }
 
 // ----- Edit 工具沙箱集成测试 -----
@@ -429,51 +430,59 @@ func TestRunScript_Sandbox_SensitiveScript_Denies(t *testing.T) {
 	assert.Contains(t, reason, "敏感")
 }
 
-// ----- 沙箱未启用时回退旧逻辑（向后兼容性回归测试）-----
+// ----- 沙箱未注入时拒绝执行（安全决策统一收口到沙箱）-----
 
-// TestSandbox_Disabled_AllTools_Fallback 验证沙箱未启用时所有工具回退到旧逻辑，
-// 行为与现有 TestRead_Grant / TestLS_Grant 等保持等价。
-func TestSandbox_Disabled_AllTools_Fallback(t *testing.T) {
+// TestSandbox_Disabled_AllTools_RefuseExecution 验证沙箱未注入时所有工具拒绝执行：
+// Grant 放行（授权无意义），Execute 一律拒绝并返回引导式错误。
+func TestSandbox_Disabled_AllTools_RefuseExecution(t *testing.T) {
 	projectDir := t.TempDir()
-	outsideDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outsideDir, "outside.txt"), []byte("hi"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "a.txt"), []byte("hi"), 0644))
 
 	ctx := newGrantCtx(t, projectDir) // 不注入沙箱
 
-	t.Run("Read 越界触发授权（旧逻辑）", func(t *testing.T) {
+	t.Run("Read 拒绝执行", func(t *testing.T) {
 		read := NewReadTool()
-		granted, reason := read.Grant(ctx, map[string]any{"filePath": filepath.Join(outsideDir, "outside.txt")})
-		assert.False(t, granted)
-		assert.Contains(t, reason, "工作区之外")
+		granted, _ := read.Grant(ctx, map[string]any{"filePath": filepath.Join(projectDir, "a.txt")})
+		assert.True(t, granted, "Grant 放行（授权无意义）")
+		_, err := read.Execute(ctx, map[string]any{"filePath": filepath.Join(projectDir, "a.txt")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "未注入沙箱")
 	})
 
-	t.Run("Ls 越界触发授权（旧逻辑）", func(t *testing.T) {
+	t.Run("Ls 拒绝执行", func(t *testing.T) {
 		ls := NewLsTool().(*LS)
-		granted, reason := ls.Grant(ctx, map[string]any{"path": outsideDir})
-		assert.False(t, granted)
-		assert.Contains(t, reason, "工作区之外")
+		granted, _ := ls.Grant(ctx, map[string]any{"path": projectDir})
+		assert.True(t, granted, "Grant 放行（授权无意义）")
+		_, err := ls.Execute(ctx, map[string]any{"path": projectDir})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "未注入沙箱")
 	})
 
-	t.Run("Write 越界触发授权（旧逻辑）", func(t *testing.T) {
+	t.Run("Write 拒绝执行", func(t *testing.T) {
 		write := NewWriteTool()
-		granted, reason := write.Grant(ctx, map[string]any{
-			"filePath": filepath.Join(outsideDir, "outside.txt"),
+		params := map[string]any{
+			"filePath": filepath.Join(projectDir, "b.txt"),
 			"content":  "x",
-		})
-		assert.False(t, granted)
-		assert.True(t, strings.Contains(reason, "工作区之外") || strings.Contains(reason, "工作区"),
-			"reason=%q", reason)
+		}
+		granted, _ := write.Grant(ctx, params)
+		assert.True(t, granted, "Grant 放行（授权无意义）")
+		_, err := write.Execute(ctx, params)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "未注入沙箱")
 	})
 
-	t.Run("Edit 越界触发授权（旧逻辑）", func(t *testing.T) {
+	t.Run("Edit 拒绝执行", func(t *testing.T) {
 		edit := NewEditTool()
-		granted, reason := edit.Grant(ctx, map[string]any{
-			"file_path":   filepath.Join(outsideDir, "outside.txt"),
+		params := map[string]any{
+			"file_path":   filepath.Join(projectDir, "a.txt"),
 			"old_string": "hi",
 			"new_string": "hello",
-		})
-		assert.False(t, granted)
-		assert.Contains(t, reason, "工作区之外")
+		}
+		granted, _ := edit.Grant(ctx, params)
+		assert.True(t, granted, "Grant 放行（授权无意义）")
+		_, err := edit.Execute(ctx, params)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "未注入沙箱")
 	})
 }
 

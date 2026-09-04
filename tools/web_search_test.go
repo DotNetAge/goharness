@@ -89,7 +89,7 @@ func TestWebSearchTool_Info(t *testing.T) {
 
 func TestWebSearchTool_MissingQuery(t *testing.T) {
 	tool := NewWebSearchTool(logging.NewNopLogger())
-	_, err := tool.Execute(ctxWithLogger(), nil)
+	_, err := tool.Execute(testCtx(t), nil)
 	if err == nil {
 		t.Error("expected error for missing query parameter")
 	}
@@ -97,7 +97,7 @@ func TestWebSearchTool_MissingQuery(t *testing.T) {
 
 func TestWebSearchTool_TooShortQuery(t *testing.T) {
 	tool := NewWebSearchTool(logging.NewNopLogger())
-	_, err := tool.Execute(ctxWithLogger(), map[string]any{
+	_, err := tool.Execute(testCtx(t), map[string]any{
 		"query": "x",
 	})
 	if err == nil {
@@ -110,7 +110,7 @@ func TestWebSearchTool_CacheBehavior(t *testing.T) {
 		t.Skip("skipping real network test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger()).(*WebSearchTool)
@@ -212,7 +212,7 @@ func TestWebSearch_RealSogou(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
 	adapter := NewSogouAdapter(logging.NewNopLogger())
@@ -234,7 +234,7 @@ func TestWebSearch_RealWeixin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
 	adapter := NewWeixinAdapter(logging.NewNopLogger())
@@ -256,7 +256,7 @@ func TestWebSearch_RealFullExecute(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 40*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -275,7 +275,7 @@ func TestWebSearch_RealBing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
 	adapter := NewBingAdapter(logging.NewNopLogger())
@@ -297,7 +297,7 @@ func TestWebSearch_Real360(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
 	adapter := NewSo360Adapter(logging.NewNopLogger())
@@ -325,7 +325,7 @@ func TestWebSearch_RealToutiao(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real network test in short mode")
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
 	adapter := NewToutiaoAdapter(logging.NewNopLogger())
@@ -451,7 +451,7 @@ func TestWebSearch_ErrorClassification_AllFail(t *testing.T) {
 			&stubAdapter{name: "stub2", err: errors.New("风控拦截")},
 		},
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
 	defer cancel()
 
 	_, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
@@ -478,7 +478,7 @@ func TestWebSearch_ErrorClassification_PartialFail(t *testing.T) {
 			&stubAdapter{name: "stub2"}, // 成功但 0 条结果
 		},
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
 	defer cancel()
 
 	_, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
@@ -502,7 +502,7 @@ func TestWebSearch_ErrorClassification_PartialSuccessHasData(t *testing.T) {
 			&stubAdapter{name: "stub2", results: []SearchResult{{Title: "结果A", URL: "https://a.com"}}},
 		},
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
 	defer cancel()
 
 	out, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})
@@ -526,7 +526,7 @@ func TestWebSearch_ErrorClassification_NoMatch(t *testing.T) {
 			&stubAdapter{name: "stub2"},
 		},
 	}
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
 	defer cancel()
 
 	_, err := tool.Execute(ctx, map[string]any{"query": "测试查询"})

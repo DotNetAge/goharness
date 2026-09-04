@@ -10,22 +10,39 @@ import (
 
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 )
 
 // testCtx creates a context with a ToolContext containing a session for testing.
+// 会话注入沙箱：安全决策统一收口到沙箱，工具在未注入沙箱时拒绝执行。
+// 沙箱边界包含进程 CWD 与系统临时目录（测试文件统一创建在 t.TempDir()）。
 func testCtx(t *testing.T) context.Context {
 	t.Helper()
 	cwd, _ := os.Getwd()
+	tmpReal, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		tmpReal = os.TempDir()
+	}
 	store := newMockSessionStore()
-	sess, err := session.New("test-agent", "", cwd, store, logging.NewNopLogger())
+	sb, err := sandbox.NewSandbox(&sandbox.SandboxPolicy{
+		AllowedDirs:       []string{cwd, tmpReal},
+		DeniedFileGlobs:   sandbox.DefaultDeniedFileGlobs(),
+		DeniedDirGlobs:    sandbox.DefaultDeniedDirGlobs(),
+		DeniedDevicePaths: sandbox.DefaultDeniedDevicePaths(),
+	}, logging.NewNopLogger())
+	if err != nil {
+		t.Fatalf("创建沙箱失败: %v", err)
+	}
+	sess, err := session.New("test-agent", "", cwd, store, logging.NewNopLogger(), session.WithSandbox(sb))
 	if err != nil {
 		t.Fatalf("创建会话失败: %v", err)
 	}
 	return WithToolContext(context.Background(), &ToolContext{
-		Session:   sess,
-		Logger:    logging.NewNopLogger(),
-		EmitEvent: func(e events.ReactEvent) {},
+		Session:          sess,
+		SessionWhitelist: sess.Whitelist(),
+		Logger:           logging.NewNopLogger(),
+		EmitEvent:        func(e events.ReactEvent) {},
 	})
 }
 
@@ -51,8 +68,11 @@ func TestGrep(t *testing.T) {
 	// Create Grep tool
 	grep := NewGrepTool()
 
-	// 测试在当前文件中搜索模式
-	result, err := grep.Execute(ctxWithLogger(), map[string]any{"pattern": "TestGrep", "path": "./builtin_test.go"})
+	// 沙箱已注入（安全决策统一收口到沙箱，未注入沙箱时工具拒绝执行）
+	ctx := newSandboxCtx(t, t.TempDir(), nil)
+
+	// 测试搜索模式
+	result, err := grep.Execute(ctx, map[string]any{"pattern": "TestGrep"})
 	if err != nil {
 		t.Errorf("Expected no error for grep, got %v", err)
 	}
@@ -62,10 +82,12 @@ func TestGrep(t *testing.T) {
 }
 
 func TestBash(t *testing.T) {
-	bash := NewBashToolUnrestricted()
+	bash := NewBashTool()
+	// 沙箱已注入（命令安全决策统一由沙箱负责，未注入沙箱时工具拒绝执行）
+	ctx := newSandboxCtx(t, t.TempDir(), nil)
 
 	t.Run("basic command execution", func(t *testing.T) {
-		result, err := bash.Execute(ctxWithLogger(), map[string]any{"command": "echo hello"})
+		result, err := bash.Execute(ctx, map[string]any{"command": "echo hello"})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -76,14 +98,14 @@ func TestBash(t *testing.T) {
 	})
 
 	t.Run("missing command parameter", func(t *testing.T) {
-		_, err := bash.Execute(ctxWithLogger(), map[string]any{})
+		_, err := bash.Execute(ctx, map[string]any{})
 		if err == nil {
 			t.Error("Expected error for missing command")
 		}
 	})
 
 	t.Run("command with error", func(t *testing.T) {
-		result, err := bash.Execute(ctxWithLogger(), map[string]any{"command": "ls /nonexistent_dir_123"})
+		result, err := bash.Execute(ctx, map[string]any{"command": "ls /nonexistent_dir_123"})
 		if err != nil {
 			t.Fatalf("Expected no error (error in result), got %v", err)
 		}
@@ -110,7 +132,7 @@ func TestBash(t *testing.T) {
 	})
 
 	t.Run("working_dir parameter", func(t *testing.T) {
-		result, err := bash.Execute(ctxWithLogger(), map[string]any{
+		result, err := bash.Execute(ctx, map[string]any{
 			"command":     "pwd",
 			"working_dir": "/tmp",
 		})
@@ -191,7 +213,8 @@ func TestLS(t *testing.T) {
 	})
 }
 
-// newGrantCtx 构造带会话白名单的 ToolContext，用于 Grant 授权语义测试。
+// newGrantCtx 构造未注入沙箱的 ToolContext（用于验证沙箱未注入时工具拒绝执行）。
+// Grant 授权语义测试请使用 newSandboxCtx（安全决策由沙箱 CheckFile 做出）。
 func newGrantCtx(t *testing.T, projectDir string) context.Context {
 	t.Helper()
 	store := newMockSessionStore()
@@ -217,29 +240,30 @@ func TestLS_Grant(t *testing.T) {
 	ls := NewLsTool().(*LS)
 
 	// 工作区内 → 放行
-	granted, _ := ls.Grant(newGrantCtx(t, projectDir), map[string]any{"path": projectDir})
+	granted, _ := ls.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"path": projectDir})
 	if !granted {
 		t.Error("工作区内目录应放行（granted=true）")
 	}
 
 	// 越界 → 触发授权
-	granted, reason := ls.Grant(newGrantCtx(t, projectDir), map[string]any{"path": outsideDir})
+	granted, reason := ls.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"path": outsideDir})
 	if granted {
 		t.Error("越界目录应触发授权（granted=false）")
 	}
-	if !strings.Contains(reason, "工作区之外") {
+	// 沙箱拒绝文案格式："该路径位于工作区 %q 之外"
+	if !strings.Contains(reason, "位于工作区") || !strings.Contains(reason, "之外") {
 		t.Errorf("授权原因应说明越界，实际=%q", reason)
 	}
 
 	// 工具白名单内越界 → 放行
 	whitelistedLS := NewLsTool().(*LS)
 	whitelistedLS.AddWhiteList(outsideDir)
-	if granted, _ = whitelistedLS.Grant(newGrantCtx(t, projectDir), map[string]any{"path": outsideDir}); !granted {
+	if granted, _ = whitelistedLS.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"path": outsideDir}); !granted {
 		t.Error("工具白名单内的越界目录应放行（granted=true）")
 	}
 
 	// 会话级白名单内越界 → 放行
-	sessionCtx := newGrantCtx(t, projectDir)
+	sessionCtx := newSandboxCtx(t, projectDir, nil)
 	tc := GetToolContext(sessionCtx)
 	if err := tc.Session.AddToWhitelist("ls", outsideDir); err != nil {
 		t.Fatalf("添加会话白名单失败: %v", err)
@@ -265,29 +289,30 @@ func TestRead_Grant(t *testing.T) {
 	read := NewReadTool()
 
 	// 工作区内 → 放行
-	granted, _ := read.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": inWorkspace})
+	granted, _ := read.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"filePath": inWorkspace})
 	if !granted {
 		t.Error("工作区内文件应放行（granted=true）")
 	}
 
 	// 越界 → 触发授权
-	granted, reason := read.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": outsideFile})
+	granted, reason := read.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"filePath": outsideFile})
 	if granted {
 		t.Error("越界文件应触发授权（granted=false）")
 	}
-	if !strings.Contains(reason, "工作区之外") {
+	// 沙箱拒绝文案格式："该路径位于工作区 %q 之外"
+	if !strings.Contains(reason, "位于工作区") || !strings.Contains(reason, "之外") {
 		t.Errorf("授权原因应说明越界，实际=%q", reason)
 	}
 
 	// 工具白名单内越界 → 放行
 	whitelistedRead := NewReadTool()
 	whitelistedRead.AddWhiteList(outsideDir)
-	if granted, _ = whitelistedRead.Grant(newGrantCtx(t, projectDir), map[string]any{"filePath": outsideFile}); !granted {
+	if granted, _ = whitelistedRead.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"filePath": outsideFile}); !granted {
 		t.Error("工具白名单内的越界文件应放行（granted=true）")
 	}
 
 	// 会话级白名单内越界 → 放行
-	sessionCtx := newGrantCtx(t, projectDir)
+	sessionCtx := newSandboxCtx(t, projectDir, nil)
 	tc := GetToolContext(sessionCtx)
 	if err := tc.Session.AddToWhitelist("read", outsideDir); err != nil {
 		t.Fatalf("添加会话白名单失败: %v", err)
@@ -299,9 +324,11 @@ func TestRead_Grant(t *testing.T) {
 
 func TestGlob(t *testing.T) {
 	glob := NewGlobTool()
+	// 沙箱已注入（安全决策统一收口到沙箱，未注入沙箱时工具拒绝执行）
+	ctx := testCtx(t)
 
 	t.Run("find go files", func(t *testing.T) {
-		result, err := glob.Execute(ctxWithLogger(), map[string]any{"pattern": "*.go", "path": "."})
+		result, err := glob.Execute(ctx, map[string]any{"pattern": "*.go", "path": "."})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -315,21 +342,21 @@ func TestGlob(t *testing.T) {
 	})
 
 	t.Run("missing pattern", func(t *testing.T) {
-		_, err := glob.Execute(ctxWithLogger(), map[string]any{"path": "."})
+		_, err := glob.Execute(ctx, map[string]any{"path": "."})
 		if err == nil {
 			t.Error("Expected error for missing pattern")
 		}
 	})
 
 	t.Run("non-existent search path", func(t *testing.T) {
-		_, err := glob.Execute(ctxWithLogger(), map[string]any{"pattern": "*.go", "path": "/nonexistent_dir_12345"})
+		_, err := glob.Execute(ctx, map[string]any{"pattern": "*.go", "path": "/nonexistent_dir_12345"})
 		if err == nil {
 			t.Error("Expected error for non-existent path")
 		}
 	})
 
 	t.Run("search path is not a directory", func(t *testing.T) {
-		_, err := glob.Execute(ctxWithLogger(), map[string]any{"pattern": "*.go", "path": "builtin_test.go"})
+		_, err := glob.Execute(ctx, map[string]any{"pattern": "*.go", "path": "builtin_test.go"})
 		if err == nil {
 			t.Error("Expected error when path is not a directory")
 		}
@@ -533,8 +560,8 @@ func TestValidateFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("validateFileSafety - restricted files", func(t *testing.T) {
-		// 这些文件在工作区之外，应被拒绝
+	t.Run("validateFileSafety - 工作区边界（机制性校验）", func(t *testing.T) {
+		// 这些路径在工作区之外，应被拒绝
 		err := ValidateFileSafety("/etc/passwd", "")
 		if err == nil {
 			t.Error("Expected error for /etc/passwd (outside workspace)")
@@ -550,10 +577,12 @@ func TestValidateFunctions(t *testing.T) {
 			t.Error("Expected error for /etc/sudoers (outside workspace)")
 		}
 
-		// A path inside workspace but with restricted filename should be rejected
+		// ValidateFileSafety 仅做路径锚定与边界强制的机制性校验，
+		// 敏感文件拦截（.env 等）已统一收口到沙箱（sandbox.EnforceFile），
+		// 由 sandbox 包的 file_checker_test.go 覆盖。
 		err = ValidateFileSafety(".env", "")
-		if err == nil {
-			t.Error("Expected error for .env (restricted filename)")
+		if err != nil {
+			t.Errorf("工作区内路径不应被机制性校验拒绝（敏感文件策略由沙箱负责），实际: %v", err)
 		}
 
 		// A safe path inside workspace should pass
@@ -568,17 +597,19 @@ func TestValidateFunctions(t *testing.T) {
 
 // TestBash_EdgeCases Bash 工具边界测试
 func TestBash_EdgeCases(t *testing.T) {
-	bash := NewBashToolUnrestricted()
+	bash := NewBashTool()
+	// 沙箱已注入（命令安全决策统一由沙箱负责，未注入沙箱时工具拒绝执行）
+	ctx := newSandboxCtx(t, t.TempDir(), nil)
 
 	t.Run("空命令字符串", func(t *testing.T) {
-		_, err := bash.Execute(ctxWithLogger(), map[string]any{"command": ""})
+		_, err := bash.Execute(ctx, map[string]any{"command": ""})
 		if err == nil {
 			t.Error("空命令应返回错误")
 		}
 	})
 
 	t.Run("纯空白命令", func(t *testing.T) {
-		_, err := bash.Execute(ctxWithLogger(), map[string]any{"command": "   \t  "})
+		_, err := bash.Execute(ctx, map[string]any{"command": "   \t  "})
 		if err == nil {
 			t.Error("纯空白命令应返回错误")
 		}
@@ -586,7 +617,7 @@ func TestBash_EdgeCases(t *testing.T) {
 
 	t.Run("超长命令（超过 16000 字符）", func(t *testing.T) {
 		longCmd := strings.Repeat("a", 16001)
-		_, err := bash.Execute(ctxWithLogger(), map[string]any{"command": longCmd})
+		_, err := bash.Execute(ctx, map[string]any{"command": longCmd})
 		if err == nil {
 			t.Error("超长命令应返回错误")
 		}
@@ -596,7 +627,7 @@ func TestBash_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("timeout 参数 - 最小值限制", func(t *testing.T) {
-		result, err := bash.Execute(ctxWithLogger(), map[string]any{
+		result, err := bash.Execute(ctx, map[string]any{
 			"command": "echo test",
 			"timeout": float64(100), // 小于最小值 1000
 		})
@@ -610,7 +641,7 @@ func TestBash_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("timeout 参数 - 最大值限制", func(t *testing.T) {
-		result, err := bash.Execute(ctxWithLogger(), map[string]any{
+		result, err := bash.Execute(ctx, map[string]any{
 			"command": "echo test",
 			"timeout": float64(999999), // 超过最大值 300000
 		})
@@ -625,7 +656,7 @@ func TestBash_EdgeCases(t *testing.T) {
 
 	t.Run("输出截断 - 大 stdout", func(t *testing.T) {
 		cmd := fmt.Sprintf("python3 -c \"print('x' * %d)\"", maxBashOutputSize*2)
-		result, err := bash.Execute(ctxWithLogger(), map[string]any{"command": cmd})
+		result, err := bash.Execute(ctx, map[string]any{"command": cmd})
 		if err != nil {
 			t.Skipf("跳过: python3 可能不可用: %v", err)
 		}
@@ -803,9 +834,11 @@ func TestWrite_EdgeCases(t *testing.T) {
 // TestGrep_EdgeCases Grep 工具边界测试
 func TestGrep_EdgeCases(t *testing.T) {
 	grep := NewGrepTool()
+	// 沙箱已注入（安全决策统一收口到沙箱，未注入沙箱时工具拒绝执行）
+	ctx := testCtx(t)
 
 	t.Run("无匹配结果", func(t *testing.T) {
-		result, err := grep.Execute(ctxWithLogger(), map[string]any{
+		result, err := grep.Execute(ctx, map[string]any{
 			"pattern": "ZZZ_NONEXISTENT_PATTERN_ZZZ",
 			"path":    ".",
 		})
@@ -819,7 +852,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("特殊正则表达式字符", func(t *testing.T) {
-		result, err := grep.Execute(ctxWithLogger(), map[string]any{
+		result, err := grep.Execute(ctx, map[string]any{
 			"pattern": `func\s+\w+\(`,
 			"path":    "*.go",
 		})
@@ -832,7 +865,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("files_with_matches 输出模式", func(t *testing.T) {
-		result, err := grep.Execute(ctxWithLogger(), map[string]any{
+		result, err := grep.Execute(ctx, map[string]any{
 			"pattern":     "package tools",
 			"output_mode": "files_with_matches",
 			"path":        ".",

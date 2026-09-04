@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/DotNetAge/goharness/sandbox"
 )
 
 // ValidateRequired 检查 params map 中是否存在某个必填参数。
@@ -54,7 +56,11 @@ func ValidateRequiredString(toolName string, params map[string]any, key string) 
 //   - 路径规范化以消除目录穿越尝试（../）
 //   - 符号链接解析以防范基于符号链接的攻击
 //   - 工作区边界强制约束以限制文件访问
-//   - 敏感系统文件保护（.env、SSH 密钥等）
+//
+// 职责边界（重要）：
+// 此函数仅做路径解析与边界强制的机制性校验（供 SafeOpenFile /
+// SafeCreateFile 在打开文件时做 TOCTOU 防护），不再承担任何安全
+// 策略决策——敏感文件拦截等策略统一由沙箱（sandbox.Sandbox）负责。
 //
 // 参数：
 //   - path: 待校验的文件路径（可为绝对路径或相对路径）
@@ -71,10 +77,6 @@ func ValidateRequiredString(toolName string, params map[string]any, key string) 
 //	if err != nil {
 //	    // 处理被拒绝的访问
 //	}
-//
-// 安全考虑：
-// 此函数提供设计期的安全校验。如需运行时保护，
-// 请使用 SafeOpenFile 或 SafeCreateFile，它们会执行原子的"打开并校验"操作。
 func ValidateFileSafety(path string, projectDir string) error {
 	cleaned := filepath.Clean(path)
 
@@ -93,15 +95,7 @@ func ValidateFileSafety(path string, projectDir string) error {
 		return fmt.Errorf("无法解析项目目录: %w", err)
 	}
 
-	if err := enforceWorkspaceBoundary(realPath, realProjectDir, path); err != nil {
-		return err
-	}
-
-	if err := checkSensitiveFiles(realPath); err != nil {
-		return err
-	}
-
-	return nil
+	return enforceWorkspaceBoundary(realPath, realProjectDir, path)
 }
 
 // resolvePathSecurely 对已存在的路径解析符号链接并执行安全检查。
@@ -157,34 +151,70 @@ func enforceWorkspaceBoundary(realPath, realProjectDir, originalPath string) err
 	return nil
 }
 
-// checkSensitiveFiles 阻止对敏感系统文件的访问。
-func checkSensitiveFiles(realPath string) error {
-	baseName := filepath.Base(realPath)
-
-	sensitiveFiles := map[string]bool{
-		".env":        true,
-		"id_rsa":      true,
-		"id_ed25519":  true,
-		"passwd":      true,
-		"shadow":      true,
-		"sudoers":     true,
-		".ssh_config": true,
-		"known_hosts": true,
+// EnforceSandboxFile 从 ctx 提取会话沙箱并对路径执行强制安全检查。
+// 沙箱未注入时返回错误（工具自身不做授权检查，安全决策统一收口到沙箱）。
+// 供增强版工具（如 mindx 的 ReadPro / LSPro）在自定义执行分支中复用，
+// 与 Read / Write / Edit / Ls 的 Execute 保持一致。
+func EnforceSandboxFile(ctx context.Context, resolvedPath string) error {
+	sb, err := requireSandbox(ctx, "File")
+	if err != nil {
+		return err
 	}
-
-	if sensitiveFiles[baseName] {
-		return fmt.Errorf("%s", GuideSensitiveFile(realPath))
-	}
-
-	return nil
+	return sb.EnforceFile(resolvedPath, GetToolContext(ctx).Session.ProjectDir())
 }
 
-// CheckSensitiveFiles 检查路径是否为敏感文件（.env / .ssh 密钥等）。
-// 返回错误表示命中敏感文件列表，该检查是硬性安全边界，授权不可覆盖。
-// 供同工具族的增强版工具（如 mindx 的 ReadPro / LSPro）在自定义执行分支中复用，
-// 与 Edit / Read 的 Execute 保持一致。
-func CheckSensitiveFiles(path string) error {
-	return checkSensitiveFiles(path)
+// EnforceSandboxFileWithWhitelist 在 EnforceSandboxFile 基础上感知白名单豁免。
+// extraAllowedDirs 为自带白名单的增强工具（如 mindx 的 LSPro）的
+// 工具白名单（AddWhiteList）与会话白名单（PermissionAllowSession 记忆）的并集，
+// 仅豁免目录边界检查；设备文件、敏感文件等硬性禁止不豁免。
+// 语义与 Grant 阶段一致：Grant 白名单放行的路径，Execute 阶段同样放行。
+func EnforceSandboxFileWithWhitelist(ctx context.Context, resolvedPath string, extraAllowedDirs []string) error {
+	sb, err := requireSandbox(ctx, "File")
+	if err != nil {
+		return err
+	}
+	return sb.EnforceFileWithWhitelist(resolvedPath, GetToolContext(ctx).Session.ProjectDir(), extraAllowedDirs)
+}
+
+// sessionWhitelistDirs 提取指定工具的会话级白名单目录列表。
+// 白名单条目来自用户此前的授权（PermissionAllowSession 记忆），
+// 在 Execute 阶段透传给沙箱 EnforceFileWithWhitelist，
+// 保证"授权后能真正执行"——仅豁免目录边界，硬性禁止不豁免。
+// 工具未知或白名单为空时返回 nil。
+func sessionWhitelistDirs(ctx context.Context, toolName string) []string {
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.SessionWhitelist == nil {
+		return nil
+	}
+	switch toolName {
+	case "read":
+		return tc.SessionWhitelist.Read
+	case "write":
+		return tc.SessionWhitelist.Write
+	case "edit":
+		return tc.SessionWhitelist.Edit
+	case "ls":
+		return tc.SessionWhitelist.Ls
+	case "run_script":
+		return tc.SessionWhitelist.RunScript
+	default:
+		return nil
+	}
+}
+
+// requireSandbox 从 ctx 提取会话沙箱；未注入时返回引导式错误。
+// 所有工具在执行安全相关操作前必须通过此函数获取沙箱，
+// 未注入沙箱时一律拒绝执行（不再回退到工具内旧安全逻辑）。
+func requireSandbox(ctx context.Context, toolName string) (*sandbox.Sandbox, error) {
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil {
+		return nil, fmt.Errorf("%s", GuideSandboxRequired(toolName))
+	}
+	sb := tc.Session.Sandbox()
+	if sb == nil {
+		return nil, fmt.Errorf("%s", GuideSandboxRequired(toolName))
+	}
+	return sb, nil
 }
 
 // SafeOpenFile 在打开文件后校验路径以提供 TOCTOU 防护。

@@ -80,7 +80,7 @@ func validateGlobParams(params map[string]any) (globParams, error) {
 	return globParams{pattern: pattern, path: searchPath}, nil
 }
 
-// authorizeGlob 解析搜索路径并执行沙箱/边界安全检查。
+// authorizeGlob 解析搜索路径并执行沙箱强制安全检查。
 // Glob 不实现 PermissionRequired，越界直接拒绝不弹窗。
 func authorizeGlob(ctx context.Context, searchPath string) (resolvedPath string, err error) {
 	tc := GetToolContext(ctx)
@@ -91,18 +91,15 @@ func authorizeGlob(ctx context.Context, searchPath string) (resolvedPath string,
 	}
 	resolvedPath, _ = ResolveTargetPath(searchPath, projectDir, sessionDir)
 
-	// 安全检查：防止 "../" 等相对路径上跳越出工作区。
-	if tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			dec := sb.CheckFileAllowOrDeny(resolvedPath, projectDir)
-			if dec.Decision != sandbox.DecisionAllow {
-				return "", fmt.Errorf("%s", dec.Reason)
-			}
-		} else if err := ValidateFileSafety(resolvedPath, projectDir); err != nil {
-			return "", err
-		}
-	} else if err := ValidateFileSafety(resolvedPath, projectDir); err != nil {
+	// 安全校验：工作区边界、敏感文件等策略统一由沙箱强制检查；
+	// 越界直接拒绝（Glob 无授权流程，AskUser 视为拒绝）。未注入沙箱时拒绝执行。
+	sb, err := requireSandbox(ctx, "Glob")
+	if err != nil {
 		return "", err
+	}
+	dec := sb.CheckFileAllowOrDeny(resolvedPath, projectDir)
+	if dec.Decision != sandbox.DecisionAllow {
+		return "", fmt.Errorf("%s", dec.Reason)
 	}
 	return resolvedPath, nil
 }

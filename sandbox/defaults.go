@@ -6,17 +6,18 @@ import (
 	"strings"
 )
 
-// 默认策略常量。所有默认值与现有 tools 包行为等价（搬家不扩展）。
+// 默认策略常量。默认值迁移自 tools 包旧安全逻辑（搬家不扩展）；
+// 旧实现已随安全决策收口删除，本包为唯一策略来源。
 //
-// 行为等价对照：
-//   - DeniedFileGlobs  ← tools/utils.go:checkSensitiveFiles 的 8 项
+// 迁移来源对照（旧实现已删除，仅作历史溯源）：
+//   - DeniedFileGlobs  ← 原 tools/utils.go:checkSensitiveFiles 的 8 项
 //   - NetworkDenySubnets ← tools/web_fetch.go:isPrivateIP 的 12 段（含 CGNAT 补充）
-//   - AllowedCommands ← tools/bash.go:baseCmds
-//   - DeniedCommandPatterns ← tools/bash.go:detectDangerousCommand
+//   - AllowedCommands ← 原 tools/bash.go:baseCmds
+//   - DeniedCommandPatterns ← 原 tools/bash.go:detectDangerousCommand
 //   - NetworkCommands ← 新增（bash 的 curl/wget 需 URL 预检）
 
 // DefaultDeniedFileGlobs 返回默认的敏感文件名 glob 模式。
-// 与 tools/utils.go:checkSensitiveFiles 行为等价。
+// 迁移自原 tools/utils.go:checkSensitiveFiles（已删除）。
 func DefaultDeniedFileGlobs() []string {
 	return []string{
 		".env",
@@ -86,7 +87,7 @@ func DefaultDeniedSubnets() []*net.IPNet {
 }
 
 // DefaultAllowedCommands 返回默认允许的命令白名单。
-// 与 tools/bash.go:baseCmds 行为等价（直接搬家，保持一致）。
+// 迁移自原 tools/bash.go:baseCmds（已删除），并移除 Windows 专属命令。
 func DefaultAllowedCommands() []string {
 	return []string{
 		"cat", "echo", "head", "tail", "less", "more",
@@ -123,7 +124,7 @@ func DefaultAllowedCommands() []string {
 }
 
 // DefaultDeniedCommandPatterns 返回默认的危险命令正则模式。
-// 与 tools/bash.go:dangerousPatterns 行为等价（完整搬家，保持一致）。
+// 迁移自原 tools/bash.go:dangerousPatterns（已删除）。
 func DefaultDeniedCommandPatterns() []*regexp.Regexp {
 	return compilePatterns([]string{
 		`^rm\s+-rf\s+/\s*$`,

@@ -247,7 +247,6 @@ func toolOf[T tools.FuncTool](name string, new func() T) toolFactory {
 // 由 NewRuntime 在初始化期间自动调用。
 // 包含文件操作（Grep、Glob、Read、Write、FileEdit、Ls）、执行工具（Bash、RunScript）、
 // 网络工具（WebSearch、WebFetch）、交互工具（AskUser）及任务管理工具。
-// 在 Windows 上额外注册 PowerShell 工具。
 // 当模型为本地部署（IsLocal=true）时，跳过 SubAgent 和 TeamXXX 等多 Agent 工具的注册，
 // 因为本地模型通常无法可靠地执行多 Agent 并行任务。
 func (rt *Runtime) registerDefaultTools() {
@@ -311,11 +310,6 @@ func (rt *Runtime) registerDefaultTools() {
 	for _, b := range bundled {
 		if t := b.factory(); t != nil {
 			_ = rt.toolReg.Register(t)
-		}
-	}
-	if tools.IsWindowsPlatform() {
-		if ps := tools.NewPowerShellTool(); ps != nil {
-			_ = rt.toolReg.Register(ps)
 		}
 	}
 }

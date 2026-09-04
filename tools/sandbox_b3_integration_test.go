@@ -20,7 +20,7 @@ import (
 //  1. Grep 沙箱启用 - 正常搜索放行（rg 在白名单）
 //  2. Grep 沙箱启用 - 原生模式遍历拒绝符号链接越界
 //  3. Grep 沙箱启用 - 原生模式正常搜索工作
-//  4. Grep 沙箱未启用 - 回退旧逻辑
+//  4. Grep 沙箱未注入 - 拒绝执行（安全决策统一收口到沙箱）
 //  5. 搜索工具（fetchBody）沙箱启用 - SSRF URL 拒绝
 //  6. 搜索工具沙箱未启用 - 跳过 CheckURL
 
@@ -72,19 +72,20 @@ func TestGrep_Sandbox_NativeMode_SymlinkDenied(t *testing.T) {
 	assert.NotContains(t, resultStr, "/etc/passwd", "沙箱应阻止通过符号链接读取 /etc/passwd")
 }
 
-// TestGrep_Sandbox_Disabled_Fallback 验证沙箱未启用时回退旧逻辑。
-func TestGrep_Sandbox_Disabled_Fallback(t *testing.T) {
+// TestGrep_Sandbox_Disabled_RefusesExecution 验证沙箱未注入时拒绝执行。
+// 安全决策统一收口到沙箱，工具自身不做任何授权检查。
+func TestGrep_Sandbox_Disabled_RefusesExecution(t *testing.T) {
 	projectDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc hello() {}"), 0644))
 
 	grep := NewGrepTool()
-	result, err := grep.Execute(newGrantCtx(t, projectDir), map[string]any{
+	_, err := grep.Execute(newGrantCtx(t, projectDir), map[string]any{
 		"pattern":     "hello",
 		"include":     "*.go",
 		"output_mode": "content",
 	})
-	require.NoError(t, err, "沙箱未启用时应正常搜索")
-	assert.Contains(t, result.(string), "hello")
+	require.Error(t, err, "沙箱未注入时应拒绝执行")
+	assert.Contains(t, err.Error(), "未注入沙箱")
 }
 
 // ----- 搜索工具（fetchBody）沙箱集成测试 -----
@@ -100,18 +101,18 @@ func TestSearch_Sandbox_SSRF_Denied(t *testing.T) {
 	require.Error(t, err, "沙箱启用时 fetchBody 应拒绝 127.0.0.1（SSRF 防护）")
 }
 
-// TestSearch_Sandbox_Disabled_NoCheck 验证沙箱未启用时 fetchBody 跳过 CheckURL 预检。
-// 沙箱未启用时不做 CheckURL 预检，但拨号层 ssrfDialContext 仍拦截私有地址（双层 SSRF 防护，
-// 防 DNS rebinding）；错误经 fetchBody 包装后包含「搜索请求失败」，区别于沙箱拒绝原因。
-func TestSearch_Sandbox_Disabled_NoCheck(t *testing.T) {
+// TestSearch_Sandbox_Disabled_Reject 验证沙箱未注入时搜索请求拒绝执行。
+// 安全决策统一收口到沙箱：未注入沙箱不再跳过 CheckURL 预检（拨号层 ssrfDialContext
+// 仍保留作为双层防护的第二层），而是直接拒绝执行。
+func TestSearch_Sandbox_Disabled_Reject(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := newGrantCtx(t, projectDir) // 不注入沙箱
 	client := newSearchStealthClient(logging.NewNopLogger(), 1 * time.Second)
 
 	_, err := fetchBody(ctx, client, "http://127.0.0.1/test", nil)
-	require.Error(t, err, "拨号层应拦截私有地址（非沙箱拒绝）")
-	// 错误信息应包含"搜索请求失败"而非沙箱拒绝原因
-	assert.Contains(t, err.Error(), "搜索请求失败")
+	require.Error(t, err, "沙箱未注入时应拒绝执行")
+	// 错误信息应为沙箱未注入引导，而非「搜索请求失败」的拨号层拦截
+	assert.Contains(t, err.Error(), "未注入沙箱")
 }
 
 // TestSearch_Sandbox_NetworkAllowSubnets_Allows 验证 NetworkAllowSubnets 放行后 CheckURL 不拒绝，

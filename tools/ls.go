@@ -75,9 +75,13 @@ const maxLsItems = 500
 
 // Grant 实现 tools.PermissionRequired 接口。
 //
-// 与 Read / Edit / Bash 保持一致的授权语义：目标目录超出项目边界
-// （ValidateFileSafety 失败）时，先放行工具白名单（AddWhiteList）与会话级
-// 白名单（PermissionAllowSession 记忆）内的路径，其余越界目录触发授权流程。
+// 与 Read / Edit / Bash 保持一致的授权语义：文件安全决策（工作区边界、
+// 敏感文件拦截）统一由沙箱 CheckFile 负责。越界访问（AskUser）时先放行
+// 工具白名单（AddWhiteList）与会话级白名单（PermissionAllowSession 记忆）
+// 内的路径，其余越界目录触发授权流程（返回 granted=false，运行时挂起
+// 思考循环等待用户回应）。
+//
+// 会话未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
 func (l *LS) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	raw, _ := GetParam(params, "path")
 	dirPath, _ := raw.(string)
@@ -95,39 +99,18 @@ func (l *LS) Grant(ctx context.Context, params map[string]any) (bool, string) {
 		return true, ""
 	}
 
-	// 沙箱启用时，由沙箱统一做文件安全决策
-	if sb := tc.Session.Sandbox(); sb != nil {
-		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
-		switch dec.Decision {
-		case sandbox.DecisionAllow:
-			return true, ""
-		case sandbox.DecisionDeny:
-			return false, dec.Reason
-		case sandbox.DecisionAskUser:
-			for _, dir := range l.whitelist {
-				if pathWithinScope(dir, resolved) {
-					return true, ""
-				}
-			}
-			if tc.SessionWhitelist != nil {
-				for _, allowed := range tc.SessionWhitelist.Ls {
-					if pathWithinScope(allowed, resolved) {
-						return true, ""
-					}
-				}
-			}
-			return false, dec.Reason
-		}
-	}
-
-	// 目录不存在或无法访问时跳过授权：
-	// ENOTDIR（路径中间段是文件）、EACCES 等场景目录同样不可能正常列出，
-	// 授权后 Execute 同样会失败，直接放行让 Execute 报错，避免浪费一轮用户交互。
-	if _, statErr := os.Stat(resolved); statErr != nil {
+	// 安全决策统一由沙箱负责；未注入沙箱时放行（Execute 阶段拒绝执行）。
+	sb := tc.Session.Sandbox()
+	if sb == nil {
 		return true, ""
 	}
-
-	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+	dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+	switch dec.Decision {
+	case sandbox.DecisionAllow:
+		return true, ""
+	case sandbox.DecisionDeny:
+		return false, dec.Reason
+	default: // DecisionAskUser：先放行工具白名单与会话级白名单，其余触发授权
 		for _, dir := range l.whitelist {
 			if pathWithinScope(dir, resolved) {
 				return true, ""
@@ -140,9 +123,8 @@ func (l *LS) Grant(ctx context.Context, params map[string]any) (bool, string) {
 				}
 			}
 		}
-		return false, GuideLsOutsideWorkspace(dirPath, resolved, err)
+		return false, dec.Reason
 	}
-	return true, ""
 }
 
 // lsParams 承载 LS 工具解析后的参数。
@@ -179,8 +161,8 @@ func validateLSParams(params map[string]any) lsParams {
 	return lsParams{path: dirPath, recursive: recursive, showHidden: showHidden}
 }
 
-// authorizeLS 解析目录路径并执行沙箱/敏感文件安全检查。
-func authorizeLS(ctx context.Context, dirPath string) (resolvedPath string, err error) {
+// authorizeLS 解析目录路径并执行沙箱强制安全检查。
+func (l *LS) authorizeLS(ctx context.Context, dirPath string) (resolvedPath string, err error) {
 	tc := GetToolContext(ctx)
 	var projectDir, sessionDir string
 	if tc != nil && tc.Session != nil {
@@ -189,17 +171,18 @@ func authorizeLS(ctx context.Context, dirPath string) (resolvedPath string, err 
 	}
 	resolvedPath, _ = ResolveTargetPath(dirPath, projectDir, sessionDir)
 
-	// 安全校验：敏感文件硬性拦截。
-	// 沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
-	if tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			if err := sb.EnforceFile(resolvedPath, projectDir); err != nil {
-				return "", err
-			}
-		} else if err := checkSensitiveFiles(resolvedPath); err != nil {
-			return "", err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// 安全校验：工作区边界、敏感文件等策略统一由沙箱 EnforceFile 强制检查
+	// （含符号链接解析，防 TOCTOU）。未注入沙箱时拒绝执行。
+	sb, err := requireSandbox(ctx, "Ls")
+	if err != nil {
+		return "", err
+	}
+	// 透传工具白名单 + 会话白名单：授权（PermissionAllowSession）与
+	// 工具白名单（AddWhiteList）放行的列举在 Execute 阶段同样豁免边界检查。
+	extra := make([]string, 0, len(l.whitelist)+2)
+	extra = append(extra, l.whitelist...)
+	extra = append(extra, sessionWhitelistDirs(ctx, "ls")...)
+	if err := sb.EnforceFileWithWhitelist(resolvedPath, projectDir, extra); err != nil {
 		return "", err
 	}
 	return resolvedPath, nil
@@ -287,7 +270,7 @@ func performLS(resolvedPath string, p lsParams) (map[string]any, error) {
 func (l *LS) Execute(ctx context.Context, params map[string]any) (any, error) {
 	p := validateLSParams(params)
 
-	resolvedPath, err := authorizeLS(ctx, p.path)
+	resolvedPath, err := l.authorizeLS(ctx, p.path)
 	if err != nil {
 		return nil, err
 	}

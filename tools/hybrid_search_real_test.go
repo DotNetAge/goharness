@@ -15,7 +15,7 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 		t.Skip("skipping real network test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 60*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -59,7 +59,7 @@ func TestHybridSearch_AdapterPerformance(t *testing.T) {
 		t.Skip("skipping real network test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	adapters := []SearchAdapter{

@@ -105,36 +105,6 @@ func TestValidateFileSafety_PathTraversal(t *testing.T) {
 	}
 }
 
-func TestValidateFileSafety_SensitiveFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	sensitiveFiles := []string{
-		".env",
-		"id_rsa",
-		"id_ed25519",
-		"passwd",
-		"shadow",
-		"sudoers",
-		".ssh_config",
-		"known_hosts",
-	}
-
-	for _, filename := range sensitiveFiles {
-		t.Run("sensitive_file_"+filename, func(t *testing.T) {
-			path := filepath.Join(tmpDir, filename)
-			os.WriteFile(path, []byte("sensitive"), 0644)
-
-			err := ValidateFileSafety(path, tmpDir)
-			if err == nil {
-				t.Errorf("ValidateFileSafety() should block access to %s", filename)
-			}
-			if err != nil && !containsString(err.Error(), "敏感文件") {
-				t.Errorf("ValidateFileSafety() error should mention security restriction, got: %v", err)
-			}
-		})
-	}
-}
-
 func TestResolveTargetPath_Comprehensive(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

@@ -91,6 +91,11 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 		Logger:       e.cfg.logger,
 		Session:      e.cfg.session,
 	}
+	// 会话白名单随会话自动注入：Execute 阶段的沙箱强制检查
+	// （EnforceFileWithWhitelist）依赖它豁免用户已授权的越界范围。
+	if e.cfg.session != nil {
+		toolCtx.SessionWhitelist = e.cfg.session.Whitelist()
+	}
 	execCtx := WithToolContext(ctx, toolCtx)
 
 	start := time.Now()

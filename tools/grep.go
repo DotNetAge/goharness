@@ -72,6 +72,12 @@ func (t *GrepTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil, fmt.Errorf("%s", GuideMissingParam("Grep", "pattern"))
 	}
 
+	// 安全校验：命令白名单、工作区边界等策略统一由沙箱强制检查。
+	// 未注入沙箱时拒绝执行（安全决策统一收口到沙箱，工具自身不做授权检查）。
+	if _, err := requireSandbox(ctx, "Grep"); err != nil {
+		return nil, err
+	}
+
 	// 搜索根固定为项目目录（Grep 工具面向项目内全文搜索）。
 	// 修复前搜索根是进程 CWD 的 "."，与 Agent 所在项目目录无关，导致搜索不到内容。
 	searchRoot := "."

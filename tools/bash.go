@@ -4,22 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"runtime"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
 	"mvdan.cc/sh/v3/syntax"
-)
-
-var (
-	defaultWhitelistOnce sync.Once
-	cachedWhitelist      []string
 )
 
 // defaultBashTimeoutMs 是 Bash 工具的默认超时时间（毫秒）。
@@ -39,63 +31,24 @@ const maxBashCommandLength = 16000
 
 // BashTool 实现了 Shell 命令执行工具。
 // 提供安全的命令执行环境，具有以下安全特性：
-//   - 危险命令检测：阻止破坏性命令（如 rm -rf /、fork bomb 等）
-//   - 命令白名单：只允许预定义的安全命令执行
+//   - 危险命令检测：由沙箱统一拦截破坏性命令（如 rm -rf /、fork bomb 等）
+//   - 命令白名单：由沙箱策略统一管理，只允许白名单内的命令执行
 //   - 超时控制：防止命令无限运行
 //   - 输出限制：防止大量输出导致内存问题
 //
 // 安全级别：LevelHighRisk（高风险），因为可以执行任意 shell 命令
-type BashTool struct {
-	whitelistEnabled bool            // 是否启用白名单检查
-	customWhitelist  map[string]bool // 自定义白名单（如果为空则使用默认白名单）
-}
+//
+// 安全决策统一收口到沙箱（sandbox.Sandbox）：本工具自身不做任何
+// 授权检查，会话未注入沙箱时一律拒绝执行。
+type BashTool struct{}
 
-// NewBashTool 创建一个启用默认白名单的 Bash 工具实例。
-// 使用内置的默认命令白名单，包含常用的安全命令。
+// NewBashTool 创建一个 Bash 工具实例。
+// 命令安全决策由会话沙箱统一负责（创建会话时通过 session.WithSandbox 注入）。
 //
 // 返回：
 //   - FuncTool: 配置好的 Bash 工具实例
 func NewBashTool() FuncTool {
-	return &BashTool{
-		whitelistEnabled: true,
-		customWhitelist:  make(map[string]bool),
-	}
-}
-
-// NewBashToolWithWhitelist 创建一个使用自定义白名单的 Bash 工具。
-//
-// 参数：
-//   - allowedCommands: 允许执行的命令名称列表
-//
-// 返回：
-//   - FuncTool: 配置好的 Bash 工具实例
-//
-// 示例：
-//
-//	bash := NewBashToolWithWhitelist([]string{"git", "npm", "node"})
-func NewBashToolWithWhitelist(allowedCommands []string) FuncTool {
-	wl := make(map[string]bool)
-	for _, cmd := range allowedCommands {
-		wl[cmd] = true
-	}
-	return &BashTool{
-		whitelistEnabled: true,
-		customWhitelist:  wl,
-	}
-}
-
-// NewBashToolUnrestricted 创建一个无白名单限制的 Bash 工具（不推荐用于生产环境）。
-// 此模式允许执行任何命令，仅进行危险命令检测。
-//
-// ⚠️ 警告：此模式存在安全风险，应仅在受信任的环境中使用。
-//
-// 返回：
-//   - FuncTool: 无白名单限制的 Bash 工具实例
-func NewBashToolUnrestricted() FuncTool {
-	return &BashTool{
-		whitelistEnabled: false,
-		customWhitelist:  make(map[string]bool),
-	}
+	return &BashTool{}
 }
 
 // Info 返回 Bash 工具的元信息。
@@ -286,12 +239,8 @@ func performBash(ctx context.Context, logger logging.Logger, sessionID string, p
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(timeoutCtx, "cmd", "/c", p.command)
-	} else {
-		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", p.command)
-	}
+	// goharness 不运行于 Windows 环境，统一使用 sh -c 执行命令。
+	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", p.command)
 
 	// 工作目录解析
 	if p.workingDir != "" {
@@ -403,8 +352,8 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	// 安全强制检查：Grant 被绕过（如 PermissionAllow）时仍拦截危险命令与越权访问。
-	// 沙箱启用时由沙箱统一检查（危险模式 + 白名单 + 网络命令 URL 预检）；
-	// 沙箱未启用时走旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
+	// 命令安全决策统一由沙箱负责（危险模式 + 白名单 + 网络命令 URL 预检）；
+	// 会话未注入沙箱时拒绝执行。
 	if blocked, ok := t.enforceCommand(ctx, p.command); ok {
 		return blocked, nil
 	}
@@ -416,19 +365,15 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 // Grant 实现 tools.PermissionRequired 接口。在 Execute 运行前预检 shell 命令，
 // 判断是否需要"询问用户"的信号。
 //
-// 沙箱启用时由沙箱统一做命令安全决策（CheckCommand + 网络命令 URL 预检）；
-// 沙箱未启用时回退旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
+// 命令安全决策统一由沙箱负责（CheckCommand + 网络命令 URL 预检）；
+// 会话未注入沙箱时直接放行，由 Execute 阶段的 enforceCommand 拒绝执行
+// （避免为注定失败的调用触发授权询问）。
 //
 // 决策流程（沙箱启用）：
 //  1. CheckCommand 危险模式检测 → Deny（硬性拒绝，授权不可覆盖）
 //  2. CheckCommand 白名单检测 → 不在白名单则 AskUser
 //  3. CheckCommand 网络命令 URL 预检 → NeedURLCheck=true 时对每个 URL 调用 CheckURL
 //  4. AskUser 时检查会话级白名单（PermissionAllowSession 记忆）
-//
-// 注意：沙箱的 extractBaseCommand 只取首个命令，而旧逻辑用 AST 解析所有子命令。
-// 为保留对子命令（如 "git status && rm -rf /"）的白名单检查能力，沙箱启用时
-// 仍调用 isCommandWhitelisted 做 AskUser 决策的细化（仅当工具配置了 customWhitelist
-// 或沙箱策略 AllowedDirs 为空时生效）。
 func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
 	rawCommand, ok := GetParam(params, "command")
 	command := ""
@@ -441,55 +386,13 @@ func (t *BashTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 		return true, ""
 	}
 
-	// 沙箱启用时，由沙箱统一做命令安全决策
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			return t.grantWithSandbox(ctx, sb, command)
-		}
+	// 会话未注入沙箱时放行，由 Execute 阶段统一拒绝（配置错误，授权无意义）
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil || tc.Session.Sandbox() == nil {
+		return true, ""
 	}
 
-	// 沙箱未启用，走旧逻辑
-	if blocked := detectDangerousCommand(command); blocked != "" {
-		return false, fmt.Sprintf("Bash 命令被安全过滤器阻止：%s", blocked)
-	}
-
-	if t.whitelistEnabled {
-		if allowed, failedCmd := t.isCommandWhitelisted(command); !allowed {
-			cmds := extractCommands(command)
-
-			// 先检查会话级白名单（用户之前选择"记住本次会话"的授权）
-			if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
-				allInSession := true
-				for _, cmd := range cmds {
-					found := false
-					for _, allowed := range tc.SessionWhitelist.Bash {
-						if cmd == allowed {
-							found = true
-							break
-						}
-					}
-					if !found {
-						allInSession = false
-						break
-					}
-				}
-				if allInSession {
-					return true, ""
-				}
-			}
-
-			// 准确报告实际不在白名单中的命令
-			blockedCmd := failedCmd
-			if blockedCmd == "" && len(cmds) > 0 {
-				blockedCmd = cmds[0]
-			} else if blockedCmd == "" {
-				blockedCmd = "unknown"
-			}
-			return false, fmt.Sprintf("Bash：命令 %q 不在白名单中", blockedCmd)
-		}
-	}
-
-	return true, ""
+	return t.grantWithSandbox(ctx, tc.Session.Sandbox(), command)
 }
 
 // grantWithSandbox 在沙箱启用时做命令安全决策。
@@ -583,53 +486,31 @@ func (t *BashTool) enforceNetworkURLs(sb *sandbox.Sandbox, command string) strin
 //   - result: 被拦截时返回阻塞结果 map（exit_code=126），未拦截时为 nil
 //   - blocked: true 表示命令被拦截（调用方应返回 result），false 表示放行
 //
-// 沙箱启用时由沙箱统一检查（危险模式 + 白名单 + 网络命令 URL 预检），
-// AskUser 在 Execute 阶段视为 Deny（与 Glob 的 CheckFileAllowOrDeny 语义一致）。
-// 沙箱未启用时走旧逻辑（detectDangerousCommand + isCommandWhitelisted）。
+// 命令安全决策统一由沙箱负责（危险模式 + 白名单 + 网络命令 URL 预检）。
+// 会话未注入沙箱时拒绝执行（安全决策已收口到沙箱，工具自身不做授权检查）。
 func (t *BashTool) enforceCommand(ctx context.Context, command string) (map[string]any, bool) {
-	// 沙箱启用时由沙箱统一检查
-	if tc := GetToolContext(ctx); tc != nil && tc.Session != nil {
-		if sb := tc.Session.Sandbox(); sb != nil {
-			if reason := t.enforceWithSandbox(sb, command); reason != "" {
-				return map[string]any{
-					"stdout":      "",
-					"stderr":      fmt.Sprintf("已阻止：%s", reason),
-					"exit_code":   126,
-					"interrupted": false,
-					"success":     false,
-					"error":       reason,
-				}, true
-			}
-			return nil, false
-		}
-	}
-
-	// 沙箱未启用，走旧逻辑
-	if blocked := detectDangerousCommand(command); blocked != "" {
+	sb, err := requireSandbox(ctx, "Bash")
+	if err != nil {
+		reason := err.Error()
 		return map[string]any{
 			"stdout":      "",
-			"stderr":      fmt.Sprintf("已阻止：%s", blocked),
+			"stderr":      fmt.Sprintf("已阻止：%s", reason),
 			"exit_code":   126,
 			"interrupted": false,
 			"success":     false,
-			"error":       blocked,
+			"error":       reason,
 		}, true
 	}
-	if t.whitelistEnabled {
-		if allowed, failedCmd := t.isCommandWhitelisted(command); !allowed {
-			blockedCmd := failedCmd
-			if blockedCmd == "" {
-				blockedCmd = "unknown"
-			}
-			return map[string]any{
-				"stdout":      "",
-				"stderr":      fmt.Sprintf("已阻止：命令 %q 不在白名单中。允许的命令：%s", blockedCmd, t.whitelistDisplay()),
-				"exit_code":   126,
-				"interrupted": false,
-				"success":     false,
-				"error":       fmt.Sprintf("命令不在白名单中：%s", blockedCmd),
-			}, true
-		}
+
+	if reason := t.enforceWithSandbox(sb, command); reason != "" {
+		return map[string]any{
+			"stdout":      "",
+			"stderr":      fmt.Sprintf("已阻止：%s", reason),
+			"exit_code":   126,
+			"interrupted": false,
+			"success":     false,
+			"error":       reason,
+		}, true
 	}
 	return nil, false
 }
@@ -700,145 +581,6 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// dangerousPatterns 定义了危险命令的检测规则列表。
-// 每个规则包含一个正则表达式和对应的危险原因描述。
-//
-// 检测的危险命令类型包括：
-//   - 文件系统破坏：rm -rf /, dd 写入磁盘等
-//   - 远程代码执行：curl | sh, 命令替换等
-//   - 系统控制：shutdown, reboot 等
-//   - 资源耗尽：fork bomb 等
-//   - 权限修改：chmod 777 /, chown 递归等
-var dangerousPatterns = []struct {
-	pattern *regexp.Regexp
-	reason  string
-}{
-	{regexp.MustCompile(`^rm\s+-rf\s+/\s*$`), "破坏性：rm -rf / 会删除整个文件系统"},
-	{regexp.MustCompile(`^rm\s+-rf\s+/\*\s*$`), "破坏性：rm -rf /* 会删除整个文件系统"},
-	{regexp.MustCompile(`>\s*/dev/sd[a-z]\b`), "危险：写入原始磁盘设备"},
-	{regexp.MustCompile(`dd\s+if=.*of=/dev/sd`), "危险：通过 dd 覆盖原始磁盘"},
-	{regexp.MustCompile(`mkfs\.`), "危险：磁盘格式化命令"},
-	{regexp.MustCompile(`:\(\)\{\s*\|.*:\s*&\s*;:\s*\}$`), "危险：检测到 fork bomb"},
-	{regexp.MustCompile(`(curl|wget)\s+.*\|\s*(sh|bash)\b`), "危险：远程代码执行管道 (curl|sh)"},
-	{regexp.MustCompile(`(curl|wget)\s+.*\s*>\s*/(bin|usr/bin)/`), "危险：远程下载二进制文件到系统路径"},
-	{regexp.MustCompile(`chmod\s+-R\s+777\s+/`), "危险：根文件系统设置为全局可写"},
-	{regexp.MustCompile(`chown\s+-R.*\s+/`), "危险：递归更改根目录所有权"},
-	{regexp.MustCompile(`shutdown\s+(now|-h|-r)\b`), "危险：系统关机命令"},
-	{regexp.MustCompile(`^reboot\s*$`), "危险：系统重启命令"},
-	{regexp.MustCompile(`(?i)format\s+[a-z]:\s*/q`), "危险：Windows 磁盘格式化"},
-	{regexp.MustCompile(`(?i)del\s+/[fs]\s+.*\\\*\.\*`), "危险：Windows 强制递归删除"},
-	{regexp.MustCompile(`(?i)rd\s+/[fs]\s+\\`), "危险：Windows 强制删除目录"},
-	{regexp.MustCompile(`(?i)reg\s+delete\s+HK`), "危险：注册表项删除"},
-	{regexp.MustCompile(`(?i)diskpart`), "危险：磁盘分区操作"},
-	{regexp.MustCompile(`(?i)icacls\s+.*\s+/grant\s+.*:F`), "危险：授予完全权限"},
-	{regexp.MustCompile(`(?i)takeown\s+/f`), "危险：获取文件所有权"},
-	{regexp.MustCompile(`(?i)cipher\s+/w:`), "危险：磁盘擦除操作"},
-	{regexp.MustCompile(`(?i)bcdedit\s+/set`), "危险：启动配置修改"},
-	{regexp.MustCompile(`(?i)powercfg\s+/h\s+off`), "危险：系统配置修改"},
-	{regexp.MustCompile(`(?i)net\s+user\s+.*\s+/add`), "危险：创建用户账户"},
-	{regexp.MustCompile(`(?i)net\s+localgroup\s+.*\s+/add`), "危险：修改用户组"},
-	{regexp.MustCompile(`(?i)sc\s+delete`), "危险：删除服务"},
-}
-
-// detectDangerousCommand 检测命令是否包含危险操作。
-// 遍历所有危险模式进行匹配，返回第一个匹配的原因描述。
-//
-// 参数：
-//   - command: 要检测的 Shell 命令
-//
-// 返回：
-//   - string: 如果匹配到危险模式，返回原因描述；否则返回空字符串
-func detectDangerousCommand(command string) string {
-	lower := strings.ToLower(strings.TrimSpace(command))
-	for _, dp := range dangerousPatterns {
-		if dp.pattern.MatchString(lower) {
-			return dp.reason
-		}
-	}
-	return ""
-}
-
-// getDefaultWhitelist 返回默认的允许命令列表。
-// 这些命令被认为是安全的，可以正常执行。
-//
-// 列表包含：
-//   - 文件操作：ls, cp, mv, mkdir, rm 等
-//   - 版本控制：git, svn, hg
-//   - 编程语言：python, node, go, cargo 等
-//   - 构建工具：make, cmake, gcc 等
-//   - 容器编排：docker, kubectl, helm
-//   - 网络工具：curl, wget, ssh 等
-//   - 系统工具：ps, top, df, du 等
-func getDefaultWhitelist() []string {
-	defaultWhitelistOnce.Do(func() {
-		cachedWhitelist = buildDefaultWhitelist()
-	})
-	return cachedWhitelist
-}
-
-// buildDefaultWhitelist 构建默认白名单列表（仅在首次调用时执行一次）。
-func buildDefaultWhitelist() []string {
-	baseCmds := []string{
-		"cat", "echo", "head", "tail", "less", "more",
-		"ls", "wc", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm",
-		"chmod", "chown", "ln", "tar", "gzip", "gunzip", "zip", "unzip",
-		"git", "svn", "hg",
-		"python", "python3", "pip", "pip3", "node", "npm", "cnpm", "npx", "nvm",
-		"go", "cargo", "rustc",
-		"make", "cmake", "gcc", "g++", "clang", "clang++",
-		"docker", "docker-compose", "kubectl", "helm",
-		"curl", "wget", "ssh", "scp", "rsync",
-		"ps", "top", "htop", "kill", "killall", "pgrep", "pkill", "mindx",
-		"df", "du", "free", "uname", "date", "whoami", "id",
-		"env", "export", "source", "alias", "which", "type", "file",
-		"sort", "uniq", "cut", "tr", "tee", "xargs",
-		"grep", "rg", "find", "diff", "comm",
-		"awk", "sed", "printf",
-		"jq", "yq",
-		"test", "[[", "true", "false", "exit", "return",
-		// Shell 语法关键字（非外部命令，不会产生进程）
-		"for", "while", "until", "if", "then", "else", "elif", "fi",
-		"case", "esac", "do", "done", "select", "function",
-		"sleep", "wait", "bg", "fg", "jobs", "nohup", "disown",
-		"basename", "dirname", "realpath", "readlink",
-		"sha256sum", "md5sum", "sha1sum", "shasum",
-		"openssl", "gpg", "ssh-keygen",
-		"time", "timeout", "watch",
-		"hostname", "uptime", "lscpu", "lsblk",
-		"ping", "ss", "dig", "host", "nslookup", "traceroute", "ip",
-		"lsof",
-		"strings", "xxd", "od", "column", "seq", "shuf", "fmt", "nl", "fold",
-		"ldd", "nm", "objdump", "readelf", "size", "strip",
-	}
-
-	if runtime.GOOS == "windows" {
-		baseCmds = append(baseCmds,
-			"dir", "type", "findstr", "where", "tasklist", "taskkill",
-			"systeminfo", "ver", "netstat", "ipconfig", "ping", "tracert",
-			"nslookup", "route", "netsh", "powershell", "pwsh",
-			"attrib", "cacls", "icacls", "compact", "chkdsk",
-			"fc", "comp", "more", "sort", "tree", "xcopy", "robocopy",
-			"cscript", "wscript", "mshta",
-		)
-	}
-
-	return baseCmds
-}
-
-// whitelistDisplay 返回活跃白名单的可读字符串（用于错误信息展示）。
-// 优先使用自定义白名单，否则返回默认白名单。
-func (t *BashTool) whitelistDisplay() string {
-	if len(t.customWhitelist) > 0 {
-		cmds := make([]string, 0, len(t.customWhitelist))
-		for cmd := range t.customWhitelist {
-			cmds = append(cmds, cmd)
-		}
-		sort.Strings(cmds)
-		return strings.Join(cmds, ", ")
-	}
-	return strings.Join(getDefaultWhitelist(), ", ")
-}
-
 // extractCommands 从 Shell 命令字符串中提取所有真实的命令名。
 // 使用 mvdan/sh 的 AST 解析器准确解析 shell 语法，避免正则表达式的误匹配。
 //
@@ -887,37 +629,3 @@ func extractCommands(command string) []string {
 	return cmds
 }
 
-// isCommandWhitelisted 检查命令（及其所有子命令）是否在白名单中。
-// 优先检查自定义白名单，如果为空则使用默认白名单。
-//
-// 参数：
-//   - command: 要检查的 Shell 命令
-//
-// 返回：
-//   - bool: 如果所有子命令都在白名单中返回 true，否则返回 false
-//   - string: 第一个不在白名单中的命令名（如果全部允许则为空字符串）
-func (t *BashTool) isCommandWhitelisted(command string) (bool, string) {
-	cmds := extractCommands(command)
-	if len(cmds) == 0 {
-		return false, ""
-	}
-
-	// 构建白名单 map
-	var wl map[string]bool
-	if len(t.customWhitelist) > 0 {
-		wl = t.customWhitelist
-	} else {
-		defaultWL := getDefaultWhitelist()
-		wl = make(map[string]bool, len(defaultWL))
-		for _, c := range defaultWL {
-			wl[c] = true
-		}
-	}
-
-	for _, cmd := range cmds {
-		if !wl[cmd] {
-			return false, cmd
-		}
-	}
-	return true, ""
-}

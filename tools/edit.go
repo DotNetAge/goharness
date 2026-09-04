@@ -111,39 +111,20 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 		return true, ""
 	}
 
-	// 沙箱启用时，由沙箱统一做文件安全决策
-	if sb := tc.Session.Sandbox(); sb != nil {
-		dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
-		switch dec.Decision {
-		case sandbox.DecisionAllow:
-			return true, ""
-		case sandbox.DecisionDeny:
-			return false, dec.Reason
-		case sandbox.DecisionAskUser:
-			for _, dir := range t.whitelist {
-				if pathWithinScope(dir, resolved) {
-					return true, ""
-				}
-			}
-			if tc.SessionWhitelist != nil {
-				for _, allowed := range tc.SessionWhitelist.Edit {
-					if pathWithinScope(allowed, resolved) {
-						return true, ""
-					}
-				}
-			}
-			return false, dec.Reason
-		}
-	}
-
-	// 文件不存在或无法访问时跳过授权：Edit 对不存在的文件永远报错不创建（创建模式仅在
-	// "存在但为空"时触发）。ENOTDIR/EACCES 等场景文件同样不可能正常编辑，
-	// 授权后 Execute 同样会失败，直接放行让 Execute 报错，避免浪费一轮用户交互。
-	if _, statErr := os.Stat(resolved); statErr != nil {
+	// 沙箱启用时，由沙箱统一做文件安全决策；
+	// 未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
+	sb := tc.Session.Sandbox()
+	if sb == nil {
 		return true, ""
 	}
 
-	if err := ValidateFileSafety(resolved, tc.Session.ProjectDir()); err != nil {
+	dec := sb.CheckFile(resolved, tc.Session.ProjectDir())
+	switch dec.Decision {
+	case sandbox.DecisionAllow:
+		return true, ""
+	case sandbox.DecisionDeny:
+		return false, dec.Reason
+	case sandbox.DecisionAskUser:
 		for _, dir := range t.whitelist {
 			if pathWithinScope(dir, resolved) {
 				return true, ""
@@ -156,7 +137,7 @@ func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, stri
 				}
 			}
 		}
-		return false, GuideEditOutsideWorkspace(filePath, resolved, err)
+		return false, dec.Reason
 	}
 	return true, ""
 }
@@ -203,17 +184,23 @@ func validateEditParams(params map[string]any) (editParams, error) {
 	}, nil
 }
 
-// authorizeEdit 解析文件路径并执行沙箱/敏感文件安全检查。
-func authorizeEdit(ctx context.Context, filePath string) (resolvedPath string, scope PathScope, err error) {
+// authorizeEdit 解析文件路径并执行沙箱强制安全检查。
+func (t *EditTool) authorizeEdit(ctx context.Context, filePath string) (resolvedPath string, scope PathScope, err error) {
 	tc := GetToolContext(ctx)
 	resolvedPath, scope = ResolveTargetPath(filePath, tc.Session.ProjectDir(), tc.Session.SessionDir())
 
-	// 安全检查：沙箱启用时由 EnforceFile 统一检查（含符号链接解析，防 TOCTOU）。
-	if sb := tc.Session.Sandbox(); sb != nil {
-		if err := sb.EnforceFile(resolvedPath, tc.Session.ProjectDir()); err != nil {
-			return "", "", err
-		}
-	} else if err := checkSensitiveFiles(resolvedPath); err != nil {
+	// 安全检查：工作区边界、敏感文件等策略统一由沙箱 EnforceFile 强制检查
+	// （含符号链接解析，防 TOCTOU）。未注入沙箱时拒绝执行。
+	sb, err := requireSandbox(ctx, "Edit")
+	if err != nil {
+		return "", "", err
+	}
+	// 透传工具白名单 + 会话白名单：授权（PermissionAllowSession）与
+	// 工具白名单（AddWhiteList）放行的编辑在 Execute 阶段同样豁免边界检查。
+	extra := make([]string, 0, len(t.whitelist)+2)
+	extra = append(extra, t.whitelist...)
+	extra = append(extra, sessionWhitelistDirs(ctx, "edit")...)
+	if err := sb.EnforceFileWithWhitelist(resolvedPath, tc.Session.ProjectDir(), extra); err != nil {
 		return "", "", err
 	}
 	return resolvedPath, scope, nil
@@ -390,7 +377,7 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 	}
 
 	// 2. 路径解析 + 安全授权
-	resolvedPath, scope, err := authorizeEdit(ctx, p.filePath)
+	resolvedPath, scope, err := t.authorizeEdit(ctx, p.filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -463,9 +450,4 @@ func normalizeQuotes(s string) string {
 		}
 	}
 	return b.String()
-}
-
-// fileMtimeMs 返回文件修改时间的毫秒表示。
-func fileMtimeMs(info os.FileInfo) int64 {
-	return info.ModTime().UnixMilli()
 }

@@ -39,7 +39,7 @@ func mustHaveProxy(t *testing.T) {
 
 func TestIntegration_WebFetch_StatusCode200_StaticHTML(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -58,7 +58,7 @@ func TestIntegration_WebFetch_StatusCode200_StaticHTML(t *testing.T) {
 
 func TestIntegration_WebFetch_StatusCode404(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -72,7 +72,7 @@ func TestIntegration_WebFetch_StatusCode404(t *testing.T) {
 
 func TestIntegration_WebFetch_StatusCode500(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -85,7 +85,7 @@ func TestIntegration_WebFetch_StatusCode500(t *testing.T) {
 
 func TestIntegration_WebFetch_RedirectChain(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -99,7 +99,7 @@ func TestIntegration_WebFetch_RedirectChain(t *testing.T) {
 
 func TestIntegration_WebFetch_LargePage(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -116,7 +116,7 @@ func TestIntegration_WebFetch_LargePage(t *testing.T) {
 
 func TestIntegration_WebFetch_EncodedURL(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -135,7 +135,7 @@ func TestIntegration_WebFetch_EncodedURL(t *testing.T) {
 
 func TestIntegration_WebFetch_UTF8Content(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -151,7 +151,7 @@ func TestIntegration_WebFetch_UTF8Content(t *testing.T) {
 
 func TestIntegration_WebFetch_JSONResponse(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -166,7 +166,7 @@ func TestIntegration_WebFetch_JSONResponse(t *testing.T) {
 
 func TestIntegration_WebFetch_HTMLWithScriptsAndStyles(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -199,7 +199,7 @@ func TestIntegration_WebFetch_SSRF_Protection_RealDNS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := NewWebFetchTool(logging.NewNopLogger())
 			start := time.Now()
-			_, err := tool.Execute(ctxWithLogger(), map[string]any{"url": tt.url})
+			_, err := tool.Execute(testCtx(t), map[string]any{"url": tt.url})
 			elapsed := time.Since(start)
 			if err == nil {
 				t.Errorf("FAIL [SSRF-%s]: should block %q but got no error (elapsed=%v)", tt.name, tt.url, elapsed)
@@ -218,7 +218,7 @@ func TestIntegration_WebFetch_SSRF_Protection_RealDNS(t *testing.T) {
 
 func TestIntegration_WebFetch_ExampleCom(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -242,7 +242,7 @@ func TestIntegration_WebFetch_ExampleCom(t *testing.T) {
 
 func TestIntegration_WebFetch_HTMLToTextExtraction(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -262,7 +262,7 @@ func TestIntegration_WebFetch_HTMLToTextExtraction(t *testing.T) {
 
 func TestIntegration_WebFetch_URLAutoNormalization(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -294,7 +294,7 @@ func TestIntegration_WebFetch_URLAutoNormalization(t *testing.T) {
 
 func TestIntegration_WebFetch_ResponseMetadata(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -308,7 +308,7 @@ func TestIntegration_WebFetch_ResponseMetadata(t *testing.T) {
 
 func TestIntegration_WebFetch_BinaryLikeContent(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -327,7 +327,7 @@ func TestIntegration_WebFetch_BinaryLikeContent(t *testing.T) {
 
 func TestIntegration_Search_GolangOfficial(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -351,7 +351,7 @@ func TestIntegration_Search_GolangOfficial(t *testing.T) {
 
 func TestIntegration_Search_TechnicalQuery(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -368,7 +368,7 @@ func TestIntegration_Search_TechnicalQuery(t *testing.T) {
 
 func TestIntegration_Search_NewsQuery(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -384,7 +384,7 @@ func TestIntegration_Search_NewsQuery(t *testing.T) {
 
 func TestIntegration_Search_DomainFiltering(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger()).(*WebSearchTool)
@@ -402,7 +402,7 @@ func TestIntegration_Search_DomainFiltering(t *testing.T) {
 
 func TestIntegration_Search_MaxResultsLimit(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -420,7 +420,7 @@ func TestIntegration_Search_MaxResultsLimit(t *testing.T) {
 
 func TestIntegration_Search_SpecialCharacters(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -442,7 +442,7 @@ func TestIntegration_Search_SpecialCharacters(t *testing.T) {
 
 func TestIntegration_Search_CacheHit(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 90*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger()).(*WebSearchTool)
@@ -476,7 +476,7 @@ func TestIntegration_Search_CacheHit(t *testing.T) {
 
 func TestIntegration_Workflow_SearchThenFetch(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 90*time.Second)
 	defer cancel()
 
 	step1 := time.Now()
@@ -518,7 +518,7 @@ func TestIntegration_Workflow_SearchThenFetch(t *testing.T) {
 
 func TestIntegration_Edge_VeryLongURL(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), testTimeout)
+	ctx, cancel := context.WithTimeout(testCtx(t), testTimeout)
 	defer cancel()
 
 	longPath := strings.Repeat("a", 2000)
@@ -539,7 +539,7 @@ func TestIntegration_Edge_VeryLongURL(t *testing.T) {
 
 func TestIntegration_Edge_QueryWithSpaces(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -555,7 +555,7 @@ func TestIntegration_Edge_QueryWithSpaces(t *testing.T) {
 
 func TestIntegration_Edge_EmptySearchResult(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
@@ -574,7 +574,7 @@ func TestIntegration_Edge_EmptySearchResult(t *testing.T) {
 
 func TestIntegration_Edge_UnicodeSearchQuery(t *testing.T) {
 	mustHaveProxy(t)
-	ctx, cancel := context.WithTimeout(ctxWithLogger(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 45*time.Second)
 	defer cancel()
 
 	tool := NewWebSearchTool(logging.NewNopLogger())
