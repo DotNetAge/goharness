@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -628,4 +627,3 @@ func extractCommands(command string) []string {
 
 	return cmds
 }
-
