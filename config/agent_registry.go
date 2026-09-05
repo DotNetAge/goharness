@@ -118,6 +118,9 @@ func (r *AgentRegistry) SaveTo(agent *AgentConfig) error {
 	if len(agent.Skills) > 0 {
 		meta["skills"] = agent.Skills
 	}
+	if len(agent.ExcludeTools) > 0 {
+		meta["exclude_tools"] = agent.ExcludeTools
+	}
 	if len(agent.Meta) > 0 {
 		meta["meta"] = agent.Meta
 	}

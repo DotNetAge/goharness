@@ -273,7 +273,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// ── 调试：打印完整系统提示词 ──
 		// 调试时开启，生产时关闭，不要删除此代码。
-		// logSystemPromptDebug(rt.logger, sid, iter, msgs)
+		logSystemPromptDebug(rt.logger, sid, iter, msgs)
 
 		// ── 流式调用 LLM（失败自愈：工具配对错误时截断会话重试一次）──
 		// 正常路径只尝试一次；仅当首次调用返回「工具调用配对不完整」类 400 错误时，

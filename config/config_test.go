@@ -189,6 +189,40 @@ func TestModelConfig_DefaultValuesAndBoundaryCases(t *testing.T) {
 	})
 }
 
+// TestAgentRegistry_SaveToExcludeTools 验证 SaveTo 持久化 exclude_tools 字段。
+// 曾因 SaveTo 重建 frontmatter 时漏掉该字段，导致 agent.update 重写文件后
+// exclude_tools 静默丢失（内存仍在，重启/重载后才暴露）。
+func TestAgentRegistry_SaveToExcludeTools(t *testing.T) {
+	tmpDir := t.TempDir()
+	registry, err := LoadAgentsFrom(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+
+	agent := &AgentConfig{
+		Name:         "excluded-agent",
+		Role:         "tester",
+		Description:  "Agent with exclude tools",
+		ExcludeTools: []string{"PowerShell", "Sleep"},
+	}
+	if err := registry.SaveTo(agent); err != nil {
+		t.Fatalf("SaveTo failed: %v", err)
+	}
+
+	// 从磁盘重新解析（而非读内存），验证文件里真实保留了 exclude_tools
+	reloaded, err := LoadAgentsFrom(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to reload registry: %v", err)
+	}
+	got := reloaded.Get("excluded-agent")
+	if got == nil {
+		t.Fatal("reloaded registry returned nil for saved agent")
+	}
+	if len(got.ExcludeTools) != 2 || got.ExcludeTools[0] != "PowerShell" || got.ExcludeTools[1] != "Sleep" {
+		t.Fatalf("exclude_tools 未被持久化, got %v", got.ExcludeTools)
+	}
+}
+
 func TestAgentRegistry_CRUDOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 
