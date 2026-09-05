@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -412,34 +413,13 @@ func (t *BashTool) grantWithSandbox(ctx context.Context, sb *sandbox.Sandbox, co
 
 	case sandbox.DecisionAskUser:
 		// 检查会话级白名单（用户之前选择"记住本次会话"的授权）
-		inSession := false
-		if tc := GetToolContext(ctx); tc != nil && tc.SessionWhitelist != nil {
-			cmds := extractCommands(command)
-			allInSession := true
-			for _, cmd := range cmds {
-				found := false
-				for _, allowed := range tc.SessionWhitelist.Bash {
-					if cmd == allowed {
-						found = true
-						break
-					}
-				}
-				if !found {
-					allInSession = false
-					break
-				}
-			}
-			if allInSession && len(cmds) > 0 {
-				inSession = true
-			}
-		}
-		if !inSession {
+		if !t.commandInSessionWhitelist(ctx, command) {
 			return false, dec.Reason
 		}
 		// 会话白名单命中，继续做 URL 预检（若有）
 		// 命中会话白名单时 dec.NeedURLCheck 不会为 true（CheckCommand 仅在 Allow 时返回 NeedURLCheck），
 		// 但网络命令仍需预检，这里主动提取 URL 检查。
-		if reason := t.enforceNetworkURLs(sb, command); reason != "" {
+		if reason := t.enforceNetworkURLs(ctx, sb, command); reason != "" {
 			return false, reason
 		}
 		return true, ""
@@ -447,7 +427,7 @@ func (t *BashTool) grantWithSandbox(ctx context.Context, sb *sandbox.Sandbox, co
 	case sandbox.DecisionAllow:
 		// 网络命令 URL 预检
 		if dec.NeedURLCheck {
-			if reason := t.checkURLs(sb, dec.URLs); reason != "" {
+			if reason := t.checkURLs(ctx, sb, dec.URLs); reason != "" {
 				return false, reason
 			}
 		}
@@ -457,26 +437,28 @@ func (t *BashTool) grantWithSandbox(ctx context.Context, sb *sandbox.Sandbox, co
 	return true, ""
 }
 
-// checkURLs 对 CheckCommand 提取的 URL 列表逐个做 CheckURL 预检。
-// 返回非空字符串表示被拒原因，空字符串表示全部通过。
-func (t *BashTool) checkURLs(sb *sandbox.Sandbox, urls []string) string {
+// checkURLs 对 CheckCommand 提取的 URL 列表逐个做预检（带会话授权豁免）。
+// 硬性禁止（Deny：解析失败等）与未授权的 AskUser（命中内网网段）均返回被拒原因；
+// 全部通过返回空串。
+func (t *BashTool) checkURLs(ctx context.Context, sb *sandbox.Sandbox, urls []string) string {
 	for _, u := range urls {
-		dec := sb.CheckURL(u)
-		if dec.Decision == sandbox.DecisionDeny {
+		dec := sb.EnforceURLWithWhitelist(u, sessionNetworkHosts(ctx))
+		switch dec.Decision {
+		case sandbox.DecisionDeny, sandbox.DecisionAskUser:
 			return dec.Reason
 		}
 	}
 	return ""
 }
 
-// enforceNetworkURLs 主动从命令中提取 URL 并做 CheckURL 预检。
-// 用于会话白名单命中后仍需 SSRF 防护的场景。
-func (t *BashTool) enforceNetworkURLs(sb *sandbox.Sandbox, command string) string {
+// enforceNetworkURLs 主动从命令中提取 URL 并做预检（带会话授权豁免）。
+// 用于命令白名单/会话白名单命中后仍需 SSRF 防护的场景。
+func (t *BashTool) enforceNetworkURLs(ctx context.Context, sb *sandbox.Sandbox, command string) string {
 	urls := sandbox.ExtractURLsFromCommand(command)
 	if len(urls) == 0 {
 		return ""
 	}
-	return t.checkURLs(sb, urls)
+	return t.checkURLs(ctx, sb, urls)
 }
 
 // enforceCommand 是 Execute 阶段的强制安全检查。
@@ -501,7 +483,7 @@ func (t *BashTool) enforceCommand(ctx context.Context, command string) (map[stri
 		}, true
 	}
 
-	if reason := t.enforceWithSandbox(sb, command); reason != "" {
+	if reason := t.enforceWithSandbox(ctx, sb, command); reason != "" {
 		return map[string]any{
 			"stdout":      "",
 			"stderr":      fmt.Sprintf("已阻止：%s", reason),
@@ -514,24 +496,54 @@ func (t *BashTool) enforceCommand(ctx context.Context, command string) (map[stri
 	return nil, false
 }
 
+// commandInSessionWhitelist 判断命令中所有真实命令名是否都在会话级白名单中
+// （用户此前通过 PermissionAllowSession"记住本次会话"授权的基础命令名）。
+// Grant 预检与 Execute 强制检查共用，保证两阶段对会话白名单的判定一致：
+// 若 Execute 阶段不透传会话白名单，授权放行的命令会在强制检查时被再次拦截，
+// "记住本次会话"的授权将形同虚设。
+func (t *BashTool) commandInSessionWhitelist(ctx context.Context, command string) bool {
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.SessionWhitelist == nil {
+		return false
+	}
+	cmds := extractCommands(command)
+	if len(cmds) == 0 {
+		return false
+	}
+	for _, cmd := range cmds {
+		if !slices.Contains(tc.SessionWhitelist.Bash, cmd) {
+			return false
+		}
+	}
+	return true
+}
+
 // enforceWithSandbox 是沙箱启用时的强制检查（简化决策路径：Allow/Deny，不返回 AskUser）。
 // 返回非空字符串表示被拒原因，空字符串表示放行。
-func (t *BashTool) enforceWithSandbox(sb *sandbox.Sandbox, command string) string {
+func (t *BashTool) enforceWithSandbox(ctx context.Context, sb *sandbox.Sandbox, command string) string {
 	dec := sb.CheckCommand(command)
 	switch dec.Decision {
 	case sandbox.DecisionDeny:
 		return dec.Reason
 	case sandbox.DecisionAskUser:
-		// Execute 阶段不弹窗，AskUser 视为 Deny
-		return dec.Reason
+		// Execute 阶段不弹窗：会话白名单（用户此前"记住本次会话"的授权）命中则放行，
+		// 未命中视为 Deny。白名单仅豁免命令白名单边界，危险模式（Deny）不豁免。
+		if !t.commandInSessionWhitelist(ctx, command) {
+			return dec.Reason
+		}
+		// 命中会话白名单仍需 URL 预检（带会话授权豁免，SSRF 预检本身不被命令授权跳过）
+		if reason := t.enforceNetworkURLs(ctx, sb, command); reason != "" {
+			return reason
+		}
+		return ""
 	case sandbox.DecisionAllow:
 		if dec.NeedURLCheck {
-			if reason := t.checkURLs(sb, dec.URLs); reason != "" {
+			if reason := t.checkURLs(ctx, sb, dec.URLs); reason != "" {
 				return reason
 			}
 		}
-		// 主动提取 URL 做 SSRF 预检（覆盖会话白名单放行的网络命令）
-		if reason := t.enforceNetworkURLs(sb, command); reason != "" {
+		// 主动提取 URL 做预检（覆盖会话白名单放行的网络命令）
+		if reason := t.enforceNetworkURLs(ctx, sb, command); reason != "" {
 			return reason
 		}
 		return ""

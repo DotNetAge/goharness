@@ -164,21 +164,46 @@ func validateWebFetchURL(params map[string]any) (string, error) {
 	return rawURL, nil
 }
 
-// authorizeWebFetch 对 URL 做 SSRF 安全校验。
-// SSRF 网段策略统一由沙箱 CheckURL 决策（含 DNS 解析与 SSRF 网段检查）；
-// 沙箱支持 NetworkAllowSubnets 显式放行特定内网服务。
-// 沙箱 CheckURL 通过后，拨号层 DialContext 拦截器仍会做强制检查（防 DNS rebinding）。
-// 未注入沙箱时拒绝执行（安全决策统一收口到沙箱，工具自身不做授权检查）。
+// authorizeWebFetch 对 URL 做 SSRF 安全校验（带会话授权豁免）。
+// SSRF 网段策略统一由沙箱 EnforceURLWithWhitelist 决策（含 DNS 解析与网段检查）：
+// 命中内网网段且会话白名单已授权该 host（用户此前 AllowSession 记忆）→ 放行；
+// 未授权的 AskUser 与硬性禁止（Deny：解析失败等）→ 拒绝。
+// 沙箱预检通过后，拨号层 DialContext 拦截器仍会做强制检查（防 DNS rebinding，
+// 同样豁免会话授权 host）。未注入沙箱时拒绝执行（安全决策统一收口到沙箱）。
 func authorizeWebFetch(ctx context.Context, rawURL string) error {
 	sb, err := requireSandbox(ctx, "WebFetch")
 	if err != nil {
 		return err
 	}
-	dec := sb.CheckURL(rawURL)
-	if dec.Decision == sandbox.DecisionDeny {
+	dec := sb.EnforceURLWithWhitelist(rawURL, sessionNetworkHosts(ctx))
+	if dec.Decision == sandbox.DecisionDeny || dec.Decision == sandbox.DecisionAskUser {
 		return fmt.Errorf("%s", dec.Reason)
 	}
 	return nil
+}
+
+// Grant 实现 PermissionRequired：URL 命中内网网段（AskUser）且会话白名单未授权时
+// 触发用户授权弹窗（granted=false）。
+// 硬性禁止（Deny：URL 解析失败等）与参数缺失放行（弹窗无意义，让 Execute 报错）；
+// 公网/回环 URL 与会话白名单已授权的 host 直接放行。
+// 会话未注入沙箱时放行，由 Execute 阶段统一拒绝（配置错误，授权无意义）。
+func (t *WebFetchTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
+	rawURL, err := validateWebFetchURL(params)
+	if err != nil {
+		return true, ""
+	}
+
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.Session == nil || tc.Session.Sandbox() == nil {
+		return true, ""
+	}
+
+	dec := tc.Session.Sandbox().EnforceURLWithWhitelist(rawURL, sessionNetworkHosts(ctx))
+	switch dec.Decision {
+	case sandbox.DecisionDeny, sandbox.DecisionAskUser:
+		return false, dec.Reason
+	}
+	return true, ""
 }
 
 // performWebFetch 执行网页内容获取核心逻辑：缓存检查、HTTP 请求、内容处理与输出。
@@ -199,6 +224,11 @@ func performWebFetch(ctx context.Context, t *WebFetchTool, logger logging.Logger
 			}
 		}
 	}
+
+	// 把会话授权的 host 列表注入请求 ctx：拨号层 ssrfDialContext 与重定向校验
+	// validateURL 从 ctx 读取，对授权 host 跳过内网网段拦截（用户已确认可访问），
+	// 保证"授权后能真正访问"——预检放行而拨号层拦截会让授权形同虚设。
+	ctx = WithAuthorizedHosts(ctx, sessionNetworkHosts(ctx))
 
 	resp, err := t.client.Do(ctx, StealthRequest{
 		Method:          "GET",
@@ -457,7 +487,9 @@ func isPrivateIP(ip net.IP) bool {
 	privateRanges := []struct {
 		network *net.IPNet
 	}{
-		{parseCIDR("127.0.0.0/8")},
+		// 回环（127.0.0.0/8、::1/128）不在列表：mindx 是单机桌面应用，
+		// 访问本机服务（本地开发服务器、CDP 调试端口）是正常行为，
+		// 预检层（沙箱 CheckURL）与拨号层同步放行回环。
 		{parseCIDR("10.0.0.0/8")},
 		{parseCIDR("172.16.0.0/12")},
 		{parseCIDR("192.168.0.0/16")},
@@ -465,7 +497,6 @@ func isPrivateIP(ip net.IP) bool {
 		{parseCIDR("100.64.0.0/10")}, // CGNAT（含阿里云元数据 100.100.100.200）
 		{parseCIDR("192.0.0.0/24")},  // IETF 协议分配
 		{parseCIDR("198.18.0.0/15")}, // 基准测试网络
-		{parseCIDR("::1/128")},
 		{parseCIDR("fc00::/7")},
 		{parseCIDR("fe80::/10")},
 		{parseCIDR("0.0.0.0/8")},
@@ -486,7 +517,9 @@ func parseCIDR(s string) *net.IPNet {
 	return network
 }
 
-func validateURL(rawURL string) error {
+// validateURL 校验 URL 可达性与目标 IP 安全性（当前仅用于 stealth_client 重定向校验）。
+// 会话授权主机（ctx 注入）跳过私有网段拦截——与拨号层豁免一致，保证授权链路完整。
+func validateURL(ctx context.Context, rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("%s", BuildGuide(
@@ -504,6 +537,7 @@ func validateURL(rawURL string) error {
 	}
 
 	host := parsed.Hostname()
+	authorized := hostAuthorized(ctx, host)
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("%s", BuildGuide(
@@ -513,11 +547,11 @@ func validateURL(rawURL string) error {
 		))
 	}
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if !authorized && isPrivateIP(ip) {
 			return fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("尝试获取 URL %q，但访问被拒绝", rawURL),
 				fmt.Sprintf("URL %q 解析为私有或内部地址 %s（SSRF 风险）", rawURL, ip),
-				"确认 URL 指向公网可访问的资源，不要访问内网/私有 IP（如 127.0.0.1、10.x、192.168.x、169.254.x）",
+				"确认 URL 指向公网可访问的资源，不要访问内网/私有 IP（如 10.x、192.168.x、169.254.x）",
 			))
 		}
 	}

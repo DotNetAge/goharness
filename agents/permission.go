@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/tools"
 	"github.com/google/uuid"
@@ -254,6 +256,13 @@ func (rt *Runtime) applyPermissionAction(
 				logger.Error("添加到会话白名单失败", err)
 			}
 		}
+		// URL 网段授权：命中内网网段的目标主机入会话网络白名单，
+		// 保证授权后 Execute 阶段（EnforceURLWithWhitelist / 拨号层）能真正放行。
+		for _, host := range rt.buildWhitelistNetworkHosts(pending) {
+			if err := b.session.AddToWhitelist("network", host); err != nil {
+				logger.Error("添加到会话网络白名单失败", err)
+			}
+		}
 		rt.executePendingAndAppend(ctx, b, pending, toolExec, emit, logger)
 	case tools.PermissionDeny:
 		rt.appendDeniedResult(ctx, b, pending)
@@ -320,6 +329,65 @@ func (rt *Runtime) waitForPermissionDecision(
 		)
 		b.resultTerminationReason = "permission_timeout"
 	}
+}
+
+// buildWhitelistNetworkHosts 提取授权请求中被沙箱判定为"需授权"（命中内网网段）
+// 的目标主机名列表，供 AllowSession 写入会话网络白名单（"network" 桶）。
+// 仅收集 CheckURL 返回 AskUser 的 host：公网 host 无需授权（不入库），
+// 解析失败（Deny）授权了也访问不了（不入库）。
+// Bash 命令内 URL 与 WebFetch 的 url 参数共用该逻辑。
+// 沙箱未注入时返回 nil（无沙箱即无 URL 拦截）。
+func (rt *Runtime) buildWhitelistNetworkHosts(pending *session.PendingPermission) []string {
+	if rt.sandbox == nil {
+		return nil
+	}
+
+	var rawURLs []string
+	switch strings.ToLower(pending.ToolName) {
+	case "bash":
+		cmd, _ := pending.Arguments["command"].(string)
+		rawURLs = sandbox.ExtractURLsFromCommand(cmd)
+	case "web_fetch":
+		rawURL, _ := pending.Arguments["url"].(string)
+		if rawURL != "" {
+			rawURLs = []string{normalizeWebFetchURL(rawURL)}
+		}
+	default:
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(rawURLs))
+	hosts := make([]string, 0, len(rawURLs))
+	for _, u := range rawURLs {
+		if dec := rt.sandbox.CheckURL(u); dec.Decision != sandbox.DecisionAskUser {
+			continue
+		}
+		parsed, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		if h := parsed.Hostname(); h != "" {
+			if _, ok := seen[h]; !ok {
+				seen[h] = struct{}{}
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	return hosts
+}
+
+// normalizeWebFetchURL 对授权判定的 URL 做与 tools.validateWebFetchURL 一致的
+// 规范化（http→https 强制升级、补 https 前缀），确保入库 host 与 Grant 阶段
+// 实际检查的 URL 一致。
+func normalizeWebFetchURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(rawURL, "http://") {
+		rawURL = "https://" + rawURL[7:]
+	}
+	if !strings.HasPrefix(rawURL, "https://") {
+		rawURL = "https://" + rawURL
+	}
+	return rawURL
 }
 
 // buildWhitelistEntry 根据工具名称和参数构造白名单条目值。

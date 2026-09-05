@@ -12,12 +12,14 @@ import (
 //  1. 解析 URL 与 host
 //  2. 对域名做 DNS 解析（防域名指向私有 IP）
 //  3. 对每个解析到的 IP 检查是否在禁止网段
-//  4. 若命中禁止网段且未在允许列表中 → Deny
+//  4. 若命中禁止网段且未在允许列表中 → AskUser（需用户授权，可被 EnforceURLWithWhitelist
+//     的会话授权豁免）；回环地址不在默认禁止列表（访问本机是正常行为）
+//  5. 解析失败 / 缺 host → Deny（硬性禁止，授权不可覆盖）
 //
 // 已知局限：
 //   - DNS 解析与实际请求之间存在时间窗口，理论上可被 DNS rebinding 绕过
+//     （WebFetch 的拨号层 ssrfDialContext 为第二层防护）
 //   - 不拦截基于域名的访问（如 attacker.com 解析到公网 IP 时通过）
-//   - 拨号层强制拦截需要 hook http.Transport.DialContext，本方案未实现
 func (s *Sandbox) CheckURL(rawURL string) URLDecision {
 	p := s.policy.Load()
 
@@ -46,11 +48,11 @@ func (s *Sandbox) CheckURL(rawURL string) URLDecision {
 		}
 	}
 
-	// 对每个 IP 检查
+	// 对每个 IP 检查：命中禁止网段 → AskUser（默认拦但可授权，与文件越界同构）
 	for _, ip := range ips {
 		if s.isIPDenied(ip, p) {
 			return URLDecision{
-				Decision:    DecisionDeny,
+				Decision:    DecisionAskUser,
 				Reason:      GuideSSRFBlocked(rawURL, ips),
 				ResolvedIPs: ips,
 			}
@@ -61,6 +63,36 @@ func (s *Sandbox) CheckURL(rawURL string) URLDecision {
 		Decision:    DecisionAllow,
 		ResolvedIPs: ips,
 	}
+}
+
+// EnforceURLWithWhitelist 是 Execute 阶段的 URL 强制检查（带会话授权豁免），
+// 与文件侧 EnforceFileWithWhitelist 同构：会话授权仅豁免网段边界（AskUser），
+// 硬性禁止（Deny：解析失败、缺 host 等）不豁免。
+// allowedHosts 为会话级网络白名单（用户此前授权过的目标主机名），大小写不敏感匹配。
+func (s *Sandbox) EnforceURLWithWhitelist(rawURL string, allowedHosts []string) URLDecision {
+	dec := s.CheckURL(rawURL)
+	if dec.Decision != DecisionAskUser || len(allowedHosts) == 0 {
+		return dec
+	}
+	host := extractURLHost(rawURL)
+	if host == "" {
+		return dec
+	}
+	for _, allowed := range allowedHosts {
+		if strings.EqualFold(allowed, host) {
+			return URLDecision{Decision: DecisionAllow, ResolvedIPs: dec.ResolvedIPs}
+		}
+	}
+	return dec
+}
+
+// extractURLHost 提取 URL 的主机名，解析失败返回空串。
+func extractURLHost(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // isIPDenied 检查 IP 是否在禁止网段且未在允许列表中。

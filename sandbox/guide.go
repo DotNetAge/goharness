@@ -42,7 +42,8 @@ func GuideOutsideWorkspace(path, projectDir string) string {
 	)
 }
 
-// GuideSSRFBlocked 构造 URL 被 SSRF 策略拦截的引导信息。
+// GuideSSRFBlocked 构造 URL 命中禁止网段需用户授权的引导信息。
+// 网段拦截是 AskUser（可授权）而非硬性禁止，文案语义与文件越界一致。
 func GuideSSRFBlocked(rawURL string, ips []string) string {
 	ipStr := "未知"
 	if len(ips) > 0 {
@@ -50,8 +51,8 @@ func GuideSSRFBlocked(rawURL string, ips []string) string {
 	}
 	return buildGuide(
 		fmt.Sprintf("尝试访问 URL %q", rawURL),
-		fmt.Sprintf("目标主机解析到 IP %s，位于沙箱禁止访问的网段（私有 IP / 云元数据 / CGNAT 等）", ipStr),
-		"避免访问内网或云元数据端点；若确实需要访问内网服务，请让宿主通过 NetworkAllowSubnets 配置显式放行",
+		fmt.Sprintf("目标主机解析到 IP %s，位于内网/保留网段（私有 IP / 云元数据 / CGNAT 等），需要用户确认后才能访问", ipStr),
+		"先自查是否误用了内网地址；若确实是用户环境中的本地/内网服务（如本地开发服务器），应询问用户授权（Allow / AllowSession）",
 	)
 }
 

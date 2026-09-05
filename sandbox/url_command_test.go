@@ -11,28 +11,85 @@ import (
 
 // ===== CheckURL 测试 =====
 
-// TestCheckURL_PrivateIP_Denies 验证私有 IP 被拒绝。
-func TestCheckURL_PrivateIP_Denies(t *testing.T) {
+// TestCheckURL_IntranetIP_AsksUser 验证内网/保留网段 IP 触发授权（AskUser，可被
+// EnforceURLWithWhitelist 的会话授权豁免），而非硬性禁止。
+func TestCheckURL_IntranetIP_AsksUser(t *testing.T) {
 	sb := newTestSandbox(t, &SandboxPolicy{
 		NetworkDenySubnets: DefaultDeniedSubnets(),
 	})
 
 	cases := []string{
-		"http://127.0.0.1/admin",
 		"http://10.0.0.1/internal",
 		"http://192.168.1.1/",
-		"http://169.254.169.254/latest/meta-data/",  // AWS 元数据
-		"http://100.100.100.200/",                    // 阿里云元数据
-		"http://[::1]/",                              // IPv6 回环
+		"http://169.254.169.254/latest/meta-data/", // AWS 元数据
+		"http://100.100.100.200/",                  // 阿里云元数据
+		"http://[fc00::1]/",                        // IPv6 ULA
 	}
 
 	for _, url := range cases {
 		t.Run(url, func(t *testing.T) {
 			dec := sb.CheckURL(url)
-			assert.Equal(t, DecisionDeny, dec.Decision, "私有 IP 应被拒绝")
+			assert.Equal(t, DecisionAskUser, dec.Decision, "内网/保留网段应触发授权")
 			assert.NotEmpty(t, dec.Reason)
 		})
 	}
+}
+
+// TestCheckURL_Loopback_Allows 验证回环地址默认放行（访问本机是正常行为）：
+// 本地开发服务器、CDP 调试端口、本地模型服务是单机桌面场景的核心日常访问目标。
+func TestCheckURL_Loopback_Allows(t *testing.T) {
+	sb := newTestSandbox(t, &SandboxPolicy{
+		NetworkDenySubnets: DefaultDeniedSubnets(),
+	})
+
+	cases := []string{
+		"http://127.0.0.1:9222/json/version", // CDP 调试端口
+		"http://localhost:3000/",             // 本地开发服务器
+		"http://[::1]:8080/health",           // IPv6 回环
+	}
+
+	for _, url := range cases {
+		t.Run(url, func(t *testing.T) {
+			dec := sb.CheckURL(url)
+			assert.Equal(t, DecisionAllow, dec.Decision, "回环地址应默认放行")
+		})
+	}
+}
+
+// TestEnforceURLWithWhitelist 验证 Execute 阶段的 URL 强制检查（带会话授权豁免）：
+// 授权 host 豁免 AskUser；未授权 host 仍拦；Deny（解析失败）不豁免。
+func TestEnforceURLWithWhitelist(t *testing.T) {
+	sb := newTestSandbox(t, &SandboxPolicy{
+		NetworkDenySubnets: DefaultDeniedSubnets(),
+	})
+
+	t.Run("已授权 host 放行", func(t *testing.T) {
+		dec := sb.EnforceURLWithWhitelist("http://192.168.1.1/admin", []string{"example.com", "192.168.1.1"})
+		assert.Equal(t, DecisionAllow, dec.Decision, "会话白名单已授权的 host 应放行")
+	})
+
+	// host 大小写不敏感匹配：用 IPv6 字面量测（解析为 ULA 网段 → AskUser 路径），
+	// 不用域名——域名解析失败走 Deny（授权不可豁免），走不到白名单匹配分支；
+	// 且 .local 是 mDNS 域名，普通 DNS 解析超时（约 5s）导致用例不稳定。
+	t.Run("host 大小写不敏感匹配", func(t *testing.T) {
+		dec := sb.EnforceURLWithWhitelist("http://[FC00::1]/", []string{"fc00::1"})
+		assert.Equal(t, DecisionAllow, dec.Decision)
+	})
+
+	t.Run("未授权 host 仍拦", func(t *testing.T) {
+		dec := sb.EnforceURLWithWhitelist("http://192.168.1.1/", []string{"other.host"})
+		assert.Equal(t, DecisionAskUser, dec.Decision)
+	})
+
+	t.Run("空白名单仍拦", func(t *testing.T) {
+		dec := sb.EnforceURLWithWhitelist("http://192.168.1.1/", nil)
+		assert.Equal(t, DecisionAskUser, dec.Decision)
+	})
+
+	t.Run("硬性禁止不豁免", func(t *testing.T) {
+		dec := sb.EnforceURLWithWhitelist("://invalid", []string{"invalid"})
+		assert.Equal(t, DecisionDeny, dec.Decision, "解析失败（Deny）不因授权豁免")
+	})
 }
 
 // TestCheckURL_PublicIP_Allows 验证公网 IP 通过。
@@ -103,14 +160,14 @@ func TestIsIPDenied(t *testing.T) {
 		ip   string
 		want bool
 	}{
-		{"127.0.0.1", true},
+		{"127.0.0.1", false}, // 回环放行
 		{"10.0.0.1", true},
 		{"192.168.1.1", true},
 		{"169.254.169.254", true},
 		{"100.100.100.200", true},
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
-		{"::1", true},
+		{"::1", false}, // IPv6 回环放行
 		{"fc00::1", true},
 		{"fe80::1", true},
 		{"2606:4700:4700::1111", false}, // Cloudflare IPv6 DNS

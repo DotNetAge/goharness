@@ -17,6 +17,10 @@ type SessionWhitelist struct {
 	RunScript []string `json:"run_script,omitempty"`
 	Read      []string `json:"read,omitempty"`
 	Ls        []string `json:"ls,omitempty"`
+	// Network 存储用户授权过的目标主机名（URL host）。
+	// Bash 命令内 URL 与 WebFetch 共用：用户授权访问某主机后，
+	// 同会话内任意工具访问该主机均放行（授权的是"访问该主机"这一事实，与工具无关）。
+	Network []string `json:"network,omitempty"`
 }
 
 // whitelistFileName 是存储在每个会话目录中的 JSON 文件名。
@@ -68,8 +72,8 @@ func (s *Session) Whitelist() *SessionWhitelist {
 // 并将更新后的白名单持久化到 {SessionDir()}/session-wl.json。
 //
 // 参数：
-//   - toolName: "bash"、"write"、"edit"、"run_script"、"read"、"ls" 之一
-//   - entry:    要添加的值（bash 为基础命令名；其他为文件/脚本路径）
+//   - toolName: "bash"、"write"、"edit"、"run_script"、"read"、"ls"、"network" 之一
+//   - entry:    要添加的值（bash 为基础命令名；其他为文件/脚本路径；network 为 URL host）
 //
 // 当工具名未知或持久化失败时返回错误。
 // 重复条目会被静默忽略。
@@ -97,6 +101,8 @@ func (s *Session) AddToWhitelist(toolName, entry string) error {
 		target = &s.whitelist.Read
 	case "ls":
 		target = &s.whitelist.Ls
+	case "network":
+		target = &s.whitelist.Network
 	default:
 		return fmt.Errorf("会话白名单中存在未知的工具 %q", toolName)
 	}

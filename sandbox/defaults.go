@@ -67,11 +67,17 @@ func DefaultDeniedDevicePaths() []string {
 	}
 }
 
-// DefaultDeniedSubnets 返回默认禁止访问的 IP 段。
-// 与 tools/web_fetch.go:isPrivateIP 行为等价（含 CGNAT 补充）。
+// DefaultDeniedSubnets 返回默认禁止访问的 IP 段（回环除外，见下述设计决策）。
+//
+// 设计决策（B2 审计后调整）：回环地址（127.0.0.0/8、::1/128）不在默认禁止列表——
+// mindx 是单机桌面应用，agent 访问本机服务（本地开发服务器、CDP 调试端口、
+// 本地模型服务）是核心日常操作，拦截回环属于威胁模型错配：
+// agent 本就拥有本地命令执行权，拦回环的边际安全价值极低而干扰极高。
+// 其余内网/保留网段仍默认拦截，但 CheckURL 对其返回 AskUser（可授权）而非 Deny。
+//
+// 与原 tools/web_fetch.go:isPrivateIP 的差异：移除回环两段。
 func DefaultDeniedSubnets() []*net.IPNet {
 	return parseCIDRs([]string{
-		"127.0.0.0/8",    // 回环
 		"10.0.0.0/8",     // 私有 A
 		"172.16.0.0/12",  // 私有 B
 		"192.168.0.0/16", // 私有 C
@@ -79,7 +85,6 @@ func DefaultDeniedSubnets() []*net.IPNet {
 		"100.64.0.0/10",  // CGNAT（含阿里云元数据 100.100.100.200）
 		"192.0.0.0/24",   // IETF 协议分配
 		"198.18.0.0/15",  // 基准测试网络
-		"::1/128",        // IPv6 回环
 		"fc00::/7",       // IPv6 ULA
 		"fe80::/10",      // IPv6 链路本地
 		"0.0.0.0/8",      // 未指定网络

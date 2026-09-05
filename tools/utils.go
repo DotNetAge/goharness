@@ -202,6 +202,18 @@ func sessionWhitelistDirs(ctx context.Context, toolName string) []string {
 	}
 }
 
+// sessionNetworkHosts 返回会话级网络白名单（用户此前授权过的 URL host）。
+// Bash 命令内 URL 与 WebFetch 共用该白名单：授权的是"访问该主机"这一事实，与工具无关。
+// 在 Execute 阶段透传给沙箱 EnforceURLWithWhitelist，保证"授权后能真正访问"——
+// 仅豁免内网网段边界（AskUser），硬性禁止（Deny：解析失败等）不豁免。
+func sessionNetworkHosts(ctx context.Context) []string {
+	tc := GetToolContext(ctx)
+	if tc == nil || tc.SessionWhitelist == nil {
+		return nil
+	}
+	return tc.SessionWhitelist.Network
+}
+
 // requireSandbox 从 ctx 提取会话沙箱；未注入时返回引导式错误。
 // 所有工具在执行安全相关操作前必须通过此函数获取沙箱，
 // 未注入沙箱时一律拒绝执行（不再回退到工具内旧安全逻辑）。

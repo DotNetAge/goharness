@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DotNetAge/goharness/events"
@@ -24,10 +25,11 @@ import (
 //   5. 沙箱启用 - 工具白名单内越界 → Grant 放行
 //   6. 沙箱启用 - 会话级白名单内越界 → Grant 放行
 //   7. 沙箱启用 - Execute 阶段 EnforceFile 拒绝敏感文件
-//   8. 沙箱未注入 - 所有工具拒绝执行（安全决策统一收口到沙箱）
-//   9. Glob 工具沙箱启用 - 越界直接 Deny（Execute 返回 error）
+//  8. 沙箱未注入 - 所有工具拒绝执行（安全决策统一收口到沙箱）
+//  9. Glob 工具沙箱启用 - 越界直接 Deny（Execute 返回 error）
+// 10. agent-browser 沙箱拦截 - 不在白名单触发授权 vs 已授权进会话白名单应放行
 //
-// 工具覆盖：Read / Edit / Write / Ls / Glob / RunScript。
+// 工具覆盖：Read / Edit / Write / Ls / Glob / RunScript / Bash。
 
 // ----- 测试辅助函数 -----
 
@@ -501,4 +503,158 @@ func TestSandbox_DeviceFile_Read_Denies(t *testing.T) {
 	granted, reason := read.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{"filePath": "/dev/null"})
 	assert.False(t, granted, "沙箱启用时 /dev/null 应被拒绝")
 	assert.Contains(t, reason, "设备文件")
+}
+
+// ----- agent-browser 沙箱拦截测试 -----
+//
+// agent-browser 是经 Bash 工具调用的 CLI（SKILL.md 的 allowed-tools 声明
+// Bash(agent-browser:*) 与 Bash(npx agent-browser:*) 两种形式），其命令名
+// 不在 sandbox.DefaultAllowedCommands() 默认白名单中（mindx app.go 采用该默认值）。
+// 以下测试对齐 mindx 真实策略，覆盖两种情况：
+//   1. agent-browser 不在白名单 → Grant 触发授权（拦截），Execute 纵深拦截
+//   2. 用户已授权 agent-browser 进入会话白名单 → 应放行（不再拦截）
+
+// newCommandSandboxCtx 构造对齐 mindx 真实策略的沙箱会话上下文：
+// 命令白名单 = DefaultAllowedCommands、网络拒绝网段 = DefaultDeniedSubnets
+// （与 mindx/internal/core/app.go 的 sandboxPolicy 构造一致）。
+func newCommandSandboxCtx(t *testing.T, projectDir string) context.Context {
+	t.Helper()
+	p := sandbox.SandboxPolicy{
+		AllowedDirs:           []string{projectDir},
+		DeniedFileGlobs:       sandbox.DefaultDeniedFileGlobs(),
+		DeniedDirGlobs:        sandbox.DefaultDeniedDirGlobs(),
+		DeniedDevicePaths:     sandbox.DefaultDeniedDevicePaths(),
+		NetworkDenySubnets:    sandbox.DefaultDeniedSubnets(),
+		AllowedCommands:       sandbox.DefaultAllowedCommands(),
+		DeniedCommandPatterns: sandbox.DefaultDeniedCommandPatterns(),
+		NetworkCommands:       sandbox.DefaultNetworkCommands(),
+	}
+	return newSandboxCtx(t, projectDir, &p)
+}
+
+// isBlockedBySandbox 判断 Bash Execute 结果是否为沙箱拦截。
+// 拦截特征：exit_code=126 且 stderr 以"已阻止"开头（见 bash.go enforceCommand）。
+func isBlockedBySandbox(result map[string]any) bool {
+	code, _ := result["exit_code"].(int)
+	stderr, _ := result["stderr"].(string)
+	return code == 126 && strings.Contains(stderr, "已阻止")
+}
+
+// TestBash_AgentBrowser_NotWhitelisted_GrantAsks 场景二：不在白名单 → Grant 触发授权。
+func TestBash_AgentBrowser_NotWhitelisted_GrantAsks(t *testing.T) {
+	projectDir := t.TempDir()
+
+	bash := NewBashTool().(*BashTool)
+	granted, reason := bash.Grant(newCommandSandboxCtx(t, projectDir), map[string]any{
+		"command": "agent-browser skills get core",
+	})
+	assert.False(t, granted, "agent-browser 不在命令白名单时应触发授权（granted=false）")
+	assert.Contains(t, reason, "白名单")
+}
+
+// TestBash_AgentBrowser_NotWhitelisted_ExecuteBlocks 场景二：不在白名单 → Execute 纵深拦截。
+// 绕过 Grant（如运行时 bug）时，Execute 阶段也不应真正执行白名单外的命令。
+func TestBash_AgentBrowser_NotWhitelisted_ExecuteBlocks(t *testing.T) {
+	projectDir := t.TempDir()
+
+	bash := NewBashTool().(*BashTool)
+	result, err := bash.Execute(newCommandSandboxCtx(t, projectDir), map[string]any{
+		"command": "agent-browser skills get core",
+		"timeout": float64(10000),
+	})
+	require.NoError(t, err)
+	m := result.(map[string]any)
+	assert.True(t, isBlockedBySandbox(m), "agent-browser 不在白名单时 Execute 应拦截（exit_code=126），实际结果=%v", m)
+}
+
+// TestBash_AgentBrowser_SessionWhitelisted_GrantAllows 场景一：已授权进会话白名单 → Grant 放行。
+// 模拟用户此前对 agent-browser 点击"允许并记住本会话"（PermissionAllowSession → AddToWhitelist）。
+func TestBash_AgentBrowser_SessionWhitelisted_GrantAllows(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := newCommandSandboxCtx(t, projectDir)
+	tc := GetToolContext(ctx)
+	require.NoError(t, tc.Session.AddToWhitelist("bash", "agent-browser"))
+
+	bash := NewBashTool().(*BashTool)
+	granted, reason := bash.Grant(ctx, map[string]any{
+		"command": "agent-browser skills get core",
+	})
+	assert.True(t, granted, "会话白名单已授权 agent-browser，Grant 应放行，实际原因=%s", reason)
+}
+
+// TestBash_AgentBrowser_SessionWhitelisted_ExecuteRuns 场景一：已授权 → Execute 不应拦截。
+// 授权链路（agents/permission.go 的 executePendingAndAppend）在用户授权后直接调用 Execute；
+// 若 Execute 阶段不透传会话白名单，则"记住本次会话"的授权形同虚设——
+// Grant 放行了命令，Execute 却在强制检查时把 AskUser 当 Deny 拦截。
+func TestBash_AgentBrowser_SessionWhitelisted_ExecuteRuns(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := newCommandSandboxCtx(t, projectDir)
+	tc := GetToolContext(ctx)
+	require.NoError(t, tc.Session.AddToWhitelist("bash", "agent-browser"))
+
+	bash := NewBashTool().(*BashTool)
+	result, err := bash.Execute(ctx, map[string]any{
+		"command": "agent-browser --version",
+		"timeout": float64(10000),
+	})
+	require.NoError(t, err)
+	m := result.(map[string]any)
+	assert.False(t, isBlockedBySandbox(m),
+		"会话白名单已授权 agent-browser，Execute 仍被沙箱拦截：stderr=%s", m["stderr"])
+}
+
+// TestBash_AgentBrowser_SessionWhitelisted_LocalhostURL_Allows 验证回环 URL 默认放行：
+// agent-browser 的典型用法是连接本机 CDP 端口（如 open http://127.0.0.1:9222），
+// 回环地址不在默认禁止网段中，访问本机是正常行为，不应拦截。
+func TestBash_AgentBrowser_SessionWhitelisted_LocalhostURL_Allows(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := newCommandSandboxCtx(t, projectDir)
+	tc := GetToolContext(ctx)
+	require.NoError(t, tc.Session.AddToWhitelist("bash", "agent-browser"))
+
+	bash := NewBashTool().(*BashTool)
+	granted, reason := bash.Grant(ctx, map[string]any{
+		"command": "agent-browser open http://127.0.0.1:9222",
+	})
+	assert.True(t, granted, "回环 URL 应默认放行（访问本机是正常行为），实际原因=%s", reason)
+}
+
+// TestBash_AgentBrowser_IntranetURL_AuthorizationFlow 验证 agent-browser 访问内网 URL 的
+// 授权闭环：未授权时 Grant 拒绝（弹窗），host 入会话网络白名单后 Grant 放行。
+func TestBash_AgentBrowser_IntranetURL_AuthorizationFlow(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := newCommandSandboxCtx(t, projectDir)
+	tc := GetToolContext(ctx)
+	require.NoError(t, tc.Session.AddToWhitelist("bash", "agent-browser"))
+
+	bash := NewBashTool().(*BashTool)
+
+	// 命令已授权但目标 host 未授权：仍触发授权（原因含"网段"）
+	granted, reason := bash.Grant(ctx, map[string]any{
+		"command": "agent-browser open http://192.168.1.1/",
+	})
+	assert.False(t, granted, "命令已授权但目标 host 未授权时仍应触发授权")
+	assert.Contains(t, reason, "网段")
+
+	// 模拟用户 AllowSession：目标 host 入会话网络白名单
+	require.NoError(t, tc.Session.AddToWhitelist("network", "192.168.1.1"))
+
+	// 授权后：放行
+	granted, _ = bash.Grant(ctx, map[string]any{
+		"command": "agent-browser open http://192.168.1.1/",
+	})
+	assert.True(t, granted, "目标 host 授权后应放行")
+}
+
+// TestBash_NpxAgentBrowser_GrantAllows 记录 npx 前缀形式的当前行为：
+// SKILL.md 的 allowed-tools 同时声明了 npx agent-browser 形式，其基础命令 npx
+// 在默认命令白名单中 → 完全不拦截，与直接调用 agent-browser 的拦截行为不对称。
+func TestBash_NpxAgentBrowser_GrantAllows(t *testing.T) {
+	projectDir := t.TempDir()
+
+	bash := NewBashTool().(*BashTool)
+	granted, _ := bash.Grant(newCommandSandboxCtx(t, projectDir), map[string]any{
+		"command": "npx agent-browser skills get core",
+	})
+	assert.True(t, granted, "npx 前缀的基础命令在默认命令白名单内，Grant 放行（与直接调用 agent-browser 的行为不对称）")
 }

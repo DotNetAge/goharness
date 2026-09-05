@@ -200,14 +200,14 @@ func TestIsPrivateIP_Comprehensive(t *testing.T) {
 		ip   string
 		want bool
 	}{
-		{"127.0.0.1", true}, {"127.255.255.255", true}, {"127.0.0.0", true},
+		// 回环放行（访问本机是正常行为），不在此列表
 		{"10.0.0.0", true}, {"10.255.255.255", true}, {"10.128.0.1", true},
 		{"172.16.0.0", true}, {"172.31.255.255", true}, {"172.16.5.1", true},
 		{"172.15.255.255", false}, {"172.32.0.0", false},
 		{"192.168.0.0", true}, {"192.168.255.255", true}, {"192.168.1.1", true},
 		{"192.167.255.255", false},
 		{"169.254.0.1", true}, {"169.254.255.255", true},
-		{"::1", true},
+		{"::1", false},
 		{"fd00::1", true}, {"fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true},
 		{"fe80::1", true},
 		{"8.8.8.8", false}, {"1.1.1.1", false}, {"93.184.216.34", false},
@@ -251,21 +251,21 @@ func TestParseCIDR_Comprehensive(t *testing.T) {
 // ============================================================
 
 func TestValidateURL_PublicDomain(t *testing.T) {
-	err := validateURL("https://example.com")
+	err := validateURL(context.Background(), "https://example.com")
 	if err != nil {
 		t.Errorf("example.com should be valid public domain, got: %v", err)
 	}
 }
 
 func TestValidateURL_IPv4Public(t *testing.T) {
-	err := validateURL("https://8.8.8.8")
+	err := validateURL(context.Background(), "https://8.8.8.8")
 	if err != nil {
 		t.Errorf("8.8.8.8 should be valid public IP, got: %v", err)
 	}
 }
 
 func TestValidateURL_HTTPScheme(t *testing.T) {
-	err := validateURL("http://example.com")
+	err := validateURL(context.Background(), "http://example.com")
 	if err != nil {
 		t.Errorf("http scheme should be allowed, got: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestValidateURL_HTTPScheme(t *testing.T) {
 func TestValidateURL_InvalidSchemes(t *testing.T) {
 	schemes := []string{"ftp", "file", "javascript", "data", "mailto"}
 	for _, scheme := range schemes {
-		err := validateURL(scheme + "://example.com")
+		err := validateURL(context.Background(), scheme + "://example.com")
 		if err == nil {
 			t.Errorf("%s:// scheme should be rejected", scheme)
 		}

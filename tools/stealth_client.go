@@ -173,7 +173,7 @@ func (c *stealthClient) initTLSBackends() error {
 			if len(via) >= 10 {
 				return errors.New("重定向次数过多")
 			}
-			return validateURL(req.URL.String())
+			return validateURL(req.Context(), req.URL.String())
 		}),
 	)
 	if err != nil {
@@ -210,7 +210,7 @@ func (c *stealthClient) initStdlibBackends() {
 			if len(via) >= 10 {
 				return errors.New("重定向次数过多")
 			}
-			return validateURL(req.URL.String())
+			return validateURL(req.Context(), req.URL.String())
 		},
 	}}
 	c.noRedirectBackend = &stdlibBackend{client: &http.Client{
@@ -364,13 +364,47 @@ func (c *stealthClient) backoff(attempt int, policy RetryPolicy) time.Duration {
 	return time.Duration(delay * spread)
 }
 
+// ctxAuthorizedHostsKey 是传递会话授权主机列表的 context key。
+type ctxAuthorizedHostsKey struct{}
+
+// WithAuthorizedHosts 把会话授权的 URL host 列表注入请求 context。
+// 拨号层 ssrfDialContext 与重定向校验 validateURL 从 ctx 读取，
+// 对授权 host 跳过内网网段拦截（用户此前已确认可访问该主机）。
+func WithAuthorizedHosts(ctx context.Context, hosts []string) context.Context {
+	if len(hosts) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxAuthorizedHostsKey{}, hosts)
+}
+
+// authorizedHostsFromCtx 从 ctx 读取会话授权主机列表，未注入时返回 nil。
+func authorizedHostsFromCtx(ctx context.Context) []string {
+	hosts, _ := ctx.Value(ctxAuthorizedHostsKey{}).([]string)
+	return hosts
+}
+
+// hostAuthorized 判断 host 是否在会话授权主机列表中（大小写不敏感）。
+func hostAuthorized(ctx context.Context, host string) bool {
+	for _, allowed := range authorizedHostsFromCtx(ctx) {
+		if strings.EqualFold(allowed, host) {
+			return true
+		}
+	}
+	return false
+}
+
 // ssrfDialContext 是带 SSRF 防护的拨号函数，签名与 net.Dialer.DialContext 一致，
 // 直接传给 tls-client 的 WithDialContext（v1.15.0+）与标准库 Transport.DialContext。
 // 复用 isPrivateIP，在 socket 级拦截私有/内部地址，防 DNS rebinding（比 CheckURL 预检更紧）。
+// 会话授权主机（ctx 注入）跳过网段拦截——预检放行而拨号层拦截会让授权形同虚设。
 func ssrfDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
+	}
+	if hostAuthorized(ctx, host) {
+		dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+		return dialer.DialContext(ctx, network, addr)
 	}
 	ips, err := net.LookupIP(host)
 	if err != nil {

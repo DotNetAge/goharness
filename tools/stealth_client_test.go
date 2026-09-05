@@ -367,7 +367,7 @@ func TestIsPrivateIP_Table(t *testing.T) {
 		ip   string
 		want bool
 	}{
-		{"127.0.0.1", true},   // 回环
+		{"127.0.0.1", false},  // 回环放行（访问本机是正常行为）
 		{"10.1.2.3", true},    // A 类私有
 		{"192.168.1.1", true}, // C 类私有
 		{"172.16.0.1", true},  // B 类私有
@@ -376,7 +376,7 @@ func TestIsPrivateIP_Table(t *testing.T) {
 		{"8.8.8.8", false},    // 公网
 		{"1.1.1.1", false},    // 公网
 		{"172.32.0.1", false}, // 不在 172.16/12 范围
-		{"::1", true},         // IPv6 回环
+		{"::1", false},        // IPv6 回环放行
 		{"fc00::1", true},     // IPv6 唯一本地
 		{"fe80::1", true},     // IPv6 链路本地
 	}
@@ -395,7 +395,8 @@ func TestSSRFDialContext_PrivateIP_Rejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	for _, addr := range []string{"127.0.0.1:80", "10.0.0.1:80", "192.168.1.1:80"} {
+	// 回环已放行（127.0.0.1 拨号会真连本机端口），仅验证仍被拦的内网/保留网段
+	for _, addr := range []string{"10.0.0.1:80", "192.168.1.1:80", "169.254.169.254:80"} {
 		conn, err := ssrfDialContext(ctx, "tcp", addr)
 		if conn != nil {
 			conn.Close()

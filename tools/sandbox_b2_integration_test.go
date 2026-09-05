@@ -144,17 +144,48 @@ func TestBash_Sandbox_Execute_NormalCommand_Runs(t *testing.T) {
 	assert.Contains(t, m["stdout"].(string), "hi")
 }
 
-// TestBash_Sandbox_NetworkCommand_SSRF_Denies 验证网络命令 URL 预检拒绝 SSRF。
-// curl http://127.0.0.1 应被沙箱 CheckURL 拒绝。
+// TestBash_Sandbox_NetworkCommand_SSRF_Denies 验证网络命令 URL 预检拦截内网地址。
+// curl http://192.168.1.1 命中禁止网段 → AskUser → Grant 拒绝（触发授权弹窗）。
+// 回环地址已默认放行（访问本机是正常行为），不再作为 SSRF 拦截用例。
 func TestBash_Sandbox_NetworkCommand_SSRF_Denies(t *testing.T) {
 	projectDir := t.TempDir()
 	bash := NewBashTool().(*BashTool)
 
-	// Grant 阶段就应拒绝（curl 在白名单，但 URL 指向 127.0.0.1）
-	granted, _ := bash.Grant(newBashSandboxCtx(t, projectDir, nil), map[string]any{
-		"command": "curl http://127.0.0.1/",
+	granted, reason := bash.Grant(newBashSandboxCtx(t, projectDir, nil), map[string]any{
+		"command": "curl http://192.168.1.1/",
 	})
-	assert.False(t, granted, "沙箱启用时 curl 内网 IP 应被拒绝（SSRF 防护）")
+	assert.False(t, granted, "沙箱启用时 curl 内网 IP 应触发授权（AskUser）")
+	assert.Contains(t, reason, "网段")
+}
+
+// TestBash_Sandbox_NetworkCommand_SessionNetworkWhitelist_Allows 验证 URL 网段授权闭环：
+// 用户 AllowSession 后（host 入会话网络白名单），Grant 与 Execute 两阶段均放行——
+// 未授权时 Grant 拒绝弹窗，授权后同会话再访问同一 host 不再弹窗且能真正执行。
+func TestBash_Sandbox_NetworkCommand_SessionNetworkWhitelist_Allows(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := newBashSandboxCtx(t, projectDir, nil)
+	tc := GetToolContext(ctx)
+	bash := NewBashTool().(*BashTool)
+
+	// 未授权：Grant 拒绝（触发授权弹窗）
+	granted, _ := bash.Grant(ctx, map[string]any{"command": "curl http://192.168.1.1/"})
+	assert.False(t, granted, "未授权时 Grant 应拒绝")
+
+	// 模拟用户 AllowSession：目标 host 入会话网络白名单
+	require.NoError(t, tc.Session.AddToWhitelist("network", "192.168.1.1"))
+
+	// 授权后：Grant 放行
+	granted, reason := bash.Grant(ctx, map[string]any{"command": "curl http://192.168.1.1/"})
+	assert.True(t, granted, "授权后 Grant 应放行，实际原因=%s", reason)
+
+	// 授权后：Execute 真正执行（192.168.1.1 不可达时错误应为网络错误而非 126 拦截）
+	result, err := bash.Execute(ctx, map[string]any{
+		"command": "curl -s -m 3 http://192.168.1.1/",
+		"timeout": float64(10000),
+	})
+	require.NoError(t, err)
+	m := result.(map[string]any)
+	assert.False(t, m["exit_code"] == 126, "授权后 Execute 不应被沙箱拦截，实际结果=%v", m)
 }
 
 // TestBash_Sandbox_NetworkCommand_PublicURL_Allows 验证网络命令公网 URL 放行。
@@ -194,28 +225,77 @@ func TestBash_Sandbox_NetworkAllowSubnets_OverridesDeny(t *testing.T) {
 	projectDir := t.TempDir()
 	bash := NewBashTool().(*BashTool)
 
-	// 放行 127.0.0.0/8（覆盖默认禁止列表）
+	// 放行 10.0.0.0/8（覆盖默认禁止列表）
 	ctx := newBashSandboxCtx(t, projectDir, func(p *sandbox.SandboxPolicy) {
-		p.NetworkAllowSubnets = mustParseCIDRList(t, []string{"127.0.0.0/8"})
+		p.NetworkAllowSubnets = mustParseCIDRList(t, []string{"10.0.0.0/8"})
 	})
 
 	granted, _ := bash.Grant(ctx, map[string]any{
-		"command": "curl http://127.0.0.1/",
+		"command": "curl http://10.0.0.1/",
 	})
-	assert.True(t, granted, "NetworkAllowSubnets 放行 127.0.0.0/8 后应允许访问")
+	assert.True(t, granted, "NetworkAllowSubnets 放行 10.0.0.0/8 后应允许访问")
 }
 
 // ----- WebFetch 工具沙箱集成测试 -----
 
-// TestWebFetch_Sandbox_SSRF_Denies 验证沙箱启用时 SSRF URL 被拒绝。
+// TestWebFetch_Sandbox_SSRF_Denies 验证沙箱启用时内网 URL 被拒绝（AskUser 未授权）。
+// WebFetch 实现 PermissionRequired：Grant 阶段拒绝触发授权弹窗；Execute 阶段
+// 未授权时同样拒绝。回环地址已默认放行，不再作为拦截用例。
 func TestWebFetch_Sandbox_SSRF_Denies(t *testing.T) {
 	projectDir := t.TempDir()
-	wf := NewWebFetchTool(logging.NewNopLogger())
+	wf := NewWebFetchTool(logging.NewNopLogger()).(*WebFetchTool)
 
-	_, err := wf.Execute(newBashSandboxCtx(t, projectDir, nil), map[string]any{
-		"url": "http://127.0.0.1/",
+	// Grant 阶段：未授权 host 触发授权
+	granted, reason := wf.Grant(newBashSandboxCtx(t, projectDir, nil), map[string]any{
+		"url": "http://192.168.1.1/",
 	})
-	require.Error(t, err, "沙箱启用时 127.0.0.1 应被 CheckURL 拒绝")
+	assert.False(t, granted, "未授权的内网 URL 应触发授权")
+	assert.Contains(t, reason, "网段")
+
+	// Execute 阶段：拒绝执行
+	_, err := wf.Execute(newBashSandboxCtx(t, projectDir, nil), map[string]any{
+		"url": "http://192.168.1.1/",
+	})
+	require.Error(t, err, "未授权的内网 URL 应被拒绝执行")
+	assert.Contains(t, err.Error(), "网段")
+}
+
+// TestWebFetch_Sandbox_Loopback_Allows 验证回环 URL 默认放行（不触发授权）。
+// 本地开发服务器/本地模型服务是 WebFetch 的正常访问目标。
+func TestWebFetch_Sandbox_Loopback_Allows(t *testing.T) {
+	projectDir := t.TempDir()
+	wf := NewWebFetchTool(logging.NewNopLogger()).(*WebFetchTool)
+
+	granted, _ := wf.Grant(newBashSandboxCtx(t, projectDir, nil), map[string]any{
+		"url": "http://localhost:3000/",
+	})
+	assert.True(t, granted, "回环 URL 应默认放行（不弹授权窗）")
+}
+
+// TestWebFetch_Sandbox_SessionNetworkWhitelist_Allows 验证 WebFetch 的 URL 网段授权闭环：
+// host 入会话网络白名单后 Grant 放行；Execute 真正发请求（连不上是网络错误而非 SSRF 拒绝）。
+func TestWebFetch_Sandbox_SessionNetworkWhitelist_Allows(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := newBashSandboxCtx(t, projectDir, nil)
+	tc := GetToolContext(ctx)
+	wf := NewWebFetchTool(logging.NewNopLogger()).(*WebFetchTool)
+
+	// 未授权：Grant 拒绝
+	granted, _ := wf.Grant(ctx, map[string]any{"url": "http://192.168.1.1/"})
+	assert.False(t, granted, "未授权时 Grant 应拒绝")
+
+	// 模拟用户 AllowSession
+	require.NoError(t, tc.Session.AddToWhitelist("network", "192.168.1.1"))
+
+	// 授权后：Grant 放行
+	granted, reason := wf.Grant(ctx, map[string]any{"url": "http://192.168.1.1/"})
+	assert.True(t, granted, "授权后 Grant 应放行，实际原因=%s", reason)
+
+	// 授权后：Execute 真正发请求（错误应为网络错误而非 SSRF 网段拒绝）
+	_, err := wf.Execute(ctx, map[string]any{"url": "http://192.168.1.1/"})
+	if err != nil {
+		assert.NotContains(t, err.Error(), "网段", "授权后 Execute 不应再被网段预检拒绝")
+	}
 }
 
 // TestWebFetch_Sandbox_Disabled_Reject 验证沙箱未注入时 WebFetch 拒绝执行。
@@ -223,7 +303,7 @@ func TestWebFetch_Sandbox_SSRF_Denies(t *testing.T) {
 // 而是直接拒绝执行（调用方配置错误，授权无法解除）。
 func TestWebFetch_Sandbox_Disabled_Reject(t *testing.T) {
 	projectDir := t.TempDir()
-	wf := NewWebFetchTool(logging.NewNopLogger())
+	wf := NewWebFetchTool(logging.NewNopLogger()).(*WebFetchTool)
 
 	_, err := wf.Execute(newGrantCtx(t, projectDir), map[string]any{
 		"url": "http://127.0.0.1/",
@@ -278,8 +358,8 @@ func TestBash_Sandbox_GrantAndExecute_Consistent(t *testing.T) {
 		command string
 	}{
 		{"危险命令 rm -rf /", "rm -rf /"},
-		{"SSRF curl 127.0.0.1", "curl http://127.0.0.1/"},
-		{"SSRF curl 169.254.169.254", "curl http://169.254.169.254/latest/meta-data/"},
+		{"内网 curl 192.168.1.1", "curl http://192.168.1.1/"},
+		{"元数据 curl 169.254.169.254", "curl http://169.254.169.254/latest/meta-data/"},
 	}
 
 	for _, c := range cases {
