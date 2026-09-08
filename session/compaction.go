@@ -12,6 +12,40 @@ import (
 
 // ── 压缩辅助函数 ────────────────────────────────────────────────────────
 
+// estimateTokens 基于 DeepSeek 官方公式估算文本的 token 数：
+//   - ASCII/英文字符 ≈ 每个 0.3 token
+//   - CJK/全角字符 ≈ 每个 0.6 token
+func estimateTokens(content string) int64 {
+	var t float64
+	for _, r := range content {
+		if r <= 0x7F {
+			t += 0.3
+		} else {
+			t += 0.6
+		}
+	}
+	return int64(t) + 1
+}
+
+// estimateWindowTokens 估算给定消息序列的 token 数。
+//
+// 对于有 Usage 数据的助手消息，只计算 CompletionTokens（+ ReasoningTokens）。
+// 不能在这里使用 TotalTokens，因为它包含了随该请求发送的整个提示历史，
+// 会重复计算窗口中已存在的早期消息。
+//
+// 对于所有其他消息，回退到 DeepSeek 字符级估算。
+func estimateWindowTokens(msgs []Message) int64 {
+	var total int64
+	for _, m := range msgs {
+		if m.Role == "assistant" && m.Usage != nil && (m.Usage.CompletionTokens > 0 || m.Usage.ReasoningTokens > 0) {
+			total += int64(m.Usage.CompletionTokens + m.Usage.ReasoningTokens)
+		} else {
+			total += estimateTokens(m.Content)
+		}
+	}
+	return total
+}
+
 // compactionCooldown 是自动压缩（TryCompact）失败后的冷却时长。
 // 冷却期内 TryCompact 直接跳过，避免 LLM 失败或空返回时每轮重试形成死循环
 // （每次重试最多耗时 compactionTimeout=10min 并消耗 token）。ForceCompact 不受约束。
@@ -35,7 +69,7 @@ func (s *Session) captureState() sessionState {
 	defer s.mu.RUnlock()
 
 	activeMessages := s.messages[s.cursor:]
-	tokens := estimateWindowTokensV2(activeMessages)
+	tokens := estimateWindowTokens(activeMessages)
 
 	return sessionState{
 		cursor:         s.cursor,
@@ -435,13 +469,6 @@ func (s *Session) SetMemory(mem MemoryStore) {
 	s.mem = mem
 }
 
-// SetMicroCompactDoneHandler 设置在 TryMicroCompact 完成后调用的回调。
-// 回调接收 (compressed, deduped, windowTokens) 计数器。
-// 传递 nil 以禁用。
-func (s *Session) SetMicroCompactDoneHandler(h func(compressed, deduped int, windowTokens int64)) {
-	s.microCompactDoneHandler = h
-}
-
 // SetCompactStartHandler 设置在 TryCompact 开始基于 LLM 的摘要压缩前调用的回调。
 // 回调接收 (windowTokens, maxWindowSize)。
 // 传递 nil 以禁用。
@@ -454,11 +481,4 @@ func (s *Session) SetCompactStartHandler(h func(windowTokens, maxWindowSize int6
 // 传递 nil 以禁用。
 func (s *Session) SetCompactDoneHandler(h func(messagesSlid int, windowTokens int64)) {
 	s.compactDoneHandler = h
-}
-
-// SetMicroCompactStartHandler 设置在 TryMicroCompact 开始工具消息压缩前调用的回调。
-// 回调接收 (windowTokens, maxWindowSize)。
-// 传递 nil 以禁用。
-func (s *Session) SetMicroCompactStartHandler(h func(windowTokens, maxWindowSize int64)) {
-	s.microCompactStartHandler = h
 }

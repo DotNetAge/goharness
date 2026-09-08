@@ -105,32 +105,5 @@ func prepareEventBus(b *AskBuilder, logger logging.Logger, ctx context.Context) 
 		})
 	})
 
-	// 微压缩开始事件
-	var microCompactBeforeTokens int64
-	b.session.SetMicroCompactStartHandler(func(windowTokens, maxWindowSize int64) {
-		microCompactBeforeTokens = windowTokens
-		emit(events.MicroCompactStart, events.MicroCompactStartData{
-			SessionID:     sid,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: maxWindowSize,
-		})
-	})
-
-	// 微压缩完成事件
-	b.session.SetMicroCompactDoneHandler(func(compressed, deduped int, windowTokens int64) {
-		var ratio float64
-		if microCompactBeforeTokens > 0 {
-			ratio = float64(windowTokens) / float64(microCompactBeforeTokens)
-		}
-		emit(events.MicroCompactDone, events.MicroCompactDoneData{
-			SessionID:     sid,
-			Compressed:    compressed,
-			Deduped:       deduped,
-			WindowTokens:  windowTokens,
-			MaxWindowSize: b.session.ModelContextLength(),
-			Ratio:         ratio,
-		})
-	})
-
 	return emit, emitRaw, outCtx, cancel
 }

@@ -5,7 +5,6 @@ import (
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
-	"github.com/DotNetAge/goharness/rule"
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
@@ -19,24 +18,47 @@ func WithModel(cfg config.ModelConfig) RuntimeConfig {
 	return func(r *Runtime) { r.model = cfg }
 }
 
-func WithAgentRegistry(reg *config.AgentRegistry) RuntimeConfig {
-	return func(r *Runtime) { r.prompt.agentReg = reg }
-}
-
+// WithProviderRegistry 设置大语言模型提供商配置注册表。
 func WithProviderRegistry(reg config.ProviderRegistry) RuntimeConfig {
 	return func(r *Runtime) { r.providerReg = reg }
+}
+
+// WithBaseSystemPrompt 注入应用侧（mindx）组装的基础系统提示词构造器。
+//
+// 这是提示词接缝的唯一入口：身份、技能目录、环境信息、搜索策略、Agent 公共规则、
+// 用户/权限规则等应用语义段落全部由应用侧组装为一个完整的基础提示词；goharness
+// 只在其后追加自己的机制段（行为准则、沟通风格）。
+//
+// builder 返回空字符串时跳过基础段（仅保留机制段，适用于 goharness 独立测试）。
+func WithBaseSystemPrompt(builder func(sessionID string, s *session.Session) string) RuntimeConfig {
+	return func(r *Runtime) { r.prompt.baseBuilder = builder }
+}
+
+// WithExcludeTools 注入按 Agent 名称解析排除工具集合的回调。
+//
+// goharness 对 Agent 结构零依赖：exclude_tools 属于应用侧的 Agent 属性，
+// 应用在创建 Runtime 时注入解析函数，工具装配（主会话与子 Agent 会话共用）
+// 按当前 agentName 取得需要排除的工具名集合。未注入时不排除任何工具。
+func WithExcludeTools(resolver func(agentName string) []string) RuntimeConfig {
+	return func(r *Runtime) { r.excludeTools = resolver }
+}
+
+// WithAgentExists 注入按名称校验 Agent 是否存在的回调。
+//
+// 子 Agent 派生（spawn）前用该回调校验目标 Agent 存在性；未注入时跳过校验。
+func WithAgentExists(checker func(agentName string) bool) RuntimeConfig {
+	return func(r *Runtime) { r.agentExists = checker }
 }
 
 func WithToolRegistry(reg tools.ToolRegistry) RuntimeConfig {
 	return func(r *Runtime) { r.toolReg = reg }
 }
 
+// WithSkillRegistry 注入技能检索注册表（P4 SPI 收窄：goharness 只保留 GetSkill
+// 检索契约，技能的发现/加载/注册由应用侧负责）。
+// 未注入（nil）时不注册 Skill 工具。
 func WithSkillRegistry(reg skill.SkillRegistry) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.skillReg = reg }
-}
-
-func WithRuleRegistry(reg rule.RuleRegistry) RuntimeConfig {
-	return func(r *Runtime) { r.prompt.ruleReg = reg }
 }
 
 func WithMemory(mem memory.Memory) RuntimeConfig {
@@ -75,30 +97,6 @@ func WithKVStore(kv store.KVStore) RuntimeConfig {
 // CollectResults 用它从磁盘恢复 SubAgent 结果。
 func WithSessionStore(ss session.SessionStore) RuntimeConfig {
 	return func(r *Runtime) { r.sessionStore = ss }
-}
-
-// WithSkillsPrompt 覆盖默认的技能目录提示词段落。
-// 传入的函数接收当前智能体过滤后的技能列表，
-// 应返回完整的目录字符串（空字符串则省略该段落）。
-// 为 nil 时（默认），使用内置的 buildSkillsCatalog。
-func WithSkillsPrompt(builder func(skills []*skill.Skill) string) RuntimeConfig {
-	return func(r *Runtime) { r.prompt.skillsCatalogBuilder = builder }
-}
-
-// WithEnvs 覆盖系统提示词中默认的环境信息段落。
-// 传入的函数接收 EnvsParams（SessionID、ProjectDir、SessionDir），
-// 应返回完整的环境信息字符串（空字符串则省略）。
-// 为 nil 时（默认），使用内置的 buildEnvironmentInfo。
-func WithEnvs(builder func(params EnvsParams) string) RuntimeConfig {
-	return func(r *Runtime) { r.prompt.envsBuilder = builder }
-}
-
-// WithSearchStrategy 覆盖系统提示词中默认的搜索策略段落。
-// 传入的函数无参数，应返回完整的段落字符串
-// （空字符串则省略整个段落）。
-// 为 nil 时（默认），使用内置的 buildSearchPriority。
-func WithSearchStrategy(builder func() string) RuntimeConfig {
-	return func(r *Runtime) { r.prompt.searchStrategyBuilder = builder }
 }
 
 // WithLLMClient 设置自定义大语言模型客户端。

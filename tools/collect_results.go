@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DotNetAge/goharness/session"
@@ -99,23 +100,46 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 
 	deadline := time.Now().Add(defaultCollectTimeout)
 
-	var jsonResults []map[string]string
-	for _, id := range sessionIDs {
-		result := t.pollForResult(waitCtx, tc, id, deadline)
-		if result != nil {
-			jsonResults = append(jsonResults, result)
-		} else {
+	// 并发轮询所有子会话：单个子代理的长时间执行或挂起不得阻塞其它子代理的结果收集。
+	// 顺序轮询时，排在前面的在跑会话会让已终止会话的失败结果迟迟无法上报，
+	// 主会话表现为持续 Loading（实证：daemon 日志中已终止会话被排在后面的在跑会话阻塞 40s+）。
+	// 结果按入参顺序写入预分配槽位，保证返回顺序与 session_ids 一致。
+	jsonResults := make([]map[string]string, len(sessionIDs))
+	var wg sync.WaitGroup
+	for i, id := range sessionIDs {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			result := t.pollForResult(waitCtx, tc, id, deadline)
+			if result != nil {
+				jsonResults[i] = result
+				return
+			}
+			// 轮询未拿到结果：区分「被取消」与「超时」，避免给父 LLM 错误归因
+			//（取消意味着用户已主动停止，父 LLM 不应再尝试续跑）。
+			if waitCtx.Err() != nil {
+				logger.Warn("collect_results: poll cancelled before sub-agent completed",
+					"session_id", id,
+				)
+				jsonResults[i] = map[string]string{
+					"session_id": id,
+					"status":     "failed",
+					"error":      "已取消：等待子代理结果时被用户中断",
+				}
+				return
+			}
 			logger.Warn("collect_results: sub-agent did not complete within deadline",
 				"session_id", id,
 				"deadline_minutes", defaultCollectTimeout.Minutes(),
 			)
-			jsonResults = append(jsonResults, map[string]string{
+			jsonResults[i] = map[string]string{
 				"session_id": id,
 				"status":     "failed",
 				"error":      "超时：子代理未在指定时间内完成",
-			})
-		}
+			}
+		}(i, id)
 	}
+	wg.Wait()
 
 	out, err := json.Marshal(jsonResults)
 	if err != nil {

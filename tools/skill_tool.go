@@ -78,21 +78,33 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 		}, nil
 	}
 
-	skill, err := t.lookup(name)
-	if err != nil {
-		return nil, fmt.Errorf("%s", GuideNotFound("技能", name, "检查技能名称拼写，从可用能力列表中选取正确的技能名称后重新调用；若该技能确实不存在，应告知用户"))
+	// 会话级技能覆盖优先（项目级技能库，仅该会话可见），
+	// 未命中再回退 Runtime 注册表（全局库 + Agent 级覆盖）。
+	var sk *skill.Skill
+	if tc := GetToolContext(ctx); tc.Session != nil {
+		if overlay := tc.Session.SkillOverlay(); overlay != nil {
+			// 覆盖未命中不视为最终失败，继续回退基础注册表
+			sk, _ = overlay.GetSkill(name)
+		}
+	}
+	if sk == nil {
+		var err error
+		sk, err = t.lookup(name)
+		if err != nil {
+			return nil, fmt.Errorf("%s", GuideNotFound("技能", name, "检查技能名称拼写，从可用能力列表中选取正确的技能名称后重新调用；若该技能确实不存在，应告知用户"))
+		}
 	}
 
 	result := map[string]any{
-		"skill_name": skill.Name,
-		"root_dir":   skill.RootDir,
-		"content":    skill.Instructions,
+		"skill_name": sk.Name,
+		"root_dir":   sk.RootDir,
+		"content":    sk.Instructions,
 		"loaded":     true,
 	}
 
 	// 包含 allowed_tools，用于技能加载后的工具激活。
-	if skill.AllowedTools != "" {
-		result["allowed_tools"] = strings.Fields(skill.AllowedTools)
+	if sk.AllowedTools != "" {
+		result["allowed_tools"] = strings.Fields(sk.AllowedTools)
 	}
 
 	return result, nil

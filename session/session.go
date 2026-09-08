@@ -45,6 +45,7 @@ import (
 
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
+	"github.com/DotNetAge/goharness/skill"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -217,12 +218,6 @@ type Session struct {
 	// compactDoneHandler 在 TryCompact 完成后调用。
 	compactDoneHandler func(messagesSlid int, windowTokens int64)
 
-	// microCompactStartHandler 在 TryMicroCompact 开始前调用。
-	microCompactStartHandler func(windowTokens int64, maxWindowSize int64)
-
-	// microCompactDoneHandler 在 TryMicroCompact 完成后调用。
-	microCompactDoneHandler func(compressed, deduped int, windowTokens int64)
-
 	// loaded 指示消息是否已从持久化存储加载。
 	// 当为 false 时，Current() 和 Append() 将触发自动懒加载。
 	loaded bool
@@ -257,6 +252,12 @@ type Session struct {
 	// 为 nil 时表示未启用沙箱，工具回退到各自的安全检查逻辑（向后兼容）。
 	// 通过 WithSandbox Option 注入。
 	sandbox *sandbox.Sandbox
+
+	// skillOverlay 是会话级技能覆盖注册表（项目级技能库的运行时挂载点，
+	// PR-PROMPTS 第三节晋升管线）。Skill 工具检索时优先查覆盖、未命中
+	// 再回退 Runtime 注册表，使项目技能"仅在该会话内可见"，不污染
+	// 同 Agent 的其它会话。为 nil 时表示未载入项目技能。
+	skillOverlay skill.SkillRegistry
 }
 
 // ID 返回此会话的唯一标识符。
@@ -271,6 +272,21 @@ func (s *Session) ProjectDir() string { return s.projectDir }
 // Sandbox 返回会话级逻辑沙箱实例。
 // 返回 nil 表示未启用沙箱，调用方应回退到各自的安全检查逻辑。
 func (s *Session) Sandbox() *sandbox.Sandbox { return s.sandbox }
+
+// SetSkillOverlay 设置会话级技能覆盖注册表（项目级技能的运行时挂载点）。
+// 仅影响当前会话实例（会话按轮次从存储重建时需由调用方重新挂载）。
+func (s *Session) SetSkillOverlay(reg skill.SkillRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.skillOverlay = reg
+}
+
+// SkillOverlay 返回会话级技能覆盖注册表；未载入项目技能时返回 nil。
+func (s *Session) SkillOverlay() skill.SkillRegistry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.skillOverlay
+}
 
 // Sponsor 返回创建/发起此会话的智能体名称。
 // 对于用户发起的会话返回空字符串。
@@ -294,14 +310,14 @@ func (s *Session) ModelContextLength() int64 {
 	return s.modelContextResolver()
 }
 
-// CurrentWindowTokens 使用与 MicroCompact/TryMicroCompact 相同的基于 DeepSeek 的公式
+// CurrentWindowTokens 使用基于 DeepSeek 的字符级估算公式
 // 估算活跃窗口（messages[cursor:]）的 token 数。
 func (s *Session) CurrentWindowTokens() int64 {
 	return s.ContextUsage().WindowTokens
 }
 
 // ContextUsage 返回当前上下文窗口使用信息，
-// 使用与 MicroCompact/TryMicroCompact 相同的 token 估算方法。
+// 使用与 TryCompact 相同的 token 估算方法。
 // 如果定价非 nil，则从每条消息的 Usage 数据计算 TotalCost。
 func (s *Session) ContextUsage(pricing ...PricingUnit) ContextWindowUsage {
 	s.ensureLoaded(context.Background())
@@ -310,7 +326,7 @@ func (s *Session) ContextUsage(pricing ...PricingUnit) ContextWindowUsage {
 	defer s.mu.RUnlock()
 
 	window := s.messages[s.cursor:]
-	windowTokens := estimateWindowTokensV2(window)
+	windowTokens := estimateWindowTokens(window)
 	mws := s.ModelContextLength()
 
 	var ratio float64
@@ -507,46 +523,6 @@ func (s *Session) Restore(ctx context.Context) error {
 	s.loaded = true
 	s.loadingMu.Unlock()
 
-	return nil
-}
-
-// MarkAsContentRef 在活跃窗口中通过 ToolCallID 查找工具消息，
-// 将其 Compacted 字段设置为 refTag，然后持久化更改。
-//
-// 存储优先：先持久化到存储，成功后再更新内存。如果存储失败，返回错误，内存保持不变。
-//
-// 返回：
-//   - error: 如果持久化失败，返回错误。如果未找到消息，返回 nil。
-func (s *Session) MarkAsContentRef(toolCallID, refTag string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// 先查找目标消息
-	var targetIdx int = -1
-	for i := s.cursor; i < len(s.messages); i++ {
-		if s.messages[i].Role == "tool" && s.messages[i].ToolCallID == toolCallID {
-			targetIdx = i
-			break
-		}
-	}
-	if targetIdx == -1 {
-		return nil
-	}
-
-	// 存储优先：先持久化
-	if s.store != nil {
-		// 创建临时副本用于持久化
-		tempMessages := make([]Message, len(s.messages))
-		copy(tempMessages, s.messages)
-		tempMessages[targetIdx].Compacted = refTag
-
-		if err := s.store.UpdateMessages(context.Background(), s.id, s.cursor, tempMessages); err != nil {
-			return fmt.Errorf("持久化内容引用标记失败: %w", err)
-		}
-	}
-
-	// 成功后更新内存
-	s.messages[targetIdx].Compacted = refTag
 	return nil
 }
 

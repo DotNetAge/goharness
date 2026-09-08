@@ -4,20 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
-	"github.com/DotNetAge/goharness/config"
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/store"
 	"github.com/DotNetAge/goharness/tools"
-	"gopkg.in/yaml.v3"
 )
 
 // fakeSessionStore 是会话存储的内存实现，专用于测试。
@@ -318,21 +313,6 @@ func newTestSession(t testingT) *session.Session {
 	return sess
 }
 
-// newTestSessionWithResolver 创建带 modelContextResolver 的测试会话，
-// 用于测试依赖 ModelContextLength() 的逻辑（如压缩占位符开关）。
-func newTestSessionWithResolver(t testingT, resolver func() int64) *session.Session {
-	t.Helper()
-	store := newFakeSessionStore()
-	sess, err := session.New("test-agent", "", "/tmp/project", store, logging.NewNopLogger(),
-		session.WithModelContextResolver(resolver),
-	)
-	if err != nil {
-		t.Fatalf("创建测试会话失败: %v", err)
-	}
-	store.ensureMeta(sess)
-	return sess
-}
-
 // newTestRuntime 创建一个注入了内存依赖的测试 Runtime。
 func newTestRuntime(t testingT, opts ...RuntimeConfig) *Runtime {
 	t.Helper()
@@ -341,40 +321,6 @@ func newTestRuntime(t testingT, opts ...RuntimeConfig) *Runtime {
 	}, opts...)
 	rt := NewRuntime(allOpts...)
 	return rt
-}
-
-// newTestAgentRegistry 从单个 AgentConfig 创建临时注册表，便于测试注入。
-func newTestAgentRegistry(t testingT, cfg config.AgentConfig) *config.AgentRegistry {
-	t.Helper()
-	dir := t.TempDir()
-	var skillsLine string
-	if len(cfg.Skills) > 0 {
-		data, _ := yaml.Marshal(cfg.Skills)
-		skillsLine = "skills:\n" + indent(string(data), 2)
-	}
-	content := fmt.Sprintf("---\nname: %s\nrole: %s\ndescription: %s\n%s---\n%s",
-		cfg.Name, cfg.Role, cfg.Description, skillsLine, cfg.Introduction)
-	filePath := filepath.Join(dir, strings.ToLower(cfg.Name)+".md")
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		t.Fatalf("写入测试智能体文件失败: %v", err)
-	}
-	reg, err := config.LoadAgentsFrom(dir, config.WithRegistryLogger(logging.NewNopLogger()))
-	if err != nil {
-		t.Fatalf("加载测试智能体注册表失败: %v", err)
-	}
-	return reg
-}
-
-// indent 为每一行添加指定数量的空格缩进，最后一行空字符串也处理。
-func indent(s string, n int) string {
-	prefix := strings.Repeat(" ", n)
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		if line != "" {
-			lines[i] = prefix + line
-		}
-	}
-	return strings.Join(lines, "\n") + "\n"
 }
 
 // testingT 抽象 *testing.T 的最小接口，便于在辅助函数中使用。

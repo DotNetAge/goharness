@@ -178,8 +178,9 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 	// 使用全量工具定义：所有已注册工具一次性发送给 LLM，
 	// 不在迭代间改变工具集，以保持前缀缓存稳定。
-	// 应用当前 Agent 的 ExcludeTools 过滤，排除声明中不允许使用的工具。
-	excludeTools := rt.prompt.AgentExcludeTools(b.agentName)
+	// 应用当前 Agent 声明的 ExcludeTools 过滤（由应用侧回调按 agentName 解析），
+	// 排除不允许使用的工具。
+	excludeTools := rt.ExcludeToolsFor(b.agentName)
 	allToolDefs := buildAllToolDefinitions(rt.toolReg, excludeTools)
 
 	// 构建系统提示词段落（每轮之间静态不变）
@@ -255,15 +256,6 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		question := ""
 		if !windowHasQuestion {
 			question = b.question
-		}
-
-		// MicroCompact（方案 A）：仅对 128K < ContextLength <= 250K 的模型启用。
-		// - ≤128K：由 TryCompact 独占管理（80% 触发全量摘要清空），不调用 MicroCompact
-		// - 128K–250K：MicroCompact 在 45% 触发局部压缩，仅压缩 [25%, 65%] 位置范围内的
-		//   工具消息，保留最近的 tool_call 配对；若窗口继续涨到 80%，TryCompact 全量清空
-		// - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
-		if shouldEnableMicroCompact(b.session.ModelContextLength()) {
-			b.session.TryMicroCompact()
 		}
 
 		// 重新读取窗口 —— Current() 返回 messages[cursor:] 的新副本。

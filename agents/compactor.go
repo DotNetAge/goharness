@@ -188,7 +188,7 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	// 2. tools 数组 —— 与主对话一致（Runtime.exec 中同样调用 buildAllToolDefinitions）。
 	//    buildAllToolDefinitions 注释明确："所有工具一次性注册，不在迭代间改变工具集，
 	//    以保持前缀缓存稳定。"
-	excludeTools := c.rt.prompt.AgentExcludeTools(agentName)
+	excludeTools := c.rt.ExcludeToolsFor(agentName)
 	toolDefs := buildAllToolDefinitions(c.rt.toolReg, excludeTools)
 
 	// 3. messages 前缀 —— 使用 AssembleMessages 构造，question="" 不追加。

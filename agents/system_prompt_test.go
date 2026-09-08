@@ -5,14 +5,13 @@ import (
 	"testing"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
-	"github.com/DotNetAge/goharness/config"
 	"github.com/DotNetAge/goharness/session"
-	"github.com/DotNetAge/goharness/skill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestBuildSystemPromptsStructure 验证系统提示词包含期望段落。
+// TestBuildSystemPromptsStructure 验证 goharness 不生成任何应用语义文案段：
+// 输出即 baseBuilder 的结果，无机制段追加。
 func TestBuildSystemPromptsStructure(t *testing.T) {
 	rt := newTestRuntime(t)
 	sess := newTestSession(t)
@@ -22,102 +21,45 @@ func TestBuildSystemPromptsStructure(t *testing.T) {
 	assert.Equal(t, "system", msgs[0].Role)
 
 	text := msgText(t, msgs[0])
-	assert.Contains(t, text, "## 搜索策略")
-	assert.Contains(t, text, "## 环境")
-	assert.NotContains(t, text, "## 可用工具目录")
-	assert.Contains(t, text, "## 沟通风格")
+	// 未注入 baseBuilder 时为空 system 消息（保持消息结构稳定，供 Hook 定位锚点）
+	assert.Empty(t, text)
+	// 应用语义段（身份/公共规则/环境/搜索策略）全部由应用侧生成，goharness 不再产生
+	assert.NotContains(t, text, "## 行为准则")
+	assert.NotContains(t, text, "## 沟通风格")
+	assert.NotContains(t, text, "## 搜索策略")
+	assert.NotContains(t, text, "## 环境")
 }
 
-// TestBuildSystemPromptsWithAgent 验证智能体身份段落被正确注入。
-func TestBuildSystemPromptsWithAgent(t *testing.T) {
-	reg := newTestAgentRegistry(t, config.AgentConfig{
-		Name:         "test-agent",
-		Role:         "测试助手",
-		Description:  "用于测试",
-		Introduction: "你好，我是测试助手。",
-	})
-
-	rt := newTestRuntime(t, WithAgentRegistry(reg))
-	sess := newTestSession(t)
-
-	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text := msgText(t, msgs[0])
-	// 身份模板格式："我叫 {name} 是一名 {role}, {description}"
-	assert.Contains(t, text, "我叫 test-agent 是一名 测试助手, 用于测试")
-	assert.Contains(t, text, "你好，我是测试助手。")
-}
-
-// TestBuildSystemPromptsCompactPlaceholder 验证压缩占位符的开关逻辑。
-// 占位符仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入。
-func TestBuildSystemPromptsCompactPlaceholder(t *testing.T) {
-	rt := newTestRuntime(t)
-
-	// 用可变 resolver 模拟不同模型窗口大小
-	currentCtx := int64(0)
-	sess := newTestSessionWithResolver(t, func() int64 { return currentCtx })
-
-	// ModelContextLength = 0 时（未注入/禁用压缩）不插入占位符
-	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text := msgText(t, msgs[0])
-	assert.NotContains(t, text, "## 压缩内容")
-
-	// ModelContextLength = 128K 时（≤128K，由 TryCompact 独占管理）不插入占位符
-	currentCtx = 128 * 1024
-	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text = msgText(t, msgs[0])
-	assert.NotContains(t, text, "## 压缩内容")
-
-	// ModelContextLength = 200K 时（128K–250K 区间）应插入压缩占位符
-	currentCtx = 200 * 1024
-	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text = msgText(t, msgs[0])
-	assert.Contains(t, text, "## 压缩内容")
-
-	// ModelContextLength = 250K 时（边界值，128K–250K 区间）应插入压缩占位符
-	currentCtx = 250 * 1024
-	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text = msgText(t, msgs[0])
-	assert.Contains(t, text, "## 压缩内容")
-
-	// ModelContextLength = 256K 时（>250K，不启用 MicroCompact）不插入占位符
-	currentCtx = 256 * 1024
-	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text = msgText(t, msgs[0])
-	assert.NotContains(t, text, "## 压缩内容")
-
-	// ModelContextLength = 1M 时（>250K，不启用 MicroCompact）不插入占位符
-	currentCtx = 1024 * 1024
-	msgs = rt.prompt.BuildSystemPrompts(sess.ID(), sess)
-	text = msgText(t, msgs[0])
-	assert.NotContains(t, text, "## 压缩内容")
-}
-
-// TestBuildSystemPromptsCustomBuilders 验证自定义 builder 覆盖生效。
-func TestBuildSystemPromptsCustomBuilders(t *testing.T) {
-	reg := newTestAgentRegistry(t, config.AgentConfig{
-		Name:         "test-agent",
-		Role:         "测试助手",
-		Skills:       []string{"test-skill"},
-		Introduction: "你好",
-	})
-
-	skillReg := skill.NewDefaultSkillRegistry()
-	require.NoError(t, skillReg.RegisterSkill(&skill.Skill{Name: "test-skill", Description: "测试技能"}))
-
+// TestBuildSystemPromptsWithBasePrompt 验证应用侧注入的基础提示词被完整透传，
+// goharness 不在其后追加任何文案段。
+func TestBuildSystemPromptsWithBasePrompt(t *testing.T) {
 	rt := newTestRuntime(t,
-		WithAgentRegistry(reg),
-		WithSkillRegistry(skillReg),
-		WithSkillsPrompt(func(_ []*skill.Skill) string { return "CUSTOM_SKILLS" }),
-		WithEnvs(func(_ EnvsParams) string { return "CUSTOM_ENVS" }),
-		WithSearchStrategy(func() string { return "CUSTOM_SEARCH" }),
+		WithBaseSystemPrompt(func(_ string, _ *session.Session) string {
+			return "我叫 test-agent 是一名 测试助手。你好，我是测试助手。"
+		}),
 	)
 	sess := newTestSession(t)
 
 	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
+	require.Len(t, msgs, 1)
 	text := msgText(t, msgs[0])
-	assert.Contains(t, text, "CUSTOM_SKILLS")
-	assert.Contains(t, text, "CUSTOM_ENVS")
-	assert.Contains(t, text, "CUSTOM_SEARCH")
+	// 输出即 base 段原样，无任何追加
+	assert.Equal(t, "我叫 test-agent 是一名 测试助手。你好，我是测试助手。", text)
+}
+
+// TestBuildSystemPromptsEmptyBasePrompt 验证 baseBuilder 返回空字符串时
+// 生成空 system 消息（单条、无内容）。
+func TestBuildSystemPromptsEmptyBasePrompt(t *testing.T) {
+	rt := newTestRuntime(t,
+		WithBaseSystemPrompt(func(_ string, _ *session.Session) string {
+			return ""
+		}),
+	)
+	sess := newTestSession(t)
+
+	msgs := rt.prompt.BuildSystemPrompts(sess.ID(), sess)
+	require.Len(t, msgs, 1)
+	assert.Empty(t, msgText(t, msgs[0]))
 }
 
 // TestAssembleMessagesOrder 验证消息顺序与角色映射。

@@ -7,157 +7,46 @@ import (
 	"strings"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
-	"github.com/DotNetAge/goharness/config"
-	"github.com/DotNetAge/goharness/rule"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
 )
 
-// defaultCompactWindowThreshold 是 MicroCompact 启用区间的下界（128K）。
-// 低于此值的模型由 TryCompact 独占管理（80% 触发全量摘要清空），
-// 不需要 MicroCompact 的局部压缩。
-const defaultCompactWindowThreshold = 128 * 1024
-
-// microCompactMaxContextThreshold 是 MicroCompact 启用区间的上界（250K）。
-// 仅当 128K < ModelContextLength <= 250K 时调用 TryMicroCompact：
-//   - ≤128K：TryCompact 独占管理，无需 MicroCompact
-//   - 128K–250K：MicroCompact（45% 触发局部压缩）先于 TryCompact（80% 触发全量清空）执行
-//   - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
-const microCompactMaxContextThreshold = 250 * 1024
-
-// shouldEnableMicroCompact 判断当前模型上下文长度是否应启用 MicroCompact。
-// 启用区间：128K < ContextLength <= 250K。
-//   - ≤128K：由 TryCompact 独占管理（80% 触发全量摘要清空），无需 MicroCompact
-//   - 128K–250K：MicroCompact（45% 触发局部压缩）先于 TryCompact（80% 触发全量清空）执行
-//   - >250K：不启用，避免修改上下文中间 tool 消息导致 KV 缓存重算成本过高
-//
-// 该条件在 executor.go（控制 TryMicroCompact 调用）与 prompt_assembler.go
-// （控制压缩内容占位符插入）两处共用，集中此处避免修改时遗漏其一。
-func shouldEnableMicroCompact(ctxLen int64) bool {
-	return ctxLen > defaultCompactWindowThreshold && ctxLen <= microCompactMaxContextThreshold
-}
-
 // PromptAssembler 负责构造发送给 LLM 的系统提示词与消息序列。
-// 它从 Runtime 抽离提示词构造职责，集中持有相关注册表引用与可覆盖的段落构造器，
+// 它从 Runtime 抽离提示词构造职责，集中持有相关注册表引用，
 // 使 Runtime 退回装配根，提示词逻辑可独立测试与演进。
+//
+// 职责切分（PR-PROMPTS）：全部应用语义段落（身份、SOUL、技能目录、AGENTS.md
+// 公共规则、环境、搜索策略、用户/权限规则）由应用侧通过 WithBaseSystemPrompt
+// 注入的 baseBuilder 组装；goharness 不生成、不追加任何文案段。
 type PromptAssembler struct {
-	agentReg *config.AgentRegistry
 	skillReg skill.SkillRegistry
-	ruleReg  rule.RuleRegistry
 
-	// 以下三个构造器为 nil 时回退到内置默认实现
-	// （buildSkillsCatalog / buildEnvironmentInfo / buildSearchPriority）。
-	skillsCatalogBuilder  func(skills []*skill.Skill) string
-	envsBuilder           func(EnvsParams) string
-	searchStrategyBuilder func() string
+	// baseBuilder 为应用侧注入的基础系统提示词构造器。
+	// 为 nil 或返回空字符串时跳过基础段（适用于 goharness 独立测试）。
+	baseBuilder func(sessionID string, s *session.Session) string
 }
 
-// BuildSystemPrompts 根据注册表和会话状态构造系统提示词。
+// BuildSystemPrompts 根据会话状态构造系统提示词。
 //
-// 系统提示词拆分为多个段落，以实现：
-//   - 关注点分离（身份、技能、规则、环境等）
-//   - KV 缓存优化（静态与动态边界）
-//   - Hook 可以选择性修改特定段落
-//
-// 段落顺序：
-//  1. 身份 — 来自 AgentRegistry 的智能体名称、角色、描述、介绍
-//  2. 技能目录 — 仅包含当前智能体声明的技能
-//  3. 行为规则 — 默认规则 + 自定义规则
-//  4. 搜索优先级 — 本地搜索与网络搜索的优先级说明
-//  5. 环境信息 — 会话 ID、工作目录等
-//  6. 压缩内容占位符 — 仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入
-//  7. 输出效率 — 简洁输出相关指令
-//
-// 最终合并为单条 system 消息，以集中大模型对系统规则的注意力。
+// 段落顺序（静态在前、动态在后，保证 KV 缓存前缀稳定）：
+// 输出即应用侧 baseBuilder 返回的单条 system 消息。goharness 不追加任何
+// 文案段（原机制段「行为准则/沟通风格」经 P4 评审认定属于应用语义，
+// 已迁至应用侧 AGENTS.md 内嵌位）；memory 摘要经 Hook 在请求时机动态追加。
 func (p *PromptAssembler) BuildSystemPrompts(sessionID string, s *session.Session) []gochatcore.Message {
 	var sections []string
 
-	// 预取智能体配置（身份与技能目录两段共用，避免重复查询注册表）。
-	var agentCfg *config.AgentConfig
-	if p.agentReg != nil {
-		agentCfg = p.agentReg.Get(s.AgentName())
-	}
-
-	// 1. 身份
-	if agentCfg != nil {
-		sections = append(sections,
-			buildIdentity(agentCfg.Name, agentCfg.Role, agentCfg.Description, agentCfg.Introduction))
-	}
-
-	// 2. 技能目录 — 仅包含当前智能体声明的技能
-	if p.skillReg != nil && agentCfg != nil && len(agentCfg.Skills) > 0 {
-		allSkills := p.skillReg.ListSkills()
-		allowed := make(map[string]bool, len(agentCfg.Skills))
-		for _, name := range agentCfg.Skills {
-			allowed[name] = true
-		}
-		var agentSkills []*skill.Skill
-		for _, sk := range allSkills {
-			if allowed[sk.Name] {
-				agentSkills = append(agentSkills, sk)
-			}
-		}
-		if catalog := p.skillsCatalog(agentSkills); catalog != "" {
-			sections = append(sections, catalog)
+	// 基础提示词（应用语义，由应用侧组装）
+	if p.baseBuilder != nil {
+		if base := p.baseBuilder(sessionID, s); base != "" {
+			sections = append(sections, base)
 		}
 	}
 
-	// 3. 行为规则（默认规则 + 可选的自定义扩展规则）
-	sections = append(sections, defaultBehavioralRules())
-	if p.ruleReg != nil {
-		if custom := p.ruleReg.FormatPromptSection(); custom != "" {
-			sections = append(sections, "## 扩展规则\n\n"+custom)
-		}
+	// 合并为单条 system 消息，以集中大模型对系统规则的注意力。
+	// base 为空时返回空 system 消息（保持消息结构稳定，供 Hook 定位锚点）。
+	return []gochatcore.Message{
+		gochatcore.NewSystemMessage(strings.Join(sections, "\n\n")),
 	}
-
-	// 4. 搜索优先级
-	sections = append(sections, p.buildSearchStrategy())
-
-	// 5. 环境信息
-	sections = append(sections, p.buildEnvs(EnvsParams{
-		SessionID:  sessionID,
-		SessionDir: s.SessionDir(),
-		ProjectDir: s.ProjectDir(),
-	}))
-
-	// 6. 压缩内容占位符：仅在 MicroCompact 启用区间（128K < ContextLength <= 250K）时插入。
-	//    该占位符向 LLM 解释 [已压缩] 标记的格式和规则，
-	//    必须与 executor.go 中的 TryMicroCompact 调用保持同步。
-	if shouldEnableMicroCompact(s.ModelContextLength()) {
-		sections = append(sections, buildCompressedContent())
-	}
-
-	// 7. 输出效率
-	sections = append(sections, buildOutputEfficiency())
-
-	return []gochatcore.Message{gochatcore.NewSystemMessage(strings.Join(sections, "\n\n"))}
-}
-
-// skillsCatalog 构造技能目录段落。如果提供了覆盖构造器则使用它，
-// 否则回退到默认的 buildSkillsCatalog。
-func (p *PromptAssembler) skillsCatalog(agentSkills []*skill.Skill) string {
-	if p.skillsCatalogBuilder != nil {
-		return p.skillsCatalogBuilder(agentSkills)
-	}
-	return buildSkillsCatalog(agentSkills)
-}
-
-// buildEnvs 构造环境信息段落。如果提供了覆盖构造器则使用它，
-// 否则回退到默认的 buildEnvironmentInfo。
-func (p *PromptAssembler) buildEnvs(params EnvsParams) string {
-	if p.envsBuilder != nil {
-		return p.envsBuilder(params)
-	}
-	return buildEnvironmentInfo(params)
-}
-
-// buildSearchStrategy 构造搜索策略段落。如果提供了覆盖构造器则使用它，
-// 否则回退到默认的 buildSearchPriority。
-func (p *PromptAssembler) buildSearchStrategy() string {
-	if p.searchStrategyBuilder != nil {
-		return p.searchStrategyBuilder()
-	}
-	return buildSearchPriority()
 }
 
 // AssembleMessages 构造发送给 LLM API 的完整消息序列。
@@ -177,8 +66,6 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 	// 导致下一次 LLM 请求因严格校验而失败。
 	window := stripOrphanedToolCalls(history)
 
-	// 构建 tool_call_id -> tool_name 映射，用于渲染压缩占位符
-	toolNameByID := session.BuildToolNameByID(history)
 	for _, m := range window {
 		switch m.Role {
 		case "system":
@@ -219,12 +106,7 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 			}
 			msgs = append(msgs, msg)
 		case "tool":
-			// 当内容被归档时渲染压缩占位符
-			content := m.Content
-			if m.Compacted != "" {
-				content = session.RenderCompactedPlaceholder(m, toolNameByID)
-			}
-			toolMsg := gochatcore.NewTextMessage("tool", content)
+			toolMsg := gochatcore.NewTextMessage("tool", m.Content)
 			toolMsg.ToolCallID = m.ToolCallID
 			msgs = append(msgs, toolMsg)
 		default:
@@ -267,19 +149,4 @@ func resolveImageBlock(img session.ImageBlock) (gochatcore.ContentBlock, bool) {
 		MediaType: mediaType,
 		Data:      data,
 	}, true
-}
-
-// AgentExcludeTools 返回指定 Agent 配置中声明要排除的工具集合。
-// 若 Agent 注册表不可用或未找到该 Agent，返回空集合（不排除任何工具）。
-func (p *PromptAssembler) AgentExcludeTools(agentName string) map[string]bool {
-	excluded := make(map[string]bool)
-	if p.agentReg == nil {
-		return excluded
-	}
-	if cfg := p.agentReg.Get(agentName); cfg != nil {
-		for _, name := range cfg.ExcludeTools {
-			excluded[name] = true
-		}
-	}
-	return excluded
 }

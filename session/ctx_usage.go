@@ -1,7 +1,7 @@
 package session
 
 // ContextWindowUsage 保存当前上下文窗口的使用信息。
-// 计算方式与 MicroCompact/TryMicroCompact 方法一致。
+// 计算方式与 TryCompact 方法一致。
 type ContextWindowUsage struct {
 	// WindowTokens 是活跃窗口的估算 token 数。
 	WindowTokens int64 `json:"window_tokens"`

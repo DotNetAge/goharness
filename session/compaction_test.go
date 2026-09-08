@@ -258,36 +258,6 @@ func TestSetCompactDoneHandler(t *testing.T) {
 	}
 }
 
-func TestSetMicroCompactStartHandler(t *testing.T) {
-	s := newTestSession("set-mcs", "agent", newMockStore())
-	called := false
-	s.SetMicroCompactStartHandler(func(windowTokens, maxWindowSize int64) {
-		called = true
-	})
-	if s.microCompactStartHandler == nil {
-		t.Error("SetMicroCompactStartHandler 未设置 handler")
-	}
-	s.microCompactStartHandler(100, 200)
-	if !called {
-		t.Error("handler 未被正确调用")
-	}
-}
-
-func TestSetMicroCompactDoneHandler(t *testing.T) {
-	s := newTestSession("set-mcd", "agent", newMockStore())
-	called := false
-	s.SetMicroCompactDoneHandler(func(compressed, deduped int, windowTokens int64) {
-		called = true
-	})
-	if s.microCompactDoneHandler == nil {
-		t.Error("SetMicroCompactDoneHandler 未设置 handler")
-	}
-	s.microCompactDoneHandler(1, 2, 100)
-	if !called {
-		t.Error("handler 未被正确调用")
-	}
-}
-
 // ── With* 配置选项测试（compaction 相关） ────────────────────────────────
 
 func TestWithCompactStartHandler(t *testing.T) {

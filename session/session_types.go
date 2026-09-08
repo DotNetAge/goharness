@@ -123,7 +123,7 @@ type SessionStore interface {
 	SaveModifyFiles(sessionID string, files []string) error
 	GetModifyFiles(sessionID string) ([]string, error)
 
-	// UpdateMessages 持久化对现有消息的修改（如 MicroCompact 对 Compacted 字段的更改）。
+	// UpdateMessages 持久化对现有消息的修改。
 	// 接收当前游标和完整消息列表。存储原子替换会话的现有消息。
 	UpdateMessages(ctx context.Context, sessionID string, cursor int, messages []Message) error
 

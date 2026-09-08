@@ -78,15 +78,3 @@ func WithCompactStartHandler(h func(windowTokens, maxWindowSize int64)) SessionC
 func WithCompactDoneHandler(h func(messagesSlid int, windowTokens int64)) SessionConfig {
 	return func(s *Session) { s.compactDoneHandler = h }
 }
-
-// WithMicroCompactStartHandler 注入 TryMicroCompact 开始工具消息压缩前的回调。
-// 回调接收 (windowTokens, maxWindowSize)。传 nil 以禁用。
-func WithMicroCompactStartHandler(h func(windowTokens, maxWindowSize int64)) SessionConfig {
-	return func(s *Session) { s.microCompactStartHandler = h }
-}
-
-// WithMicroCompactDoneHandler 注入 TryMicroCompact 完成后的回调。
-// 回调接收 (compressed, deduped, windowTokens)。传 nil 以禁用。
-func WithMicroCompactDoneHandler(h func(compressed, deduped int, windowTokens int64)) SessionConfig {
-	return func(s *Session) { s.microCompactDoneHandler = h }
-}

@@ -59,7 +59,6 @@ import (
 	"github.com/DotNetAge/goharness/hooks/loop"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/memory"
-	"github.com/DotNetAge/goharness/rule"
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
@@ -101,7 +100,7 @@ const (
 //   - toolReg: 可用工具注册表（Grep、Bash、WebSearch 等）。
 //   - mem: 向量存储与检索（RAG）接口。
 //   - providerReg: 大语言模型提供商配置注册表。
-//   - prompt: 提示词装配器，持有 agent/skill/rule 注册表与可覆盖段落构造器。
+//   - prompt: 提示词装配器，持有 skill 注册表与应用侧注入的基础提示词构造器。
 //   - toolExec: 工具执行引擎，支持钩子与事件发射。
 //   - logger: 结构化日志器。
 //   - loopHooks: 思考循环中每次大语言模型调用前后运行的钩子。
@@ -117,10 +116,18 @@ type Runtime struct {
 	providerReg config.ProviderRegistry
 	toolExec    tools.ToolExecutor
 
-	// prompt 承载系统提示词与消息序列的构造职责（持有 agent/skill/rule 注册表引用
-	// 与可覆盖的段落构造器）。通过 WithAgentRegistry/WithSkillRegistry/WithRuleRegistry
-	// 及 WithSkillsPrompt/WithEnvs/WithSearchStrategy 配置。
+	// prompt 承载系统提示词与消息序列的构造职责（持有 skill 注册表引用
+	// 与应用侧注入的基础提示词构造器）。通过 WithSkillRegistry 及
+	// WithBaseSystemPrompt 配置。
 	prompt PromptAssembler
+
+	// excludeTools 按 Agent 名称解析需要排除的工具集合（应用侧注入，
+	// 见 WithExcludeTools）。nil 时不排除任何工具。
+	excludeTools func(agentName string) []string
+
+	// agentExists 按 Agent 名称校验存在性（应用侧注入，见 WithAgentExists）。
+	// 子 Agent 派生前校验用；nil 时跳过校验。
+	agentExists func(agentName string) bool
 
 	// kvStore 为需要会话级持久化的工具（TaskCreate / TaskGet / TaskUpdate / TaskList）
 	// 提供键值存储。若为 nil，这些工具返回“KVStore 不可用”。通过 WithKVStore 配置。
@@ -178,18 +185,16 @@ type RunResult struct {
 //
 // 默认行为：
 //   - 默认工具注册表，包含 15+ 内置工具（Grep、Glob、Read、Write、Bash 等）
-//   - 默认技能注册表（空，可继续注册）
 //   - 默认日志器（标准输出，结构化 JSON）
 //   - 同步 / 异步工具超时均为 5 分钟
-//   - 无智能体注册表、规则注册表或记忆（nil）
+//   - 无智能体注册表或记忆（nil）；技能注册表无默认实现，未注入时不注册 Skill 工具
 //   - 未注册任何钩子
 //
 // 参数 opts 是可变 RuntimeConfig 函数列表，常见选项包括：
 //   - WithModel(config.ModelConfig)：设置大语言模型配置（必需）
 //   - WithToolRegistry(tools.ToolRegistry)：使用自定义工具注册表
 //   - WithSkillRegistry(skill.SkillRegistry)：使用自定义技能注册表
-//   - WithRuleRegistry(rule.RuleRegistry)：使用自定义规则注册表
-//   - WithAgentRegistry(*config.AgentRegistry)：使用自定义智能体注册表
+//   - WithAgentExists(func(string) bool)：Agent 存在性校验回调（由应用侧提供，goharness 对 Agent 结构零依赖）
 //   - WithProviderRegistry(config.ProviderRegistry)：使用自定义提供商注册表
 //   - WithMemory(memory.Memory)：设置记忆 / RAG 后端
 //   - WithLogger(logging.Logger)：设置自定义日志器
@@ -203,9 +208,8 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 		logger:       logging.DefaultLogger(),
 		asyncTimeout: 5 * time.Minute,
 		syncTimeout:  5 * time.Minute,
-		prompt: PromptAssembler{
-			skillReg: skill.NewDefaultSkillRegistry(),
-		},
+		// skillReg 无默认实现（P4 SPI 收窄）：由应用侧经 WithSkillRegistry 注入，
+		// 未注入时不注册 Skill 工具。
 	}
 	r.subAgents = newSubAgentManager(r)
 	for _, opt := range opts {
@@ -284,7 +288,15 @@ func (rt *Runtime) registerDefaultTools() {
 			toolOf("TaskGet", tools.NewTaskGetTool),
 			toolOf("TaskUpdate", tools.NewTaskUpdateTool),
 			// toolOf("Sleep", tools.NewSleepTool),
-			toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.prompt.skillReg.GetSkill) }),
+		)
+		// Skill 工具仅在应用注入技能注册表（WithSkillRegistry）时注册；
+		// P4 SPI 收窄后 skillReg 无默认实现，为 nil 时跳过（避免 nil 解引用）。
+		if rt.prompt.skillReg != nil {
+			bundled = append(bundled,
+				toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.prompt.skillReg.GetSkill) }),
+			)
+		}
+		bundled = append(bundled,
 			toolOf("SubAgent", func() *tools.SubAgentTool {
 				subAgentTool := tools.NewSubAgentTool(rt.subAgents.spawn)
 				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName, sessionID string) (string, error) {
@@ -335,7 +347,7 @@ func (rt *Runtime) registerDefaultHooks() {
 	}
 
 	// 注册默认工具钩子
-	defaultHooks := action.Defaults(nil, rt.prompt.skillReg, rt.logger, rt.fileModifyTracker)
+	defaultHooks := action.Defaults(rt.logger, rt.fileModifyTracker)
 
 	// 捕获 FileModifyHook 引用，以便通过 WithFileModifyTracker 延迟绑定。
 	rt.fileModifyHook = nil
@@ -387,7 +399,7 @@ func (rt *Runtime) SessionConfigs() []session.SessionConfig {
 // 返回的 AskBuilder 可通过事件处理器定制，然后执行以运行完整的 ReAct 循环。
 //
 // 参数：
-//   - agentName: 要使用的智能体配置标识符。必须匹配 AgentRegistry 中注册的名称。
+//   - agentName: 要使用的智能体标识符。存在性由 WithAgentExists 回调校验（应用侧注册表）。
 //     智能体配置定义系统提示词中使用的角色、描述和介绍。
 //   - question: 用户的问题或指令，将作为用户消息追加到会话并发送给大语言模型。
 //   - s: 维护对话历史和状态的 Session 实例。每次 Ask 调用都会向该会话追加消息。
@@ -426,14 +438,9 @@ func (rt *Runtime) Sandbox() *sandbox.Sandbox { return rt.sandbox }
 // NewRuntime 自动注册内置工具；额外工具可通过 RegisterTool 或 WithToolRegistry 注册。
 func (rt *Runtime) ToolRegistry() tools.ToolRegistry { return rt.toolReg }
 
-// SkillRegistry 返回 Runtime 的技能注册表，用于管理智能体能力。
-// 技能定义在系统提示词中向智能体展示的高级能力。
-// 与工具（函数调用）不同，技能描述智能体能做什么。
+// SkillRegistry 返回 Runtime 的技能检索注册表（P4 SPI 收窄：仅 GetSkill 检索契约）。
+// 未通过 WithSkillRegistry 注入时返回 nil（此时 Skill 工具未注册）。
 func (rt *Runtime) SkillRegistry() skill.SkillRegistry { return rt.prompt.skillReg }
-
-// RuleRegistry 返回 Runtime 的行为规则注册表。
-// 规则定义智能体应如何表现、应避免什么以及任何操作边界。规则会纳入系统提示词。
-func (rt *Runtime) RuleRegistry() rule.RuleRegistry { return rt.prompt.ruleReg }
 
 // ProviderRegistry 返回 Runtime 的大语言模型提供商注册表。
 // 提供商配置可用于多提供商设置或回退逻辑。
@@ -447,9 +454,19 @@ func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
 	return rt.toolExec
 }
 
-// AgentRegistry 返回 Runtime 的智能体配置注册表。
-// 智能体配置定义角色、描述和介绍，用于构建系统提示词中的身份段落。
-func (rt *Runtime) AgentRegistry() *config.AgentRegistry { return rt.prompt.agentReg }
+// ExcludeToolsFor 返回指定 Agent 声明要排除的工具名集合。
+// 数据来自应用侧注入的解析回调（WithExcludeTools）；
+// 未注入或解析失败时返回空集合（不排除任何工具）。
+func (rt *Runtime) ExcludeToolsFor(agentName string) map[string]bool {
+	excluded := make(map[string]bool)
+	if rt.excludeTools == nil {
+		return excluded
+	}
+	for _, name := range rt.excludeTools(agentName) {
+		excluded[name] = true
+	}
+	return excluded
+}
 
 // WithFileModifyTracker 设置当前 Runtime 的文件修改追踪器 provider。
 // 设置后，默认工具钩子中会自动注册 FileModifyHook，以在 Write / FileEdit 工具执行前备份文件。

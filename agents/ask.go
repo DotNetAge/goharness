@@ -194,22 +194,6 @@ func (b *AskBuilder) OnCompactDone(fn func(data events.CompactDoneData)) *AskBui
 	})
 }
 
-func (b *AskBuilder) OnMicroCompactStart(fn func(data events.MicroCompactStartData)) *AskBuilder {
-	return b.on(events.MicroCompactStart, func(d any) {
-		if v, ok := d.(events.MicroCompactStartData); ok {
-			fn(v)
-		}
-	})
-}
-
-func (b *AskBuilder) OnMicroCompactDone(fn func(data events.MicroCompactDoneData)) *AskBuilder {
-	return b.on(events.MicroCompactDone, func(d any) {
-		if v, ok := d.(events.MicroCompactDoneData); ok {
-			fn(v)
-		}
-	})
-}
-
 func (b *AskBuilder) OnError(fn func(err string)) *AskBuilder {
 	return b.on(events.Error, func(d any) {
 		if s, ok := d.(string); ok {

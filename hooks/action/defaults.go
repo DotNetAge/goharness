@@ -3,7 +3,6 @@ package action
 import (
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/skill"
 )
 
 // TrackerProvider 根据 sessionID 返回对应的文件修改追踪函数。
@@ -24,7 +23,7 @@ type TrackerProvider func(sessionID string) (TrackFunc, bool)
 // 权限强制不再是工具钩子——它现在是工具内部关注点
 // （见 tools.PermissionRequired）。运行时在每次工具调用前调用 Grant()；
 // 被拒绝的工具在运行时层被阻止，权限流程对 LLM 不可见。
-func Defaults(_ /* ruleStore */ interface{}, _ /* skillRegistry */ skill.SkillRegistry, logger logging.Logger, trackerProvider ...TrackerProvider) []hooks.ToolHook {
+func Defaults(logger logging.Logger, trackerProvider ...TrackerProvider) []hooks.ToolHook {
 	// FileModifyHook 始终被注册（provider 可为 nil），
 	// 以便后期通过 FileModifyHook.SetProvider() 动态注入 tracker。
 	// 见 Runtime.WithFileModifyTracker()。

@@ -52,7 +52,7 @@ type perSessionState struct {
 //
 // 依赖经 rt 反向引用（子系统持有父编排器的引用是 Go 常见模式，相比传递多个回调更清晰）：
 //   - rt.Ask：运行子智能体思考循环
-//   - rt.prompt.agentReg：校验子智能体配置是否存在
+//   - rt.agentExists：校验子智能体配置是否存在（应用侧回调）
 //   - rt.SessionConfigs()：为新建子会话注入 Compactor / Sandbox 等通用能力
 //   - rt.logger：日志
 type subAgentManager struct {
@@ -256,10 +256,9 @@ func (m *subAgentManager) touchSession(sessionID string) {
 //   - 通过 Runtime.Ask 运行，与主智能体使用相同的思考循环。
 //   - 独立会话意味着与父级上下文完全隔离。
 func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID string) (answer string, sid string, err error) {
-	if m.rt.prompt.agentReg != nil {
-		if cfg := m.rt.prompt.agentReg.Get(agentName); cfg == nil {
-			return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
-		}
+	// Agent 存在性校验走应用侧回调（goharness 对 Agent 结构零依赖）。
+	if m.rt.agentExists != nil && !m.rt.agentExists(agentName) {
+		return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
 	}
 
 	tc := tools.GetToolContext(ctx)

@@ -8,14 +8,6 @@ type ToolCall struct {
 	Arguments string `json:"arguments" yaml:"arguments"` // JSON 编码的参数映射
 }
 
-// CompactedMeta 存储 MicroCompact 压缩的工具消息的元数据。
-// JSON 编码并存储在 Message.Compacted 中。
-type CompactedMeta struct {
-	Path       string `json:"path"`        // 缓存文件绝对路径
-	ToolName   string `json:"tool_name"`   // 原始工具名称（当 ToolCallID 查找失败时的后备）
-	TokenCount int64  `json:"token_count"` // 压缩时的 token 估算
-}
-
 // ImageBlock 是嵌入消息中的图片内容块。
 // 图片以 image_url 消息的形式进入上下文（而非混入工具结果的文本内容）：
 // 发送前会拼接为 data:<media_type>;base64,<data> 的 data URI。
@@ -35,11 +27,9 @@ type ImageBlock struct {
 //   - reasoning_content: 模型的思考/推理流（如 DeepSeek-R1）
 //   - tool_calls: 助手消息中的工具调用
 //   - tool_call_id: 工具结果消息的关联 ID
-//   - compacted: JSON 编码的 CompactedMeta，当内容归档到磁盘时非空
 type Message struct {
 	Role             string      `json:"role" yaml:"role"`
 	Content          string      `json:"content" yaml:"content"`
-	Compacted        string      `json:"compacted,omitempty" yaml:"compacted,omitempty"`                 // JSON(CompactedMeta)，非空 → 内容已归档
 	ReasoningContent string      `json:"reasoning_content,omitempty" yaml:"reasoning_content,omitempty"` // 思考流（DeepSeek-R1 等）
 	Images           []ImageBlock `json:"images,omitempty" yaml:"images,omitempty"`                     // 图片内容块（以 image_url 消息进入上下文）
 	Timestamp        int64       `json:"timestamp" yaml:"timestamp"`
