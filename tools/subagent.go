@@ -47,6 +47,7 @@ type EnsureSubAgentSessionFunc func(ctx context.Context, agentName, sessionID st
 type SubAgentTool struct {
 	spawn         SpawnFunc
 	ensureSession EnsureSubAgentSessionFunc // 同步获取子 session ID
+	agentExists   func(string) bool         // 同步校验 agent_name 是否存在（应用侧回调）
 }
 
 // NewSubAgentTool 创建一个 SubAgentTool 实例。
@@ -66,21 +67,27 @@ func (t *SubAgentTool) SetEnsureSessionFunc(fn EnsureSubAgentSessionFunc) {
 	t.ensureSession = fn
 }
 
+// SetAgentExistsFunc 设置 agent_name 存在性校验函数（应用侧回调）。
+// 在 Execute 同步阶段调用：agent_name 不存在时立即返回柔性错误（错误原因 + 下一步引导），
+// 写入主会话供 LLM 自查纠正。若把校验留到后台 spawn，失败只进日志、无会话标记，
+// CollectResults 会拿着存根 session_id 死等轮询直到超时，违背柔性失败原则。
+func (t *SubAgentTool) SetAgentExistsFunc(fn func(string) bool) {
+	t.agentExists = fn
+}
+
 // Info 返回 SubAgent 工具的元信息。
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
 		Description: "为任务生成一个子代理。之后可使用 CollectResults 获取结果。",
 		Prompt: `为一次性委派任务生成一个子代理。立即返回 {status: "running", agent_name, session_id}。
-
 关键约束：此工具是异步的。你不会在同一轮中看到结果。请使用 CollectResults(session_ids) 稍后获取结果。
-
 同一响应中的多个 SubAgent 调用会并行执行。请根据角色命名代理（例如 "code_reviewer"）。任务描述应自包含——子代理无法看到你的对话上下文。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
 		Parameters: []Parameter{
-			{Name: "agent_name", Type: "string", Description: "要生成的子代理名称。", Required: true},
-			{Name: "task", Type: "string", Description: "子代理的任务描述。", Required: true},
+			{Name: "agent_name", Type: "string", Description: "声明系统内的具名智能体来执行任务，如果要创建分身就用你自己的名称", Required: true},
+			{Name: "task", Type: "string", Description: "子代理的任务描述，无需声明子代理的角色，子代理自有其角色定义，直接说明任务内容。", Required: true},
 			{Name: "session_id", Type: "string", Description: "要复用的子代理会话 ID。传入后将延续该会话之前的对话上下文；不传时系统自动延续该子代理最近一次的空闲会话（主从对话连贯），被占用时新建独立会话。", Required: false},
 		},
 	}
@@ -139,6 +146,17 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	if t.spawn == nil {
 		return nil, fmt.Errorf("%s", GuideMissingContext("SubAgent", "SpawnFunc（子代理创建函数）"))
 	}
+	// agent_name 存在性校验前移到同步阶段（柔性失败）：不存在时立即返回
+	// 错误原因 + 下一步引导，经 executor 的 formatToolResult 写入主会话，
+	// LLM 本轮即可见并纠正。若留到后台 spawn 才校验，失败无会话标记可写，
+	// CollectResults 将对存根 session_id 死等轮询直到超时。
+	if t.agentExists != nil && !t.agentExists(agentName) {
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("为任务派发子代理 %q 失败", agentName),
+			fmt.Sprintf("声明系统中不存在名为 %q 的智能体", agentName),
+			"改用系统中真实存在的智能体名称重新调用 SubAgent（可用名称见系统提示词的智能体清单）；若要创建自己的分身，agent_name 传你自己的名称",
+		))
+	}
 
 	logger.Info("spawning sub-agent",
 		"agent_name", agentName,
@@ -177,8 +195,28 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 	go func() {
 		startedAt := time.Now()
 		defer func() { <-subagentSem }()
+		// 进程保护兜底：spawn 内部已将自身链路的 panic 捕获转为错误返回（含失败
+		// 广播登记），此处捕获 spawn 之外残余代码（事件发射、日志构造等）的意外
+		// panic，保证后台 goroutine 的任何异常不得击穿崩溃整个进程。
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("子代理后台任务发生未捕获 panic",
+					fmt.Errorf("%v", r),
+					"agent_name", agentName,
+					"session_id", sessionID,
+				)
+			}
+		}()
 
-		result, _, err := t.spawn(ctx, agentName, task, sessionID)
+		// context.WithoutCancel：Execute 同步返回后 execCtx 会被
+		// executeSingleTool 的 defer execCancel() 取消，而后台 spawn 的会话
+		// 操作（getOrCreate / 标记 Append）在 goroutine 中进行，若沿用已取消
+		// 的 ctx 会导致持久化失败。剥离取消信号与截止时间、保留 Value
+		// （logger / ToolContext / 授权 sink）。注意：子任务执行循环的取消
+		// 不经本 ctx——其生命周期由 subAgentManager 的强停登记管理
+		// （Runtime.CancelSubAgents，主会话停止时由宿主调用级联强停），
+		// 本调整不改变该强停语义。
+		result, _, err := t.spawn(context.WithoutCancel(ctx), agentName, task, sessionID)
 
 		completedAt := time.Now()
 

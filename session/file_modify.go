@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 )
@@ -29,10 +30,10 @@ type FileModifyHandler func(FileModifyEvent)
 // TrackModify 追踪一个文件的修改。
 //
 // 当 Write、FileEdit 等工具即将修改文件时调用此方法：
-//   - 如果文件已在 modifyFiles 中，跳过（不重复备份）
+//   - 如果文件已在 modifyFiles 中，跳过重复备份，但仍触发事件（见下）
 //   - 如果文件存在且未被追踪过，将其备份到 Session 的 Backup 目录
 //   - 将文件路径加入 modifyFiles 数组
-//   - 发出事件（首次追踪时；新文件也会触发，此时 backupPath 为空）
+//   - 发出事件（首次追踪与再次修改都触发；新文件也会触发，此时 backupPath 为空）
 //
 // 参数：
 //   - filePath: 即将被修改的文件的绝对路径
@@ -45,17 +46,26 @@ func (s *Session) TrackModify(filePath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 已在追踪列表中，跳过
+	// 已在追踪列表中：不重复备份，但仍触发事件。
+	//
+	// 再次修改意味着文件内容相对「首次追踪时」已发生变化，而外部（如 daemon
+	// 前端桥）持有的 diff 是旧快照；必须通知外部重新拉取，否则前端展示的
+	// diff 与当前文件内容失配（历史上导致 FileReviewBar 打不开 diff 视图）。
 	if s.containsModifyFile(cleanPath) {
+		if s.fileModifyHandler != nil {
+			s.fileModifyHandler(FileModifyEvent{
+				FilePath:   cleanPath,
+				BackupPath: s.backupPathFor(cleanPath),
+				Action:     "tracked",
+			})
+		}
 		return nil
 	}
 
 	// 文件不存在则无需备份（新文件），但仍需追踪
-	backupDir := s.resolveBackupDir()
-
 	var backupPath string
 	if fileExists(cleanPath) {
-		bp, err := s.backupFile(cleanPath, backupDir)
+		bp, err := s.backupFile(cleanPath)
 		if err != nil {
 			return fmt.Errorf("track modify: backup %q failed: %w", cleanPath, err)
 		}
@@ -101,9 +111,8 @@ func (s *Session) ConfirmModify(files ...string) ([]string, error) {
 	confirmed := make([]string, 0, len(targets))
 
 	for _, fp := range targets {
-		// 删除备份文件
-		backupDir := s.resolveBackupDir()
-		backupPath := filepath.Join(backupDir, filepath.Base(fp)+".bak")
+		// 读取侧回退旧键：升级前会话的存量备份是旧命名，读不到新键时须能命中
+		backupPath := s.backupPathForRead(fp)
 		if fileExists(backupPath) {
 			if err := os.Remove(backupPath); err != nil {
 				return confirmed, fmt.Errorf("confirm modify: remove backup %q failed: %w", backupPath, err)
@@ -146,8 +155,9 @@ func (s *Session) Rollback(files ...string) ([]string, error) {
 	rolledBack := make([]string, 0, len(targets))
 
 	for _, fp := range targets {
-		backupDir := s.resolveBackupDir()
-		backupPath := filepath.Join(backupDir, filepath.Base(fp)+".bak")
+		// 读取侧回退旧键：升级前会话的存量备份是旧命名，读不到新键时须能命中，
+		// 否则回滚会静默移除追踪而不还原内容
+		backupPath := s.backupPathForRead(fp)
 
 		if !fileExists(backupPath) {
 			// 无备份文件，直接移除追踪即可
@@ -269,21 +279,73 @@ func (s *Session) resolveBackupDir() string {
 }
 
 // backupFile 将源文件复制到备份目录。返回备份文件路径。
-func (s *Session) backupFile(srcPath, backupDir string) (string, error) {
+func (s *Session) backupFile(srcPath string) (string, error) {
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		return "", fmt.Errorf("read source: %w", err)
 	}
 
-	fileName := filepath.Base(srcPath)
-	// 使用固定命名：原始文件名.bak
-	backupPath := filepath.Join(backupDir, fileName+".bak")
+	backupPath := s.backupPathFor(srcPath)
 
 	if err := os.WriteFile(backupPath, data, 0644); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 
 	return backupPath, nil
+}
+
+// backupKeyFor 计算源文件的备份键：原始文件名 + 绝对路径 FNV 散列。
+//
+// 不能只用文件名（filepath.Base）做键：不同目录下的同名文件（如 pkg/a/util.go
+// 与 pkg/b/util.go）会共用同一个 .bak，后追踪者覆盖先追踪者的备份，导致
+// diff 展示错乱、回滚把 A 文件内容写进 B 文件。附加路径散列即可唯一化，
+// 同时保留文件名前缀便于人工排查备份目录。
+func backupKeyFor(absPath string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(absPath))
+	return fmt.Sprintf("%s-%x.bak", filepath.Base(absPath), h.Sum64())
+}
+
+// legacyBackupKeyFor 返回旧版备份键（原始文件名.bak）。
+// 仅用于读取回退：键规则引入路径散列之前创建的存量备份以此命名。
+func legacyBackupKeyFor(absPath string) string {
+	return filepath.Base(absPath) + ".bak"
+}
+
+// backupPathFor 返回源文件在当前会话备份目录中的备份文件完整路径。
+// 备份/确认/回滚/外部读取 diff 必须统一经由此方法取路径，禁止各自拼键。
+func (s *Session) backupPathFor(fp string) string {
+	return filepath.Join(s.resolveBackupDir(), backupKeyFor(fp))
+}
+
+// backupPathForRead 返回读取备份时实际可用的路径：新键存在优先；否则回退
+// 旧键（升级前创建的会话其备份文件仍是旧命名，且已追踪文件不会重新备份，
+// 新代码下永远等不到新键备份）。读取侧统一走此方法，避免升级窗口内活跃
+// 会话的回滚静默失效、diff 被误判为全量新增。两键都不存在时返回新键路径
+// （与旧键路径的差别仅体现为调用方的 fileExists 检查结果）。
+func (s *Session) backupPathForRead(fp string) string {
+	p := s.backupPathFor(fp)
+	if fileExists(p) {
+		return p
+	}
+	legacy := filepath.Join(s.resolveBackupDir(), legacyBackupKeyFor(fp))
+	if fileExists(legacy) {
+		return legacy
+	}
+	return p
+}
+
+// BackupPathFor 导出：返回源文件在当前会话备份目录中的备份文件完整路径。
+// 供上层服务（如 mindx daemon 计算 modify_files diff）复用同一命名规则，
+// 避免两处独立实现键规则造成漂移。
+func (s *Session) BackupPathFor(fp string) string {
+	return s.backupPathFor(cleanFilePath(fp))
+}
+
+// BackupPathForRead 导出：读取侧备份路径（新键优先，旧键回退）。
+// 供上层服务读取备份基线使用；写入侧（备份创建）仍必须用 BackupPathFor。
+func (s *Session) BackupPathForRead(fp string) string {
+	return s.backupPathForRead(cleanFilePath(fp))
 }
 
 // persistModifyFilesLocked 将 modifyFiles 持久化到 store（需要持有写锁）。

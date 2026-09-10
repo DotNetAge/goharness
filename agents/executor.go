@@ -180,7 +180,7 @@ func (rt *Runtime) exec(b *AskBuilder) {
 	// 不在迭代间改变工具集，以保持前缀缓存稳定。
 	// 应用当前 Agent 声明的 ExcludeTools 过滤（由应用侧回调按 agentName 解析），
 	// 排除不允许使用的工具。
-	excludeTools := rt.ExcludeToolsFor(b.agentName)
+	excludeTools := effectiveExcludeTools(rt, b.agentName, b.session)
 	allToolDefs := buildAllToolDefinitions(rt.toolReg, excludeTools)
 
 	// 构建系统提示词段落（每轮之间静态不变）
@@ -610,6 +610,39 @@ func formatToolResult(tr hooks.ToolResult) string {
 	}
 	// 空结果属于"不及预期"场景，同样采用第一人称引导，提示调整参数或换工具。
 	return fmt.Sprintf("[%s] 返回结果: (空结果)。我未能从该工具获得任何输出，下一步我应该考虑调整参数或改用其它工具来获取所需信息。", tr.ToolName)
+}
+
+// multiAgentToolNames 多 Agent 协作类工具清单：任务派发（SubAgent/TeamCreate）、
+// 结果收集（CollectResults，与 SubAgent 配对使用）、团队管理（TeamDelete/TeamList/
+// TeamGetTasks）。子智能体会话必须全部屏蔽（见 exec 中的 Sponsor 判定），
+// 防止「子派孙」递归派发；与 registerDefaultTools 的注册分支保持同集，
+// 新增多 Agent 工具时须两处同步维护。
+var multiAgentToolNames = []string{
+	"SubAgent",
+	"CollectResults",
+	"TeamCreate",
+	"TeamDelete",
+	"TeamList",
+	"TeamGetTasks",
+}
+
+// effectiveExcludeTools 汇总 exec 实际生效的工具排除集合：
+// Agent 声明的 ExcludeTools + 子会话的多 Agent 协作工具屏蔽。
+//
+// 子智能体会话（spawn 派生，Sponsor 非空）必须屏蔽全部多 Agent 协作工具。
+// 根因：子会话复用主 Agent 的系统提示与完整工具集，当任务与角色错配
+// （如给执行助理派翻译任务）或单批工作量偏大时，模型会按系统提示中
+// 「协调其它智能体」的职责再次调用 SubAgent/TeamCreate 派发，形成
+// 「子派孙」递归——每层 spawn 同步阻塞等待下一层，CollectResults 永远
+// 等不到终止标记，表现为所有子任务永久处于运行中（假死循环）。
+func effectiveExcludeTools(rt *Runtime, agentName string, sess *session.Session) map[string]bool {
+	exclude := rt.ExcludeToolsFor(agentName)
+	if sess != nil && sess.Sponsor() != "" {
+		for _, name := range multiAgentToolNames {
+			exclude[name] = true
+		}
+	}
+	return exclude
 }
 
 // buildAllToolDefinitions 从工具注册表构建工具定义，用于 LLM 请求的 tools 字段。

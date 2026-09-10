@@ -220,7 +220,10 @@ type Session struct {
 
 	// loaded 指示消息是否已从持久化存储加载。
 	// 当为 false 时，Current() 和 Append() 将触发自动懒加载。
-	loaded bool
+	// 使用原子类型：ensureLoaded 的快速路径在 loadingMu 锁外读取本标志，
+	// 与锁内写入构成跨 goroutine 访问，必须原子化以消除数据竞争
+	// （bool 单向翻转逻辑上良性，但 race detector 会判定为竞争）。
+	loaded atomic.Bool
 
 	// loadingMu 防止并发懒加载操作
 	loadingMu sync.Mutex
@@ -459,7 +462,8 @@ func (s *Session) loadMessages(ctx context.Context) error {
 // - 第一个调用者获取 loadingMu 并执行加载
 // - 并发调用者阻塞直到加载完成，然后看到 loaded==true
 func (s *Session) ensureLoaded(ctx context.Context) {
-	if s.loaded {
+	// 快速路径：已加载则直接返回。原子读取，与锁内写入无数据竞争。
+	if s.loaded.Load() {
 		return
 	}
 
@@ -467,19 +471,19 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 	defer s.loadingMu.Unlock()
 
 	// 获取锁后双重检查（另一个 goroutine 可能已加载）
-	if s.loaded {
+	if s.loaded.Load() {
 		return
 	}
 
 	if s.store == nil {
-		s.loaded = true
+		s.loaded.Store(true)
 		return
 	}
 
 	// 从存储加载消息和游标
 	if err := s.loadMessages(ctx); err != nil {
 		// 如果加载失败，仍然标记为已加载以避免重试循环。
-		s.loaded = true
+		s.loaded.Store(true)
 		return
 	}
 
@@ -499,7 +503,7 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 	// 否则下一轮魔法词（PermissionAllow/Deny）无法解析。
 	s.loadPendingPermission()
 
-	s.loaded = true
+	s.loaded.Store(true)
 }
 
 // Restore 显式地从持久化存储加载历史消息到内存。
@@ -520,7 +524,7 @@ func (s *Session) Restore(ctx context.Context) error {
 	}
 
 	s.loadingMu.Lock()
-	s.loaded = true
+	s.loaded.Store(true)
 	s.loadingMu.Unlock()
 
 	return nil

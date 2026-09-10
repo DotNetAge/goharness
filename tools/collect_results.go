@@ -32,12 +32,28 @@ const (
 	SubAgentTaskStartPrefix = "[sub-agent-task-start]"
 )
 
+// WaitCompletionsFunc 等待指定子任务全部结束（Promise.all 语义）：
+// 事件驱动阻塞直至所有会话的 spawn 结束或 ctx 取消。
+// 返回 sessionID → spawn 早期失败原因（正常结束不出现在返回值中）。
+type WaitCompletionsFunc func(ctx context.Context, sessionIDs []string) map[string]error
+
 // CollectResultsTool 收集子代理任务的结果。
 // 通过轮询子 session 获取 SubAgent 的执行结果，不依赖 ResultStore。
-type CollectResultsTool struct{}
+// 轮询前优先经 waitCompletions 事件驱动等待子任务结束广播（同进程 Promise
+// 语义），完成即收集；轮询保留为跨进程恢复会话（无广播通道）的兜底。
+type CollectResultsTool struct {
+	waitCompletions WaitCompletionsFunc
+}
 
 func NewCollectResultsTool() *CollectResultsTool {
 	return &CollectResultsTool{}
+}
+
+// SetWaitCompletionsFunc 设置子任务完成等待函数（agents 层实现，经 Runtime 注入）。
+// 在轮询前调用：全部子任务结束（close 广播）即唤醒，消除 2 秒轮询盲扫延迟；
+// spawn 早期失败经返回值直接上报，避免对无标记会话死等 30 分钟。
+func (t *CollectResultsTool) SetWaitCompletionsFunc(fn WaitCompletionsFunc) {
+	t.waitCompletions = fn
 }
 
 func (t *CollectResultsTool) Info() *ToolInfo {
@@ -98,6 +114,15 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	// 否则会话队列会被一直占住，后续消息全部排队、取消形同虚设。
 	waitCtx := withoutDeadline(ctx)
 
+	// 事件驱动等待（Promise.all 语义）：全部子任务的 spawn 结束广播（close）
+	// 即唤醒，完成即收集，消除 2 秒轮询盲扫延迟。spawn 早期失败（无子会话
+	// 标记可写）经返回值直接上报，不进入轮询死等 30 分钟。
+	// 无广播通道的会话（跨进程恢复的旧会话）不等待，由后续轮询兜底。
+	spawnErrs := map[string]error{}
+	if t.waitCompletions != nil {
+		spawnErrs = t.waitCompletions(waitCtx, sessionIDs)
+	}
+
 	deadline := time.Now().Add(defaultCollectTimeout)
 
 	// 并发轮询所有子会话：单个子代理的长时间执行或挂起不得阻塞其它子代理的结果收集。
@@ -110,6 +135,20 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		wg.Add(1)
 		go func(i int, id string) {
 			defer wg.Done()
+			// spawn 早期失败：等待已确保广播结束，直接返回失败原因，
+			// 不进入轮询死等（子会话中永远不会有终止标记）。
+			if err, ok := spawnErrs[id]; ok {
+				logger.Warn("collect_results: sub-agent spawn failed early",
+					"session_id", id,
+					"error", err,
+				)
+				jsonResults[i] = map[string]string{
+					"session_id": id,
+					"status":     "failed",
+					"error":      fmt.Sprintf("子代理任务启动失败: %v", err),
+				}
+				return
+			}
 			result := t.pollForResult(waitCtx, tc, id, deadline)
 			if result != nil {
 				jsonResults[i] = result

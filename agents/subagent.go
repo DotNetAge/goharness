@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -38,6 +39,15 @@ type perSessionState struct {
 	// 不参与复用——避免并行分身场景中，一个会话刚创建尚未被其 spawn
 	// 锁定时被其他并发调用误复用。
 	lastUsedAt time.Time
+
+	// spawning 是「空闲复用认领」标志：findIdleSession / recoverLatestSession
+	// 选中会话时在 m.mu 写锁内置位（探测即认领，原子），spawn 结束时由
+	// releaseSpawn 复位。它取代旧的 TryLock「探测后立即解锁」方案——那存在
+	// 认领窗口：并发调用方都能通过探测、随后各自加锁，导致多个并行派发
+	// 坍缩到同一会话（子任务串行撞车、CollectResults 读串、结果逐字相同）。
+	// 显式 sessionID 复用不经此判定（本就是排队语义）；标志泄漏（spawn 在
+	// 认领后、接管前失败）的后果仅是该会话不再被空闲复用，不影响正确性。
+	spawning bool
 }
 
 // subAgentManager 管理子智能体的会话登记与派生执行，是 Runtime 的一个内聚子系统，
@@ -59,13 +69,36 @@ type subAgentManager struct {
 	rt     *Runtime
 	mu     sync.RWMutex
 	states map[string]*perSessionState
+
+	// doneChs 是「子任务完成广播」登记表（Promise 语义）：sessionID → 广播通道。
+	// spawn 启动时登记、结束时 close（close 即广播，多等待者安全）。
+	// CollectResults 经 rt 注入的 waitCompletions 等待通道关闭，
+	// 事件驱动感知子任务结束，替代盲轮询（轮询保留为跨进程恢复场景的兜底）。
+	doneChs map[string]chan struct{}
+
+	// spawnErrors 记录 spawn 早期失败（无子会话可写终止标记的场景，如
+	// getOrCreate 失败）：sessionID → 失败原因。CollectResults 唤醒后
+	// 据此直接返回失败，避免对无标记会话死等轮询到 30 分钟上限。
+	spawnErrors map[string]error
+
+	// sponsored 是「主会话停止 → 派生子代理级联强停」的登记表：
+	// 主会话 ID → (子会话 ID → 子执行循环 ctx 的取消函数)。
+	// 子执行循环运行在 Runtime.Ask 新建的独立 Background ctx 上，不随主
+	// exec ctx 级联取消（保证工具调用结束、主轮次正常收尾不影响后台子任务），
+	// 因此「主会话被停止时强停其全部派生子代理」必须显式登记、显式取消
+	// （Runtime.CancelSubAgents）。同一子会话同一时刻至多一个活跃 spawn
+	// （per-session 互斥锁保证），登记即覆盖旧句柄；spawn 结束或强停后清理。
+	sponsored map[string]map[string]context.CancelFunc
 }
 
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
 	return &subAgentManager{
-		rt:     rt,
-		states: make(map[string]*perSessionState),
+		rt:          rt,
+		states:      make(map[string]*perSessionState),
+		doneChs:     make(map[string]chan struct{}),
+		spawnErrors: make(map[string]error),
+		sponsored:   make(map[string]map[string]context.CancelFunc),
 	}
 }
 
@@ -80,11 +113,18 @@ func newSubAgentManager(rt *Runtime) *subAgentManager {
 //
 // 失败时返回错误（不再静默返回 nil）。
 func (m *subAgentManager) getOrCreate(ctx context.Context, agentName, projectDir, sponsor string, store session.SessionStore, sessionID string) (*perSessionState, error) {
-	// 显式复用时先读快照：已登记的会话直接命中，避免重复加载。
+	// 显式复用时先查已登记状态：命中则在写锁内置位 spawning 认领标志后直接返回，
+	// 避免重复加载。显式复用虽是排队语义，但认领标志必须置位——否则并发派发的
+	// findIdleSession（判定条件含 spawning == false）会在本会话显式复用期间把它
+	// 当作空闲会话误认领，把本应独立的并行任务串行化到同一会话（上下文混流）。
+	// 置位由 spawn 结束时的 releaseSpawn 统一复位（该路径已持锁，直接写安全）。
 	if sessionID != "" {
-		m.mu.RLock()
+		m.mu.Lock()
 		st, ok := m.states[sessionID]
-		m.mu.RUnlock()
+		if ok {
+			st.spawning = true
+		}
+		m.mu.Unlock()
 		if ok {
 			return st, nil
 		}
@@ -105,9 +145,12 @@ func (m *subAgentManager) getOrCreate(ctx context.Context, agentName, projectDir
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 双重检查，避免加锁期间其他 goroutine 已登记。
+	// 双重检查，避免加锁期间其他 goroutine 已登记。命中时同样置位 spawning
+	// 认领标志（与上方显式复用快照路径一致，防止被 findIdleSession 误认领），
+	// 由 spawn 结束时的 releaseSpawn 统一复位。
 	if sessionID != "" {
 		if st, ok := m.states[sessionID]; ok {
+			st.spawning = true
 			return st, nil
 		}
 	}
@@ -141,7 +184,13 @@ func (m *subAgentManager) getOrCreate(ctx context.Context, agentName, projectDir
 			return nil, fmt.Errorf("加载子智能体会话失败: %w", err)
 		}
 	}
-	st := &perSessionState{sess: s}
+	// spawning 置位贯穿整个 spawn 生命周期：getOrCreate 返回即被本次 spawn
+	// 接管（新建分身或显式恢复），直到 spawn 结束由 releaseSpawn 复位。
+	// 不能依赖 lastUsedAt 判定活跃——touchSession 在 spawn 开始时即写入时间戳，
+	// 若新建会话 spawning 为 false，首个 spawn 运行期间其他并发派发的
+	// findIdleSession 会看到「lastUsedAt 非零 && spawning == false」而误认领
+	// 正在运行的会话（并行任务坍缩串行，即本次修复的缺陷场景）。
+	st := &perSessionState{sess: s, spawning: true}
 	m.states[s.ID()] = st
 	return st, nil
 }
@@ -149,12 +198,13 @@ func (m *subAgentManager) getOrCreate(ctx context.Context, agentName, projectDir
 // findIdleSession 在内存已登记会话中查找可复用的空闲会话。
 // 匹配条件：AgentName / ProjectDir / Sponsor 三者一致——同一发起方（Sponsor）在
 // 同一工作目录（ProjectDir）下安排同一 Agent，讨论的话题相关度高，上下文连续可延续；
-// 且会话已被 spawn 认领使用过（lastUsedAt 非零）、当前空闲（per-session 锁未被持有）。
-// 若该 Agent 正有活跃 spawn 并行工作，则不复用（返回 nil，由调用方新建分身保持并行）。
+// 且会话已被 spawn 认领使用过（lastUsedAt 非零）、当前未被认领（spawning == false）。
+// 认领判定与置位同在 m.mu 写锁内完成（探测即认领，原子），并发调用不可能同时
+// 选中同一会话；被认领中的会话跳过，由调用方新建分身保持并行。
 // 多个候选时选择最近使用（lastUsedAt 最新）的会话。
 func (m *subAgentManager) findIdleSession(agentName, projectDir, sponsor string) *perSessionState {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var best *perSessionState
 	for _, st := range m.states {
 		if st.sess.AgentName() != agentName ||
@@ -162,26 +212,26 @@ func (m *subAgentManager) findIdleSession(agentName, projectDir, sponsor string)
 			st.sess.Sponsor() != sponsor {
 			continue
 		}
-		if st.lastUsedAt.IsZero() {
+		if st.lastUsedAt.IsZero() || st.spawning {
 			// 从未被 spawn 认领（刚创建/恢复，即将被其 spawn 锁定使用）：
 			// 不参与复用，避免并行分身场景下误复用到同一新会话。
+			// spawning == true：已被并发调用认领、正在排队或执行中——跳过。
 			continue
 		}
-		if !st.lock.TryLock() {
-			// 当前有活跃 spawn —— 并行分身场景，跳过复用。
-			continue
-		}
-		st.lock.Unlock()
 		if best == nil || st.lastUsedAt.After(best.lastUsedAt) {
 			best = st
 		}
+	}
+	if best != nil {
+		// 原子认领：本次 spawn 结束后由 releaseSpawn 复位。
+		best.spawning = true
 	}
 	return best
 }
 
 // recoverLatestSession 从持久化存储恢复同 Agent + ProjectDir + Sponsor 的最近使用会话，
 // 实现跨进程重启后的上下文延续（读取最新会话恢复讨论上下文）。
-// 返回 nil 表示存储不可用、无可匹配会话，或候选会话正被活跃 spawn 使用（并行分身）。
+// 返回 nil 表示存储不可用、无可匹配会话，或候选会话已被并发调用登记/认领（并行分身）。
 func (m *subAgentManager) recoverLatestSession(ctx context.Context, agentName, projectDir, sponsor string, store session.SessionStore) *perSessionState {
 	if store == nil {
 		return nil
@@ -208,13 +258,18 @@ func (m *subAgentManager) recoverLatestSession(ctx context.Context, agentName, p
 		return nil
 	}
 
-	m.mu.RLock()
-	_, inMem := m.states[latest.SessionID]
-	m.mu.RUnlock()
-	if inMem {
-		// 已在内存中：是否可复用（空闲且使用过）由 findIdleSession 判定，
-		// 此处一律返回 nil——否则并行分身场景下会误复用到刚创建、尚未被其
-		// spawn 认领的新会话，导致并行任务被错误串行化。
+	// 「是否已在内存」检查与登记必须在同一次写锁持有内完成：
+	// 旧实现两次独立加锁（RLock 检查 → 解锁 → Load → Lock 登记）存在窗口，
+	// 并发调用会在窗口内全部判定「不在内存」而加载同一持久化会话，
+	// 登记处双重检查又把它们合并为同一实例——多个并行派发因此共用同一
+	// sessionID（子任务串行撞车、结果串台）。写锁内会话加载为本地存储读取，
+	// 耗时可接受，正确性优先。
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, inMem := m.states[latest.SessionID]; inMem {
+		// 已在内存（含并发调用刚登记的情形）：是否可复用由 findIdleSession
+		// 的 spawning 判定，此处一律返回 nil——否则并行分身场景下会误复用
+		// 到刚创建、尚未被其 spawn 认领的新会话，导致并行任务被错误串行化。
 		return nil
 	}
 
@@ -223,14 +278,8 @@ func (m *subAgentManager) recoverLatestSession(ctx context.Context, agentName, p
 	if err != nil {
 		return nil
 	}
-	st := &perSessionState{sess: s}
-	m.mu.Lock()
-	if exist, ok := m.states[s.ID()]; ok {
-		m.mu.Unlock()
-		return exist
-	}
+	st := &perSessionState{sess: s, spawning: true}
 	m.states[s.ID()] = st
-	m.mu.Unlock()
 	return st
 }
 
@@ -242,6 +291,173 @@ func (m *subAgentManager) touchSession(sessionID string) {
 	if st := m.states[sessionID]; st != nil {
 		st.lastUsedAt = time.Now()
 	}
+}
+
+// releaseSpawn 复位会话的「空闲复用认领」标志：spawn 结束（无论成败）时调用，
+// 使会话重新参与后续的空闲复用（findIdleSession）。与 findIdleSession /
+// recoverLatestSession 的置位配对，同用 m.mu 写锁保证原子性。
+// 会话不在登记表时静默忽略（spawn 早期失败尚未来得及登记的场景）。
+func (m *subAgentManager) releaseSpawn(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if st := m.states[sessionID]; st != nil {
+		st.spawning = false
+	}
+}
+
+// registerDone 登记子任务完成广播通道（幂等）：已登记则复用既有通道。
+// Promise 语义的第一半——spawn 启动即登记，结束（无论成败）由 completeDone
+// close 广播。空 sessionID 忽略（无广播对象）。
+// 同时清除该会话上一次 spawn 的失败登记：会话复用（同 sid 新任务）场景下，
+// 旧失败记录会让 waitCompletions 把本次成功任务误判为启动失败。
+func (m *subAgentManager) registerDone(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.doneChs[sessionID]; !ok {
+		m.doneChs[sessionID] = make(chan struct{})
+	}
+	delete(m.spawnErrors, sessionID)
+}
+
+// completeDone 广播子任务结束：close 通道唤醒所有等待者并清理登记。
+// Promise 语义的第二半——spawn 结束时调用，多等待者（多个 CollectResults）
+// 同时唤醒均安全。
+func (m *subAgentManager) completeDone(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ch, ok := m.doneChs[sessionID]; ok {
+		delete(m.doneChs, sessionID)
+		close(ch)
+	}
+}
+
+// failDone 记录 spawn 早期失败并广播结束。
+// 早期失败（如 getOrCreate 失败）没有子会话可写终止标记，CollectResults
+// 唤醒后查本登记直接返回失败，避免对无标记会话死等轮询到 30 分钟上限。
+// 幂等语义限于单次 spawn：保留本次 spawn 的首个失败原因
+// （跨 spawn 的旧记录由 registerDone 在新任务登记时清除）。
+func (m *subAgentManager) failDone(sessionID string, err error) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	if _, ok := m.spawnErrors[sessionID]; !ok {
+		m.spawnErrors[sessionID] = err
+	}
+	m.mu.Unlock()
+	m.completeDone(sessionID)
+}
+
+// waitCompletions 等待指定子任务全部结束（Promise.all 语义）：
+// 事件驱动阻塞直至所有会话的 spawn 结束（完成广播通道关闭）或 ctx 取消。
+// 无活跃登记的会话视为已完成（跨进程恢复的旧会话无通道，调用方以轮询兜底）。
+// 返回本次询问中 spawn 早期失败的 sessionID → 失败原因（正常结束不出现在
+// 返回值中，结果由调用方从子会话读取）。
+func (m *subAgentManager) waitCompletions(ctx context.Context, sessionIDs []string) map[string]error {
+	chs := make(map[string]chan struct{}, len(sessionIDs))
+	m.mu.RLock()
+	for _, id := range sessionIDs {
+		if ch, ok := m.doneChs[id]; ok {
+			chs[id] = ch
+		}
+	}
+	m.mu.RUnlock()
+
+	// 等待所有活跃通道关闭：每个通道一个 goroutine，ctx 取消时同步退出。
+	if len(chs) > 0 {
+		var wg sync.WaitGroup
+		for _, ch := range chs {
+			wg.Add(1)
+			go func(ch chan struct{}) {
+				defer wg.Done()
+				select {
+				case <-ch:
+				case <-ctx.Done():
+				}
+			}(ch)
+		}
+		wg.Wait()
+	}
+
+	// 等待结束后查失败登记：此时 failDone 必然已完成，不会漏掉等待期间的失败。
+	errs := make(map[string]error)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range sessionIDs {
+		if e, ok := m.spawnErrors[id]; ok {
+			errs[id] = e
+		}
+	}
+	return errs
+}
+
+// registerSponsored 登记运行中子代理的强停句柄：sponsorSessionID 为主会话 ID，
+// subSessionID 为子会话 ID，cancel 为子执行循环 ctx 的取消函数。
+// 同一子会话同一时刻至多一个活跃 spawn（per-session 互斥锁保证），重复登记
+// 即覆盖旧句柄；空主会话 ID 或空取消函数忽略（无强停入口）。
+func (m *subAgentManager) registerSponsored(sponsorSessionID, subSessionID string, cancel context.CancelFunc) {
+	if sponsorSessionID == "" || cancel == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subs, ok := m.sponsored[sponsorSessionID]
+	if !ok {
+		subs = make(map[string]context.CancelFunc)
+		m.sponsored[sponsorSessionID] = subs
+	}
+	subs[subSessionID] = cancel
+}
+
+// unregisterSponsored 注销强停句柄：spawn 结束（无论成败）时调用。
+// 句柄不存在时静默返回（cancelSponsored 强停时可能已提前清理）。
+func (m *subAgentManager) unregisterSponsored(sponsorSessionID, subSessionID string) {
+	if sponsorSessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subs, ok := m.sponsored[sponsorSessionID]
+	if !ok {
+		return
+	}
+	delete(subs, subSessionID)
+	if len(subs) == 0 {
+		delete(m.sponsored, sponsorSessionID)
+	}
+}
+
+// cancelSponsored 强停指定主会话派生的全部运行中子代理：
+// 逐一取消其执行循环 ctx（LLM 流式调用、工具执行、授权挂起等待均随 ctx
+// 取消而终止；子会话随后写入终止标记，CollectResults 可立即感知失败），
+// 并清理登记避免重复强停。返回被强停的子代理数。
+func (m *subAgentManager) cancelSponsored(sponsorSessionID string) int {
+	if sponsorSessionID == "" {
+		return 0
+	}
+	m.mu.Lock()
+	subs, ok := m.sponsored[sponsorSessionID]
+	if !ok {
+		m.mu.Unlock()
+		return 0
+	}
+	cancels := make([]context.CancelFunc, 0, len(subs))
+	for _, cancel := range subs {
+		cancels = append(cancels, cancel)
+	}
+	delete(m.sponsored, sponsorSessionID)
+	m.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
 }
 
 // spawn 创建并运行子智能体（实现 tools.SpawnFunc）。
@@ -256,25 +472,75 @@ func (m *subAgentManager) touchSession(sessionID string) {
 //   - 通过 Runtime.Ask 运行，与主智能体使用相同的思考循环。
 //   - 独立会话意味着与父级上下文完全隔离。
 func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID string) (answer string, sid string, err error) {
+	// panic 兜底（覆盖早期阶段：agent 校验、上下文检查、会话定位）：
+	// spawn 链路任何 panic 不得击穿到 tools 层后台 goroutine 崩掉整个进程。
+	// 捕获后转为错误返回，并登记失败广播——CollectResults 唤醒后查 spawnErrors
+	// 直接感知失败，不至对无终止标记的子会话死等轮询。此时完成广播通道可能尚未
+	// 登记（failDone 的 close 为 no-op），感知依赖 spawnErrors 查询：CollectResults
+	// 调用必然晚于 SubAgent 工具返回，而后者必然晚于本函数返回（failDone 已完成），
+	// 时序严格成立、无竞态。sessionID 非空时顺带复位 spawning（releaseSpawn defer
+	// 在早期 panic 场景尚未注册）；为空时无法定位会话，后果仅是该会话不再参与
+	// 空闲复用，不影响正确性。
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("子智能体执行发生 panic: %v", r)
+			m.rt.logger.Error("子智能体执行 panic",
+				err,
+				"agent_name", agentName,
+				"session_id", sessionID,
+				"stack", string(debug.Stack()),
+			)
+			m.failDone(sessionID, err)
+			if sessionID != "" {
+				m.releaseSpawn(sessionID)
+			}
+		}
+	}()
+
 	// Agent 存在性校验走应用侧回调（goharness 对 Agent 结构零依赖）。
 	if m.rt.agentExists != nil && !m.rt.agentExists(agentName) {
-		return "", "", fmt.Errorf("未找到智能体配置: %q", agentName)
+		spawnErr := fmt.Errorf("未找到智能体配置: %q", agentName)
+		// sessionID 已知（ensureSession 存根）时登记失败并广播，
+		// CollectResults 唤醒后直接拿到失败原因，不至死等轮询。
+		m.failDone(sessionID, spawnErr)
+		return "", "", spawnErr
 	}
 
 	tc := tools.GetToolContext(ctx)
 	if tc == nil || tc.Session == nil {
-		return "", "", fmt.Errorf("上下文未包含会话")
+		spawnErr := fmt.Errorf("上下文未包含会话")
+		m.failDone(sessionID, spawnErr)
+		return "", "", spawnErr
+	}
+	// 完成广播登记（Promise 语义）：sessionID 已知（ensureSession 存根/显式复用）
+	// 时立即登记，使 getOrCreate 失败也能广播；为空（新建/复用空闲会话）时在
+	// 会话确定后补登记。spawn 结束（无论成败）统一 close 广播，
+	// CollectResults 事件驱动感知子任务结束，替代盲轮询。
+	if sessionID != "" {
+		m.registerDone(sessionID)
 	}
 	st, err := m.getOrCreate(ctx, agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store(), sessionID)
 	if err != nil {
-		return "", "", fmt.Errorf("获取子智能体会话失败: %q: %w", agentName, err)
+		wrapped := fmt.Errorf("获取子智能体会话失败: %q: %w", agentName, err)
+		m.failDone(sessionID, wrapped)
+		return "", "", wrapped
 	}
 	sess := st.sess
+	if sessionID == "" {
+		sessionID = sess.ID()
+		m.registerDone(sessionID)
+	}
+	defer m.completeDone(sessionID)
 
 	// per-session 互斥：同一会话的并发 Ask 串行执行。
 	// 锁粒度 = 完整 exec 循环，持有期间阻塞其他对该会话的 spawn。
 	st.lock.Lock()
 	defer st.lock.Unlock()
+
+	// 认领释放：spawn 结束（无论成败）后复位 spawning 标志，使会话重新参与
+	// 后续的空闲复用。defer 栈上位于 st.lock.Unlock 之前执行（LIFO），
+	// 复位动作本身走 m.mu 写锁，与 per-session 互斥锁无耦合。
+	defer m.releaseSpawn(sess.ID())
 
 	// 记录本次使用时间：后续同一 Agent + ProjectDir + Sponsor 的 spawn
 	// 可据此判断空闲会话并复用（延续讨论上下文）。
@@ -326,6 +592,30 @@ func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID 
 	defer func() {
 		m.clearPermissionWait(sess.ID(), permissionCh)
 		close(permissionCh)
+	}()
+
+	// 强停登记（级联取消锚点）：以发起方主会话 ID 为键登记子执行循环的
+	// 取消函数，主会话被停止时由宿主（mindx）经 Runtime.CancelSubAgents
+	// 统一强停。登记在 per-session 锁持有期间进行，保证同一子会话同一
+	// 时刻至多一个活跃登记；spawn 结束（无论成败）注销。
+	m.registerSponsored(tc.Session.ID(), sess.ID(), builder.cancel)
+	defer m.unregisterSponsored(tc.Session.ID(), sess.ID())
+
+	// panic 兜底（覆盖执行循环阶段）：捕获后转为错误返回并登记失败广播。
+	// defer LIFO 顺序保证本 recover 最先执行——failDone 先写入 spawnErrors 并
+	// close 广播唤醒等待者，随后函数尾部 defer completeDone 发现键已被清理而
+	// no-op，确保「等待者唤醒 → 查 spawnErrors」必然读到失败原因，无竞态窗口。
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("子智能体执行发生 panic: %v", r)
+			m.rt.logger.Error("子智能体执行 panic",
+				err,
+				"agent_name", agentName,
+				"session_id", sessionID,
+				"stack", string(debug.Stack()),
+			)
+			m.failDone(sessionID, err)
+		}
 	}()
 
 	result, err := builder.Run()

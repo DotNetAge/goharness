@@ -145,8 +145,10 @@ func NewCompactor(rt *Runtime) session.Compactor {
 // 第二次请求能命中第一次已落盘的前缀缓存——这是把重试放在 Compactor 层的额外收益。
 //
 // 返回：
-//   - 成功：chunks（可能为空，表示 LLM 判定无实质信息）
-//   - 失败：error（首次失败 + 重试也失败时返回合并错误）
+//   - 成功：chunks（非空）
+//   - 失败：error（首次失败 + 重试也失败时返回合并错误）。
+//     空响应同样走失败路径触发重试：LLM 未返回 content 时无法区分
+//     「判定无实质信息」与「服务端异常」，宁可重试一次也不静默丢压缩。
 func (c *compactor) Compact(ctx context.Context, s *session.Session, messages []session.Message) ([]memory.MemoryChunk, error) {
 	// 首次尝试
 	chunks, err := c.compactionTurn(ctx, s, messages, compactionInstruction)
@@ -185,10 +187,11 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	// 1. system prompts —— 与主对话一致（Runtime.exec 中同样调用 prompt.BuildSystemPrompts）
 	systemMsgs := c.rt.prompt.BuildSystemPrompts(sid, s)
 
-	// 2. tools 数组 —— 与主对话一致（Runtime.exec 中同样调用 buildAllToolDefinitions）。
-	//    buildAllToolDefinitions 注释明确："所有工具一次性注册，不在迭代间改变工具集，
-	//    以保持前缀缓存稳定。"
-	excludeTools := c.rt.ExcludeToolsFor(agentName)
+	// 2. tools 数组 —— 与本会话的主对话请求逐字段一致（Runtime.exec 中同样调用
+	//    buildAllToolDefinitions）。必须走 effectiveExcludeTools 而非裸 ExcludeToolsFor：
+	//    子会话（Sponsor 非空）的 exec 请求屏蔽了多 Agent 协作工具，压缩请求若不
+	//    同步屏蔽，tools 字段与主请求不一致会导致前缀缓存不命中。审计发现的契约违背。
+	excludeTools := effectiveExcludeTools(c.rt, agentName, s)
 	toolDefs := buildAllToolDefinitions(c.rt.toolReg, excludeTools)
 
 	// 3. messages 前缀 —— 使用 AssembleMessages 构造，question="" 不追加。
@@ -226,24 +229,36 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 		return nil, fmt.Errorf("compactor stream open: %w", err)
 	}
 
-	// 6. 流式收集：只收集 content，忽略 thinking/tool_call/done 事件。
-	//    模式参考 collectStreamResponse（此处为精简版：compaction 无需事件转发与 reasoning）。
+	// 6. 流式收集：content 为主，thinking/FinishReason/Usage 作为观测字段同步收集。
+	//    这些字段是空响应排障的唯一线索（生产曾出现 4 分钟空响应且无任何定位信息）。
 	var contentBuf strings.Builder
+	var thinkingChars int
+	var toolCallEvents int
 	var streamErr error
+	var finishReason string
+	var doneUsage *gochatcore.Usage
 	for stream.Next() {
 		ev := stream.Event()
 		switch ev.Type {
 		case gochatcore.EventContent:
 			contentBuf.WriteString(ev.Content)
+		case gochatcore.EventThinking:
+			// 思考型模型（如 glm-4.7-flash）的输出可能全部落在思考流，
+			// 思考长度是判定「模型输出了但 content 通道为空」的关键证据
+			thinkingChars += len(ev.Content)
 		case gochatcore.EventError:
 			streamErr = ev.Err
 		case gochatcore.EventToolCall:
 			// ToolChoice="auto" 下模型理论上可能调工具，但靠 instruction 已禁止。
 			// 若仍收到 tool_call 事件，记录日志但不中断流（让 content 部分仍被收集）。
+			toolCallEvents += len(ev.ToolCallDeltas)
 			c.logger.Warn("压缩阶段收到意外的 tool_call 事件（instruction 已禁止）",
 				"session_id", sid)
-		case gochatcore.EventThinking, gochatcore.EventDone:
-			// 忽略思考内容和完成事件
+		case gochatcore.EventDone:
+			finishReason = ev.FinishReason
+			// done 事件可能自带 Usage：Next 循环退出后迟到的 usage 尾包
+			// 会在 Close 的 drain 中被丢弃，此处快照作回退来源
+			doneUsage = ev.Usage
 		}
 	}
 	stream.Close()
@@ -253,10 +268,34 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	}
 
 	content := contentBuf.String()
+
+	// 流结束后记录完整观测信息：Usage 优先取尾包汇总，缺失时回退 done 事件快照
+	streamUsage := stream.Usage()
+	if streamUsage == nil {
+		streamUsage = doneUsage
+	}
+	usageFields := []any{"session_id", sid, "finish_reason", finishReason}
+	if streamUsage != nil {
+		usageFields = append(usageFields,
+			"prompt_tokens", streamUsage.PromptTokens,
+			"completion_tokens", streamUsage.CompletionTokens)
+	} else {
+		// Usage 为 nil 本身就是异常信号：流未走完服务端用量回报即终止
+		usageFields = append(usageFields, "prompt_tokens", "nil", "completion_tokens", "nil")
+	}
+	c.logger.Info("压缩流结束",
+		append(usageFields,
+			"content_chars", len(content),
+			"thinking_chars", thinkingChars,
+			"tool_call_events", toolCallEvents)...)
+
 	if content == "" {
-		// 空响应返回 nil,nil（LLM 未返回内容，无实质信息可压缩）
-		c.logger.Info("压缩响应为空，LLM 未返回内容", "session_id", sid)
-		return nil, nil
+		// 空响应必须返回错误触发 Compact 的重试机制（同前缀仅换末尾指令，命中前缀缓存）。
+		// 之前返回 nil,nil 会绕过重试直接判失败，且不留任何排障线索。
+		// 附带观测字段：finish_reason=length 指向输出预算被思考流耗尽；
+		// usage 为 nil 指向服务端静默断流。
+		return nil, fmt.Errorf("压缩响应为空（finish_reason=%q, thinking_chars=%d, tool_call_events=%d）",
+			finishReason, thinkingChars, toolCallEvents)
 	}
 
 	// 7. 解析 LLM 返回的 JSON 文本为 MemoryChunk（纯解析，无 LLM 调用）

@@ -766,3 +766,58 @@ func TestExecReadImageNonVisionNoImageMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestEffectiveExcludeTools 验证 exec 工具排除集合的汇总逻辑：
+// 主会话（Sponsor 为空）只应用 Agent 声明的排除，保留 SubAgent 等多 Agent
+// 协作工具；子会话（spawn 派生，Sponsor 非空）必须额外屏蔽全部多 Agent
+// 协作工具——这是「子派孙」递归派发死循环（子会话再调 SubAgent，每层同步
+// 阻塞等待，全部子任务永久「运行中」）的根治防线。
+func TestEffectiveExcludeTools(t *testing.T) {
+	rt := NewRuntime(WithLogger(logging.NewNopLogger()))
+	// 模拟应用侧为主 Agent 声明排除 WebSearch
+	rt.excludeTools = func(agentName string) []string {
+		return []string{"WebSearch"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store := newFakeSessionStore()
+	projectDir := t.TempDir()
+
+	// 主会话：Sponsor 为空；子会话：spawn 派生，Sponsor 非空
+	mainSt, err := rt.subAgents.getOrCreate(ctx, "main-agent", projectDir, "", store, "")
+	if err != nil {
+		t.Fatalf("创建主会话失败: %v", err)
+	}
+	subSt, err := rt.subAgents.getOrCreate(ctx, "main-agent", projectDir, "main-agent", store, "")
+	if err != nil {
+		t.Fatalf("创建子会话失败: %v", err)
+	}
+
+	mainExclude := effectiveExcludeTools(rt, "main-agent", mainSt.sess)
+	subExclude := effectiveExcludeTools(rt, "main-agent", subSt.sess)
+
+	// Agent 声明的排除对两类会话同样生效
+	if !mainExclude["WebSearch"] {
+		t.Error("Agent 声明的排除应对主会话生效")
+	}
+	if !subExclude["WebSearch"] {
+		t.Error("Agent 声明的排除应对子会话生效")
+	}
+
+	// 主会话保留全部多 Agent 协作工具（可派发子任务）
+	for _, name := range multiAgentToolNames {
+		if mainExclude[name] {
+			t.Errorf("主会话应保留多 Agent 工具 %s", name)
+		}
+	}
+	// 子会话屏蔽全部多 Agent 协作工具（切断「子派孙」递归）
+	for _, name := range multiAgentToolNames {
+		if !subExclude[name] {
+			t.Errorf("子会话应屏蔽多 Agent 工具 %s", name)
+		}
+	}
+	// 子会话的普通工具不受影响
+	if subExclude["Read"] {
+		t.Error("子会话的普通工具不应被屏蔽")
+	}
+}

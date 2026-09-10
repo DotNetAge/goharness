@@ -282,7 +282,14 @@ func (rt *Runtime) registerDefaultTools() {
 	// 因为本地模型通常无法可靠地执行多 Agent 并行任务
 	if !rt.model.IsLocal {
 		bundled = append(bundled,
-			toolOf("CollectResults", tools.NewCollectResultsTool),
+			toolOf("CollectResults", func() *tools.CollectResultsTool {
+				collectTool := tools.NewCollectResultsTool()
+				// 子任务完成广播等待（Promise.all 语义）：轮询前事件驱动等待
+				// 全部 spawn 结束，完成即收集；spawn 早期失败经返回值直接上报，
+				// 不进入轮询死等。无广播通道的跨进程恢复会话由轮询兜底。
+				collectTool.SetWaitCompletionsFunc(rt.subAgents.waitCompletions)
+				return collectTool
+			}),
 			toolOf("TaskCreate", tools.NewTaskCreateTool),
 			toolOf("TaskList", tools.NewTaskListTool),
 			toolOf("TaskGet", tools.NewTaskGetTool),
@@ -299,6 +306,12 @@ func (rt *Runtime) registerDefaultTools() {
 		bundled = append(bundled,
 			toolOf("SubAgent", func() *tools.SubAgentTool {
 				subAgentTool := tools.NewSubAgentTool(rt.subAgents.spawn)
+				// agent_name 存在性同步校验：与 spawn 内的校验共用应用侧回调。
+				// 在 Execute 同步阶段拦截不存在的 agent_name，柔性错误直接写入
+				// 主会话（错误原因 + 下一步引导），避免后台失败导致 CollectResults 死等。
+				subAgentTool.SetAgentExistsFunc(func(agentName string) bool {
+					return rt.agentExists == nil || rt.agentExists(agentName)
+				})
 				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName, sessionID string) (string, error) {
 					tc := tools.GetToolContext(ctx)
 					if tc == nil || tc.Session == nil {
@@ -417,6 +430,23 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 		runtime:   rt,
 		onEvent:   make(map[events.ReactEventType][]func(any)),
 	}
+}
+
+// CancelSubAgents 强停指定主会话派生的全部运行中子代理。
+//
+// 主会话执行循环被停止（如宿主的停止按钮 / 客户端断连）时调用。
+// 子代理执行循环运行在 Runtime.Ask 新建的独立 Background ctx 上，不随主
+// exec ctx 级联取消（保证工具调用结束、主轮次正常收尾不影响后台子任务），
+// 强停依赖 spawn 时的显式登记（发起方主会话 ID → 子执行循环取消函数）。
+// 取消会终止子代理的 LLM 流式调用、工具执行与授权挂起等待，子会话随后
+// 写入终止标记（reason=cancelled），CollectResults 后续可立即感知失败。
+//
+// 返回被强停的子代理数；该会话无运行中派生子代理时返回 0。
+func (rt *Runtime) CancelSubAgents(sponsorSessionID string) int {
+	if sponsorSessionID == "" {
+		return 0
+	}
+	return rt.subAgents.cancelSponsored(sponsorSessionID)
 }
 
 // Logger 返回 Runtime 的结构化日志器实例。

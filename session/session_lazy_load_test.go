@@ -177,7 +177,7 @@ func TestLazyLoad_CurrentTriggersAutoLoad(t *testing.T) {
 
 	s := newTestSession(sessionID, "test-agent", store)
 
-	if s.loaded {
+	if s.loaded.Load() {
 		t.Error("New session should not be marked as loaded")
 	}
 
@@ -193,7 +193,7 @@ func TestLazyLoad_CurrentTriggersAutoLoad(t *testing.T) {
 		}
 	}
 
-	if !s.loaded {
+	if !s.loaded.Load() {
 		t.Error("Session should be marked as loaded after Current()")
 	}
 }
@@ -228,7 +228,7 @@ func TestLazyLoad_CrossRequestSessionResume(t *testing.T) {
 	// ========== REQUEST 2: User says "继续" ==========
 	session2 := newTestSession(sessionID, agentName, store)
 
-	if session2.loaded {
+	if session2.loaded.Load() {
 		t.Error("session2 should NOT be loaded yet")
 	}
 
@@ -299,7 +299,7 @@ func TestLazyLoad_ConcurrentAccess(t *testing.T) {
 		t.Errorf("Only received %d results, want %d", count, numGoroutines)
 	}
 
-	if !s.loaded {
+	if !s.loaded.Load() {
 		t.Error("Session should be marked as loaded after concurrent access")
 	}
 }
@@ -317,7 +317,7 @@ func TestLazyLoad_NewSessionWithNoHistory(t *testing.T) {
 		t.Errorf("Brand new session: Current() should return nil, got %d messages", len(current))
 	}
 
-	if !s.loaded {
+	if !s.loaded.Load() {
 		t.Error("Brand new session should still be marked as loaded after Current()")
 	}
 
@@ -344,7 +344,7 @@ func TestLazyLoad_WithoutStore(t *testing.T) {
 		t.Errorf("Memory-only session: Current() returned %d messages, want 1", len(current))
 	}
 
-	if !s.loaded {
+	if !s.loaded.Load() {
 		t.Error("Memory-only session should be marked as loaded")
 	}
 }
@@ -372,7 +372,7 @@ func TestLazyLoad_ProjectDirLoadedFromStore(t *testing.T) {
 		t.Errorf("After lazy-load: ProjectDir() = %q, want %q", s.ProjectDir(), expectedProjectDir)
 	}
 
-	if !s.loaded {
+	if !s.loaded.Load() {
 		t.Error("Session should be marked as loaded after Current()")
 	}
 }

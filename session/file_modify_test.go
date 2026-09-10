@@ -51,7 +51,7 @@ func TestTrackModify_ExistingFile(t *testing.T) {
 	}
 
 	// 验证备份文件存在
-	backupPath := filepath.Join(s.resolveBackupDir(), "test.txt.bak")
+	backupPath := s.BackupPathFor(filePath)
 	if !fileExists(backupPath) {
 		t.Error("备份文件应存在")
 	}
@@ -79,7 +79,7 @@ func TestTrackModify_NewFile_NoBackup(t *testing.T) {
 	}
 
 	// 新文件不应有备份
-	backupPath := filepath.Join(s.resolveBackupDir(), "new_file.txt.bak")
+	backupPath := s.BackupPathFor(newFilePath)
 	if fileExists(backupPath) {
 		t.Error("新文件不应创建备份")
 	}
@@ -111,10 +111,111 @@ func TestTrackModify_Duplicate_SkipBackup(t *testing.T) {
 	}
 
 	// 备份应仍为原始内容
-	backupPath := filepath.Join(s.resolveBackupDir(), "dup.txt.bak")
+	backupPath := s.BackupPathFor(filePath)
 	data, _ := os.ReadFile(backupPath)
 	if string(data) != "content" {
 		t.Errorf("备份应保持首次内容: got %q, want %q", string(data), "content")
+	}
+}
+
+// TestTrackModify_SameBaseName_NoCollision 验证不同目录下的同名文件
+// 各自拥有独立备份：后追踪者不得覆盖先追踪者的备份（回归防护——
+// 旧实现用 filepath.Base 做备份键，会互相覆盖导致 diff 错乱、回滚串文件）。
+func TestTrackModify_SameBaseName_NoCollision(t *testing.T) {
+	tmpDir := t.TempDir()
+	dirA := filepath.Join(tmpDir, "pkg_a")
+	dirB := filepath.Join(tmpDir, "pkg_b")
+	os.MkdirAll(dirA, 0755)
+	os.MkdirAll(dirB, 0755)
+	fA := createTempFile(t, dirA, "util.go", "package a")
+	fB := createTempFile(t, dirB, "util.go", "package b")
+
+	s := newTestSessionWithModify()
+	s.projectDir = tmpDir
+
+	if err := s.TrackModify(fA); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrackModify(fB); err != nil {
+		t.Fatal(err)
+	}
+
+	// 两个备份必须并存且内容各自正确
+	backupA := s.BackupPathFor(fA)
+	backupB := s.BackupPathFor(fB)
+	if backupA == backupB {
+		t.Fatalf("同名文件的备份路径不应相同: %q", backupA)
+	}
+	if data, err := os.ReadFile(backupA); err != nil || string(data) != "package a" {
+		t.Errorf("A 文件备份缺失或内容被覆盖: err=%v, content=%q", err, string(data))
+	}
+	if data, err := os.ReadFile(backupB); err != nil || string(data) != "package b" {
+		t.Errorf("B 文件备份缺失或内容被覆盖: err=%v, content=%q", err, string(data))
+	}
+}
+
+// TestBackupPathForRead_LegacyFallback 验证读取侧旧键回退：
+// 备份键引入路径散列之前创建的会话，其存量备份为旧命名（basename.bak），
+// 且已追踪文件在新代码下不会重新生成新键备份——读取（回滚/确认/diff 基线）
+// 必须能回退命中旧键，否则升级窗口内活跃会话会回滚静默失效、diff 被误判为
+// 全量新增。新键存在时仍优先新键。
+func TestBackupPathForRead_LegacyFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := createTempFile(t, tmpDir, "legacy.txt", "package b")
+
+	s := newTestSessionWithModify()
+	s.projectDir = tmpDir
+
+	// 模拟升级前会话状态：旧键备份已在磁盘、追踪列表已从持久化恢复
+	if err := os.WriteFile(filepath.Join(s.resolveBackupDir(), "legacy.txt.bak"), []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	s.modifyFiles = append(s.modifyFiles, filePath)
+
+	// 读取侧应回退命中旧键
+	legacyPath := filepath.Join(s.resolveBackupDir(), "legacy.txt.bak")
+	if got := s.BackupPathForRead(filePath); got != legacyPath {
+		t.Fatalf("新键缺失时应回退旧键: got %q, want %q", got, legacyPath)
+	}
+
+	// 回滚应命中旧键并还原内容（回归防护：旧代码下此处静默移除追踪不还原）
+	rolled, err := s.Rollback(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rolled) != 1 {
+		t.Fatalf("应回滚 1 个文件: %v", rolled)
+	}
+	if data, _ := os.ReadFile(filePath); string(data) != "package a" {
+		t.Errorf("内容应被还原为备份内容: got %q", string(data))
+	}
+	if fileExists(legacyPath) {
+		t.Error("回滚后旧键备份应被删除")
+	}
+}
+
+// TestBackupPathForRead_PreferNewKey 验证新键存在时读取侧优先新键，
+// 旧键回退不干扰正常路径。
+func TestBackupPathForRead_PreferNewKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := createTempFile(t, tmpDir, "normal.txt", "new content")
+
+	s := newTestSessionWithModify()
+	s.projectDir = tmpDir
+
+	if err := s.TrackModify(filePath); err != nil {
+		t.Fatal(err)
+	}
+
+	// 新键备份已存在：读取侧直接返回新键
+	if got := s.BackupPathForRead(filePath); got != s.BackupPathFor(filePath) {
+		t.Fatalf("新键存在时应返回新键: got %q, want %q", got, s.BackupPathFor(filePath))
+	}
+
+	// 两键皆不存在（新文件无备份）：返回新键路径，由调用方 fileExists 判定
+	fresh := createTempFile(t, tmpDir, "fresh.txt", "data")
+	if got := s.BackupPathForRead(fresh); got != s.BackupPathFor(fresh) {
+		t.Fatalf("两键皆无时应返回新键路径: got %q, want %q", got, s.BackupPathFor(fresh))
 	}
 }
 
@@ -196,8 +297,7 @@ func TestConfirmModify_All(t *testing.T) {
 	}
 
 	// 备份文件应被删除
-	backupDir := s.resolveBackupDir()
-	if fileExists(filepath.Join(backupDir, "a.txt.bak")) || fileExists(filepath.Join(backupDir, "b.txt.bak")) {
+	if fileExists(s.BackupPathFor(f1)) || fileExists(s.BackupPathFor(f2)) {
 		t.Error("确认后备份文件应被删除")
 	}
 
@@ -289,7 +389,7 @@ func TestRollback_RestoresContent(t *testing.T) {
 	}
 
 	// 备份文件应被删除
-	backupPath := filepath.Join(s.resolveBackupDir(), "rollback_test.txt.bak")
+	backupPath := s.BackupPathFor(filePath)
 	if fileExists(backupPath) {
 		t.Error("回滚后备份文件应被删除")
 	}
