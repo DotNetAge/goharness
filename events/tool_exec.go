@@ -21,4 +21,8 @@ type ToolExecEndData struct {
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	TotalTokens      int `json:"total_tokens,omitempty"`
 	CachedTokens     int `json:"cached_tokens,omitempty"`
+	// ResultMeta 是工具执行结果的旁路统计（如 ±行数、命中数、退出码）。
+	// 数据源为工具返回值自带的结构化对象，经 executor 透传，LLM 上下文不受污染。
+	// 前端据此渲染工具名片与轮级摘要，无需解析 Result 文本。
+	ResultMeta map[string]any `json:"result_meta,omitempty"`
 }

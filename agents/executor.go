@@ -1197,6 +1197,7 @@ func (rt *Runtime) executeSingleTool(
 				Duration:   result.Duration,
 				Success:    result.Success,
 				Result:     result.Result,
+				ResultMeta: eventResultMeta(result.Metadata),
 			}, usage))
 			return result
 		}
@@ -1240,6 +1241,7 @@ func (rt *Runtime) executeSingleTool(
 		Success:    tr.Success,
 		Result:     tr.Result,
 		Error:      tr.Error,
+		ResultMeta: eventResultMeta(tr.Metadata),
 	}, usage))
 	return tr
 }

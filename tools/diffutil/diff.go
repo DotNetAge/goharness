@@ -103,6 +103,16 @@ func GenerateDiff(oldContent, newContent string) ([]Hunk, string) {
 	return hunks, diffStr
 }
 
+// SumChanges 汇总 hunks 的变更行数，返回（新增行数, 删除行数）。
+// 供 Write/Edit 在生成 diff 时同步统计 ±行数，避免前端解析 diff 文本。
+func SumChanges(hunks []Hunk) (additions, deletions int) {
+	for _, h := range hunks {
+		additions += h.NewLines
+		deletions += h.OldLines
+	}
+	return additions, deletions
+}
+
 // computeLCS 计算两行集合的最长公共子序列。
 func computeLCS(a, b []string) []string {
 	m, n := len(a), len(b)

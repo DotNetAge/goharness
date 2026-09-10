@@ -38,7 +38,7 @@ func TestGrep_Sandbox_RgMode_NormalSearch(t *testing.T) {
 		"output_mode": "content",
 	})
 	require.NoError(t, err, "沙箱启用时 rg 模式搜索应正常工作")
-	assert.Contains(t, result.(string), "hello")
+	assert.Contains(t, unpackResultString(t, result), "hello")
 }
 
 // TestGrep_Sandbox_NativeMode_NormalSearch 验证沙箱启用时原生模式正常搜索。
@@ -50,7 +50,7 @@ func TestGrep_Sandbox_NativeMode_NormalSearch(t *testing.T) {
 	grep := NewGrepTool().(*GrepTool)
 	result, err := grep.executeNative(newBashSandboxCtx(t, projectDir, nil), "hello", "*.go", "content", projectDir)
 	require.NoError(t, err, "沙箱启用时原生模式搜索应正常工作")
-	assert.Contains(t, result.(string), "hello")
+	assert.Contains(t, unpackResultString(t, result), "hello")
 }
 
 // TestGrep_Sandbox_NativeMode_SymlinkDenied 验证沙箱启用时原生模式拒绝符号链接越界。
@@ -68,7 +68,7 @@ func TestGrep_Sandbox_NativeMode_SymlinkDenied(t *testing.T) {
 	result, err := grep.executeNative(newBashSandboxCtx(t, projectDir, nil), "root", "*.txt", "content", projectDir)
 	require.NoError(t, err, "沙箱应跳过符号链接文件，不报错")
 	// 结果不应包含 /etc/passwd 的内容
-	resultStr, _ := result.(string)
+	resultStr := unpackResultString(t, result)
 	assert.NotContains(t, resultStr, "/etc/passwd", "沙箱应阻止通过符号链接读取 /etc/passwd")
 }
 

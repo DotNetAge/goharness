@@ -235,7 +235,7 @@ func validateBashParams(params map[string]any) (bashParams, error) {
 }
 
 // performBash 执行命令核心逻辑：构建命令、解析工作目录、运行命令、收集输出与结果构建。
-func performBash(ctx context.Context, logger logging.Logger, sessionID string, p bashParams) (map[string]any, error) {
+func performBash(ctx context.Context, logger logging.Logger, sessionID string, p bashParams) (any, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
 	defer cancel()
 
@@ -327,7 +327,10 @@ func performBash(ctx context.Context, logger logging.Logger, sessionID string, p
 		)
 	}
 
-	return result, nil
+	return MetaMap{
+		Data: result,
+		Meta: map[string]any{"exit_code": result["exit_code"]},
+	}, nil
 }
 
 // Execute 编排 Bash 工具执行流程：validate → 长度检查 → enforce → perform。
@@ -355,7 +358,10 @@ func (t *BashTool) Execute(ctx context.Context, params map[string]any) (any, err
 	// 命令安全决策统一由沙箱负责（危险模式 + 白名单 + 网络命令 URL 预检）；
 	// 会话未注入沙箱时拒绝执行。
 	if blocked, ok := t.enforceCommand(ctx, p.command); ok {
-		return blocked, nil
+		return MetaMap{
+			Data: blocked,
+			Meta: map[string]any{"exit_code": blocked["exit_code"]},
+		}, nil
 	}
 
 	sessionID := ExtractSessionID(ctx)

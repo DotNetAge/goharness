@@ -90,6 +90,26 @@ type ReadResult struct {
 	Images []ImageContent `json:"-"`
 }
 
+// ResultMeta 实现 MetaProvider 接口，向前端暴露结构化统计。
+func (r *ReadResult) ResultMeta() map[string]any {
+	if r.Data == nil {
+		return nil
+	}
+	meta := map[string]any{
+		"path": r.Data.Path,
+	}
+	if r.Data.LinesRead > 0 {
+		meta["lines_read"] = r.Data.LinesRead
+	}
+	if r.Data.TotalLines > 0 {
+		meta["total_lines"] = r.Data.TotalLines
+	}
+	if r.Data.Format != "" {
+		meta["format"] = r.Data.Format
+	}
+	return meta
+}
+
 // ImageContent 是压缩并编码后的图片数据。
 type ImageContent struct {
 	MediaType      string `json:"media_type"`
@@ -114,7 +134,34 @@ type EditResult struct {
 
 	// 变更差异（仅 P2 场景启用）
 	Diff string `json:"diff,omitempty"`
+
+	// 变更行数统计（不进入 LLM 上下文，仅供 result_meta 旁路给前端）
+	Additions int `json:"-"`
+	Deletions int `json:"-"`
 }
+
+// ResultMeta 实现 MetaProvider 接口，向前端暴露结构化统计。
+func (r *EditResult) ResultMeta() map[string]any {
+	meta := map[string]any{
+		"file_path":     r.FilePath,
+		"replace_count": r.ReplaceCount,
+		"replace_mode":  r.ReplaceMode,
+	}
+	if r.Additions > 0 || r.Deletions > 0 {
+		meta["additions"] = r.Additions
+		meta["deletions"] = r.Deletions
+	}
+	return meta
+}
+
+// diff 计算门槛（Edit/Write 共用）：diffInlineMaxBytes 内才把 diff 字符串放入
+// 工具结果（结果会进 LLM 上下文，防止大文件 diff 膨胀）；diffStatMaxBytes 内
+// 计算 ±行数统计——统计只走 result_meta 旁路（Additions/Deletions 带 json:"-"），
+// 不进上下文，故门槛可放宽到 1MB，超门槛文件才跳过统计。
+const (
+	diffInlineMaxBytes = 8 * 1024
+	diffStatMaxBytes   = 1024 * 1024
+)
 
 // WriteResult 是 Write 工具的结构化输出。
 // 见 WRITE_DESIGN.md B 节。
@@ -130,6 +177,24 @@ type WriteResult struct {
 
 	// 变更差异（仅 overwrite + P2 场景启用）
 	Diff string `json:"diff,omitempty"`
+
+	// 变更行数统计（不进入 LLM 上下文，仅供 result_meta 旁路给前端）
+	Additions int `json:"-"`
+	Deletions int `json:"-"`
+}
+
+// ResultMeta 实现 MetaProvider 接口，向前端暴露结构化统计。
+func (r *WriteResult) ResultMeta() map[string]any {
+	meta := map[string]any{
+		"file_path":     r.FilePath,
+		"write_type":    r.Type,
+		"bytes_written": r.BytesWritten,
+	}
+	if r.Additions > 0 || r.Deletions > 0 {
+		meta["additions"] = r.Additions
+		meta["deletions"] = r.Deletions
+	}
+	return meta
 }
 
 // Message 是 SideEffect 消息载体。

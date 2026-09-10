@@ -142,6 +142,9 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	if rr, isRead := result.(*ReadResult); isRead {
 		ter.Images = rr.Images
 	}
+	// 提取工具返回值自带的旁路统计（±行数、命中数等），
+	// 供上层经 ToolExecEnd 事件透传给前端，LLM 上下文不受污染。
+	ter.Metadata = ExtractResultMeta(result)
 
 	str, ok := result.(string)
 	if !ok {

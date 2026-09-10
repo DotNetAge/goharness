@@ -105,7 +105,7 @@ func authorizeGlob(ctx context.Context, searchPath string) (resolvedPath string,
 }
 
 // performGlob 执行文件模式匹配核心逻辑：存在性检查、遍历目录、模式匹配、排序、构建结果。
-func performGlob(resolvedPath string, p globParams, maxResults int) (map[string]any, error) {
+func performGlob(resolvedPath string, p globParams, maxResults int) (any, error) {
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("遍历", resolvedPath, err), err)
@@ -169,10 +169,15 @@ func performGlob(resolvedPath string, p globParams, maxResults int) (map[string]
 		files[i] = e.path
 	}
 
-	return map[string]any{
-		"success":       true,
-		"matches_found": len(files),
-		"files":         files,
+	return MetaMap{
+		Data: map[string]any{
+			"success":       true,
+			"matches_found": len(files),
+			"files":         files,
+		},
+		Meta: map[string]any{
+			"match_count": len(files),
+		},
 	}, nil
 }
 

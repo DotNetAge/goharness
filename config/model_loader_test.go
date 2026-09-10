@@ -166,3 +166,83 @@ func TestLoadModels_CompositeDeleteKeepsSibling(t *testing.T) {
 		t.Fatal("测试执行超时")
 	}
 }
+
+// TestModelRegistry_ListDeterministicOrder 回归测试：List/ListRaw 内部存储是 map，
+// Go map 遍历顺序随机。TUI 的 /model 浮层打开时与选中时各调一次 List() 并按索引映射，
+// 两次顺序不一致会导致“选中的模型与实际切换的模型错位”。
+// 因此 List/ListRaw 必须按组合键（Provider/Name）排序，多次调用顺序恒定。
+func TestModelRegistry_ListDeterministicOrder(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		path, cleanup := writeModelsYAML(t, `
+providers:
+  - name: openai
+    base_url: https://api.openai.com/v1
+  - name: zhipu
+    base_url: https://open.bigmodel.cn/api/paas/v4
+models:
+  - name: glm-4.7
+    provider: zhipu
+  - name: gpt-4o
+    provider: openai
+  - name: claude-4
+    provider: openai
+  - name: glm-5
+    provider: zhipu
+`)
+		defer cleanup()
+
+		reg, err := LoadModels(path)
+		if err != nil {
+			t.Errorf("LoadModels 失败: %v", err)
+			return
+		}
+
+		// 多次调用 List()，顺序必须完全一致且按键有序
+		first := reg.List()
+		if len(first) != 4 {
+			t.Errorf("List 数量应为 4，实际 %d", len(first))
+			return
+		}
+		for i := 0; i < 50; i++ {
+			again := reg.List()
+			if len(again) != len(first) {
+				t.Errorf("多次 List() 数量不一致: %d vs %d", len(again), len(first))
+				return
+			}
+			for j := range first {
+				if first[j].Key() != again[j].Key() {
+					t.Errorf("第 %d 次 List() 顺序漂移: 位置 %d 为 %q，首次为 %q", i, j, again[j].Key(), first[j].Key())
+					return
+				}
+			}
+		}
+
+		// 顺序必须按键（Provider/Name）升序
+		for j := 1; j < len(first); j++ {
+			if first[j-1].Key() >= first[j].Key() {
+				t.Errorf("List() 未按键升序: %q 应排在 %q 之后", first[j-1].Key(), first[j].Key())
+			}
+		}
+
+		// ListRaw 同样必须顺序确定
+		rawFirst := reg.ListRaw()
+		for i := 0; i < 50; i++ {
+			again := reg.ListRaw()
+			for j := range rawFirst {
+				if rawFirst[j].Key() != again[j].Key() {
+					t.Errorf("第 %d 次 ListRaw() 顺序漂移: 位置 %d 为 %q，首次为 %q", i, j, again[j].Key(), rawFirst[j].Key())
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("测试执行超时")
+	}
+}

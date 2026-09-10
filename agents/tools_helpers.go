@@ -87,6 +87,15 @@ func buildToolResult(inv hooks.ToolCallInvocation, execResult *tools.ToolExecuti
 	return tr
 }
 
+// eventResultMeta 将工具结果携带的旁路统计转换为 ToolExecEnd 事件的
+// result_meta 字段（map[string]any）；Metadata 为空或类型不符时返回 nil。
+func eventResultMeta(metadata any) map[string]any {
+	if m, ok := metadata.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
 // findAskUserInvocation 在调用列表中查找 AskUser 工具调用。
 // 若未找到则返回 nil。
 func findAskUserInvocation(invocs []hooks.ToolCallInvocation) *hooks.ToolCallInvocation {

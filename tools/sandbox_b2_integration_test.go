@@ -123,7 +123,7 @@ func TestBash_Sandbox_Execute_BlocksDangerousCommand(t *testing.T) {
 		"command": "rm -rf /",
 	})
 	require.NoError(t, err, "Execute 返回阻塞结果而非 error")
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.Equal(t, false, m["success"])
 	assert.Equal(t, 126, m["exit_code"])
 	assert.NotEmpty(t, m["error"])
@@ -139,7 +139,7 @@ func TestBash_Sandbox_Execute_NormalCommand_Runs(t *testing.T) {
 		"command": "cat " + filepath.Join(projectDir, "test.txt"),
 	})
 	require.NoError(t, err)
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.Equal(t, true, m["success"])
 	assert.Contains(t, m["stdout"].(string), "hi")
 }
@@ -184,7 +184,7 @@ func TestBash_Sandbox_NetworkCommand_SessionNetworkWhitelist_Allows(t *testing.T
 		"timeout": float64(10000),
 	})
 	require.NoError(t, err)
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.False(t, m["exit_code"] == 126, "授权后 Execute 不应被沙箱拦截，实际结果=%v", m)
 }
 
@@ -215,7 +215,7 @@ func TestBash_Sandbox_Disabled_RefusesExecution(t *testing.T) {
 	// Execute 拒绝执行（以阻塞结果返回，exit_code=126）
 	result, err := bash.Execute(ctx, map[string]any{"command": "ls"})
 	require.NoError(t, err, "拒绝以阻塞结果返回而非 error")
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.Equal(t, false, m["success"])
 	assert.Contains(t, m["error"].(string), "未注入沙箱")
 }
@@ -371,7 +371,7 @@ func TestBash_Sandbox_GrantAndExecute_Consistent(t *testing.T) {
 			// Execute 也应拒绝（返回 exit_code=126）
 			result, err := bash.Execute(ctx, map[string]any{"command": c.command})
 			require.NoError(t, err)
-			m := result.(map[string]any)
+			m := unpackResultMap(t, result)
 			assert.Equal(t, false, m["success"], "Execute 应拦截")
 			assert.Equal(t, 126, m["exit_code"])
 		})

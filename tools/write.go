@@ -194,6 +194,7 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 
 	var writeType string
 	var diffStr string
+	var additions, deletions int
 
 	if p.appendMode {
 		// ── 追加模式 ──
@@ -241,6 +242,8 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 			Scope:        string(scope),
 			BytesWritten: bytesWritten,
 			TotalSize:    info.Size(),
+			// 追加内容行数即新增行数（M3 前置换行已计入 content）
+			Additions: CountLines(content),
 		}, nil
 	}
 
@@ -261,10 +264,14 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 		if readErr == nil {
 			origStr := string(orig)
 
-			// C. 生成 unified diff（P2，超过 8KB 截断）
-			if len(origStr) > 0 && len(origStr) <= 8*1024 {
-				_, d := diffutil.GenerateDiff(origStr, content)
-				diffStr = d
+			// 生成 unified diff 与 ±行数统计（门槛解耦，见 content_types.go 常量说明）：
+			// diff 字符串仅小文件进结果，±行数统计放宽到 1MB（只走 result_meta 旁路）
+			if len(origStr) > 0 && len(origStr) <= diffStatMaxBytes {
+				hunks, d := diffutil.GenerateDiff(origStr, content)
+				additions, deletions = diffutil.SumChanges(hunks)
+				if len(origStr) <= diffInlineMaxBytes {
+					diffStr = d
+				}
 			}
 		}
 	} else if os.IsNotExist(statErr) {
@@ -313,6 +320,12 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 		BytesWritten: len(content),
 		TotalSize:    totalSize,
 	}
+	if writeType == "create" {
+		// 新建文件：全部内容都是新增行
+		additions = CountLines(content)
+	}
+	result.Additions = additions
+	result.Deletions = deletions
 	if diffStr != "" {
 		result.Diff = diffStr
 	}

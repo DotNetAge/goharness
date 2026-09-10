@@ -252,6 +252,8 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 			Scope:        string(scope),
 			ReplaceCount: 1,
 			ReplaceMode:  "create",
+			// 空文件创建：全部内容都是新增行
+			Additions: CountLines(newStr),
 		}, nil
 	}
 
@@ -351,10 +353,16 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 		"replace_count", replaceCount,
 	)
 
-	// 生成 unified diff（与 write.go 的截断策略一致），供前端展示 +/- 行数与 diff 视图
+	// 生成 unified diff 与 ±行数统计（门槛解耦，见 content_types.go 常量说明）：
+	// diff 字符串仅小文件进结果，±行数统计放宽到 1MB（只走 result_meta 旁路）
 	var diffStr string
-	if len(fileContent) > 0 && len(fileContent) <= 8*1024 {
-		_, diffStr = diffutil.GenerateDiff(fileContent, updatedContent)
+	var additions, deletions int
+	if len(fileContent) > 0 && len(fileContent) <= diffStatMaxBytes {
+		hunks, d := diffutil.GenerateDiff(fileContent, updatedContent)
+		additions, deletions = diffutil.SumChanges(hunks)
+		if len(fileContent) <= diffInlineMaxBytes {
+			diffStr = d
+		}
 	}
 
 	return &EditResult{
@@ -365,6 +373,8 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 		TotalMatches: totalMatches,
 		ReplaceMode:  replaceMode,
 		Diff:         diffStr,
+		Additions:    additions,
+		Deletions:    deletions,
 	}, nil
 }
 

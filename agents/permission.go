@@ -566,6 +566,7 @@ func (rt *Runtime) executePendingAndAppend(
 		Duration:   tr.Duration,
 		Success:    tr.Success,
 		Result:     content,
+		ResultMeta: eventResultMeta(tr.Metadata),
 	})
 
 	if err := b.session.Append(ctx, session.Message{

@@ -130,7 +130,7 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return "未找到匹配项。", nil
+			return MetaString{Value: "未找到匹配项。", Meta: map[string]any{"hit_count": 0}}, nil
 		}
 		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide(
 			fmt.Sprintf("尝试用 ripgrep 在 %q 中搜索模式 %q", searchRoot, pattern),
@@ -152,7 +152,7 @@ func (t *GrepTool) executeWithRg(ctx context.Context, pattern, include, outputMo
 				t.MaxOutputChars, t.MaxResults, len(lines))
 	}
 
-	return resultStr, nil
+	return MetaString{Value: resultStr, Meta: map[string]any{"hit_count": len(lines)}}, nil
 }
 
 func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMode, searchRoot string) (any, error) {
@@ -250,7 +250,7 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 	}
 
 	if totalMatchCount == 0 {
-		return "未找到匹配项。", nil
+		return MetaString{Value: "未找到匹配项。", Meta: map[string]any{"hit_count": 0}}, nil
 	}
 
 	if t.MaxResults > 0 && len(results) > t.MaxResults {
@@ -265,5 +265,5 @@ func (t *GrepTool) executeNative(ctx context.Context, pattern, include, outputMo
 				t.MaxOutputChars, t.MaxResults, totalMatchCount)
 	}
 
-	return resultStr, nil
+	return MetaString{Value: resultStr, Meta: map[string]any{"hit_count": totalMatchCount}}, nil
 }

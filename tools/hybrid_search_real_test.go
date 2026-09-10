@@ -27,7 +27,7 @@ func TestHybridSearch_RealKeyword(t *testing.T) {
 		t.Fatalf("hybrid search failed: %v", err)
 	}
 
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("=== Hybrid Search Results ===\n%s\n", s)
 
 	if s == "" {

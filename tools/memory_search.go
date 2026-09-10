@@ -132,7 +132,8 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 	}
 
 	if len(all) == 0 {
-		return fmt.Sprintf("未找到关于查询的记忆：%q\n\n记忆为空或未找到相关信息。请尝试换一种方式表述您的查询，或搜索互联网。", query), nil
+		// 空结果也带 MetaProvider 供给（hit_count=0），前端名片显示「记忆检索 xxx · 0 条」（对齐 grep 空结果模式）
+		return MetaString{Value: fmt.Sprintf("未找到关于查询的记忆：%q\n\n记忆为空或未找到相关信息。请尝试换一种方式表述您的查询，或搜索互联网。", query), Meta: map[string]any{"hit_count": 0}}, nil
 	}
 
 	if len(all) > limit {
@@ -145,7 +146,8 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]any) (any,
 		"result_count", len(all),
 	)
 
-	return result, nil
+	// hit_count 键名对齐前端工具对照表契约（与 grep 一致），经 result_meta 旁路透传
+	return MetaString{Value: result, Meta: map[string]any{"hit_count": len(all)}}, nil
 }
 
 // splitQueryTokens 将查询按逗号拆分为多个关键词。

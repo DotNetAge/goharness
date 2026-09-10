@@ -91,7 +91,7 @@ func TestBash(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		if resultMap["success"] != true {
 			t.Error("Expected success to be true")
 		}
@@ -109,7 +109,7 @@ func TestBash(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error (error in result), got %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		if resultMap["success"] != false {
 			t.Error("Expected success to be false")
 		}
@@ -139,7 +139,7 @@ func TestBash(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		stdout := resultMap["stdout"].(string)
 		if !strings.Contains(stdout, "/tmp") {
 			t.Errorf("Expected pwd to show /tmp, got %q", stdout)
@@ -332,7 +332,7 @@ func TestGlob(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		if resultMap["success"] != true {
 			t.Error("Expected success to be true")
 		}
@@ -634,7 +634,7 @@ func TestBash_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("小 timeout 不应导致执行失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		if resultMap["success"] != true {
 			t.Error("小 timeout 应被修正为最小值并正常执行")
 		}
@@ -648,7 +648,7 @@ func TestBash_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("大 timeout 不应导致执行失败: %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		if resultMap["success"] != true {
 			t.Error("大 timeout 应被修正为最大值并正常执行")
 		}
@@ -660,7 +660,7 @@ func TestBash_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Skipf("跳过: python3 可能不可用: %v", err)
 		}
-		resultMap := result.(map[string]any)
+		resultMap := unpackResultMap(t, result)
 		stdout := resultMap["stdout"].(string)
 		// 截断后还会追加截断提示（约 250 字符），故阈值放宽
 		if len(stdout) > maxBashOutputSize+500 {
@@ -845,7 +845,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("无匹配搜索失败: %v", err)
 		}
-		resultStr := result.(string)
+		resultStr := unpackResultString(t, result)
 		if resultStr == "" {
 			t.Error("无匹配时不应返回空字符串")
 		}

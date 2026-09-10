@@ -418,7 +418,8 @@ func validateWebSearchParams(params map[string]any) (webSearchParams, error) {
 }
 
 // performWebSearch 执行搜索核心逻辑：缓存检查、多引擎搜索、结果合并去重、错误处理与格式化。
-func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logger, p webSearchParams) (string, error) {
+// 除格式化文本外，一并返回旁路统计（结果数、实际使用的引擎、失败引擎），供 result_meta 透传给前端。
+func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logger, p webSearchParams) (string, map[string]any, error) {
 	query := p.query
 	maxResults := p.maxResults
 
@@ -429,7 +430,10 @@ func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logg
 		if data, err := kvs.Get(ctx, cacheSessionID, cacheKey); err == nil && len(data) > 0 {
 			var entry cachedSearch
 			if json.Unmarshal(data, &entry) == nil && time.Since(entry.Timestamp) < searchCacheTTL {
-				return formatSearchResults(query, entry.Results), nil
+				return formatSearchResults(query, entry.Results), map[string]any{
+					"result_count": len(entry.Results),
+					"cached":       true,
+				}, nil
 			}
 			if data != nil {
 				kvs.Delete(ctx, cacheSessionID, cacheKey)
@@ -490,7 +494,7 @@ func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logg
 		// 只有此时才告知 Agent "被风控"，避免部分失败就报错——
 		// 容错优先：只要有任一引擎返回数据就正常返回，不算打穿。
 		if allTokensAllFailed && len(failedList) > 0 {
-			return "", fmt.Errorf("%s", BuildGuide(
+			return "", nil, fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("搜索查询 %q 失败：所有搜索引擎均报错，全部兜底策略被打穿。失败引擎：%s", query, strings.Join(failedList, ", ")),
 				"所有搜索引擎均无法完成搜索（风控/网络错误/解析失败）",
 				"稍后重试；若持续失败，说明当前搜索源全部不可达，应告知用户",
@@ -499,7 +503,7 @@ func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logg
 
 		// 部分引擎失败，但未全部打穿（其余超时或无匹配）——不说"被风控"，如实说明部分失败
 		if len(failedList) > 0 {
-			return "", fmt.Errorf("%s", BuildGuide(
+			return "", nil, fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("搜索查询 %q 未获得结果：部分引擎失败，其余超时或无匹配。失败引擎：%s", query, strings.Join(failedList, ", ")),
 				"部分搜索引擎失败，未获得任何结果",
 				"稍后重试；或更换关键词重新搜索",
@@ -508,7 +512,7 @@ func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logg
 
 		// 无引擎报错但无结果：上下文超时（8 秒 deadline 或外层取消）
 		if ctx.Err() != nil {
-			return "", fmt.Errorf("%s", BuildGuide(
+			return "", nil, fmt.Errorf("%s", BuildGuide(
 				fmt.Sprintf("搜索查询 %q，但 8 秒内未获得任何结果", query),
 				fmt.Sprintf("搜索超时（查询：%q）", query),
 				"缩短查询词或更换关键词后重试；若持续超时，说明当前搜索源不可达，应告知用户",
@@ -516,7 +520,7 @@ func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logg
 		}
 
 		// 所有引擎都成功返回但无匹配结果——这才是真正的"没有搜索结果"
-		return "", fmt.Errorf("%s", BuildGuide(
+		return "", nil, fmt.Errorf("%s", BuildGuide(
 			fmt.Sprintf("搜索查询 %q，但未找到任何搜索结果", query),
 			"没有搜索引擎返回与查询匹配的结果",
 			"更换关键词或使用更通用的表述重新搜索；若多次尝试仍无结果，基于已有信息直接作答",
@@ -552,7 +556,30 @@ func performWebSearch(ctx context.Context, t *WebSearchTool, logger logging.Logg
 		"result_count", len(results),
 		"formatted_len", len(formatted),
 	)
-	return formatted, nil
+
+	// 旁路统计：结果数 + 实际使用的引擎 + 失败引擎（回退链路可审计）
+	engineSet := make(map[string]bool)
+	for _, r := range results {
+		if r.Source != "" {
+			engineSet[r.Source] = true
+		}
+	}
+	engines := make([]string, 0, len(engineSet))
+	for e := range engineSet {
+		engines = append(engines, e)
+	}
+	failedEngines := make([]string, 0, len(failedAdapterSet))
+	for f := range failedAdapterSet {
+		failedEngines = append(failedEngines, f)
+	}
+	meta := map[string]any{
+		"result_count": len(results),
+		"engines":      engines,
+	}
+	if len(failedEngines) > 0 {
+		meta["failed_engines"] = failedEngines
+	}
+	return formatted, meta, nil
 }
 
 // Execute 编排 WebSearch 工具执行流程：validate → perform。
@@ -563,7 +590,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (any
 	}
 
 	logger := getLogger(ctx)
-	return performWebSearch(ctx, t, logger, p)
+	formatted, meta, err := performWebSearch(ctx, t, logger, p)
+	if err != nil {
+		return nil, err
+	}
+	return MetaString{Value: formatted, Meta: meta}, nil
 }
 
 // ---- 缓存查询 API（通过 KVStore 复用知识） ----

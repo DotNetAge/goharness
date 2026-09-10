@@ -129,8 +129,8 @@ func TestWebSearchTool_CacheBehavior(t *testing.T) {
 		t.Skipf("second Execute() error = %v", err)
 	}
 
-	s1 := result1.(string)
-	s2 := result2.(string)
+	s1 := unpackResultString(t, result1)
+	s2 := unpackResultString(t, result2)
 	if s1 == s2 {
 		return // 精确缓存命中
 	}
@@ -266,7 +266,7 @@ func TestWebSearch_RealFullExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WebSearchTool.Execute 失败：%v", err)
 	}
-	s := out.(string)
+	s := unpackResultString(t, out)
 	t.Logf("完整 Execute 返回（长度 %d）：\n%s", len(s), s)
 }
 
@@ -509,7 +509,7 @@ func TestWebSearch_ErrorClassification_PartialSuccessHasData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("有引擎返回数据时不应报错，实际：%s", err.Error())
 	}
-	s := out.(string)
+	s := unpackResultString(t, out)
 	if !strings.Contains(s, "结果A") {
 		t.Errorf("应包含成功引擎的结果，实际：%s", s)
 	}

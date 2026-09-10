@@ -369,7 +369,7 @@ func TestGlob_Sandbox_InWorkspace_Allows(t *testing.T) {
 		"path":    projectDir,
 	})
 	require.NoError(t, err, "沙箱启用时工作区内 Glob 应放行")
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.Equal(t, true, m["success"])
 }
 
@@ -563,7 +563,7 @@ func TestBash_AgentBrowser_NotWhitelisted_ExecuteBlocks(t *testing.T) {
 		"timeout": float64(10000),
 	})
 	require.NoError(t, err)
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.True(t, isBlockedBySandbox(m), "agent-browser 不在白名单时 Execute 应拦截（exit_code=126），实际结果=%v", m)
 }
 
@@ -598,7 +598,7 @@ func TestBash_AgentBrowser_SessionWhitelisted_ExecuteRuns(t *testing.T) {
 		"timeout": float64(10000),
 	})
 	require.NoError(t, err)
-	m := result.(map[string]any)
+	m := unpackResultMap(t, result)
 	assert.False(t, isBlockedBySandbox(m),
 		"会话白名单已授权 agent-browser，Execute 仍被沙箱拦截：stderr=%s", m["stderr"])
 }

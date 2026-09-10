@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -137,7 +139,9 @@ func (m *ModelRegistry) Get(name string) *ModelConfig {
 // List 返回所有已注册的模型配置列表（均已解析 Provider）。
 // 返回的切片是新生成的，修改不会影响内部存储。
 //
-// 该方法是并发安全的，使用读锁保护共享数据。
+// 内部存储是 map，Go map 遍历顺序随机，因此这里按组合键（Provider/Name）
+// 排序后返回，保证多次调用返回顺序一致（调用方常依赖两次 List() 的顺序对齐）。
+// 该方法是并发安全的。
 func (m *ModelRegistry) List() []*ModelConfig {
 	m.mu.RLock()
 	models := make([]*ModelConfig, 0, len(m.models))
@@ -146,6 +150,9 @@ func (m *ModelRegistry) List() []*ModelConfig {
 		models = append(models, mc)
 	}
 	m.mu.RUnlock()
+	slices.SortFunc(models, func(a, b *ModelConfig) int {
+		return strings.Compare(a.Key(), b.Key())
+	})
 	return models
 }
 
@@ -164,6 +171,7 @@ func (m *ModelRegistry) GetRaw(name string) *ModelConfig {
 // 与 List 方法不同，ListRaw 返回的是存储在注册表中的原始配置，
 // 不进行任何 Provider 继承处理。
 //
+// 与 List 一致，这里同样按组合键（Provider/Name）排序，保证返回顺序确定。
 // 该方法是并发安全的，使用读锁保护共享数据。
 func (m *ModelRegistry) ListRaw() []*ModelConfig {
 	m.mu.RLock()
@@ -172,6 +180,9 @@ func (m *ModelRegistry) ListRaw() []*ModelConfig {
 	for _, mc := range m.models {
 		result = append(result, mc)
 	}
+	slices.SortFunc(result, func(a, b *ModelConfig) int {
+		return strings.Compare(a.Key(), b.Key())
+	})
 	return result
 }
 
