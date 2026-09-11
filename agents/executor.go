@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -659,10 +660,22 @@ func buildAllToolDefinitions(registry tools.ToolRegistry, exclude map[string]boo
 		if exclude != nil && exclude[info.Name] {
 			continue
 		}
+		var paramsJSON json.RawMessage
+		if info.RawSchema != nil {
+			// MCP / 外部工具：直接透传完整 JSON Schema（保留嵌套 / 联合类型 / $ref 等）
+			b, err := json.Marshal(info.RawSchema)
+			if err != nil {
+				paramsJSON = buildParamSchema(info.Parameters)
+			} else {
+				paramsJSON = b
+			}
+		} else {
+			paramsJSON = buildParamSchema(info.Parameters)
+		}
 		out = append(out, gochatcore.Tool{
 			Name:        info.Name,
 			Description: info.Description,
-			Parameters:  buildParamSchema(info.Parameters),
+			Parameters:  paramsJSON,
 		})
 	}
 	return out

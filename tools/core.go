@@ -80,6 +80,11 @@ type ToolInfo struct {
 	// 每个参数包含名称、类型、是否必需等信息。
 	Parameters []Parameter `json:"parameters" yaml:"parameters"`
 
+	// RawSchema 是完整的 JSON Schema（嵌套对象 / 联合类型 / $ref 等都保留）。
+	// 当非 nil 时，buildParamSchema 会优先用它序列化后作为 LLM function call 的 parameters。
+	// 典型用途：MCP 工具从 inputSchema 直接透传，绕过 []Parameter 扁平转换。
+	RawSchema map[string]any `json:"raw_schema,omitempty" yaml:"raw_schema,omitempty"`
+
 	// ReturnType 描述返回值的类型。
 	// 用于类型检查和文档生成。
 	ReturnType string `json:"return_type" yaml:"return_type"`
