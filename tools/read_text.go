@@ -1,14 +1,19 @@
 package tools
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/DotNetAge/goharness/store"
 	"github.com/DotNetAge/goharness/tools/filestate"
 )
+
+// readLineSep 是按行扫描的行分隔符（与 strings.Split(s, "\n") 语义一致，保留 "\r"）。
+var readLineSep = []byte{'\n'}
 
 // docMeta 是文档转换元数据（仅文档格式读取时提供；纯文本时为 nil）。
 type docMeta struct {
@@ -78,31 +83,44 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 		}
 	}
 
-	// E. 动态默认行数（当未指定 limit 且 DynamicDefaultLines 启用时）
+	// E. 动态默认行数（当未指定 limit 且 DynamicDefaultLines 启用时）。
+	// bytes.Count 零分配统计行数（等价 len(strings.Split)，后者会对全文件做行切片分配）
 	if _, hasLimit := GetParam(params, "limit"); !hasLimit && r.limits.DynamicDefaultLines {
-		preTotalLines := len(strings.Split(string(data), "\n"))
+		preTotalLines := bytes.Count(data, readLineSep) + 1
 		maxLines = dynamicDefaultLines(preTotalLines, r.limits.DefaultLines)
 	}
 
 	endLine := startLine + maxLines - 1
 
-	// 按行分割并选择范围
-	allLines := strings.Split(string(data), "\n")
-	totalLines := len(allLines)
+	// 字节层游标按行扫描：总行数 = '\n' 个数 + 1（与 split 语义一致，含末尾空段）。
+	// 只物化 [startLine, endLine] 范围内的行——修复前 strings.Split(string(data), "\n")
+	// 会对全文件做字节→串拷贝并分配所有行切片，limit=50 读 10MB 文件时 99% 的分配被丢弃。
+	totalLines := bytes.Count(data, readLineSep) + 1
 
 	var content strings.Builder
 	lineNum := 0
 	linesRead := 0
-	for i, line := range allLines {
-		lineNum = i + 1
-		if lineNum < startLine {
-			continue
+	pos := 0
+	for lineNum < totalLines {
+		lineNum++
+		// 行界：'\n' 之前是行内容；末行没有结尾换行符
+		lineEnd := len(data)
+		if idx := bytes.IndexByte(data[pos:], '\n'); idx >= 0 {
+			lineEnd = pos + idx
 		}
-		if lineNum > endLine {
-			break
+		if lineNum >= startLine {
+			if lineNum > endLine {
+				break
+			}
+			// 手拼代替 fmt.Sprintf：热循环中 Sprintf 的反射开销不可忽略，
+			// Builder.Write 直接引用 data 切片，零每行分配
+			content.WriteString(strconv.Itoa(lineNum))
+			content.WriteByte('\t')
+			content.Write(data[pos:lineEnd])
+			content.WriteByte('\n')
+			linesRead++
 		}
-		content.WriteString(fmt.Sprintf("%d\t%s\n", lineNum, line))
-		linesRead++
+		pos = lineEnd + 1
 	}
 
 	// E2. 输出预算检查：超过预算直接返回错误，引导 LLM 用 offset/limit 缩小范围重试，

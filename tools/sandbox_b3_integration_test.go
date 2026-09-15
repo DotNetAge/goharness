@@ -42,13 +42,15 @@ func TestGrep_Sandbox_RgMode_NormalSearch(t *testing.T) {
 }
 
 // TestGrep_Sandbox_NativeMode_NormalSearch 验证沙箱启用时原生模式正常搜索。
-// 直接调用 executeNative 绕过 rg 可用性检查。
+// 直接调用 runNative 绕过 rg 可用性检查。
 func TestGrep_Sandbox_NativeMode_NormalSearch(t *testing.T) {
 	projectDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc hello() {}"), 0644))
 
 	grep := NewGrepTool().(*GrepTool)
-	result, err := grep.executeNative(newBashSandboxCtx(t, projectDir, nil), "hello", "*.go", "content", projectDir)
+	result, err := grep.runNative(newBashSandboxCtx(t, projectDir, nil), grepParams{
+		pattern: "hello", include: "*.go", outputMode: "content",
+	}, projectDir)
 	require.NoError(t, err, "沙箱启用时原生模式搜索应正常工作")
 	assert.Contains(t, unpackResultString(t, result), "hello")
 }
@@ -65,7 +67,9 @@ func TestGrep_Sandbox_NativeMode_SymlinkDenied(t *testing.T) {
 
 	grep := NewGrepTool().(*GrepTool)
 	// 搜索 "root"（/etc/passwd 中肯定有 root），但 EnforceFile 应拒绝符号链接
-	result, err := grep.executeNative(newBashSandboxCtx(t, projectDir, nil), "root", "*.txt", "content", projectDir)
+	result, err := grep.runNative(newBashSandboxCtx(t, projectDir, nil), grepParams{
+		pattern: "root", include: "*.txt", outputMode: "content",
+	}, projectDir)
 	require.NoError(t, err, "沙箱应跳过符号链接文件，不报错")
 	// 结果不应包含 /etc/passwd 的内容
 	resultStr := unpackResultString(t, result)
@@ -166,8 +170,8 @@ func TestGrep_Sandbox_RgDisabledByPolicy(t *testing.T) {
 	_, err = grep.Execute(ctx, map[string]any{
 		"pattern": "hello",
 	})
-	// rg 被策略禁用时，executeWithRg 应返回 error
-	// 但如果 rg 不可用会回退到 executeNative（不调用 CheckCommand）
+	// rg 被策略禁用时，runRg 应返回 error
+	// 但如果 rg 不可用会回退到 runNative（不调用 CheckCommand）
 	// 所以这个测试只在 rg 可用时验证 CheckCommand 拒绝
 	if isRgAvailable() {
 		require.Error(t, err, "沙箱策略禁用 rg 时应返回 error")

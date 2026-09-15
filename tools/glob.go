@@ -14,8 +14,6 @@ import (
 	"github.com/DotNetAge/goharness/sandbox"
 )
 
-// const globDefaultTimeout = 30 * time.Second
-
 type fileEntry struct {
 	path    string
 	modTime time.Time
@@ -36,22 +34,28 @@ func (t *GlobTool) Info() *ToolInfo {
 		Name:               "Glob",
 		MaxResultSizeChars: 30000,
 		Description:        "查找文件。当你需要通过文件名模式查找文件时使用此工具。",
-		Prompt: `快速文件模式匹配工具，适用于任何规模的文件查找任务。
-- 返回匹配的文件路径，按修改时间排序。
-- 当你进行可能需要多轮 glob 和 grep 的开放式搜索时，使用 SubAgent 工具代替。`,
+		// Prompt 仅写参数定义表达不了的行为约定（排序规则、性能定位、路由建议）；
+		// 参数语义一律写在 Parameters[].Description，不在 Prompt 重复。
+		Prompt:        `按修改时间降序返回匹配文件。遍历自动跳过隐藏目录与 node_modules/dist 等重目录，比 find 更快、结果更聚焦。开放式的多轮 glob+grep 搜索请改用 SubAgent 工具。`,
 		Tags:          []string{"file", "search", "pattern", "filesystem", "discovery"},
 		SecurityLevel: events.LevelSafe,
 		Parameters: []Parameter{
 			{
 				Name:        "pattern",
 				Type:        "string",
-				Description: "要匹配的文件模式（例如 '**/*.go'）。",
+				Description: `文件匹配模式。不含路径分隔符（如 '*.go'）时按文件名在任意深度匹配；含路径分隔符（如 'src/**/*.go'、'config/*.yaml'）时按相对 path 的路径分层匹配，'**' 匹配零或多层目录。`,
 				Required:    true,
 			},
 			{
 				Name:        "path",
 				Type:        "string",
-				Description: "要搜索的目录。默认为 '.'。",
+				Description: "要搜索的目录。默认为项目目录。",
+				Required:    false,
+			},
+			{
+				Name:        "head_limit",
+				Type:        "integer",
+				Description: "返回的最大结果数（默认 200，按修改时间降序截断）。",
 				Required:    false,
 			},
 		},
@@ -60,12 +64,13 @@ func (t *GlobTool) Info() *ToolInfo {
 
 // globParams 承载 Glob 工具解析后的参数。
 type globParams struct {
-	pattern string
-	path    string
+	pattern   string
+	path      string
+	headLimit int
 }
 
 // validateGlobParams 从参数映射提取 Glob 工具参数。
-// pattern 为必填，path 默认为 "."。
+// pattern 为必填，path 默认为 "."，head_limit 可选。
 func validateGlobParams(params map[string]any) (globParams, error) {
 	pattern, err := ValidateRequiredString("Glob", params, "pattern")
 	if err != nil {
@@ -77,7 +82,7 @@ func validateGlobParams(params map[string]any) (globParams, error) {
 			searchPath = p
 		}
 	}
-	return globParams{pattern: pattern, path: searchPath}, nil
+	return globParams{pattern: pattern, path: searchPath, headLimit: parseIntParam(params, "head_limit")}, nil
 }
 
 // authorizeGlob 解析搜索路径并执行沙箱强制安全检查。
@@ -118,7 +123,19 @@ func performGlob(resolvedPath string, p globParams, maxResults int) (any, error)
 		))
 	}
 
-	matchPattern := normalizeGlobPattern(p.pattern)
+	// 模式编译一次（分段 + 折叠连续 **），遍历中零重复解析
+	pat := compileGlobPattern(p.pattern)
+	// 多段模式（含路径分隔符，含反斜杠写法归一化后的模式）按相对路径段匹配；
+	// 先算好相对化前缀避免逐文件 filepath.Rel。
+	// 用 len(pat) > 1 判定而非检查原始串是否含 '/'：compileGlobPattern 已把 '\\' 归一化为
+	// '/'，原始串判定会让 "src\*.go" 静默退化为 basename 任意深度匹配（作用域丢失）。
+	relPrefix := ""
+	if len(pat) > 1 {
+		relPrefix = resolvedPath + string(filepath.Separator)
+	}
+
+	// segBuf 是遍历热路径的栈上分段缓冲（闭包内声明不逃逸，跨文件复用零分配）
+	var segBuf [globStackSegs]string
 
 	var entries []fileEntry
 	walkErr := filepath.WalkDir(resolvedPath, func(path string, d fs.DirEntry, walkErr error) error {
@@ -129,18 +146,20 @@ func performGlob(resolvedPath string, p globParams, maxResults int) (any, error)
 			return nil
 		}
 
-		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
-		}
 		if d.IsDir() {
+			// 跳过隐藏目录与默认重目录集合（性能兜底：比 find 快且结果不被依赖目录淹没）
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || defaultSkipDirs[name] {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
 
-		matched, matchErr := filepath.Match(matchPattern, d.Name())
-		if matchErr != nil || !matched {
+		matched := matchGlobEntry(pat, relPrefix, path, d.Name(), segBuf[:])
+		if !matched {
 			return nil
 		}
 
@@ -156,12 +175,18 @@ func performGlob(resolvedPath string, p globParams, maxResults int) (any, error)
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("匹配文件模式", resolvedPath, walkErr), walkErr)
 	}
 
+	// 修改时间降序（最新优先，便于定位近期变更的文件）
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].modTime.After(entries[j].modTime)
 	})
 
-	if maxResults > 0 && len(entries) > maxResults {
-		entries = entries[:maxResults]
+	// head_limit > 0 时以其为上限，否则回落到 MaxResults（默认 200，防超长输出）
+	limit := maxResults
+	if p.headLimit > 0 {
+		limit = p.headLimit
+	}
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
 	}
 
 	files := make([]string, len(entries))
@@ -196,22 +221,95 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 	return performGlob(resolvedPath, p, t.MaxResults)
 }
 
-func normalizeGlobPattern(pattern string) string {
-	cleaned := strings.TrimSpace(pattern)
-	cleaned = strings.ReplaceAll(cleaned, "\\", "/")
+// globSegPattern 为编译后的 glob 模式（按 "/" 分段）。
+type globSegPattern []string
 
-	for strings.HasPrefix(cleaned, "**/") {
-		cleaned = cleaned[3:]
+// compileGlobPattern 编译模式：统一分隔符、去空段、折叠连续 "**"（避免匹配器指数回溯）。
+func compileGlobPattern(pattern string) globSegPattern {
+	cleaned := strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/")
+	cleaned = strings.TrimPrefix(cleaned, "./")
+	parts := strings.Split(cleaned, "/")
+	segs := make([]string, 0, len(parts))
+	for _, s := range parts {
+		if s == "" || s == "." {
+			continue
+		}
+		if s == "**" && len(segs) > 0 && segs[len(segs)-1] == "**" {
+			continue
+		}
+		segs = append(segs, s)
 	}
-	cleaned = strings.ReplaceAll(cleaned, "/**/", "/")
+	return segs
+}
 
-	if idx := strings.LastIndex(cleaned, "/"); idx >= 0 {
-		cleaned = cleaned[idx+1:]
+// globStackSegs 是遍历热路径的栈上分段缓冲容量（超深路径罕见，超出回退堆分配）。
+const globStackSegs = 32
+
+// splitPathSegs 把相对路径切分为路径段，优先写入 buf（段切片共享底层字符串，零拷贝），
+// 段数超出 buf 容量时回退 strings.Split（堆分配）。
+func splitPathSegs(rel string, buf []string) []string {
+	if n := strings.Count(rel, "/") + 1; n <= len(buf) {
+		segs := buf[:n]
+		i := 0
+		for len(rel) > 0 {
+			if idx := strings.IndexByte(rel, '/'); idx >= 0 {
+				segs[i] = rel[:idx]
+				rel = rel[idx+1:]
+			} else {
+				segs[i] = rel
+				rel = ""
+			}
+			i++
+		}
+		return segs
 	}
+	return strings.Split(rel, "/")
+}
 
-	if cleaned == "" || cleaned == "*" || cleaned == "**" {
-		cleaned = "*"
+// matchGlobEntry 判断单个文件是否命中模式：
+//   - 模式单段（如 '*.go'、'**'）：按文件名在任意深度匹配（fd 风格，Agent 最高频用法）
+//   - 模式多段（如 'src/**/*.go'）：按相对 searchDir 的路径分层匹配，"**" 段匹配零或多层
+//     目录，且路径必须被完整消费（'src/*.go' 不命中 'src/sub/a.go'，与 shell globstar 一致）
+func matchGlobEntry(pat globSegPattern, relPrefix, path, baseName string, segBuf []string) bool {
+	if relPrefix == "" {
+		matched, err := filepath.Match(pat.lastOrSelf(), baseName)
+		return err == nil && matched
 	}
+	rel := strings.TrimPrefix(path, relPrefix)
+	return matchGlobSegments(pat, splitPathSegs(rel, segBuf))
+}
 
-	return cleaned
+// lastOrSelf 返回末段（裸 basename 模式经编译后即文件名模式）；空模式返回 "*" 兜底。
+func (g globSegPattern) lastOrSelf() string {
+	if len(g) == 0 {
+		return "*"
+	}
+	return g[len(g)-1]
+}
+
+// matchGlobSegments 判断相对路径段序列是否匹配模式段序列（globstar 语义）。
+// "**" 匹配零或多层目录；其余段用 filepath.Match 逐段匹配。
+func matchGlobSegments(pat, path []string) bool {
+	for len(pat) > 0 {
+		if pat[0] == "**" {
+			rest := pat[1:]
+			// "**" 展开为零或多层：穷举切割点
+			for i := 0; i <= len(path); i++ {
+				if matchGlobSegments(rest, path[i:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(path) == 0 {
+			return false
+		}
+		matched, err := filepath.Match(pat[0], path[0])
+		if err != nil || !matched {
+			return false
+		}
+		pat, path = pat[1:], path[1:]
+	}
+	// 模式已消费完：路径必须同样消费完（前缀匹配不成立）
+	return len(path) == 0
 }

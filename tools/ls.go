@@ -129,9 +129,9 @@ func (l *LS) Grant(ctx context.Context, params map[string]any) (bool, string) {
 
 // lsParams 承载 LS 工具解析后的参数。
 type lsParams struct {
-	path        string
-	recursive   bool
-	showHidden  bool
+	path       string
+	recursive  bool
+	showHidden bool
 }
 
 // validateLSParams 从参数映射提取 LS 工具参数。
@@ -223,7 +223,12 @@ func performLS(resolvedPath string, p lsParams) (map[string]any, error) {
 			continue
 		}
 
-		finfo, _ := entry.Info()
+		finfo, infoErr := entry.Info()
+		if infoErr != nil {
+			// 条目在 ReadDir 与 Info 之间被删除（竞态）时 Info 返回非 nil error，
+			// 跳过该条目而非 panic（修复前 finfo, _ := entry.Info() 后直接解引用）
+			continue
+		}
 		item := map[string]any{
 			"name":    entry.Name(),
 			"type":    entryType(entry.IsDir()),
@@ -233,24 +238,36 @@ func performLS(resolvedPath string, p lsParams) (map[string]any, error) {
 		}
 
 		if p.recursive && entry.IsDir() {
-			subDir := filepath.Join(resolvedPath, entry.Name())
-			subEntries, err := os.ReadDir(subDir)
-			if err == nil {
-				children := make([]map[string]any, 0)
-				for _, subEntry := range subEntries {
-					if !p.showHidden && strings.HasPrefix(subEntry.Name(), ".") {
-						continue
+			if defaultSkipDirs[entry.Name()] {
+				// 重目录只列本身不展开，显式标记避免下游把"无 children"误读为空目录
+				item["children_skipped"] = true
+			} else {
+				// 递归展开普通子目录：
+				// 修复前 children 会被依赖目录的第一层子包淹没（500 条上限内挤占真实条目），
+				// 既拖慢遍历又污染上下文。
+				subDir := filepath.Join(resolvedPath, entry.Name())
+				subEntries, err := os.ReadDir(subDir)
+				if err == nil {
+					children := make([]map[string]any, 0)
+					for _, subEntry := range subEntries {
+						if !p.showHidden && strings.HasPrefix(subEntry.Name(), ".") {
+							continue
+						}
+						subFinfo, subErr := subEntry.Info()
+						if subErr != nil {
+							// 条目竞态删除，跳过而非 panic
+							continue
+						}
+						child := map[string]any{
+							"name":    subEntry.Name(),
+							"type":    entryType(subEntry.IsDir()),
+							"size":    subFinfo.Size(),
+							"modTime": subFinfo.ModTime().Format("2006-01-02 15:04:05"),
+						}
+						children = append(children, child)
 					}
-					subFinfo, _ := subEntry.Info()
-					child := map[string]any{
-						"name":    subEntry.Name(),
-						"type":    entryType(subEntry.IsDir()),
-						"size":    subFinfo.Size(),
-						"modTime": subFinfo.ModTime().Format("2006-01-02 15:04:05"),
-					}
-					children = append(children, child)
+					item["children"] = children
 				}
-				item["children"] = children
 			}
 		}
 

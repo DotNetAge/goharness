@@ -854,7 +854,7 @@ func TestGrep_EdgeCases(t *testing.T) {
 	t.Run("特殊正则表达式字符", func(t *testing.T) {
 		result, err := grep.Execute(ctx, map[string]any{
 			"pattern": `func\s+\w+\(`,
-			"path":    "*.go",
+			"include": "*.go",
 		})
 		if err != nil {
 			t.Fatalf("正则表达式搜索失败: %v", err)

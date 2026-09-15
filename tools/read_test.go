@@ -487,6 +487,51 @@ func TestRead_NegativeCache(t *testing.T) {
 	}
 }
 
+// TestRead_CursorScanEquivalence 验证字节层游标扫描与 split 语义的边界等价：
+// 末尾空段（尾随换行产生的第 N+1 段）、offset 越界、翻页行号连续性。
+func TestRead_CursorScanEquivalence(t *testing.T) {
+	read, dir := tempReadTool(t, &FileReadingLimits{
+		MaxSizeBytes:   256 * 1024,
+		MaxOutputChars: 75000,
+		DefaultLines:   10,
+	})
+
+	// 1) 尾随换行："a\nb\n" 按 split 语义为 3 段（含末尾空段），第 3 段输出空行
+	file := filepath.Join(dir, "trailing.txt")
+	os.WriteFile(file, []byte("a\nb\n"), 0644)
+	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file, "limit": float64(10)})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rr := resultI.(*ReadResult)
+	if rr.Data.TotalLines != 3 {
+		t.Errorf("尾随换行文件应计 3 行（含末尾空段），实际 %d", rr.Data.TotalLines)
+	}
+	if !strings.HasSuffix(rr.Data.Content, "3\t\n") {
+		t.Errorf("末尾空段应输出空行 3\\t\\n，实际内容：%q", rr.Data.Content)
+	}
+
+	// 2) offset 越界（startLine > totalLines）：0 行、无 more、不报错
+	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": file, "offset": float64(99)})
+	if err != nil {
+		t.Fatalf("offset 越界不应报错: %v", err)
+	}
+	rr = resultI.(*ReadResult)
+	if rr.Data.LinesRead != 0 || rr.Data.HasMore {
+		t.Errorf("offset 越界应返回 0 行且无 more，实际 lines=%d hasMore=%v", rr.Data.LinesRead, rr.Data.HasMore)
+	}
+
+	// 3) 翻页行号连续：offset=2 limit=2 → 行 2、3
+	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": file, "offset": float64(2), "limit": float64(2)})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rr = resultI.(*ReadResult)
+	if !strings.Contains(rr.Data.Content, "2\tb\n") || strings.Contains(rr.Data.Content, "1\t") {
+		t.Errorf("offset=2 应从行 2 开始，实际内容：%q", rr.Data.Content)
+	}
+}
+
 func TestRead_HasMoreLines(t *testing.T) {
 	read, dir := tempReadTool(t, &FileReadingLimits{
 		MaxSizeBytes:   256 * 1024,
