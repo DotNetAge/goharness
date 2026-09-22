@@ -488,6 +488,30 @@ func (rt *Runtime) exec(b *AskBuilder) {
 
 		// ── 没有工具调用 → 回答完成 ──
 		if len(streamToolCalls) == 0 {
+			// 兜底自动等待：LLM 未调用 CollectResults 就试图收尾，而本会话名下
+			// 仍有运行中的子代理时，不能就此 finalize——exec 退出会销毁事件订阅，
+			// 子代理的全程事件将静默丢弃（前端冻结），子代理结果也无人收集。
+			// 命中时跳过 finalize，阻塞等待全部子代理落定（带上限），结果以
+			// user 角色消息注入（复用图片视觉消息的注入先例），continue 循环让
+			// LLM 基于收集结果总结收尾。
+			if b.subagentWaitHook != nil && rt.subAgents.hasActiveSponsored(sid) {
+				emit(events.SubagentWaitStarted, events.SubagentWaitData{
+					SessionID:     sid,
+					SubagentCount: len(rt.subAgents.ActiveSponsored(sid)),
+				})
+				collected, _ := b.subagentWaitHook(ctx, sid, b.question)
+				emit(events.SubagentWaitEnded, events.SubagentWaitData{SessionID: sid})
+				// 等待期间用户停止（ctx 取消）：不注入不总结，交由循环顶部的
+				// 取消检查以 cancelled 收尾。
+				if ctx.Err() == nil && collected != "" {
+					if !appendAndAbort(iter, session.Message{
+						Role: "user", Content: collected, Timestamp: time.Now().Unix(),
+					}, "子代理兜底收集结果") {
+						return
+					}
+					continue
+				}
+			}
 			rt.finalizeAnswer(b, content, reasoning, finishReason, totalUsage, lastIteration, start, emit)
 			return
 		}
@@ -575,6 +599,25 @@ func (rt *Runtime) exec(b *AskBuilder) {
 		// 用户的回答将作为新会话轮次中的普通用户消息到达。
 		if askUserInv := findAskUserInvocation(invocs); askUserInv != nil {
 			askUserData := buildAskUserPendingData(askUserInv.Arguments)
+			// 子代理提问冒泡：子会话不结束 exec（否则主会话的 CollectResults 会
+			// 死等，且子任务上下文无法延续），而是经 askSink 直达前端挂起等待
+			// 用户回答，回答以 user 消息注入后继续循环。
+			// 主会话自身保持原有 ask_user_pending 结束 + 用户消息恢复的语义不变。
+			if b.askCh != nil {
+				askUserData.SessionID = b.session.ID()
+				emit(events.TaskSummary, events.TaskSummaryData{
+					Summary:    "子智能体向用户提出问题，等待回答中...",
+					TokenUsage: totalUsage,
+				})
+				rt.waitForAskUserDecision(ctx, b, askUserData, emit)
+				if b.resultTerminationReason != "" {
+					// 提问等待超时（ask_timeout）/ 上下文取消 / 回答追加失败
+					setIterResult(iter)
+					return
+				}
+				// 用户回答已注入会话，继续下一轮循环消化回答
+				continue
+			}
 			emit(events.AskUserPending, askUserData)
 			emit(events.TaskSummary, events.TaskSummaryData{
 				Summary:    "向用户提出问题，等待回答中...",

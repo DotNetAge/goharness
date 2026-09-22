@@ -254,7 +254,7 @@ func (t *CollectResultsTool) pollForResult(ctx context.Context, tc *ToolContext,
 		}
 
 		// 查找执行结果：正常最终答案，或终止标记（无最终答案的失败终止）。
-		answer, termReason := findFinalAnswer(subMsgs)
+		answer, termReason := FindFinalAnswer(subMsgs)
 		if answer != "" {
 			agentName := lookupSubAgentName(ctx, tc, sessionID)
 			logger.Info("collect_results: found FinalAnswer in sub-session",
@@ -336,7 +336,9 @@ func extractAgentNameFromMessages(tc *ToolContext, sessionID string) string {
 	return ""
 }
 
-// findFinalAnswer 在子 session 的消息中查找执行结果。
+// FindFinalAnswer 在子 session 的消息中查找执行结果。
+// 除 CollectResults 轮询外，agents 层的兜底自动等待钩子（subagentWaitHook）
+// 也复用本函数收集子会话结果，保证两处判定逻辑完全一致。
 // 返回两个值：
 //   - answer：子会话正常完成时的最终答案（当前任务段内最后一条无 tool_calls 的 assistant 消息内容）。
 //   - termReason：若当前任务段内最后一条无 tool_calls 的 assistant 消息是终止标记
@@ -352,7 +354,7 @@ func extractAgentNameFromMessages(tc *ToolContext, sessionID string) string {
 //   - 本函数从后向前扫描，遇到最近的 user 消息（任务开始标记、任务问题或图片消息）
 //     即停止——该消息属于当前任务的起点及边界，之前的 assistant 消息属于历史任务，
 //     一律不计入当前任务结果，返回空结果让调用方继续轮询。
-func findFinalAnswer(msgs []session.Message) (answer, termReason string) {
+func FindFinalAnswer(msgs []session.Message) (answer, termReason string) {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		if m.Role == "user" {

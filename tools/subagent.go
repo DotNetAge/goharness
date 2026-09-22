@@ -81,7 +81,7 @@ func (t *SubAgentTool) Info() *ToolInfo {
 		Name:        "SubAgent",
 		Description: "为任务生成一个子代理。之后可使用 CollectResults 获取结果。",
 		Prompt: `为一次性委派任务生成一个子代理。立即返回 {status: "running", agent_name, session_id}。
-关键约束：此工具是异步的。你不会在同一轮中看到结果。请使用 CollectResults(session_ids) 稍后获取结果。
+关键约束：此工具是异步的，但回合不能就此结束。在同一响应中并行派发全部所需的 SubAgent 后，你必须立即调用 CollectResults(session_ids...) 传入全部 session_id，阻塞等待所有子任务落定并拿到结果后，再基于结果继续作答。严禁在子任务结果收集之前结束回合回答用户。
 同一响应中的多个 SubAgent 调用会并行执行。请根据角色命名代理（例如 "code_reviewer"）。任务描述应自包含——子代理无法看到你的对话上下文。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,

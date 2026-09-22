@@ -321,6 +321,12 @@ func (rt *Runtime) registerDefaultTools() {
 					if err != nil {
 						return "", err
 					}
+					// 同步登记完成广播（幂等）：SubAgent 工具的 Execute 同步返回后
+					// 后台 goroutine 才开始 spawn，若等 spawn 内部再登记，存在
+					// 「LLM 极速收尾 → 兜底等待先于登记执行」的竞态窗口——
+					// waitCompletions 查无通道会把仍在运行的子代理误判为已完成。
+					// 在同步阶段登记即关闭该窗口（spawn 内的 registerDone 幂等复用）。
+					rt.subAgents.registerDone(st.sess.ID())
 					return st.sess.ID(), nil
 				})
 				return subAgentTool
@@ -429,6 +435,9 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 		session:   s,
 		runtime:   rt,
 		onEvent:   make(map[events.ReactEventType][]func(any)),
+		// 兜底自动等待钩子：LLM 未调用 CollectResults 就收尾时，
+		// executor 在 finalize 前经它等待并收集本会话名下的子代理结果。
+		subagentWaitHook: rt.subAgents.waitAndCollect,
 	}
 }
 
@@ -447,6 +456,26 @@ func (rt *Runtime) CancelSubAgents(sponsorSessionID string) int {
 		return 0
 	}
 	return rt.subAgents.cancelSponsored(sponsorSessionID)
+}
+
+// CancelAllSubAgents 强停本 Runtime 全部主会话派生的运行中子代理（不限 sponsor）。
+// 供宿主停机安全网使用：daemon 停机时子代理执行循环不随任何会话级联取消，
+// 若不显式强停，子代理会被进程死亡杀死且无终止标记，重启后 CollectResults
+// 对其轮询将死等到上限。逐会话遍历需宿主维护「活跃 sponsor 清单」，停机场景
+// 直接全量强停更完备（宿主无需追踪哪些主会话派生过子代理）。
+// 返回被强停的子代理总数。
+func (rt *Runtime) CancelAllSubAgents() int {
+	return rt.subAgents.cancelAllSponsored()
+}
+
+// DispatchAskAnswer 将用户对子代理提问的回答路由到挂起等待的子会话。
+// Runtime 按 agent 名缓存（宿主的 runtimeCache），提问回答仅携带目标子会话 ID、
+// 无法定位持有该会话的 Runtime 实例，宿主应经 ForEachRuntime 逐一尝试本方法——
+// 仅实际持有挂起提问登记的 Runtime 会命中。
+// target 非空时精确路由（前端作答携带子会话 ID）；为空时先到先服务。
+// 返回 false 表示本 Runtime 没有挂起提问的子会话。
+func (rt *Runtime) DispatchAskAnswer(target, answer string) bool {
+	return rt.subAgents.dispatchAskAnswer(target, answer)
 }
 
 // Logger 返回 Runtime 的结构化日志器实例。

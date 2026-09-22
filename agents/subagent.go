@@ -33,6 +33,16 @@ type perSessionState struct {
 	// 多个子会话同时挂起时，主会话按此时间戳先到先服务路由魔法词。
 	pendingAt int64
 
+	// pendingAskCh 是子智能体 AskUser 提问冒泡的等待通道（镜像 pendingCh）。
+	// 子会话 exec 调用 AskUser 挂起等待回答时由 registerAskWait 登记，
+	// daemon 收到用户回答后经 dispatchAskAnswer 把答案送入该通道；
+	// exec 结束后由 clearAskWait 清除并关闭。nil 表示未挂起等待回答。
+	pendingAskCh chan string
+
+	// pendingAskAt 记录子会话开始挂起等待提问回答的纳秒时间戳。
+	// 多个子会话同时挂起提问时，未指定目标的回答按此时间戳先到先服务。
+	pendingAskAt int64
+
 	// lastUsedAt 记录最近一次被 spawn 认领使用的时间。
 	// 空闲会话复用（findIdleSession）据此选择"最近使用"的会话；
 	// 零值表示从未被 spawn 认领（刚创建/恢复，即将被其 spawn 锁定使用），
@@ -460,6 +470,27 @@ func (m *subAgentManager) cancelSponsored(sponsorSessionID string) int {
 	return len(cancels)
 }
 
+// cancelAllSponsored 强停全部主会话派生的运行中子代理（不限 sponsor），
+// 供宿主停机安全网使用（Runtime.CancelAllSubAgents）。语义与 cancelSponsored
+// 一致：逐一取消子执行循环 ctx、清理登记；子会话随后由 spawn 的 defer 写入
+// 终止标记。返回被强停的子代理数。
+func (m *subAgentManager) cancelAllSponsored() int {
+	m.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(m.sponsored))
+	for sponsor, subs := range m.sponsored {
+		for _, cancel := range subs {
+			cancels = append(cancels, cancel)
+		}
+		delete(m.sponsored, sponsor)
+	}
+	m.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
+}
+
 // spawn 创建并运行子智能体（实现 tools.SpawnFunc）。
 // 子智能体通过 Runtime.Ask 运行独立思考循环，结果随后通过 CollectResultsTool 收集。
 //
@@ -580,6 +611,12 @@ func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID 
 	if sink, ok := ctx.Value(permissionSinkKeyType{}).(PermissionSink); ok {
 		builder.permissionSink = sink
 	}
+	// 子智能体提问冒泡旁路（镜像授权旁路）：从 ctx 读取 AskUser 提问直达
+	// 前端的发送器并注入 builder。ctx 中的值由宿主经 WithAskSink 注入；
+	// 未注入时提问退回原 parentEmit 转发链路，行为保持不变。
+	if askSink, ok := ctx.Value(askSinkKeyType{}).(AskUserSink); ok {
+		builder.askSink = askSink
+	}
 	// 子智能体授权冒泡：创建权限信号通道并注入 builder。
 	// 子会话 exec 遇到需要授权的工具时通过该通道挂起等待主会话（用户）的授权决策，
 	// 授权后继续执行；超时则以 permission_timeout 终止。
@@ -592,6 +629,17 @@ func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID 
 	defer func() {
 		m.clearPermissionWait(sess.ID(), permissionCh)
 		close(permissionCh)
+	}()
+
+	// 子智能体提问冒泡（镜像授权通道）：创建提问回答通道并注入 builder。
+	// 子会话 exec 调用 AskUser 时通过该通道挂起等待用户回答，
+	// 回答注入后继续执行；超时则以 ask_timeout 终止。
+	askCh := make(chan string, 1)
+	builder.askCh = askCh
+	// 通道生命周期随本 spawn 结束而结束（镜像授权通道）：解除挂起登记并关闭。
+	defer func() {
+		m.clearAskWait(sess.ID(), askCh)
+		close(askCh)
 	}()
 
 	// 强停登记（级联取消锚点）：以发起方主会话 ID 为键登记子执行循环的
@@ -742,6 +790,90 @@ func safeSendPermission(ch chan permissionSignal, sig permissionSignal) (sent bo
 	}()
 	select {
 	case ch <- sig:
+		return true
+	default:
+		return false
+	}
+}
+
+// registerAskWait 登记子会话挂起等待用户回答提问的状态（镜像 registerPermissionWait）。
+// 子会话 exec 在 waitForAskUserDecision 挂起时调用，
+// daemon 收到用户回答时据此定位目标子会话并路由答案。
+func (m *subAgentManager) registerAskWait(sessionID string, ch chan string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.states[sessionID]
+	if st == nil {
+		return
+	}
+	st.pendingAskCh = ch
+	st.pendingAskAt = time.Now().UnixNano()
+}
+
+// clearAskWait 解除子会话的提问等待登记（镜像 clearPermissionWait）。
+// ch 必须与当前登记的通道一致才生效，避免误清其他 spawn 的登记。
+// 注意：本方法不关闭通道——通道关闭统一由 spawn 结束时的 defer 负责，
+// 因为同一 spawn 内可能多次挂起等待提问，通道需在整个执行循环期间保持可用。
+func (m *subAgentManager) clearAskWait(sessionID string, ch chan string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.states[sessionID]
+	if st == nil || st.pendingAskCh != ch {
+		return
+	}
+	st.pendingAskCh = nil
+	st.pendingAskAt = 0
+}
+
+// findPendingAskTarget 返回当前挂起等待提问回答的子会话 ID 及其通道。
+// target 非空时精确匹配指定 sessionID（前端作答携带 session_id 精确路由，
+// 避免多个子会话并发提问时回答错位）；为空时按先到先服务选择最早挂起者。
+// 返回的通道可能随后被关闭（子会话提问超时/结束），调用方发送前需做好防护。
+func (m *subAgentManager) findPendingAskTarget(target string) (string, chan string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if target != "" {
+		st := m.states[target]
+		if st != nil && st.pendingAskCh != nil {
+			return target, st.pendingAskCh
+		}
+		return "", nil
+	}
+	var (
+		earliest int64
+		sid      string
+		ch       chan string
+	)
+	for id, st := range m.states {
+		if st.pendingAskCh == nil {
+			continue
+		}
+		if earliest == 0 || st.pendingAskAt < earliest {
+			earliest = st.pendingAskAt
+			sid = id
+			ch = st.pendingAskCh
+		}
+	}
+	return sid, ch
+}
+
+// dispatchAskAnswer 将用户对子代理提问的回答路由到挂起等待的子会话。
+// target 非空时精确路由到指定子会话（前端作答携带 session_id）；
+// 为空时按先到先服务选择最早挂起者。
+// 返回 true 表示已成功送达（回答将被注入子会话并恢复其循环）；
+// false 表示没有挂起提问的子会话（调用方按普通消息处理）。
+func (m *subAgentManager) dispatchAskAnswer(target, answer string) bool {
+	sid, ch := m.findPendingAskTarget(target)
+	if ch == nil {
+		return false
+	}
+	m.rt.logger.Info("向子智能体转发用户回答",
+		"session", sid, "target", target, "answer_len", len(answer))
+	// 非阻塞发送 + recover 防护：子会话可能在发送前已超时/结束并关闭通道，
+	// 与 safeSendPermission 相同的竞态防护，保证路由方不因竞态崩溃。
+	defer func() { _ = recover() }()
+	select {
+	case ch <- answer:
 		return true
 	default:
 		return false

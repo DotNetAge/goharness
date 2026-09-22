@@ -44,6 +44,26 @@ type AskBuilder struct {
 	// 未注入（如测试环境）时退回原 parentEmit 转发链路，行为保持不变。
 	permissionSink PermissionSink
 
+	// askSink 是子会话 AskUser 提问直达前端的旁路发送器（镜像 permissionSink 模式）。
+	// 由宿主注入到派发 ctx，spawn 时复制到 builder：子会话调用 AskUser 时经它
+	// 把问题直达前端（不依赖父 exec EventBus 存活），随后挂起等待用户回答。
+	// 未注入时退回原 parentEmit 转发链路，行为保持不变。
+	askSink func(data events.AskUserPendingData)
+
+	// askCh 是子智能体 AskUser 提问的等待通道（镜像 permissionCh 模式）。
+	// 子会话场景下由 subAgentManager 在 spawn 时创建并注入：本执行循环调用
+	// AskUser 时不以 ask_user_pending 结束，而是挂起等待用户回答经该通道送达，
+	// 回答以 user 消息注入后继续循环。主会话自身不设置此通道，
+	// 保持原有的「结束 → 用户消息恢复」行为。
+	askCh chan string
+
+	// subagentWaitHook 是主回合「等待子代理落定」的兜底钩子（由 Runtime.Ask 注入）。
+	// LLM 未调用 CollectResults 就产出无工具调用的收尾响应时，executor 在
+	// finalize 前调用它：钩子检测本会话名下是否有未落定的子代理，有则阻塞等待
+	// 全部落定并收集结果文本（带上限，超时返回部分结果并注明）；
+	// ok=false 表示无需等待（无活跃子代理），调用方正常收尾。
+	subagentWaitHook func(ctx context.Context, sessionID, question string) (collected string, ok bool)
+
 	resultAnswer            string
 	resultUsage             session.TokenUsage
 	resultIterations        int
@@ -264,6 +284,27 @@ func (b *AskBuilder) OnUserMessageSaved(fn func(data events.UserMessageSavedData
 func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)) *AskBuilder {
 	return b.on(events.TokenUsageRecorded, func(d any) {
 		if v, ok := d.(session.TokenUsageRecord); ok {
+			fn(v)
+		}
+	})
+}
+
+// OnSubagentWaitStarted 注册「等待子代理落定」阶段开始的处理器。
+// 兜底自动等待钩子触发（LLM 未调用 CollectResults 就试图收尾，且本会话
+// 名下仍有运行中的子代理）时发射，前端据此在回合上显示等待徽标。
+func (b *AskBuilder) OnSubagentWaitStarted(fn func(data events.SubagentWaitData)) *AskBuilder {
+	return b.on(events.SubagentWaitStarted, func(d any) {
+		if v, ok := d.(events.SubagentWaitData); ok {
+			fn(v)
+		}
+	})
+}
+
+// OnSubagentWaitEnded 注册「等待子代理落定」阶段结束的处理器。
+// 全部落定 / 等待上限超时 / 上下文取消时发射，前端据此消除等待徽标。
+func (b *AskBuilder) OnSubagentWaitEnded(fn func(data events.SubagentWaitData)) *AskBuilder {
+	return b.on(events.SubagentWaitEnded, func(d any) {
+		if v, ok := d.(events.SubagentWaitData); ok {
 			fn(v)
 		}
 	})
