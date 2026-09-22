@@ -49,7 +49,6 @@ package agents
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/DotNetAge/goharness/config"
@@ -101,12 +100,10 @@ const (
 //   - mem: 向量存储与检索（RAG）接口。
 //   - providerReg: 大语言模型提供商配置注册表。
 //   - prompt: 提示词装配器，持有 skill 注册表与应用侧注入的基础提示词构造器。
-//   - toolExec: 工具执行引擎，支持钩子与事件发射。
 //   - logger: 结构化日志器。
 //   - loopHooks: 思考循环中每次大语言模型调用前后运行的钩子。
 //   - toolHooks: 每次工具执行前后运行的钩子。
-//   - asyncTimeout: 异步（并发）工具的最大执行时间。
-//   - syncTimeout: 同步（顺序）工具的最大执行时间。
+//   - syncTimeout: 工具执行的超时预算。
 type Runtime struct {
 	model config.ModelConfig
 
@@ -114,7 +111,6 @@ type Runtime struct {
 	mem     memory.Memory
 
 	providerReg config.ProviderRegistry
-	toolExec    tools.ToolExecutor
 
 	// prompt 承载系统提示词与消息序列的构造职责（持有 skill 注册表引用
 	// 与应用侧注入的基础提示词构造器）。通过 WithSkillRegistry 及
@@ -140,8 +136,10 @@ type Runtime struct {
 	loopHooks []hooks.LoopHook
 	toolHooks []hooks.ToolHook
 
-	asyncTimeout time.Duration
-	syncTimeout  time.Duration
+	// syncTimeout 是工具执行（含授权挂起恢复路径 executePendingAndAppend）的
+	// 超时预算。异步工具并发执行的 asyncTimeout 随旧核 executeTools 一并拆除
+	//（新核工具执行由 goagent 内核顺序调度，经适配器委托 goharness 执行器）。
+	syncTimeout time.Duration
 
 	// subAgents 管理子智能体的会话登记与派生执行（详见 subAgentManager）。
 	// 以 SessionID 为唯一键定位会话：不传 ID 时每次新建（分身/并行委派），
@@ -200,14 +198,12 @@ type RunResult struct {
 //   - WithLogger(logging.Logger)：设置自定义日志器
 //   - WithLoopHooks(...hooks.LoopHook)：添加循环生命周期钩子
 //   - WithToolHooks(...hooks.ToolHook)：添加工具执行钩子
-//   - WithAsyncTimeout(time.Duration)：设置异步工具超时（默认 5 分钟）
-//   - WithSyncTimeout(time.Duration)：设置同步工具超时（默认 5 分钟）
+//   - WithSyncTimeout(time.Duration)：设置工具执行超时（默认 5 分钟）
 func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	r := &Runtime{
-		toolReg:      tools.NewDefaultToolRegistry(),
-		logger:       logging.DefaultLogger(),
-		asyncTimeout: 5 * time.Minute,
-		syncTimeout:  5 * time.Minute,
+		toolReg:     tools.NewDefaultToolRegistry(),
+		logger:      logging.DefaultLogger(),
+		syncTimeout: 5 * time.Minute,
 		// skillReg 无默认实现（P4 SPI 收窄）：由应用侧经 WithSkillRegistry 注入，
 		// 未注入时不注册 Skill 工具。
 	}
@@ -226,10 +222,6 @@ func NewRuntime(opts ...RuntimeConfig) *Runtime {
 	if r.llmClient == nil {
 		r.llmClient = NewDefaultLLMClient(r.model.APIKey, r.model.BaseURL, r.model.Provider)
 	}
-	r.toolExec = tools.NewToolExecutor(r.toolReg,
-		tools.WithSessionStore(r.sessionStore),
-		tools.WithKVStore(r.kvStore),
-	)
 	r.registerDefaultTools()
 	r.registerDefaultHooks()
 	return r
@@ -282,14 +274,7 @@ func (rt *Runtime) registerDefaultTools() {
 	// 因为本地模型通常无法可靠地执行多 Agent 并行任务
 	if !rt.model.IsLocal {
 		bundled = append(bundled,
-			toolOf("CollectResults", func() *tools.CollectResultsTool {
-				collectTool := tools.NewCollectResultsTool()
-				// 子任务完成广播等待（Promise.all 语义）：轮询前事件驱动等待
-				// 全部 spawn 结束，完成即收集；spawn 早期失败经返回值直接上报，
-				// 不进入轮询死等。无广播通道的跨进程恢复会话由轮询兜底。
-				collectTool.SetWaitCompletionsFunc(rt.subAgents.waitCompletions)
-				return collectTool
-			}),
+			toolOf("CollectResults", tools.NewCollectResultsTool),
 			toolOf("TaskCreate", tools.NewTaskCreateTool),
 			toolOf("TaskList", tools.NewTaskListTool),
 			toolOf("TaskGet", tools.NewTaskGetTool),
@@ -304,34 +289,11 @@ func (rt *Runtime) registerDefaultTools() {
 			)
 		}
 		bundled = append(bundled,
-			toolOf("SubAgent", func() *tools.SubAgentTool {
-				subAgentTool := tools.NewSubAgentTool(rt.subAgents.spawn)
-				// agent_name 存在性同步校验：与 spawn 内的校验共用应用侧回调。
-				// 在 Execute 同步阶段拦截不存在的 agent_name，柔性错误直接写入
-				// 主会话（错误原因 + 下一步引导），避免后台失败导致 CollectResults 死等。
-				subAgentTool.SetAgentExistsFunc(func(agentName string) bool {
-					return rt.agentExists == nil || rt.agentExists(agentName)
-				})
-				subAgentTool.SetEnsureSessionFunc(func(ctx context.Context, agentName, sessionID string) (string, error) {
-					tc := tools.GetToolContext(ctx)
-					if tc == nil || tc.Session == nil {
-						return "", fmt.Errorf("上下文未包含会话")
-					}
-					st, err := rt.subAgents.getOrCreate(ctx, agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store(), sessionID)
-					if err != nil {
-						return "", err
-					}
-					// 同步登记完成广播（幂等）：SubAgent 工具的 Execute 同步返回后
-					// 后台 goroutine 才开始 spawn，若等 spawn 内部再登记，存在
-					// 「LLM 极速收尾 → 兜底等待先于登记执行」的竞态窗口——
-					// waitCompletions 查无通道会把仍在运行的子代理误判为已完成。
-					// 在同步阶段登记即关闭该窗口（spawn 内的 registerDone 幂等复用）。
-					rt.subAgents.registerDone(st.sess.ID())
-					return st.sess.ID(), nil
-				})
-				return subAgentTool
-			}),
-			toolOf("TeamCreate", func() *tools.TeamCreateTool { return tools.NewTeamCreateTool(rt.subAgents.spawn) }),
+			// SubAgent 工具壳（goharness 风格 Info/Execute）委托 subAgentManager
+			// 受理派发：管理器实现 goagent/subagent.SubAgentDispatcher，Submit
+			// 同步返回受理回执（含跟踪句柄），子任务在后台独立运行并经控制平面结算。
+			toolOf("SubAgent", func() *tools.SubAgentTool { return tools.NewSubAgentTool(rt.subAgents) }),
+			toolOf("TeamCreate", tools.NewTeamCreateTool),
 			toolOf("TeamDelete", tools.NewTeamDeleteTool),
 			toolOf("TeamList", tools.NewTeamListTool),
 			toolOf("TeamGetTasks", tools.NewTeamGetTasksTool),
@@ -435,9 +397,6 @@ func (rt *Runtime) Ask(agentName, question string, s *session.Session) *AskBuild
 		session:   s,
 		runtime:   rt,
 		onEvent:   make(map[events.ReactEventType][]func(any)),
-		// 兜底自动等待钩子：LLM 未调用 CollectResults 就收尾时，
-		// executor 在 finalize 前经它等待并收集本会话名下的子代理结果。
-		subagentWaitHook: rt.subAgents.waitAndCollect,
 	}
 }
 
@@ -504,14 +463,6 @@ func (rt *Runtime) SkillRegistry() skill.SkillRegistry { return rt.prompt.skillR
 // ProviderRegistry 返回 Runtime 的大语言模型提供商注册表。
 // 提供商配置可用于多提供商设置或回退逻辑。
 func (rt *Runtime) ProviderRegistry() config.ProviderRegistry { return rt.providerReg }
-
-// ToolExecutor 返回 Runtime 的工具执行引擎。
-// 执行器处理带有钩子支持、超时管理和事件发射的工具调用。
-// 在自定义代码中执行工具时，建议使用此执行器而非直接调用工具，
-// 因为它包含钩子链和错误处理。
-func (rt *Runtime) ToolExecutor() tools.ToolExecutor {
-	return rt.toolExec
-}
 
 // ExcludeToolsFor 返回指定 Agent 声明要排除的工具名集合。
 // 数据来自应用侧注入的解析回调（WithExcludeTools）；

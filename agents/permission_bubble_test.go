@@ -3,10 +3,13 @@ package agents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DotNetAge/goagent"
+	"github.com/DotNetAge/goagent/subagent"
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/logging"
@@ -15,7 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// spawnInBubble 在 goroutine 中运行子智能体 spawn，模拟 SubAgentTool 的异步执行方式。
+// spawnInBubble 经 Dispatcher.Submit 受理子任务派发（模拟 SubAgentTool 的调用方式），
+// 并在后台 goroutine 中经控制平面等待终态（模拟 CollectResults 的读取方式）。
 // 返回结果通道供测试断言；父级 ToolContext 的 Session 提供子会话的创建参数
 // （ProjectDir / AgentName / SessionStore）。
 func spawnInBubble(t *testing.T, rt *Runtime, parentSess *session.Session, agentName, task string) <-chan struct {
@@ -24,11 +28,23 @@ func spawnInBubble(t *testing.T, rt *Runtime, parentSess *session.Session, agent
 	err    error
 } {
 	t.Helper()
+	// 受理事件捕获通道：Submit 同步发射 SubtaskSpawned，从中提取子会话 ID。
+	sidCh := make(chan string, 1)
 	tc := &tools.ToolContext{
 		Session:      parentSess,
 		SessionStore: parentSess.Store(),
 		Logger:       logging.NewNopLogger(),
-		EmitEvent:    func(events.ReactEvent) {},
+		EmitEvent: func(e events.ReactEvent) {
+			if e.Type != events.SubtaskSpawned {
+				return
+			}
+			if info, ok := e.Data.(events.SubtaskInfo); ok && info.SessionID != "" {
+				select {
+				case sidCh <- info.SessionID:
+				default:
+				}
+			}
+		},
 	}
 	spawnCtx := tools.WithToolContext(context.Background(), tc)
 
@@ -38,12 +54,40 @@ func spawnInBubble(t *testing.T, rt *Runtime, parentSess *session.Session, agent
 		err    error
 	}, 1)
 	go func() {
-		answer, sid, err := rt.subAgents.spawn(spawnCtx, agentName, task, "")
-		resultCh <- struct {
+		res := struct {
 			answer string
 			sid    string
 			err    error
-		}{answer: answer, sid: sid, err: err}
+		}{}
+		receipt, err := rt.subAgents.Submit(spawnCtx, subagent.SubAgentRequest{AgentName: agentName, Task: task})
+		if err != nil {
+			res.err = err
+			resultCh <- res
+			return
+		}
+		if !receipt.Accepted {
+			res.err = errors.New(receipt.Reason)
+			resultCh <- res
+			return
+		}
+		res.sid = <-sidCh
+		// 经控制平面等待终态：与 CollectResults 的 collectOne 相同的读取路径。
+		entry, ok := goagent.DefaultRuntimeManager().Get(receipt.TaskID)
+		if !ok {
+			res.err = fmt.Errorf("任务句柄不存在: %s", receipt.TaskID)
+			resultCh <- res
+			return
+		}
+		<-entry.Done()
+		switch entry.Status() {
+		case goagent.StatusCompleted:
+			res.answer = entry.Result()
+		case goagent.StatusCancelled:
+			res.err = errors.New("子代理任务被取消")
+		default:
+			res.err = fmt.Errorf("子代理任务失败: %s", entry.Reason())
+		}
+		resultCh <- res
 	}()
 	return resultCh
 }
@@ -184,10 +228,11 @@ func TestSubAgentPermissionBubble_Deny(t *testing.T) {
 	}
 }
 
-// TestSubAgentPermissionBubble_TerminationMarker 验证子会话无最终答案终止时写入终止标记：
+// TestSubAgentPermissionBubble_TerminationFailure 验证子会话无最终答案终止时的失败结算：
 // 拒绝授权后子会话继续，但 LLM 第二轮报错（llm_error）→ 无答案终止 →
-// spawn 追加终止标记，CollectResults 的 findFinalAnswer 可据此快速判定失败。
-func TestSubAgentPermissionBubble_TerminationMarker(t *testing.T) {
+// 后台任务经控制平面结算为 Failed，等待方经 Done/Reason 立即感知失败，
+// 不再依赖会话内终止标记（旧机制已拆除）。
+func TestSubAgentPermissionBubble_TerminationFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -222,16 +267,10 @@ func TestSubAgentPermissionBubble_TerminationMarker(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.Error(t, res.err, "LLM 报错时子智能体应返回错误")
+		require.Error(t, res.err, "LLM 报错时子智能体应以失败结算")
 		require.Empty(t, res.answer)
-		// 终止标记应写入子会话，供 CollectResults 快速判定失败。
-		allMsgs, err := mainSess.Store().Get(context.Background(), res.sid)
-		require.NoError(t, err)
-		require.NotEmpty(t, allMsgs, "子会话应留有消息")
-		last := allMsgs[len(allMsgs)-1]
-		require.True(t, strings.HasPrefix(last.Content, tools.SubAgentTerminatedPrefix),
-			"最后一条消息应为终止标记，得到: %s", last.Content)
-		require.Contains(t, last.Content, "llm_error", "终止标记应携带终止原因")
+		require.Contains(t, res.err.Error(), "模拟 LLM 错误", "失败原因应携带底层错误信息")
+		require.NotEmpty(t, res.sid, "失败结算仍应携带子会话 ID（供前端关联）")
 	case <-ctx.Done():
 		t.Fatal("等待子智能体完成超时")
 	}

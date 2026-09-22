@@ -2,6 +2,7 @@ package events
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -258,11 +259,13 @@ func TestCriticalEventsAlwaysDelivered(t *testing.T) {
 	smallCh, cancel := bus.SubscribeFiltered(nil)
 	defer cancel()
 
-	var receivedCritical bool
+	// receivedCritical 由订阅 goroutine 写、主 goroutine 读，
+	// 必须原子化（裸 bool 会触发数据竞争）
+	var receivedCritical atomic.Bool
 	go func() {
 		for event := range smallCh {
 			if event.Type == PermissionRequest {
-				receivedCritical = true
+				receivedCritical.Store(true)
 			}
 		}
 	}()
@@ -276,7 +279,7 @@ func TestCriticalEventsAlwaysDelivered(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if !receivedCritical {
+	if !receivedCritical.Load() {
 		t.Error("critical event should be delivered even when channel is busy")
 	}
 }

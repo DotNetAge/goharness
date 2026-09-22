@@ -2,12 +2,14 @@ package agents
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/DotNetAge/goagent"
+	"github.com/DotNetAge/goagent/subagent"
 	gochatcore "github.com/DotNetAge/gochat/core"
+	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/tools"
@@ -216,50 +218,6 @@ func TestSubAgentManager_ExplicitReuse(t *testing.T) {
 		"传 session_id 应复用已登记的同一会话实例（延续对话）")
 }
 
-// TestSubAgentSpawn_TaskBoundaryMarker 验证复用会话时写入任务开始标记：
-// 同一 Agent + ProjectDir + Sponsor 的第二次委派复用同一会话（延续上下文），
-// spawn 应在新任务的问题消息之前追加 user 角色任务开始标记，
-// 供 CollectResults 的 findFinalAnswer 划定任务边界（避免命中历史任务结果）。
-func TestSubAgentSpawn_TaskBoundaryMarker(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rt := newTestRuntimeWithTools(t, nil)
-	// 两次 spawn 均直接给出答案（无需工具）。
-	rt.llmClient = newMockLLMClient(
-		responseStream("第一次任务结果", "stop"),
-		responseStream("第二次任务结果", "stop"),
-	)
-
-	store := newFakeSessionStore()
-	mainSess, err := session.New("test-agent", "", "/tmp/project", store, logging.NewNopLogger())
-	require.NoError(t, err)
-	store.ensureMeta(mainSess)
-
-	// 第一次 spawn：新建会话。
-	res1 := <-spawnInBubble(t, rt, mainSess, "sub-agent", "第一次任务")
-	require.NoError(t, res1.err)
-	require.Equal(t, "第一次任务结果", res1.answer)
-
-	// 第二次 spawn：复用同一空闲会话（延续讨论上下文）。
-	res2 := <-spawnInBubble(t, rt, mainSess, "sub-agent", "第二次任务")
-	require.NoError(t, res2.err)
-	require.Equal(t, "第二次任务结果", res2.answer)
-	require.Equal(t, res1.sid, res2.sid, "空闲会话应被复用")
-
-	// 复用会话时应写入任务开始标记，作为 CollectResults 的任务边界。
-	allMsgs, err := store.Get(ctx, res2.sid)
-	require.NoError(t, err)
-	markerFound := false
-	for _, m := range allMsgs {
-		if m.Role == "user" && strings.HasPrefix(m.Content, tools.SubAgentTaskStartPrefix) {
-			markerFound = true
-			break
-		}
-	}
-	require.True(t, markerFound, "复用会话应包含任务开始标记")
-}
-
 // blockingStream 构造一个阻塞直到 release 被关闭的 LLM 响应流（随后返回
 // 指定文本），用于让 exec 循环停在流消费阶段，以便断言运行中间状态。
 func blockingStream(release <-chan struct{}, content string) *gochatcore.Stream {
@@ -375,23 +333,63 @@ func TestSubAgentManager_ExplicitReuseClaimsSpawning(t *testing.T) {
 		"显式复用占用中的会话不得被空闲复用路径并发认领，应新建分身")
 }
 
-// TestSubAgentSpawn_RecoverPanic 验证 spawn 的 panic 兜底：
-// 执行链路发生 panic 时不得击穿到调用方（tools 层后台 goroutine）崩掉整个进程，
-// 而是捕获转为错误返回，并登记失败广播——CollectResults 经 waitCompletions
-// 直接感知失败原因，不至对无终止标记的子会话死等轮询。
-func TestSubAgentSpawn_RecoverPanic(t *testing.T) {
+// TestSubAgentSubmit_RecoverPanic 验证 Submit 的 panic 兜底：
+// 受理链路（agentExists 应用侧回调等）发生 panic 时不得击穿工具调用崩掉
+// 主会话执行循环，而是捕获转为错误返回——LLM 本轮即可感知派发失败并自纠。
+func TestSubAgentSubmit_RecoverPanic(t *testing.T) {
 	rt := NewRuntime(WithLogger(logging.NewNopLogger()))
-	// agentExists 校验在 spawn 早期阶段执行（recover 覆盖范围内），
-	// 以回调 panic 模拟执行链路任意 panic 源。
+	// agentExists 校验在 Submit 受理早期执行，以回调 panic 模拟受理链路任意 panic 源。
 	rt.agentExists = func(string) bool { panic("应用侧配置回调异常") }
 
-	const subSessionID = "sub-session-panic-test"
-	_, _, err := rt.subAgents.spawn(context.Background(), "sub-agent", "任务", subSessionID)
+	_, err := rt.subAgents.Submit(context.Background(),
+		subagent.SubAgentRequest{AgentName: "sub-agent", Task: "任务"})
 	require.Error(t, err, "panic 应被捕获转为错误返回，而非击穿崩溃")
 	assert.Contains(t, err.Error(), "panic")
+}
 
-	// CollectResults 的等待入口应能感知到本次失败（spawnErrors 登记）。
-	errs := rt.subAgents.waitCompletions(context.Background(), []string{subSessionID})
-	require.Contains(t, errs, subSessionID, "spawn 早期 panic 应登记失败广播供 CollectResults 感知")
-	assert.Contains(t, errs[subSessionID].Error(), "panic")
+// TestSubAgentSubmit_PanicAfterRegisterSettlesFail 验证受理后置、goroutine 启动前
+// 的 panic 补偿：控制平面条目已注册但后台 goroutine 尚未启动（无人结算），Submit
+// 的兜底必须补偿 Fail——否则条目永久 Pending，CollectResults 对该句柄死等
+// Done 永不关闭（孤儿 Pending）。
+func TestSubAgentSubmit_PanicAfterRegisterSettlesFail(t *testing.T) {
+	rt := newTestRuntimeWithTools(t, nil)
+	rt.llmClient = newMockLLMClient(responseStream("不应被执行", "stop"))
+
+	store := newFakeSessionStore()
+	mainSess, err := session.New("test-agent", "", "/tmp/project", store, logging.NewNopLogger())
+	require.NoError(t, err)
+	store.ensureMeta(mainSess)
+
+	// EmitEvent 回调先捕获受理事件的 TaskID 再 panic：模拟受理链路后置 panic 源
+	//（此时控制平面条目已注册、goroutine 尚未启动）。
+	var registeredTaskID string
+	tc := &tools.ToolContext{
+		Session:      mainSess,
+		SessionStore: mainSess.Store(),
+		Logger:       logging.NewNopLogger(),
+		EmitEvent: func(e events.ReactEvent) {
+			if e.Type == events.SubtaskSpawned {
+				if info, ok := e.Data.(events.SubtaskInfo); ok {
+					registeredTaskID = info.TaskID
+				}
+			}
+			panic("受理事件回调异常")
+		},
+	}
+	ctx := tools.WithToolContext(context.Background(), tc)
+
+	_, err = rt.subAgents.Submit(ctx,
+		subagent.SubAgentRequest{AgentName: "sub-agent", Task: "任务"})
+	require.Error(t, err, "panic 应被捕获转为错误返回")
+	require.NotEmpty(t, registeredTaskID, "panic 前受理事件应已发射（条目已注册）")
+
+	// 补偿结算：条目应为 Failed 终态且 Done 已关闭，CollectResults 不会死等。
+	entry, ok := goagent.DefaultRuntimeManager().Get(registeredTaskID)
+	require.True(t, ok, "panic 时已注册的条目应保留供查询")
+	select {
+	case <-entry.Done():
+	default:
+		t.Fatal("孤儿 Pending 条目应被补偿 Fail（Done 关闭），否则 CollectResults 会死等")
+	}
+	assert.Equal(t, goagent.StatusFailed, entry.Status())
 }

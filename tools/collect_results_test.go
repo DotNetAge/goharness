@@ -3,57 +3,93 @@ package tools
 import (
 	"context"
 	"errors"
-	"os"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goagent"
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/session"
 )
 
 // TestCollectResults_Cancellation 验证 CollectResults 在父 context 被取消时能及时返回。
 //
-// 回归背景：原实现使用 context.WithoutCancel 剥离父 ctx 的取消信号与截止时间，
-// 导致停止按钮（message.cancel）无法中断最长 30 分钟的轮询等待，会话队列被占住、
-// 后续消息全部排队。修复后仅剥离截止时间、保留取消信号。
+// 回归背景：原实现对未落定任务的等待不响应取消（旧轮询实现曾用 context.WithoutCancel
+// 剥离父 ctx 的取消信号），导致停止按钮（message.cancel）无法中断长等待，
+// 会话队列被占住、后续消息全部排队。现实现仅剥离截止时间、保留取消信号。
 func TestCollectResults_Cancellation(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("获取工作目录失败: %v", err)
+	manager := goagent.DefaultRuntimeManager()
+	// 登记 Pending 态任务（永不结算），CollectResults 应阻塞等待其 Done。
+	if _, err := manager.Register("task-cancel-test"); err != nil {
+		t.Fatalf("登记任务失败: %v", err)
 	}
-	store := newMockSessionStore()
-	sess, err := session.New("test-agent", "", cwd, store, logging.NewNopLogger())
-	if err != nil {
-		t.Fatalf("创建会话失败: %v", err)
-	}
-	base := WithToolContext(context.Background(), &ToolContext{
-		Session:      sess,
-		SessionStore: store,
-		Logger:       logging.NewNopLogger(),
-		EmitEvent:    func(e events.ReactEvent) {},
-	})
+	defer manager.Unregister("task-cancel-test")
 
-	ctx, cancel := context.WithCancel(base)
+	ctx, cancel := context.WithCancel(WithToolContext(context.Background(), &ToolContext{
+		Logger: logging.NewNopLogger(),
+	}))
 	defer cancel()
 
 	tool := NewCollectResultsTool()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = tool.Execute(ctx, map[string]any{"session_ids": []any{"sub-1"}})
+		_, _ = tool.Execute(ctx, map[string]any{"task_ids": []any{"task-cancel-test"}})
 	}()
 
-	// 等待轮询进入等待期后取消（覆盖「轮询中取消」的真实时序）
-	time.Sleep(300 * time.Millisecond)
+	// 等待进入等待期后取消（覆盖「等待中取消」的真实时序）
+	time.Sleep(100 * time.Millisecond)
 	cancel()
 
 	select {
 	case <-done:
 		// 及时返回，符合预期
 	case <-time.After(10 * time.Second):
-		t.Fatal("CollectResults 应在父 context 取消后及时返回，而非等待 30 分钟轮询超时")
+		t.Fatal("CollectResults 应在父 context 取消后及时返回，而非无限等待")
 	}
+}
+
+// TestCollectResults_CompletedAndFailed 验证按跟踪句柄读取控制平面的三种结算路径：
+// Completed → result；Failed → error（携带原因）；句柄不存在 → 引导重派。
+func TestCollectResults_CompletedAndFailed(t *testing.T) {
+	manager := goagent.DefaultRuntimeManager()
+	if _, err := manager.Register("task-ok"); err != nil {
+		t.Fatalf("登记任务失败: %v", err)
+	}
+	manager.Complete("task-ok", "分析完成：共 3 处问题")
+	if _, err := manager.Register("task-bad"); err != nil {
+		t.Fatalf("登记任务失败: %v", err)
+	}
+	manager.Fail("task-bad", "授权超时")
+
+	tool := NewCollectResultsTool()
+	out, err := tool.Execute(WithToolContext(context.Background(), &ToolContext{
+		Logger: logging.NewNopLogger(),
+	}), map[string]any{
+		"task_ids": []any{"task-ok", "task-bad", "task-gone"},
+	})
+	if err != nil {
+		t.Fatalf("Execute 不应报错，实际: %v", err)
+	}
+	payload, ok := out.(string)
+	if !ok {
+		t.Fatalf("Execute 应返回 JSON 字符串，实际: %T", out)
+	}
+	for _, want := range []string{
+		`"task_id":"task-ok"`,
+		`"status":"completed"`,
+		`"result":"分析完成：共 3 处问题"`,
+		`"task_id":"task-bad"`,
+		`"error":"子代理任务失败: 授权超时"`,
+		`"task_id":"task-gone"`,
+		"任务句柄不存在",
+	} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("结果应包含 %s，实际: %s", want, payload)
+		}
+	}
+
+	manager.Unregister("task-ok")
+	manager.Unregister("task-bad")
 }
 
 // TestWithoutDeadline 验证 withoutDeadline 的契约：
@@ -69,7 +105,7 @@ func TestWithoutDeadline(t *testing.T) {
 		t.Errorf("withoutDeadline 应剥离截止时间，得到 %v", dl)
 	}
 
-	// 取消信号必须保留（这是修复的关键：停止按钮必须能中断轮询等待）
+	// 取消信号必须保留（这是修复的关键：停止按钮必须能中断等待）
 	cancel()
 	select {
 	case <-wd.Done():

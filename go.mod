@@ -18,6 +18,7 @@ require (
 )
 
 require (
+	github.com/DotNetAge/goagent v0.0.0
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
@@ -43,3 +44,5 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )
+
+replace github.com/DotNetAge/goagent => ../goagent

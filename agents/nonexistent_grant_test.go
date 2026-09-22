@@ -192,4 +192,3 @@ func TestReadGrant_ENOTDIR(t *testing.T) {
 
 	assert.Nil(t, pending, "ENOTDIR 路径文件不可能存在，不应触发权限请求，但触发了：reason=%v", pending)
 }
-

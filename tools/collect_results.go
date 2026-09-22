@@ -4,178 +4,94 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/DotNetAge/goharness/session"
+	"github.com/DotNetAge/goagent"
 )
-
-const (
-	// defaultCollectTimeout 是等待所有子代理完成的最大超时时间。
-	defaultCollectTimeout = 30 * time.Minute
-	// pollInterval 是子 session 轮询之间的间隔时间。
-	pollInterval = 2 * time.Second
-
-	// SubAgentTerminatedPrefix 是子智能体无最终答案终止时的标记前缀。
-	// subAgentManager.spawn 在子会话无最终答案（授权超时、上下文取消、执行错误等）
-	// 时追加一条以该前缀开头的 assistant 消息，
-	// CollectResults 据此快速判定失败，避免死等到默认 30 分钟收集超时。
-	SubAgentTerminatedPrefix = "[sub-agent-terminated]"
-
-	// SubAgentTaskStartPrefix 是子智能体任务开始标记的前缀。
-	// subAgentManager.spawn 在复用已有会话（延续上下文）时，于新任务的问题消息之前
-	// 追加一条以该前缀开头的 user 消息，标记新任务的起点。
-	// findFinalAnswer 据此划定任务边界：该消息（及更早的 user 消息）之前的
-	// assistant 消息属于历史任务，不得作为当前任务的结果——
-	// 否则会话复用后 CollectResults 会提前命中旧任务的答案或终止标记。
-	SubAgentTaskStartPrefix = "[sub-agent-task-start]"
-)
-
-// WaitCompletionsFunc 等待指定子任务全部结束（Promise.all 语义）：
-// 事件驱动阻塞直至所有会话的 spawn 结束或 ctx 取消。
-// 返回 sessionID → spawn 早期失败原因（正常结束不出现在返回值中）。
-type WaitCompletionsFunc func(ctx context.Context, sessionIDs []string) map[string]error
 
 // CollectResultsTool 收集子代理任务的结果。
-// 通过轮询子 session 获取 SubAgent 的执行结果，不依赖 ResultStore。
-// 轮询前优先经 waitCompletions 事件驱动等待子任务结束广播（同进程 Promise
-// 语义），完成即收集；轮询保留为跨进程恢复会话（无广播通道）的兜底。
-type CollectResultsTool struct {
-	waitCompletions WaitCompletionsFunc
-}
+// 结果不靠轮询子会话，而是直接读取控制平面（goagent.DefaultRuntimeManager）：
+// 对每个跟踪句柄定位运行实例，阻塞等待其 Done 关闭（终态结算），
+// Completed 读取结果、Failed/Cancelled 读取失败原因。
+// 本工具不依赖其它工具、不做会话扫描——跟踪句柄来自 SubAgent 的受理回执。
+type CollectResultsTool struct{}
 
 func NewCollectResultsTool() *CollectResultsTool {
 	return &CollectResultsTool{}
-}
-
-// SetWaitCompletionsFunc 设置子任务完成等待函数（agents 层实现，经 Runtime 注入）。
-// 在轮询前调用：全部子任务结束（close 广播）即唤醒，消除 2 秒轮询盲扫延迟；
-// spawn 早期失败经返回值直接上报，避免对无标记会话死等 30 分钟。
-func (t *CollectResultsTool) SetWaitCompletionsFunc(fn WaitCompletionsFunc) {
-	t.waitCompletions = fn
 }
 
 func (t *CollectResultsTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "CollectResults",
 		MaxResultSizeChars: 50000,
-		Description:        "收集子代理任务的结果",
+		Description:        "收集子代理任务的结果（按跟踪句柄阻塞等待任务落定）",
 		Prompt: `收集子代理任务的结果。支持重试与恢复。
 
-返回 JSON 数组，每项包含 {session_id, agent_name, status, result}。
+返回 JSON 数组，每项包含 {task_id, status, result}。
 
-当存在子代理 session_id 时，请优先调用此工具：
-- 首次调用：等待正在运行的任务并返回结果
-- 重试：从已完成的任务中恢复结果（从子 session 直接读取）
+当存在子代理跟踪句柄（SubAgent 回执返回的 task_id）时，请优先调用此工具：
+- 首次调用：等待正在运行的任务落定并返回结果
+- 重试：从已落定的任务中恢复结果（按句柄直接读取）
 
 如果返回 status=completed，result 字段包含子代理的最终答案。
-如果某个 session_id 未返回结果（missing/failed），请对该 agent 重新发起
-SubAgent 调用（task 设为"继续之前的任务并给出最终结果"），
-再调用 CollectResults 获取新结果。同一 agent 会复用之前的 session。`,
+如果某个 task_id 返回「任务句柄不存在」，说明该任务已无法跟踪
+（如服务重启），请对该 agent 重新发起 SubAgent 调用
+（task 设为"继续之前的任务并给出最终结果"），再收集新结果。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
-			{Name: "session_ids", Type: "array", Description: "要收集结果的子 session ID 数组。session_id 来自 SubAgent 返回结果。", Required: true},
+			{Name: "task_ids", Type: "array", Description: "要收集结果的子任务跟踪句柄数组。task_id 来自 SubAgent 受理回执。", Required: true},
 		},
 	}
 }
 
+// Execute 按跟踪句柄收集子任务结果。
+// 并发等待所有句柄落定（单个子任务的长时间执行或挂起不得阻塞其它子任务的
+// 结果收集），结果按入参顺序写入预分配槽位，保证返回顺序与 task_ids 一致。
 func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	tc := GetToolContext(ctx)
 	logger := getLogger(ctx)
-	if tc == nil || tc.Session == nil || tc.SessionStore == nil {
-		return nil, fmt.Errorf("%s", GuideMissingContext("CollectResults", "包含 Session 和 SessionStore 的 ToolContext"))
-	}
 
-	rawIDsVal, found := GetParam(params, "session_ids")
+	rawIDsVal, found := GetParam(params, "task_ids")
 	if !found {
-		return nil, fmt.Errorf("%s", GuideMissingParam("CollectResults", "session_ids"))
+		return nil, fmt.Errorf("%s", GuideMissingParam("CollectResults", "task_ids"))
 	}
 	rawIDs, ok := rawIDsVal.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%s", GuideWrongParamType("CollectResults", "session_ids", "array", rawIDsVal))
+		return nil, fmt.Errorf("%s", GuideWrongParamType("CollectResults", "task_ids", "array", rawIDsVal))
 	}
 
-	sessionIDs := make([]string, 0, len(rawIDs))
+	taskIDs := make([]string, 0, len(rawIDs))
 	for _, raw := range rawIDs {
-		if id, ok := raw.(string); ok {
-			sessionIDs = append(sessionIDs, id)
+		if id, ok := raw.(string); ok && id != "" {
+			taskIDs = append(taskIDs, id)
 		}
 	}
+	if len(taskIDs) == 0 {
+		return nil, fmt.Errorf("%s", GuideInvalidValue("CollectResults", "task_ids", rawIDsVal, "传入 SubAgent 受理回执返回的跟踪句柄（task_id 字符串数组），至少一个"))
+	}
 	logger.Info("collect_results: collecting results",
-		"session_ids", sessionIDs,
-		"count", len(sessionIDs),
-		"deadline_in", defaultCollectTimeout.String(),
+		"task_ids", taskIDs,
+		"count", len(taskIDs),
 	)
 
 	// 仅剥离单次工具执行的超时截止时间，保留父 context 的取消信号：
-	// 用户点击停止按钮（message.cancel）必须能中断此处的轮询等待，
+	// 用户点击停止按钮（message.cancel）必须能中断此处的等待，
 	// 否则会话队列会被一直占住，后续消息全部排队、取消形同虚设。
 	waitCtx := withoutDeadline(ctx)
 
-	// 事件驱动等待（Promise.all 语义）：全部子任务的 spawn 结束广播（close）
-	// 即唤醒，完成即收集，消除 2 秒轮询盲扫延迟。spawn 早期失败（无子会话
-	// 标记可写）经返回值直接上报，不进入轮询死等 30 分钟。
-	// 无广播通道的会话（跨进程恢复的旧会话）不等待，由后续轮询兜底。
-	spawnErrs := map[string]error{}
-	if t.waitCompletions != nil {
-		spawnErrs = t.waitCompletions(waitCtx, sessionIDs)
-	}
-
-	deadline := time.Now().Add(defaultCollectTimeout)
-
-	// 并发轮询所有子会话：单个子代理的长时间执行或挂起不得阻塞其它子代理的结果收集。
-	// 顺序轮询时，排在前面的在跑会话会让已终止会话的失败结果迟迟无法上报，
-	// 主会话表现为持续 Loading（实证：daemon 日志中已终止会话被排在后面的在跑会话阻塞 40s+）。
-	// 结果按入参顺序写入预分配槽位，保证返回顺序与 session_ids 一致。
-	jsonResults := make([]map[string]string, len(sessionIDs))
+	// 并发等待所有子任务落定：单个子任务的长时间执行或挂起不得阻塞其它
+	// 子任务的结果收集（顺序等待时，排在前面的在跑任务会让已落定任务的
+	// 失败结果迟迟无法上报）。结果按入参顺序写入预分配槽位，
+	// 保证返回顺序与 task_ids 一致。
+	manager := goagent.DefaultRuntimeManager()
+	jsonResults := make([]map[string]string, len(taskIDs))
 	var wg sync.WaitGroup
-	for i, id := range sessionIDs {
+	for i, id := range taskIDs {
 		wg.Add(1)
 		go func(i int, id string) {
 			defer wg.Done()
-			// spawn 早期失败：等待已确保广播结束，直接返回失败原因，
-			// 不进入轮询死等（子会话中永远不会有终止标记）。
-			if err, ok := spawnErrs[id]; ok {
-				logger.Warn("collect_results: sub-agent spawn failed early",
-					"session_id", id,
-					"error", err,
-				)
-				jsonResults[i] = map[string]string{
-					"session_id": id,
-					"status":     "failed",
-					"error":      fmt.Sprintf("子代理任务启动失败: %v", err),
-				}
-				return
-			}
-			result := t.pollForResult(waitCtx, tc, id, deadline)
-			if result != nil {
-				jsonResults[i] = result
-				return
-			}
-			// 轮询未拿到结果：区分「被取消」与「超时」，避免给父 LLM 错误归因
-			//（取消意味着用户已主动停止，父 LLM 不应再尝试续跑）。
-			if waitCtx.Err() != nil {
-				logger.Warn("collect_results: poll cancelled before sub-agent completed",
-					"session_id", id,
-				)
-				jsonResults[i] = map[string]string{
-					"session_id": id,
-					"status":     "failed",
-					"error":      "已取消：等待子代理结果时被用户中断",
-				}
-				return
-			}
-			logger.Warn("collect_results: sub-agent did not complete within deadline",
-				"session_id", id,
-				"deadline_minutes", defaultCollectTimeout.Minutes(),
-			)
-			jsonResults[i] = map[string]string{
-				"session_id": id,
-				"status":     "failed",
-				"error":      "超时：子代理未在指定时间内完成",
-			}
+			jsonResults[i] = t.collectOne(waitCtx, manager, id)
 		}(i, id)
 	}
 	wg.Wait()
@@ -187,8 +103,63 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	return string(out), nil
 }
 
+// collectOne 等待单个跟踪句柄对应的子任务落定并返回结果条目。
+// 句柄不存在（daemon 重启后旧句柄、拼写错误等）时立即返回引导性失败，
+// 提示 LLM 重新派发，而不是无限等待。
+func (t *CollectResultsTool) collectOne(ctx context.Context, manager *goagent.RuntimeManager, taskID string) map[string]string {
+	rt, ok := manager.Get(taskID)
+	if !ok {
+		return map[string]string{
+			"task_id": taskID,
+			"status":  "failed",
+			"error":   "任务句柄不存在，请对该 agent 重新派发 SubAgent 任务后再收集",
+		}
+	}
+
+	select {
+	case <-rt.Done():
+	case <-ctx.Done():
+		// 用户停止（取消意味着用户已主动停止，父 LLM 不应再尝试续跑）。
+		return map[string]string{
+			"task_id": taskID,
+			"status":  "failed",
+			"error":   "已取消：等待子代理结果时被用户中断",
+		}
+	}
+
+	switch rt.Status() {
+	case goagent.StatusCompleted:
+		return map[string]string{
+			"task_id": taskID,
+			"status":  "completed",
+			"result":  rt.Result(),
+		}
+	case goagent.StatusCancelled:
+		reason := rt.Reason()
+		if reason == "" {
+			reason = "子代理任务被取消"
+		}
+		return map[string]string{
+			"task_id": taskID,
+			"status":  "failed",
+			"error":   "子代理任务失败: " + reason,
+		}
+	default:
+		// Failed 或其余终态：失败原因经 Runtime.Reason() 可查。
+		reason := rt.Reason()
+		if reason == "" {
+			reason = rt.Status().String()
+		}
+		return map[string]string{
+			"task_id": taskID,
+			"status":  "failed",
+			"error":   "子代理任务失败: " + reason,
+		}
+	}
+}
+
 // withoutDeadline 返回剥离截止时间、但保留取消信号与上下文值的 context。
-// 用于让长耗时轮询工具（CollectResults）突破单次工具执行超时，
+// 用于让长耗时等待工具（CollectResults）突破单次工具执行超时，
 // 同时仍能响应上级取消（如 message.cancel 停止按钮）。
 func withoutDeadline(ctx context.Context) context.Context {
 	return &noDeadlineContext{Context: ctx}
@@ -201,173 +172,3 @@ type noDeadlineContext struct {
 }
 
 func (*noDeadlineContext) Deadline() (time.Time, bool) { return time.Time{}, false }
-
-// pollForResult 轮询等待单个子 session 的结果。
-// 直接通过 session_id 加载子 session → 查找 FinalAnswer。
-// 每 30 次轮询输出一次进度日志，避免高频重复日志。
-func (t *CollectResultsTool) pollForResult(ctx context.Context, tc *ToolContext, sessionID string, deadline time.Time) map[string]string {
-	logger := getLogger(ctx)
-	startedAt := time.Now()
-	pollCount := 0
-
-	logger.Info("collect_results: start polling sub-session",
-		"session_id", sessionID,
-		"deadline_at", deadline.Format(time.RFC3339),
-	)
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Warn("collect_results: poll cancelled",
-				"session_id", sessionID,
-				"poll_count", pollCount,
-				"elapsed_ms", time.Since(startedAt).Milliseconds(),
-				"reason", ctx.Err(),
-			)
-			return nil
-		default:
-		}
-
-		if time.Now().After(deadline) {
-			logger.Warn("collect_results: deadline reached",
-				"session_id", sessionID,
-				"poll_count", pollCount,
-				"elapsed_ms", time.Since(startedAt).Milliseconds(),
-			)
-			return nil
-		}
-
-		// 加载子 session 消息
-		subMsgs, err := tc.SessionStore.Get(ctx, sessionID)
-		if err != nil || len(subMsgs) == 0 {
-			if pollCount%30 == 0 {
-				logger.Info("collect_results: sub-session not ready yet, retrying",
-					"session_id", sessionID,
-					"poll_count", pollCount,
-					"elapsed_s", int(time.Since(startedAt).Seconds()),
-					"error", err,
-				)
-			}
-			pollCount++
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		// 查找执行结果：正常最终答案，或终止标记（无最终答案的失败终止）。
-		answer, termReason := FindFinalAnswer(subMsgs)
-		if answer != "" {
-			agentName := lookupSubAgentName(ctx, tc, sessionID)
-			logger.Info("collect_results: found FinalAnswer in sub-session",
-				"session_id", sessionID,
-				"agent_name", agentName,
-				"poll_count", pollCount,
-				"elapsed_ms", time.Since(startedAt).Milliseconds(),
-				"result_len", len(answer),
-			)
-			return map[string]string{
-				"session_id": sessionID,
-				"agent_name": agentName,
-				"status":     "completed",
-				"result":     answer,
-			}
-		}
-		if termReason != "" {
-			// 子会话已终止但未产生最终答案（授权超时、上下文取消等）：
-			// 立即判定失败返回，不再继续轮询。
-			agentName := lookupSubAgentName(ctx, tc, sessionID)
-			logger.Warn("collect_results: sub-session terminated without FinalAnswer",
-				"session_id", sessionID,
-				"agent_name", agentName,
-				"poll_count", pollCount,
-				"elapsed_ms", time.Since(startedAt).Milliseconds(),
-				"reason", termReason,
-			)
-			return map[string]string{
-				"session_id": sessionID,
-				"agent_name": agentName,
-				"status":     "failed",
-				"error":      "子代理已终止但未产生最终答案: " + termReason,
-			}
-		}
-
-		// 每 30 次轮询输出一次进度，避免高频重复日志
-		if pollCount%30 == 0 {
-			logger.Info("collect_results: no FinalAnswer yet, retrying",
-				"session_id", sessionID,
-				"poll_count", pollCount,
-				"elapsed_s", int(time.Since(startedAt).Seconds()),
-			)
-		}
-		pollCount++
-		time.Sleep(pollInterval)
-	}
-}
-
-// lookupSubAgentName 从子 session 的 meta 中获取 agent_name。
-// 优先使用 SessionStore.GetMeta（从文件元数据读取），
-// 兜底从子 session 的 system 消息解析。
-func lookupSubAgentName(ctx context.Context, tc *ToolContext, sessionID string) string {
-	if tc.SessionStore != nil {
-		info, err := tc.SessionStore.GetMeta(ctx, sessionID)
-		if err == nil && info != nil && info.AgentName != "" {
-			return info.AgentName
-		}
-	}
-	// 兜底：从 system 消息解析
-	return extractAgentNameFromMessages(tc, sessionID)
-}
-
-// extractAgentNameFromMessages 从子 session 的 system 消息中提取 agent_name。
-func extractAgentNameFromMessages(tc *ToolContext, sessionID string) string {
-	msgs, err := tc.SessionStore.Get(context.Background(), sessionID)
-	if err != nil {
-		return ""
-	}
-	for _, m := range msgs {
-		if m.Role == "system" && m.Content != "" {
-			var meta struct {
-				AgentName string `json:"agent_name"`
-			}
-			if err := json.Unmarshal([]byte(m.Content), &meta); err == nil && meta.AgentName != "" {
-				return meta.AgentName
-			}
-		}
-	}
-	return ""
-}
-
-// FindFinalAnswer 在子 session 的消息中查找执行结果。
-// 除 CollectResults 轮询外，agents 层的兜底自动等待钩子（subagentWaitHook）
-// 也复用本函数收集子会话结果，保证两处判定逻辑完全一致。
-// 返回两个值：
-//   - answer：子会话正常完成时的最终答案（当前任务段内最后一条无 tool_calls 的 assistant 消息内容）。
-//   - termReason：若当前任务段内最后一条无 tool_calls 的 assistant 消息是终止标记
-//     （子会话无最终答案即终止，如授权超时、上下文取消），返回标记携带的终止原因。
-//
-// 终止标记消息同时满足 assistant / 无 tool_calls / 内容非空 三个条件，
-// 因此必须先识别标记再按正常答案处理，避免把标记误判为最终答案。
-//
-// 任务边界（会话复用）：子会话会被复用（同 Agent + ProjectDir + Sponsor 的空闲会话
-// 延续上下文），历史任务的最终答案与终止标记仍保留在会话消息中。若不加边界判断，
-// 新任务尚未完成时 CollectResults 会提前命中旧任务的结果。因此：
-//   - spawn 复用会话时追加一条 user 角色任务开始标记（SubAgentTaskStartPrefix）；
-//   - 本函数从后向前扫描，遇到最近的 user 消息（任务开始标记、任务问题或图片消息）
-//     即停止——该消息属于当前任务的起点及边界，之前的 assistant 消息属于历史任务，
-//     一律不计入当前任务结果，返回空结果让调用方继续轮询。
-func FindFinalAnswer(msgs []session.Message) (answer, termReason string) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Role == "user" {
-			// 任务边界：此消息（含）之后才可能属于当前任务。
-			return "", ""
-		}
-		if m.Role == "assistant" && len(m.ToolCalls) == 0 && m.Content != "" {
-			if strings.HasPrefix(m.Content, SubAgentTerminatedPrefix) {
-				reason := strings.TrimSpace(strings.TrimPrefix(m.Content, SubAgentTerminatedPrefix))
-				return "", reason
-			}
-			return m.Content, ""
-		}
-	}
-	return "", ""
-}

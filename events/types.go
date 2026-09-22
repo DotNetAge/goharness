@@ -133,21 +133,6 @@ const (
 	// 数据：PermissionPendingData
 	PermissionPending ReactEventType = "permission_pending"
 
-	// SubagentWaitStarted 表示主回合进入「等待子代理落定」阶段：
-	// 兜底自动等待钩子触发（LLM 未调用 CollectResults 就试图收尾，
-	// 且本会话名下仍有运行中的子代理），执行循环阻塞等待全部子代理落定。
-	// 前端可据此在回合上显示等待徽标。
-	//
-	// 数据：SubagentWaitData
-	SubagentWaitStarted ReactEventType = "subagent_wait_started"
-
-	// SubagentWaitEnded 表示「等待子代理落定」阶段结束
-	// （全部子代理落定 / 等待上限超时 / 上下文被取消），
-	// 收集到的结果将以 user 角色消息注入主循环继续总结。
-	//
-	// 数据：SubagentWaitData
-	SubagentWaitEnded ReactEventType = "subagent_wait_ended"
-
 	// UserMessageSaved 表示用户消息已被追加到会话并持久化。
 	// 在用户消息追加后立即发出（仅针对真实用户消息 ——
 	// 魔法词不会被追加，因此不会触发此事件）。携带后端消息
@@ -199,14 +184,4 @@ type UserMessageSavedData struct {
 	// Timestamp 是后端消息 id（Message.Timestamp），
 	// 供 session.delete_round 用于定位并删除整个轮次。
 	Timestamp int64 `json:"timestamp"`
-}
-
-// SubagentWaitData 携带「等待子代理落定」阶段开始/结束事件的信息。
-type SubagentWaitData struct {
-	// SessionID 是发起等待的主会话 ID（子代理的 sponsor）。
-	SessionID string `json:"session_id"`
-
-	// SubagentCount 是本次等待涉及的子代理数量（开始事件携带；
-	// 结束事件同为该值，供前端配对展示）。
-	SubagentCount int `json:"subagent_count,omitempty"`
 }

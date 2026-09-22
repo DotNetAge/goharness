@@ -126,10 +126,7 @@ func TestMemorySearch_Execute_Success(t *testing.T) {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
-	resultStr, ok := result.(string)
-	if !ok {
-		t.Fatal("result should be a string")
-	}
+	resultStr := asResultString(t, result)
 
 	if !contains(resultStr, "TypeScript") {
 		t.Error("result should contain information about TypeScript preference")
@@ -159,7 +156,7 @@ func TestMemorySearch_Execute_EmptyResult(t *testing.T) {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
-	resultStr := result.(string)
+	resultStr := asResultString(t, result)
 	if !contains(resultStr, "未找到关于查询的记忆") {
 		t.Errorf("empty result should indicate no memories found, got: %s", resultStr)
 	}
@@ -180,10 +177,7 @@ func TestMemorySearch_Execute_Error(t *testing.T) {
 		t.Fatalf("Execute() should not return error, got: %v", err)
 	}
 
-	resultStr, ok := result.(string)
-	if !ok {
-		t.Fatal("result should be a string")
-	}
+	resultStr := asResultString(t, result)
 
 	// 应该返回"未找到"消息
 	if !contains(resultStr, "未找到关于查询的记忆") {
@@ -270,7 +264,7 @@ func TestMemorySearch_LimitValidation(t *testing.T) {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
-	resultStr := result.(string)
+	resultStr := asResultString(t, result)
 	if contains(resultStr, "25 relevant") {
 		t.Error("limit should be capped at 20, but all 25 records were returned")
 	}
@@ -307,6 +301,22 @@ func TestMemorySearch_FormatResults(t *testing.T) {
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+// asResultString 从工具 Execute 返回值提取结果文本。工具统一返回形态为
+// MetaString（字符串结果 + 元数据旁路，序列化行为与裸 string 一致），
+// 保留裸 string 分支兜底。
+func asResultString(t *testing.T, result any) string {
+	t.Helper()
+	switch v := result.(type) {
+	case MetaString:
+		return v.Value
+	case string:
+		return v
+	default:
+		t.Fatalf("结果应为 MetaString 或 string，得到 %T", result)
+		return ""
+	}
 }
 
 func searchString(s, substr string) bool {

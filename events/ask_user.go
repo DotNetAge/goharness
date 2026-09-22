@@ -37,6 +37,12 @@ type AskUserPendingData struct {
 	// daemon 据此把答案精确路由到挂起等待的子 exec（askCh），避免多个子会话
 	// 并发提问时回答错位。主会话自身的提问不设置（为空），保持旧行为。
 	SessionID string `json:"session_id,omitempty"`
+
+	// ToolCallID 是本轮 AskUser 工具调用的 ID：恢复时回答以 AskUser 工具结果
+	// 消息（Role=tool）补全会话，保证 assistant.tool_calls 与 tool 消息严格
+	// 配对，且提问-回答上下文对 LLM 完整可见。为空时（异常兜底）退回旧的
+	// user 消息注入方式。
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 func NewAskUserPendingData(questions []AskUserQuestion) AskUserPendingData {

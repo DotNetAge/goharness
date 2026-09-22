@@ -244,7 +244,11 @@ type Session struct {
 	// 存储在会话上（而不是运行时上）使权限流能够在 Ask() 调用
 	// 和子智能体边界之间存活，因为会话是共享状态。
 	pendingPermission *PendingPermission
-	pendingMu         sync.Mutex
+	// pendingAskUser 存储主会话挂起等待用户回答的 AskUser 提问（与
+	// pendingPermission 共用 pendingMu）：下一轮 Run 入口把用户消息视为
+	// 回答并以 AskUser 工具结果消息补全协议。
+	pendingAskUser *PendingAskUser
+	pendingMu      sync.Mutex
 
 	// whitelist 是会话级工具白名单的内存缓存。
 	// 首次访问时从 {SessionDir()}/session-wl.json 懒加载。
@@ -502,6 +506,11 @@ func (s *Session) ensureLoaded(ctx context.Context) {
 	// 上一轮以 permission_pending 终止留下的 pending 必须在此重建，
 	// 否则下一轮魔法词（PermissionAllow/Deny）无法解析。
 	s.loadPendingPermission()
+
+	// 从磁盘恢复挂起提问（session-ask-user.json）：上一轮以 ask_user_pending
+	// 终止留下的提问必须在此重建，否则下一轮无法把用户消息识别为回答并
+	// 补全 AskUser 的 tool 结果消息。
+	s.loadPendingAsk()
 
 	s.loaded.Store(true)
 }

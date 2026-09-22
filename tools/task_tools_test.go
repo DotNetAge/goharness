@@ -220,11 +220,7 @@ func TestTeamCreateTool_Execute(t *testing.T) {
 	kv, cleanup := newTestKVStore(t)
 	defer cleanup()
 
-	spawnFunc := func(ctx context.Context, agentName, task, sessionID string) (string, string, error) {
-		return "team result", "team-session-id", nil
-	}
-
-	tool := NewTeamCreateTool(spawnFunc)
+	tool := NewTeamCreateTool()
 	ctx, _ := withKVStoreContext(context.Background(), kv, "test-session-6")
 
 	params := map[string]any{

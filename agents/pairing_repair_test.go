@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 )
@@ -175,7 +176,8 @@ func TestRepairToolPairingBreak_截断并同步持久化(t *testing.T) {
 		t.Fatalf("追加消息失败: %v", err)
 	}
 
-	if !repairToolPairingBreak(ctx, sess, logging.NewNopLogger()) {
+	repaired, _ := repairToolPairingBreak(ctx, sess, logging.NewNopLogger())
+	if !repaired {
 		t.Fatalf("repairToolPairingBreak() 应返回 true")
 	}
 
@@ -213,7 +215,8 @@ func TestRepairToolPairingBreak_空窗口时追加说明(t *testing.T) {
 		t.Fatalf("追加消息失败: %v", err)
 	}
 
-	if !repairToolPairingBreak(ctx, sess, logging.NewNopLogger()) {
+	repaired, _ := repairToolPairingBreak(ctx, sess, logging.NewNopLogger())
+	if !repaired {
 		t.Fatalf("repairToolPairingBreak() 应返回 true")
 	}
 
@@ -241,7 +244,7 @@ func TestRepairToolPairingBreak_窗口完整返回false(t *testing.T) {
 		t.Fatalf("追加消息失败: %v", err)
 	}
 
-	if repairToolPairingBreak(ctx, sess, logging.NewNopLogger()) {
+	if repaired, _ := repairToolPairingBreak(ctx, sess, logging.NewNopLogger()); repaired {
 		t.Fatalf("窗口完整时 repairToolPairingBreak() 应返回 false")
 	}
 
@@ -252,5 +255,115 @@ func TestRepairToolPairingBreak_窗口完整返回false(t *testing.T) {
 	}
 	if len(stored) != 3 {
 		t.Fatalf("完整窗口不应被修改，消息数 = %d, want 3", len(stored))
+	}
+}
+
+// TestRepairToolPairingBreak_挂起孤儿回补用户消息 验证高危回归修复（发现 1）：
+// ask_user 挂起场景下会话遗留孤儿 assistant(tool_calls)（挂起轮回写、无配对
+// tool 结果），恢复轮的用户回答与新问题依次追加其后。修复必须只回滚坏轮次的
+// 孤儿 assistant，而把被截区间内的用户消息按原顺序回补——否则用户回答在持久层
+// 丢失，下一轮 LLM 失忆且前端历史缺条。
+func TestRepairToolPairingBreak_挂起孤儿回补用户消息(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, store := newPairingTestSession(t)
+
+	// 坏序列：挂起孤儿 asst(AskUser) 后随用户回答与新问题
+	msgs := []session.Message{
+		pairingMsg("user", "初始问题", ""),
+		pairingMsg("assistant", "", "", pairingTC("S", "AskUser")),
+		pairingMsg("user", "用户回答", ""),
+		pairingMsg("user", "新问题", ""),
+	}
+	if err := sess.Append(ctx, msgs...); err != nil {
+		t.Fatalf("追加消息失败: %v", err)
+	}
+
+	repaired, removedTCs := repairToolPairingBreak(ctx, sess, logging.NewNopLogger())
+	if !repaired {
+		t.Fatalf("repairToolPairingBreak() 应返回 true")
+	}
+	if _, hit := removedTCs["S"]; !hit {
+		t.Fatalf("removedTCs 应包含被截孤儿 tool_call S, got %v", removedTCs)
+	}
+
+	// 回补后窗口应为 [user(初始问题), user(用户回答), user(新问题)]：
+	// 坏轮次的孤儿 assistant 回滚，用户消息按原顺序完整保留
+	got := sess.Current()
+	if len(got) != 3 {
+		t.Fatalf("回补后窗口消息数 = %d, want 3", len(got))
+	}
+	for i, want := range []struct{ role, content string }{
+		{"user", "初始问题"}, {"user", "用户回答"}, {"user", "新问题"},
+	} {
+		if got[i].Role != want.role || got[i].Content != want.content {
+			t.Fatalf("回补后窗口[%d] = (%s, %q), want (%s, %q)",
+				i, got[i].Role, got[i].Content, want.role, want.content)
+		}
+	}
+	// 末尾已是 user 消息，不应误加说明消息
+	if got[len(got)-1].Content == toolPairingRepairNotice {
+		t.Fatalf("末尾已是用户消息，不应追加说明消息")
+	}
+
+	// 存储应同步截断+回补
+	stored, err := store.Get(ctx, sess.ID())
+	if err != nil {
+		t.Fatalf("读取存储失败: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Fatalf("存储中消息数 = %d, want 3（Truncate 与回补必须同步持久化）", len(stored))
+	}
+}
+
+// TestInvalidatePendingsAfterRepair 验证挂起失效闭环（发现 3）：入口配对修复
+// 回滚坏轮次后，命中被截 tool_call 的挂起授权/挂起提问必须失效——授权发射
+// PermissionDenied 撤前端弹窗，提问丢弃；未命中的挂起提问原样保留。
+func TestInvalidatePendingsAfterRepair(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, _ := newPairingTestSession(t)
+	rt := &Runtime{logger: logging.NewNopLogger()}
+	b := &AskBuilder{ctx: ctx, session: sess}
+
+	var denied []string
+	emit := func(_ events.ReactEventType, data any) {
+		if s, ok := data.(string); ok {
+			denied = append(denied, s)
+		}
+	}
+
+	// 场景一：挂起授权与挂起提问均命中被截集合 → 授权撤销并发射 PermissionDenied，提问丢弃
+	sess.SetPendingPermission(session.PendingPermission{ToolName: "Bash", ToolCallID: "tc_gone"})
+	sess.SetPendingAskUser(session.PendingAskUser{ToolCallID: "ask_gone", Question: "被回滚的提问"})
+	rt.invalidatePendingsAfterRepair(b, map[string]struct{}{"tc_gone": {}, "ask_gone": {}}, emit)
+
+	if sess.HasPendingPermission() {
+		t.Fatal("命中被截集合的挂起授权应被撤销")
+	}
+	if sess.HasPendingAskUser() {
+		t.Fatal("命中被截集合的挂起提问应被丢弃")
+	}
+	if len(denied) != 1 {
+		t.Fatalf("应发射一次 PermissionDenied, got %v", denied)
+	}
+
+	// 场景二：挂起提问未命中被截集合 → 原样保留
+	sess.SetPendingAskUser(session.PendingAskUser{ToolCallID: "ask_kept", Question: "仍然有效的提问"})
+	rt.invalidatePendingsAfterRepair(b, map[string]struct{}{"tc_gone": {}, "ask_gone": {}}, emit)
+	if p := sess.TakePendingAskUser(); p == nil || p.ToolCallID != "ask_kept" {
+		t.Fatalf("未命中的挂起提问应保留, got %+v", p)
+	}
+
+	// 场景三：挂起提问缺失 ToolCallID（无法定位对应调用）→ 丢弃
+	sess.SetPendingAskUser(session.PendingAskUser{Question: "无 ToolCallID 的提问"})
+	rt.invalidatePendingsAfterRepair(b, nil, emit)
+	if sess.HasPendingAskUser() {
+		t.Fatal("缺失 ToolCallID 的挂起提问应被丢弃")
+	}
+	if len(denied) != 1 {
+		t.Fatalf("无挂起授权时不应发射 PermissionDenied, got %v", denied)
 	}
 }

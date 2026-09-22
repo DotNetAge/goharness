@@ -37,7 +37,9 @@ const askWaitTimeout = 10 * time.Minute
 // 时，不在本会话内以 ask_user_pending 结束（那样子 exec 就结束了，主会话的
 // CollectResults 会死等，且子任务上下文无法延续），而是经 askSink 直达前端
 // 挂起等待。用户作答后 daemon 经 dispatchAskAnswer 把答案送入本通道，
-// 答案以 user 消息注入会话后继续循环；超时则以 ask_timeout 终止。
+// 答案以 AskUser 工具结果消息注入会话（补全 assistant.tool_calls 与 tool
+// 消息的严格配对）后继续循环；超时同样以工具结果补全协议后以 ask_timeout
+// 终止。
 func (rt *Runtime) waitForAskUserDecision(
 	ctx context.Context,
 	b *AskBuilder,
@@ -75,13 +77,20 @@ func (rt *Runtime) waitForAskUserDecision(
 			"session", b.session.ID(),
 			"answer_len", len(answer),
 		)
-		// 回答以 user 消息注入会话（与主会话「用户回答作为普通消息到达」
-		// 的恢复语义一致），循环继续由 LLM 消化回答。
-		if err := b.session.Append(ctx, session.Message{
-			Role:      "user",
-			Content:   answer,
-			Timestamp: time.Now().Unix(),
-		}); err != nil {
+		// 回答以 AskUser 工具结果消息注入会话：补全挂起轮已落库的
+		// assistant.tool_calls 配对，提问-回答上下文对 LLM 完整可见；
+		// 无 ToolCallID 时（异常兜底）退回旧的 user 消息注入方式。
+		msg := session.Message{
+			Role:       "tool",
+			ToolCallID: askUserData.ToolCallID,
+			Content:    answer,
+			Timestamp:  time.Now().Unix(),
+		}
+		if askUserData.ToolCallID == "" {
+			msg.Role = "user"
+			msg.ToolCallID = ""
+		}
+		if err := b.session.Append(ctx, msg); err != nil {
 			logger.Error("追加用户回答失败", err, "session", b.session.ID())
 			emit(events.Error, "追加用户回答失败: "+err.Error())
 			b.resultErr = err
@@ -92,6 +101,19 @@ func (rt *Runtime) waitForAskUserDecision(
 			"session", b.session.ID(),
 			"timeout", askWaitTimeout.String(),
 		)
+		// 超时终止前以工具结果补全协议：挂起轮的 assistant.tool_calls 已落库，
+		// 缺失配对 tool 消息会在后续轮次触发配对断裂 400（由入口修复兜底，
+		// 但会连带回滚上下文）。
+		if askUserData.ToolCallID != "" {
+			if err := b.session.Append(ctx, session.Message{
+				Role:       "tool",
+				ToolCallID: askUserData.ToolCallID,
+				Content:    "用户未在时限内回答，本次提问已超时关闭。如仍需用户输入请重新提问。",
+				Timestamp:  time.Now().Unix(),
+			}); err != nil {
+				logger.Error("追加提问超时工具结果失败", err, "session", b.session.ID())
+			}
+		}
 		b.resultTerminationReason = "ask_timeout"
 	}
 }

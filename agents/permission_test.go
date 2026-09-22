@@ -235,7 +235,7 @@ func TestResolvePermissionMagicWordAllow(t *testing.T) {
 	})
 
 	b := rt.Ask("test-agent", tools.PermissionAllow, sess)
-	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, newTestToolExecutor(rt), func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.True(t, consumed)
 	assert.Nil(t, sess.TakePendingPermission())
 
@@ -258,7 +258,7 @@ func TestResolvePermissionMagicWordDeny(t *testing.T) {
 	})
 
 	b := rt.Ask("test-agent", tools.PermissionDeny, sess)
-	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, newTestToolExecutor(rt), func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.True(t, consumed)
 	assert.Nil(t, sess.TakePendingPermission())
 
@@ -302,7 +302,7 @@ func TestResolvePermissionMagicWordAllowWithImage(t *testing.T) {
 	})
 
 	b := rt.Ask("test-agent", tools.PermissionAllow, sess)
-	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, newTestToolExecutor(rt), func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.True(t, consumed)
 
 	msgs := sess.All()
@@ -324,7 +324,7 @@ func TestResolvePermissionMagicWordNoPending(t *testing.T) {
 	rt := newTestRuntime(t)
 	sess := newTestSession(t)
 	b := rt.Ask("test-agent", tools.PermissionAllow, sess)
-	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, newTestToolExecutor(rt), func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.False(t, consumed)
 }
 
@@ -333,7 +333,7 @@ func TestResolvePermissionMagicWordRegularMessage(t *testing.T) {
 	rt := newTestRuntime(t)
 	sess := newTestSession(t)
 	b := rt.Ask("test-agent", "hello", sess)
-	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, rt.toolExec, func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
+	consumed, _ := rt.resolvePermissionMagicWord(context.Background(), b, newTestToolExecutor(rt), func(_ events.ReactEventType, _ any) {}, logging.NewNopLogger())
 	assert.False(t, consumed)
 }
 

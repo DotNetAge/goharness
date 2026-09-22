@@ -323,6 +323,16 @@ func newTestRuntime(t testingT, opts ...RuntimeConfig) *Runtime {
 	return rt
 }
 
+// newTestToolExecutor 为测试构造 goharness 工具执行器（魔法词解析等
+// 路径需要真实执行器执行挂起工具）。旧核 rt.toolExec 字段拆除后，
+// 测试与生产路径一致：按需局部构造。
+func newTestToolExecutor(rt *Runtime) tools.ToolExecutor {
+	return tools.NewToolExecutor(rt.toolReg,
+		tools.WithSessionStore(rt.sessionStore),
+		tools.WithKVStore(rt.kvStore),
+	)
+}
+
 // testingT 抽象 *testing.T 的最小接口，便于在辅助函数中使用。
 type testingT interface {
 	Helper()

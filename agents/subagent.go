@@ -2,11 +2,15 @@ package agents
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/DotNetAge/goagent"
+	"github.com/DotNetAge/goagent/subagent"
 	"github.com/DotNetAge/goharness/events"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/tools"
@@ -15,6 +19,11 @@ import (
 // parentEmitKeyType 用于在 context 中传递父级 EventBus 发射器，
 // 使子智能体能够将事件转发到父级事件总线。
 type parentEmitKeyType struct{}
+
+// subagentSem 是子代理任务的并发信号量。
+// 限制同时运行的子代理任务数量，防止资源耗尽；满载时新任务保持
+// Pending（已受理未运行），有槽位释放后自动开跑。
+var subagentSem = make(chan struct{}, 20)
 
 // perSessionState 是单个子代理会话的执行状态：
 // 包含会话实例与其专属互斥锁。锁粒度覆盖整个 exec 循环，
@@ -60,8 +69,10 @@ type perSessionState struct {
 	spawning bool
 }
 
-// subAgentManager 管理子智能体的会话登记与派生执行，是 Runtime 的一个内聚子系统，
-// 从 Runtime 抽离以减轻后者的职责密度。
+// subAgentManager 管理子智能体的会话登记与派发执行，是 Runtime 的一个内聚子系统，
+// 从 Runtime 抽离以减轻后者的职责密度。它同时是 goagent/subagent.SubAgentDispatcher
+// 的宿主实现：Submit 受理派发请求（登记控制平面 + 发射受理事件）并立即返回回执，
+// 子任务在后台 goroutine 中独立运行，结果经控制平面（RuntimeManager）按句柄结算。
 //
 // 职责：
 //   - 以 SessionID 为唯一键登记子智能体会话（1 ProjectDir → N Session 分身模型）：
@@ -80,17 +91,6 @@ type subAgentManager struct {
 	mu     sync.RWMutex
 	states map[string]*perSessionState
 
-	// doneChs 是「子任务完成广播」登记表（Promise 语义）：sessionID → 广播通道。
-	// spawn 启动时登记、结束时 close（close 即广播，多等待者安全）。
-	// CollectResults 经 rt 注入的 waitCompletions 等待通道关闭，
-	// 事件驱动感知子任务结束，替代盲轮询（轮询保留为跨进程恢复场景的兜底）。
-	doneChs map[string]chan struct{}
-
-	// spawnErrors 记录 spawn 早期失败（无子会话可写终止标记的场景，如
-	// getOrCreate 失败）：sessionID → 失败原因。CollectResults 唤醒后
-	// 据此直接返回失败，避免对无标记会话死等轮询到 30 分钟上限。
-	spawnErrors map[string]error
-
 	// sponsored 是「主会话停止 → 派生子代理级联强停」的登记表：
 	// 主会话 ID → (子会话 ID → 子执行循环 ctx 的取消函数)。
 	// 子执行循环运行在 Runtime.Ask 新建的独立 Background ctx 上，不随主
@@ -104,11 +104,9 @@ type subAgentManager struct {
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
 	return &subAgentManager{
-		rt:          rt,
-		states:      make(map[string]*perSessionState),
-		doneChs:     make(map[string]chan struct{}),
-		spawnErrors: make(map[string]error),
-		sponsored:   make(map[string]map[string]context.CancelFunc),
+		rt:        rt,
+		states:    make(map[string]*perSessionState),
+		sponsored: make(map[string]map[string]context.CancelFunc),
 	}
 }
 
@@ -315,98 +313,6 @@ func (m *subAgentManager) releaseSpawn(sessionID string) {
 	}
 }
 
-// registerDone 登记子任务完成广播通道（幂等）：已登记则复用既有通道。
-// Promise 语义的第一半——spawn 启动即登记，结束（无论成败）由 completeDone
-// close 广播。空 sessionID 忽略（无广播对象）。
-// 同时清除该会话上一次 spawn 的失败登记：会话复用（同 sid 新任务）场景下，
-// 旧失败记录会让 waitCompletions 把本次成功任务误判为启动失败。
-func (m *subAgentManager) registerDone(sessionID string) {
-	if sessionID == "" {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.doneChs[sessionID]; !ok {
-		m.doneChs[sessionID] = make(chan struct{})
-	}
-	delete(m.spawnErrors, sessionID)
-}
-
-// completeDone 广播子任务结束：close 通道唤醒所有等待者并清理登记。
-// Promise 语义的第二半——spawn 结束时调用，多等待者（多个 CollectResults）
-// 同时唤醒均安全。
-func (m *subAgentManager) completeDone(sessionID string) {
-	if sessionID == "" {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if ch, ok := m.doneChs[sessionID]; ok {
-		delete(m.doneChs, sessionID)
-		close(ch)
-	}
-}
-
-// failDone 记录 spawn 早期失败并广播结束。
-// 早期失败（如 getOrCreate 失败）没有子会话可写终止标记，CollectResults
-// 唤醒后查本登记直接返回失败，避免对无标记会话死等轮询到 30 分钟上限。
-// 幂等语义限于单次 spawn：保留本次 spawn 的首个失败原因
-// （跨 spawn 的旧记录由 registerDone 在新任务登记时清除）。
-func (m *subAgentManager) failDone(sessionID string, err error) {
-	if sessionID == "" {
-		return
-	}
-	m.mu.Lock()
-	if _, ok := m.spawnErrors[sessionID]; !ok {
-		m.spawnErrors[sessionID] = err
-	}
-	m.mu.Unlock()
-	m.completeDone(sessionID)
-}
-
-// waitCompletions 等待指定子任务全部结束（Promise.all 语义）：
-// 事件驱动阻塞直至所有会话的 spawn 结束（完成广播通道关闭）或 ctx 取消。
-// 无活跃登记的会话视为已完成（跨进程恢复的旧会话无通道，调用方以轮询兜底）。
-// 返回本次询问中 spawn 早期失败的 sessionID → 失败原因（正常结束不出现在
-// 返回值中，结果由调用方从子会话读取）。
-func (m *subAgentManager) waitCompletions(ctx context.Context, sessionIDs []string) map[string]error {
-	chs := make(map[string]chan struct{}, len(sessionIDs))
-	m.mu.RLock()
-	for _, id := range sessionIDs {
-		if ch, ok := m.doneChs[id]; ok {
-			chs[id] = ch
-		}
-	}
-	m.mu.RUnlock()
-
-	// 等待所有活跃通道关闭：每个通道一个 goroutine，ctx 取消时同步退出。
-	if len(chs) > 0 {
-		var wg sync.WaitGroup
-		for _, ch := range chs {
-			wg.Add(1)
-			go func(ch chan struct{}) {
-				defer wg.Done()
-				select {
-				case <-ch:
-				case <-ctx.Done():
-				}
-			}(ch)
-		}
-		wg.Wait()
-	}
-
-	// 等待结束后查失败登记：此时 failDone 必然已完成，不会漏掉等待期间的失败。
-	errs := make(map[string]error)
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, id := range sessionIDs {
-		if e, ok := m.spawnErrors[id]; ok {
-			errs[id] = e
-		}
-	}
-	return errs
-}
-
 // registerSponsored 登记运行中子代理的强停句柄：sponsorSessionID 为主会话 ID，
 // subSessionID 为子会话 ID，cancel 为子执行循环 ctx 的取消函数。
 // 同一子会话同一时刻至多一个活跃 spawn（per-session 互斥锁保证），重复登记
@@ -491,216 +397,292 @@ func (m *subAgentManager) cancelAllSponsored() int {
 	return len(cancels)
 }
 
-// spawn 创建并运行子智能体（实现 tools.SpawnFunc）。
-// 子智能体通过 Runtime.Ask 运行独立思考循环，结果随后通过 CollectResultsTool 收集。
+// Submit 受理子任务派发（实现 goagent/subagent.SubAgentDispatcher）。
+// 同步完成「校验 → 会话定位 → 控制平面登记 → 受理事件发射」，立即返回回执；
+// 子任务在后台 goroutine 中独立运行（runTask），结果经控制平面按跟踪句柄结算。
+// 本方法只做受理，不等待任务执行——CollectResults 经回执中的 TaskID 主动读取结果。
 //
 // 设计决策：
-//   - 会话定位遵循「空闲复用 + 并行分身 + 显式复用」：sessionID 为空 → 优先复用
-//     同 Agent + ProjectDir + Sponsor 的空闲会话延续上下文（避免重复读取文件浪费算力），
-//     无空闲候选则新建独立会话（分身，支持并行委派）；sessionID 非空 → 复用旧会话。
-//   - per-session 互斥锁：同一会话的并发 Ask 串行执行，从根上杜绝消息交错
-//     （assistant tool_calls → tool 配对被并发写破坏）；不同会话之间完全并行。
-//   - 通过 Runtime.Ask 运行，与主智能体使用相同的思考循环。
-//   - 独立会话意味着与父级上下文完全隔离。
-func (m *subAgentManager) spawn(ctx context.Context, agentName, task, sessionID string) (answer string, sid string, err error) {
-	// panic 兜底（覆盖早期阶段：agent 校验、上下文检查、会话定位）：
-	// spawn 链路任何 panic 不得击穿到 tools 层后台 goroutine 崩掉整个进程。
-	// 捕获后转为错误返回，并登记失败广播——CollectResults 唤醒后查 spawnErrors
-	// 直接感知失败，不至对无终止标记的子会话死等轮询。此时完成广播通道可能尚未
-	// 登记（failDone 的 close 为 no-op），感知依赖 spawnErrors 查询：CollectResults
-	// 调用必然晚于 SubAgent 工具返回，而后者必然晚于本函数返回（failDone 已完成），
-	// 时序严格成立、无竞态。sessionID 非空时顺带复位 spawning（releaseSpawn defer
-	// 在早期 panic 场景尚未注册）；为空时无法定位会话，后果仅是该会话不再参与
-	// 空闲复用，不影响正确性。
+//   - agent 配置不存在的柔性校验前移到受理阶段：拒绝以回执（Accepted=false + Reason）
+//     返回，LLM 本轮即可自纠，不产生无效任务条目。
+//   - 会话定位（空闲复用 + 并行分身 + 显式复用）在同步阶段完成：spawning 认领标志
+//     即刻置位，保证并发派发不坍缩到同一会话；子会话 ID 随受理事件同步发射给前端。
+//   - 控制平面登记即受理：任务条目以 Pending 态进入 RuntimeManager（UI 立即可见），
+//     后台 goroutine 运行完毕后经 Complete/Fail 结算（终态条目保留供 CollectResults
+//     重试查询，不做 Unregister）。
+func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentRequest) (receipt subagent.SubAgentReceipt, err error) {
+	// acceptedTaskID 非空表示控制平面条目已注册、但后台 goroutine 尚未启动：
+	// 此窗口内 panic 时条目无人结算，defer 中补偿 Fail（否则 CollectResults
+	// 对该句柄死等 Done 永不关闭）；goroutine 启动后置空，结算由 runTask 保证。
+	var acceptedTaskID string
+
+	// panic 兜底：受理链路（agentExists 应用侧回调、会话定位等）任何 panic 不得
+	// 击穿工具调用崩掉主会话执行循环，捕获后转为错误返回。
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("子智能体执行发生 panic: %v", r)
-			m.rt.logger.Error("子智能体执行 panic",
-				err,
-				"agent_name", agentName,
-				"session_id", sessionID,
+			if acceptedTaskID != "" {
+				goagent.DefaultRuntimeManager().Fail(acceptedTaskID, fmt.Sprintf("派发受理中断: %v", r))
+			}
+			receipt = subagent.SubAgentReceipt{}
+			err = fmt.Errorf("派发子智能体任务时发生 panic: %v", r)
+			m.rt.logger.Error("派发子智能体任务 panic", err,
+				"agent_name", req.AgentName,
 				"stack", string(debug.Stack()),
 			)
-			m.failDone(sessionID, err)
-			if sessionID != "" {
-				m.releaseSpawn(sessionID)
-			}
 		}
 	}()
 
 	// Agent 存在性校验走应用侧回调（goharness 对 Agent 结构零依赖）。
-	if m.rt.agentExists != nil && !m.rt.agentExists(agentName) {
-		spawnErr := fmt.Errorf("未找到智能体配置: %q", agentName)
-		// sessionID 已知（ensureSession 存根）时登记失败并广播，
-		// CollectResults 唤醒后直接拿到失败原因，不至死等轮询。
-		m.failDone(sessionID, spawnErr)
-		return "", "", spawnErr
+	// 策略性拒绝：经回执返回原因（非 error），与 goagent/subagent 协议语义一致。
+	if m.rt.agentExists != nil && !m.rt.agentExists(req.AgentName) {
+		return subagent.SubAgentReceipt{
+			Accepted: false,
+			Reason:   fmt.Sprintf("系统中不存在名为 %q 的智能体。请改用系统提示词智能体清单中的名称重新派发；若要创建自己的分身，agent_name 传你自己的名称", req.AgentName),
+		}, nil
 	}
 
 	tc := tools.GetToolContext(ctx)
 	if tc == nil || tc.Session == nil {
-		spawnErr := fmt.Errorf("上下文未包含会话")
-		m.failDone(sessionID, spawnErr)
-		return "", "", spawnErr
+		return subagent.SubAgentReceipt{}, fmt.Errorf("上下文未包含会话")
 	}
-	// 完成广播登记（Promise 语义）：sessionID 已知（ensureSession 存根/显式复用）
-	// 时立即登记，使 getOrCreate 失败也能广播；为空（新建/复用空闲会话）时在
-	// 会话确定后补登记。spawn 结束（无论成败）统一 close 广播，
-	// CollectResults 事件驱动感知子任务结束，替代盲轮询。
-	if sessionID != "" {
-		m.registerDone(sessionID)
-	}
-	st, err := m.getOrCreate(ctx, agentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store(), sessionID)
+
+	// 会话定位（同步阶段）：空闲复用 / 并行分身 / 显式复用的认领即在此完成，
+	// 子会话 ID 随受理事件发射，前端立即可见派发目标。
+	st, err := m.getOrCreate(ctx, req.AgentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store(), req.SessionID)
 	if err != nil {
-		wrapped := fmt.Errorf("获取子智能体会话失败: %q: %w", agentName, err)
-		m.failDone(sessionID, wrapped)
-		return "", "", wrapped
+		return subagent.SubAgentReceipt{}, fmt.Errorf("获取子智能体会话失败: %q: %w", req.AgentName, err)
 	}
-	sess := st.sess
-	if sessionID == "" {
-		sessionID = sess.ID()
-		m.registerDone(sessionID)
+	sid := st.sess.ID()
+
+	// 受理即登记控制平面（Pending 态，UI 立即可见）；TaskID 作为跟踪句柄
+	// 写入回执，CollectResults 据此等待并读取结果。
+	taskID := newTaskID()
+	if _, err := goagent.DefaultRuntimeManager().Register(taskID); err != nil {
+		return subagent.SubAgentReceipt{}, fmt.Errorf("登记子任务运行实例失败: %w", err)
 	}
-	defer m.completeDone(sessionID)
+	acceptedTaskID = taskID
 
-	// per-session 互斥：同一会话的并发 Ask 串行执行。
-	// 锁粒度 = 完整 exec 循环，持有期间阻塞其他对该会话的 spawn。
-	st.lock.Lock()
-	defer st.lock.Unlock()
+	// 受理事件：前端据此渲染「子任务运行中」状态（不受任务实例 Pending 态影响）。
+	if tc.EmitEvent != nil {
+		tc.EmitEvent(events.ReactEvent{
+			AgentName: req.AgentName,
+			Type:      events.SubtaskSpawned,
+			Data: events.SubtaskInfo{
+				AgentName:   req.AgentName,
+				Description: req.Task,
+				SessionID:   sid,
+				TaskID:      taskID,
+			},
+		})
+	}
 
-	// 认领释放：spawn 结束（无论成败）后复位 spawning 标志，使会话重新参与
-	// 后续的空闲复用。defer 栈上位于 st.lock.Unlock 之前执行（LIFO），
-	// 复位动作本身走 m.mu 写锁，与 per-session 互斥锁无耦合。
-	defer m.releaseSpawn(sess.ID())
-
-	// 记录本次使用时间：后续同一 Agent + ProjectDir + Sponsor 的 spawn
-	// 可据此判断空闲会话并复用（延续讨论上下文）。
-	m.touchSession(sess.ID())
-
-	m.rt.logger.Info("sub-agent spawn started",
-		"agent_name", agentName,
-		"session_id", sess.ID(),
+	m.rt.logger.Info("sub-agent task accepted",
+		"agent_name", req.AgentName,
+		"session_id", sid,
+		"task_id", taskID,
 	)
 
-	// 任务边界标记：复用已有会话（延续上下文）时，历史任务的最终答案/终止标记
-	// 仍保留在会话消息中。在新任务的问题消息（exec 追加）之前插入一条 user 角色
-	// 任务开始标记，使 CollectResults 的 findFinalAnswer 能划定任务边界——
-	// 避免新任务尚未完成时提前命中旧任务的结果（直接返回旧答案/旧终止标记）。
-	// 全新会话无历史消息，无需标记；标记追加失败仅告警，不阻断任务（Append 不依赖 ctx 取消）。
-	if len(sess.All()) > 0 {
-		if appendErr := sess.Append(ctx, session.Message{
-			Role:      "user",
-			Content:   tools.SubAgentTaskStartPrefix + " 新的子任务开始，请结合此前的讨论上下文完成新任务。",
-			Timestamp: time.Now().Unix(),
-		}); appendErr != nil {
-			m.rt.logger.Warn("追加子智能体任务开始标记失败",
-				"session", sess.ID(), "error", appendErr)
-		}
-	}
+	// 后台执行：goroutine 归宿主，ctx 剥离取消信号与截止时间（Execute 同步返回后
+	// execCtx 会被取消，会话持久化操作不得随之中断）、保留 Value（logger /
+	// ToolContext / 授权与提问 sink）。goroutine 一经启动即由 runTask 保证结算，
+	// 补偿窗口关闭。
+	acceptedTaskID = ""
+	go m.runTask(context.WithoutCancel(ctx), taskID, req.AgentName, req.Task, st, tc)
 
-	builder := m.rt.Ask(agentName, task, sess)
-	// 将子智能体的事件转发到父级 EventBus，
-	// 以便订阅父级的客户端能够看到所有智能体事件。
-	if pe, ok := ctx.Value(parentEmitKeyType{}).(func(events.ReactEvent)); ok {
-		builder.parentEmit = pe
-	}
-	// 子智能体授权冒泡旁路：从 ctx 读取授权请求直达前端的发送器并注入 builder。
-	// 子会话触发授权时优先经它发送授权请求，不依赖父 exec EventBus 的存活
-	// （父 exec 结束/被取消后订阅销毁会静默丢事件）；ctx 中的值由宿主
-	// （mindx daemon）在派发子任务时经 WithPermissionSink 注入。
-	if sink, ok := ctx.Value(permissionSinkKeyType{}).(PermissionSink); ok {
-		builder.permissionSink = sink
-	}
-	// 子智能体提问冒泡旁路（镜像授权旁路）：从 ctx 读取 AskUser 提问直达
-	// 前端的发送器并注入 builder。ctx 中的值由宿主经 WithAskSink 注入；
-	// 未注入时提问退回原 parentEmit 转发链路，行为保持不变。
-	if askSink, ok := ctx.Value(askSinkKeyType{}).(AskUserSink); ok {
-		builder.askSink = askSink
-	}
-	// 子智能体授权冒泡：创建权限信号通道并注入 builder。
-	// 子会话 exec 遇到需要授权的工具时通过该通道挂起等待主会话（用户）的授权决策，
-	// 授权后继续执行；超时则以 permission_timeout 终止。
-	permissionCh := make(chan permissionSignal, 1)
-	builder.permissionCh = permissionCh
-	// 通道生命周期随本 spawn 结束而结束：解除挂起登记并关闭通道。
-	// waitForPermissionDecision 每次挂起/恢复也会解除登记，但不关闭通道——
-	// 同一 spawn 内可能多次触发授权（授权后继续循环又遇到需授权的工具），
-	// 通道必须保持可用，直到整个执行循环结束。
-	defer func() {
-		m.clearPermissionWait(sess.ID(), permissionCh)
-		close(permissionCh)
-	}()
+	return subagent.SubAgentReceipt{Accepted: true, TaskID: taskID}, nil
+}
 
-	// 子智能体提问冒泡（镜像授权通道）：创建提问回答通道并注入 builder。
-	// 子会话 exec 调用 AskUser 时通过该通道挂起等待用户回答，
-	// 回答注入后继续执行；超时则以 ask_timeout 终止。
-	askCh := make(chan string, 1)
-	builder.askCh = askCh
-	// 通道生命周期随本 spawn 结束而结束（镜像授权通道）：解除挂起登记并关闭。
-	defer func() {
-		m.clearAskWait(sess.ID(), askCh)
-		close(askCh)
-	}()
+// runTask 在后台 goroutine 中运行子任务并结算控制平面条目。
+// 执行完毕后经 Complete（成功）/ Fail（失败）写入终态并关闭 Done，
+// 等待中的 CollectResults 随即被唤醒；同时发射 SubtaskCompleted 事件。
+// 本函数承载既有 spawn 的全部编排语义：subagentSem 并发上限、per-session
+// 互斥、认领释放、授权与提问冒泡通道、sponsored 强停登记。
+func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task string, st *perSessionState, tc *tools.ToolContext) {
+	manager := goagent.DefaultRuntimeManager()
+	sess := st.sess
+	startedAt := time.Now()
 
-	// 强停登记（级联取消锚点）：以发起方主会话 ID 为键登记子执行循环的
-	// 取消函数，主会话被停止时由宿主（mindx）经 Runtime.CancelSubAgents
-	// 统一强停。登记在 per-session 锁持有期间进行，保证同一子会话同一
-	// 时刻至多一个活跃登记；spawn 结束（无论成败）注销。
-	m.registerSponsored(tc.Session.ID(), sess.ID(), builder.cancel)
-	defer m.unregisterSponsored(tc.Session.ID(), sess.ID())
+	// settled 标记结算已完成（Fail/Complete 已执行）；其后链路（日志 / 完成事件
+	// 回调）panic 时仅记日志，不再补偿结算。
+	settled := false
 
-	// panic 兜底（覆盖执行循环阶段）：捕获后转为错误返回并登记失败广播。
-	// defer LIFO 顺序保证本 recover 最先执行——failDone 先写入 spawnErrors 并
-	// close 广播唤醒等待者，随后函数尾部 defer completeDone 发现键已被清理而
-	// no-op，确保「等待者唤醒 → 查 spawnErrors」必然读到失败原因，无竞态窗口。
+	// panic 兜底：执行闭包自行 recover 转错误，但结算链路（logger / EmitEvent
+	// 外部回调）仍可能 panic——任何 panic 不得击穿后台 goroutine 崩掉整个进程；
+	// 未结算时补偿 Fail，防止 CollectResults 对该句柄死等 Done 永不关闭。
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("子智能体执行发生 panic: %v", r)
-			m.rt.logger.Error("子智能体执行 panic",
-				err,
+			if !settled {
+				manager.Fail(taskID, fmt.Sprintf("子任务执行链路 panic: %v", r))
+			}
+			m.rt.logger.Error("子任务 goroutine panic",
+				fmt.Errorf("%v", r),
 				"agent_name", agentName,
-				"session_id", sessionID,
+				"session_id", sess.ID(),
+				"task_id", taskID,
 				"stack", string(debug.Stack()),
 			)
-			m.failDone(sessionID, err)
 		}
 	}()
 
-	result, err := builder.Run()
+	// 并发上限：信号量在后台 goroutine 中获取，满载时任务保持 Pending
+	//（已受理未运行，控制平面立即可见），有槽位释放后自动开跑。
+	subagentSem <- struct{}{}
+	defer func() { <-subagentSem }()
 
-	sid = sess.ID()
+	// 单轮执行闭包：返回答案、终止原因与错误；panic 统一转错误。
+	answer, termReason, execErr := func() (answer, termReason string, err error) {
+		// panic 兜底：执行链路任何 panic 不得击穿后台 goroutine 崩掉整个进程，
+		// 捕获后按失败结算控制平面条目。
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("子智能体执行发生 panic: %v", r)
+				m.rt.logger.Error("子智能体执行 panic",
+					err,
+					"agent_name", agentName,
+					"session_id", sess.ID(),
+					"task_id", taskID,
+					"stack", string(debug.Stack()),
+				)
+			}
+		}()
 
-	// 子会话无最终答案的非正常终止（授权超时、上下文取消、执行错误等）：
-	// 追加终止标记，供 CollectResults 快速判定失败，避免轮询死等到默认 30 分钟超时。
-	// 错误场景同样写入标记（如 llm_error / cancelled），否则 CollectResults 无法区分
-	// "子会话还在运行" 与 "已静默终止"，会死等轮询。
-	//
-	// 例外：AskUser 阻塞（ask_user_pending）不追加标记——子会话并非失败终止，
-	// 而是在等待用户在子会话 Tab 回答（用户回答后由 daemon 启动下一次 exec 恢复循环）。
-	// 若追加标记，CollectResults 的 findFinalAnswer 会把它识别为终止原因并立即判定失败，
-	// 而子会话实际还在等待回答，导致主 Agent 误判子任务失败。
-	// 不追加标记时 findFinalAnswer 从后向前扫描到任务的 user 边界即返回空，继续轮询，
-	// 直到用户回答后的最终答案出现。
-	if result.Answer == "" && result.TerminationReason != "ask_user_pending" {
-		marker := session.Message{
-			Role:      "assistant",
-			Content:   tools.SubAgentTerminatedPrefix + " " + result.TerminationReason,
-			Timestamp: time.Now().Unix(),
+		// per-session 互斥：同一会话的并发 Ask 串行执行，从根上杜绝消息交错
+		// （assistant tool_calls → tool 配对被并发写破坏）；不同会话之间完全并行。
+		st.lock.Lock()
+		defer st.lock.Unlock()
+
+		// 认领释放：任务结束（无论成败）后复位 spawning 标志，使会话重新参与
+		// 后续的空闲复用。复位动作走 m.mu 写锁，与 per-session 互斥锁无耦合。
+		defer m.releaseSpawn(sess.ID())
+
+		// 记录本次使用时间：后续同一 Agent + ProjectDir + Sponsor 的派发
+		// 可据此判断空闲会话并复用（延续讨论上下文）。
+		m.touchSession(sess.ID())
+
+		builder := m.rt.Ask(agentName, task, sess)
+		// 将子智能体的事件转发到父级 EventBus，
+		// 以便订阅父级的客户端能够看到所有智能体事件。
+		if pe, ok := ctx.Value(parentEmitKeyType{}).(func(events.ReactEvent)); ok {
+			builder.parentEmit = pe
 		}
-		if appendErr := sess.Append(ctx, marker); appendErr != nil {
-			m.rt.logger.Warn("追加子智能体终止标记失败",
-				"session", sid, "error", appendErr, "reason", result.TerminationReason)
-		} else {
-			m.rt.logger.Info("子智能体无最终答案，写入终止标记",
-				"session", sid, "reason", result.TerminationReason)
+		// 子智能体授权冒泡旁路：从 ctx 读取授权请求直达前端的发送器并注入 builder。
+		// 子会话触发授权时优先经它发送授权请求，不依赖父 exec EventBus 的存活
+		// （父 exec 结束/被取消后订阅销毁会静默丢事件）；ctx 中的值由宿主
+		// （mindx daemon）在派发子任务时经 WithPermissionSink 注入。
+		if sink, ok := ctx.Value(permissionSinkKeyType{}).(PermissionSink); ok {
+			builder.permissionSink = sink
 		}
+		// 子智能体提问冒泡旁路（镜像授权旁路）：从 ctx 读取 AskUser 提问直达
+		// 前端的发送器并注入 builder。ctx 中的值由宿主经 WithAskSink 注入；
+		// 未注入时提问退回原 parentEmit 转发链路，行为保持不变。
+		if askSink, ok := ctx.Value(askSinkKeyType{}).(AskUserSink); ok {
+			builder.askSink = askSink
+		}
+		// 子智能体授权冒泡：创建权限信号通道并注入 builder。
+		// 子会话 exec 遇到需要授权的工具时通过该通道挂起等待主会话（用户）的授权决策，
+		// 授权后继续执行；超时则以 permission_timeout 终止。
+		permissionCh := make(chan permissionSignal, 1)
+		builder.permissionCh = permissionCh
+		// 通道生命周期随本任务结束而结束：解除挂起登记并关闭通道。
+		// waitForPermissionDecision 每次挂起/恢复也会解除登记，但不关闭通道——
+		// 同一任务内可能多次触发授权（授权后继续循环又遇到需授权的工具），
+		// 通道必须保持可用，直到整个执行循环结束。
+		defer func() {
+			m.clearPermissionWait(sess.ID(), permissionCh)
+			close(permissionCh)
+		}()
+
+		// 子智能体提问冒泡（镜像授权通道）：创建提问回答通道并注入 builder。
+		// 子会话 exec 调用 AskUser 时通过该通道挂起等待用户回答，
+		// 回答注入后继续执行；超时则以 ask_timeout 终止。
+		askCh := make(chan string, 1)
+		builder.askCh = askCh
+		// 通道生命周期随本任务结束而结束（镜像授权通道）：解除挂起登记并关闭。
+		defer func() {
+			m.clearAskWait(sess.ID(), askCh)
+			close(askCh)
+		}()
+
+		// 强停登记（级联取消锚点）：以发起方主会话 ID 为键登记子执行循环的
+		// 取消函数，主会话被停止时由宿主（mindx）经 Runtime.CancelSubAgents
+		// 统一强停。登记在 per-session 锁持有期间进行，保证同一子会话同一
+		// 时刻至多一个活跃登记；任务结束（无论成败）注销。
+		m.registerSponsored(tc.Session.ID(), sess.ID(), builder.cancel)
+		defer m.unregisterSponsored(tc.Session.ID(), sess.ID())
+
+		result, runErr := builder.Run()
+		if runErr != nil {
+			return "", result.TerminationReason, fmt.Errorf("sub-agent %q: %w", agentName, runErr)
+		}
+		return result.Answer, result.TerminationReason, nil
+	}()
+
+	// 结算控制平面条目（终态写入 + close Done 唤醒等待者）：
+	//   - 执行错误 → Failed（携带原因）；
+	//   - 无最终答案的非正常终止（授权超时、执行取消等）→ Failed；
+	//     例外 ask_user_pending（等待用户作答的特殊路径）与空终止原因按完成结算。
+	//   - 正常 → Completed（结果经 Runtime.Result() 供 CollectResults 读取）。
+	// 终态条目保留在登记表中（不 Unregister）：CollectResults 重试查询与
+	// 「刚刚结束」窗口都依赖它，清理交给宿主策略。
+	failureReason := ""
+	switch {
+	case execErr != nil:
+		failureReason = execErr.Error()
+	case answer == "" && termReason != "" && termReason != "ask_user_pending":
+		failureReason = termReason
+	}
+	if failureReason != "" {
+		manager.Fail(taskID, failureReason)
+	} else {
+		manager.Complete(taskID, answer)
+	}
+	settled = true
+
+	elapsed := time.Since(startedAt)
+	if failureReason != "" {
+		m.rt.logger.Error("sub-agent task failed",
+			fmt.Errorf("%s", failureReason),
+			"agent_name", agentName,
+			"session_id", sess.ID(),
+			"task_id", taskID,
+			"elapsed_ms", elapsed.Milliseconds(),
+		)
+	} else {
+		m.rt.logger.Info("sub-agent task completed",
+			"agent_name", agentName,
+			"session_id", sess.ID(),
+			"task_id", taskID,
+			"elapsed_ms", elapsed.Milliseconds(),
+			"result_len", len(answer),
+		)
 	}
 
-	if err != nil {
-		return "", sid, fmt.Errorf("sub-agent %q: %w", agentName, err)
+	// 完成事件：前端据此更新子任务状态（含跟踪句柄与结果摘要）。
+	if tc.EmitEvent != nil {
+		tc.EmitEvent(events.ReactEvent{
+			AgentName: agentName,
+			Type:      events.SubtaskCompleted,
+			Data: events.SubtaskResult{
+				AgentName:   agentName,
+				Success:     failureReason == "",
+				Answer:      answer,
+				Error:       failureReason,
+				Description: task,
+				SessionID:   sess.ID(),
+				TaskID:      taskID,
+			},
+		})
 	}
+}
 
-	return result.Answer, sid, nil
+// newTaskID 生成随机任务跟踪句柄（受理回执返回给 LLM，CollectResults 据此查询）。
+func newTaskID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand 失败极罕见；退化为时间戳保证非空唯一性
+		return fmt.Sprintf("task-%d", time.Now().UnixNano())
+	}
+	return "task-" + hex.EncodeToString(b[:])
 }
 
 // registerPermissionWait 登记子会话挂起等待主会话授权的状态。

@@ -173,19 +173,19 @@ func TestBuildParamSchemaEmpty(t *testing.T) {
 // TestParamTypeToJSONType 验证类型映射。
 func TestParamTypeToJSONType(t *testing.T) {
 	cases := map[string]string{
-		"integer": "integer",
-		"int":     "integer",
-		"int64":   "integer",
-		"number":  "number",
-		"float64": "number",
-		"boolean": "boolean",
-		"bool":    "boolean",
-		"array":   "array",
-		"[]string":"array",
-		"object":  "object",
-		"map":     "object",
-		"string":  "string",
-		"unknown": "string",
+		"integer":  "integer",
+		"int":      "integer",
+		"int64":    "integer",
+		"number":   "number",
+		"float64":  "number",
+		"boolean":  "boolean",
+		"bool":     "boolean",
+		"array":    "array",
+		"[]string": "array",
+		"object":   "object",
+		"map":      "object",
+		"string":   "string",
+		"unknown":  "string",
 	}
 	for input, expected := range cases {
 		assert.Equal(t, expected, paramTypeToJSONType(input), "input: %s", input)

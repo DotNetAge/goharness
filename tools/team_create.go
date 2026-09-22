@@ -6,12 +6,10 @@ import (
 	"time"
 )
 
-type TeamCreateTool struct {
-	spawn SpawnFunc
-}
+type TeamCreateTool struct{}
 
-func NewTeamCreateTool(spawn SpawnFunc) *TeamCreateTool {
-	return &TeamCreateTool{spawn: spawn}
+func NewTeamCreateTool() *TeamCreateTool {
+	return &TeamCreateTool{}
 }
 
 func (t *TeamCreateTool) Info() *ToolInfo {

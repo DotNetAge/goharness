@@ -57,13 +57,6 @@ type AskBuilder struct {
 	// 保持原有的「结束 → 用户消息恢复」行为。
 	askCh chan string
 
-	// subagentWaitHook 是主回合「等待子代理落定」的兜底钩子（由 Runtime.Ask 注入）。
-	// LLM 未调用 CollectResults 就产出无工具调用的收尾响应时，executor 在
-	// finalize 前调用它：钩子检测本会话名下是否有未落定的子代理，有则阻塞等待
-	// 全部落定并收集结果文本（带上限，超时返回部分结果并注明）；
-	// ok=false 表示无需等待（无活跃子代理），调用方正常收尾。
-	subagentWaitHook func(ctx context.Context, sessionID, question string) (collected string, ok bool)
-
 	resultAnswer            string
 	resultUsage             session.TokenUsage
 	resultIterations        int
@@ -289,27 +282,6 @@ func (b *AskBuilder) OnTokenUsageRecorded(fn func(data session.TokenUsageRecord)
 	})
 }
 
-// OnSubagentWaitStarted 注册「等待子代理落定」阶段开始的处理器。
-// 兜底自动等待钩子触发（LLM 未调用 CollectResults 就试图收尾，且本会话
-// 名下仍有运行中的子代理）时发射，前端据此在回合上显示等待徽标。
-func (b *AskBuilder) OnSubagentWaitStarted(fn func(data events.SubagentWaitData)) *AskBuilder {
-	return b.on(events.SubagentWaitStarted, func(d any) {
-		if v, ok := d.(events.SubagentWaitData); ok {
-			fn(v)
-		}
-	})
-}
-
-// OnSubagentWaitEnded 注册「等待子代理落定」阶段结束的处理器。
-// 全部落定 / 等待上限超时 / 上下文取消时发射，前端据此消除等待徽标。
-func (b *AskBuilder) OnSubagentWaitEnded(fn func(data events.SubagentWaitData)) *AskBuilder {
-	return b.on(events.SubagentWaitEnded, func(d any) {
-		if v, ok := d.(events.SubagentWaitData); ok {
-			fn(v)
-		}
-	})
-}
-
 // OnEvent 注册一个全量处理器，在执行循环发射每个 ReactEvent 时触发
 // （先于类型特定处理器）。处理器接收完整的 ReactEvent，包含 AgentName、
 // SessionID、Type 和 Data。适用于跟踪「哪个智能体产生了事件」等元数据。
@@ -372,30 +344,7 @@ func (b *AskBuilder) OnAnswer(fn func(answer string)) *AskBuilder {
 }
 
 // Run 执行思考循环并返回结果。
+// 由 goagent 引擎驱动（runWithGoAgent，实现在 loop.go）。
 func (b *AskBuilder) Run() (*RunResult, error) {
-	b.runtime.exec(b)
-	if b.resultErr != nil {
-		reason := b.resultTerminationReason
-		if reason == "" {
-			reason = "error"
-		}
-		return &RunResult{
-			Answer:            b.resultAnswer,
-			TokenUsage:        b.resultUsage,
-			Duration:          b.resultDuration,
-			Iterations:        b.resultIterations,
-			TerminationReason: reason,
-		}, b.resultErr
-	}
-	reason := b.resultTerminationReason
-	if reason == "" {
-		reason = "completed"
-	}
-	return &RunResult{
-		Answer:            b.resultAnswer,
-		TokenUsage:        b.resultUsage,
-		Duration:          b.resultDuration,
-		Iterations:        b.resultIterations,
-		TerminationReason: reason,
-	}, nil
+	return b.runtime.runWithGoAgent(b)
 }
