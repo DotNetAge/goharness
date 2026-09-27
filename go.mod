@@ -3,6 +3,7 @@ module github.com/DotNetAge/goharness
 go 1.26
 
 require (
+	github.com/DotNetAge/goagent v0.1.0
 	github.com/DotNetAge/gochat v0.2.11
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/PuerkitoBio/goquery v1.12.0
@@ -18,7 +19,6 @@ require (
 )
 
 require (
-	github.com/DotNetAge/goagent v0.0.0
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
@@ -45,4 +45,4 @@ require (
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )
 
-replace github.com/DotNetAge/goagent => ../goagent
+// replace github.com/DotNetAge/goagent => ../goagent
