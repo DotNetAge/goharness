@@ -34,25 +34,26 @@ const compactionTimeout = 10 * time.Minute
 // （三家国内大模型文档都没明确说 ToolChoice 是否参与缓存前缀匹配，保守不动），
 // 靠指令文本禁止 LLM 在压缩阶段调工具。该文本位于末条 user message（新增的、
 // 不在缓存前缀里的部分），改动不影响缓存命中。
-const compactionInstruction = `将上面对话浓缩为 JSON 数组格式的结构化摘要。每个主题一条，相关决策可合并为同一条。
+const compactionInstruction = `将上面对话浓缩为 JSON 数组格式的结构化执行快照。每个任务一条，相关决策可合并为同一条。
 
 输出格式：
 [
   {
-    "title": "主题标题（名词性短语，≤15字，用于检索召回）",
-    "summary": "核心结论（一两句话，概括这条记忆的最终结论和最关键理由）",
-    "content": "详细要点，用 - 分条列举，保留决策、理由、关键实体、待办",
+    "title": "任务目标（干什么，动词性短语，≤15字，用于检索召回）",
+    "summary": "执行状态（已干了什么 + 干得怎么样，一两句话，含完成度）",
+    "content": "有效决策的路径与重要结果，用 - 分条列举，保留决策、理由、关键实体、待办",
     "tags": ["3-5个从内容提取的关键词，小写短横线分隔"],
-    "timestamp": "本主题最重要事件的 ISO 8601 时间（如 2026-07-02T14:30:45Z）"
+    "timestamp": "本任务最重要事件的 ISO 8601 时间（如 2026-07-02T14:30:45Z）"
   }
 ]
 
 三段式字段职责（严格区分，字段名即职责，不可混淆）：
-- title：极短导航标题，名词性短语，不要写成完整句子
-  正确："Redis 迁移 Cluster" / 错误："讨论了 Redis 的迁移问题"
-- summary：一两句话核心结论，让读者快速判断这条记忆讲什么、结论是什么。包含"做了什么决定" + 最关键理由
-  正确："决定从 Redis 单点迁移到 Cluster，因单点无法支撑 50K QPS"
-- content：详细要点，分条列举。title 和 summary 是 content 的索引与概括，content 是完整细节
+- title：任务目标，动词性短语（干什么），不要写成完整句子
+  正确："迁移 Redis 单点到 Cluster" / 错误："讨论了 Redis 的迁移问题"
+- summary：执行状态行（已干了什么 + 干得怎么样），让读者一眼判断任务进展。包含完成度（已完成/进行中/阻塞/失败）+ 一句关键结果，不要写成决策或理由
+  正确："迁移已完成，Cluster 压测通过 50K QPS；lettuce 升级后无兼容问题"
+  错误："决定从 Redis 单点迁移到 Cluster，因单点无法支撑 50K QPS"（这是决策，不是状态）
+- content：有效决策的路径与重要结果，分条列举。title 和 summary 是 content 的索引与概括，content 是完整细节
 
 content 字段要求（决定压缩质量的关键）：
 - 用 "- " 前缀分条，每条一个完整信息单元，用 \n 分隔
@@ -79,16 +80,16 @@ content 字段要求（决定压缩质量的关键）：
 示例：
 [
   {
-    "title": "Redis 迁移 Cluster",
-    "summary": "决定从 Redis 单点迁移到 Cluster 模式，Q3 完成，因单点已无法支撑 50K QPS。",
-    "content": "- 决策：从 Redis 单点迁移到 Cluster，Q3 完成\n- 理由：单点已无法支撑 50K QPS，Cluster 可水平扩展\n- 关键路径：/etc/redis/redis-cluster.conf\n- 阻塞点：lettuce 客户端需升级到 6.x 才支持 Cluster\n- 待办：迁移方案需 DBA 评审后实施",
+    "title": "迁移 Redis 单点到 Cluster",
+    "summary": "迁移已完成，Cluster 压测通过 50K QPS；lettuce 升级到 6.x 后无兼容问题。",
+    "content": "- 决策：单点无法支撑 50K QPS，迁移 Cluster 水平扩展\n- 关键路径：/etc/redis/redis-cluster.conf\n- 结果：50K QPS 压测通过\n- 待办：旧 lettuce 客户端（不支持 Cluster）从其他服务中逐步下线",
     "tags": ["redis", "cluster-migration", "lettuce"],
     "timestamp": "2026-07-02T14:30:45Z"
   },
   {
-    "title": "前端构建切 Vite",
-    "summary": "构建工具从 Webpack 5 切换到 Vite 5，解决冷启动慢问题，CI 脚本待同步调整。",
-    "content": "- 决策：构建工具从 Webpack 5 切换到 Vite 5\n- 理由：Webpack 冷启动 90s，Vite 仅 2s，开发体验显著提升\n- 配置：vite.config.ts 保留原有 alias 配置\n- 兼容性：需保留 @vitejs/plugin-vue 5.x\n- 待办：CI 流水线 build 脚本需同步调整",
+    "title": "前端构建从 Webpack 切到 Vite",
+    "summary": "本地构建已切换并验证通过；CI 流水线脚本未同步，进行中。",
+    "content": "- 决策：Webpack 冷启动 90s，切 Vite 5 改善开发体验\n- 配置：vite.config.ts 保留原有 alias\n- 兼容性：需保留 @vitejs/plugin-vue 5.x\n- 待办：CI 流水线 build 脚本需同步调整",
     "tags": ["vite", "webpack-migration", "frontend-build"],
     "timestamp": "2026-07-03T09:15:00Z"
   }
@@ -97,8 +98,8 @@ content 字段要求（决定压缩质量的关键）：
 规则：
 - 只输出原始 JSON 数组，无其他文本
 - 禁止对话体、问句、问候、情绪、表情符号
-- 单主题只输出一条；多主题拆成多条
-- title 是名词短语，summary 是结论句，content 是分条细节，三者不可混淆或互相替代
+- 单任务只输出一条；多任务拆成多条
+- title 是动词性目标短语（干什么），summary 是执行状态行（已干了什么+干得怎么样），content 是有效决策路径与重要结果的分条细节，三者不可混淆或互相替代
 - 矛盾讨论只保留最终方案及其理由，省略被否决方案的细节
 - 待决问题独立成条并以"待办："标注，不要省略
 - tags 从 content 提取
@@ -106,11 +107,11 @@ content 字段要求（决定压缩质量的关键）：
 - 不要调用任何工具，直接输出 JSON 数组，不要产生 tool_call`
 
 // retryInstruction — 重试时使用的精简指令，同样放在最后一条 user message。
-// 即使精简也保留三段式结构与核心约束（决策/理由/路径/待办），避免重试时退化为过度简化。
+// 即使精简也保留三段式语义（目标/执行状态/有效决策路径）与核心约束
+// （完成度/理由/路径/待办），避免重试时退化为过度简化。
 // 末尾同样追加工具调用禁令。
-const retryInstruction = `将以上全部对话输出为 JSON 数组，每个主题一条。
-每条格式：{"title":"主题标题(≤15字名词短语)","summary":"核心结论(一两句话)","content":"- 要点1\n- 要点2(保留决策、理由、文件路径、待办)","tags":["标签"],"timestamp":"ISO 8601"}。
-title 是名词短语，summary 是结论句，content 用 - 分条列举且必须保留：决策结论、理由、关键路径/函数名/参数、报错及解决方案、待办事项。
+const retryInstruction = `将以上全部对话按任务输出为 JSON 数组，每个任务一条。
+每条格式：{"title":"任务目标(≤15字动词短语)","summary":"执行状态(已干了什么+干得怎么样,含完成度:已完成/进行中/阻塞/失败)","content":"- 有效决策路径1\n- 决策的重要结果2(保留决策、理由、文件路径、待办)","tags":["标签"],"timestamp":"ISO 8601"}。
 只输出 JSON 数组，无其他文本。无实质信息时返回 []。
 不要调用任何工具，不要产生 tool_call。`
 

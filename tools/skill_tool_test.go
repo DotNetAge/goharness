@@ -5,22 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
 )
-
-// overlayRegistry 是测试用会话级技能覆盖注册表。
-type overlayRegistry struct {
-	skills map[string]*skill.Skill
-}
-
-func (r *overlayRegistry) GetSkill(name string) (*skill.Skill, error) {
-	sk, ok := r.skills[name]
-	if !ok {
-		return nil, skill.ErrSkillNotFound
-	}
-	return sk, nil
-}
 
 // baseRegistry 是测试用 Runtime 基础注册表。
 type baseRegistry struct {
@@ -35,71 +23,69 @@ func (r *baseRegistry) GetSkill(name string) (*skill.Skill, error) {
 	return sk, nil
 }
 
-func TestSkillTool_OverlayPriority(t *testing.T) {
+// nopStore / nopLogger 是测试用空实现（嵌入接口，Execute 仅读取会话
+// ProjectDir，不触发存储与日志调用）。
+type nopStore struct{ session.SessionStore }
+type nopLogger struct{ logging.Logger }
+
+// newSessionWithProjectDir 构造一个绑定指定项目目录的会话。
+func newSessionWithProjectDir(t *testing.T, projectDir string) *session.Session {
+	t.Helper()
+	sess, err := session.New("test-agent", "", projectDir, nopStore{}, nopLogger{})
+	if err != nil {
+		t.Fatalf("创建测试会话失败: %v", err)
+	}
+	return sess
+}
+
+func TestSkillTool_ProjectFallback(t *testing.T) {
 	// 技能去重缓存是进程级全局（同名技能只完整加载一次），
 	// 因此各子测试使用互不相同的技能名，避免去重提示干扰断言。
 	base := &baseRegistry{skills: map[string]*skill.Skill{
-		"base-only-skill":  {Name: "base-only-skill", Instructions: "基础独有技能", RootDir: "/base/only"},
-		"shadowed-skill":   {Name: "shadowed-skill", Instructions: "基础版本", RootDir: "/base/shadowed"},
-	}}
-	overlay := &overlayRegistry{skills: map[string]*skill.Skill{
-		"shadowed-skill":   {Name: "shadowed-skill", Instructions: "项目覆盖版本", RootDir: "/proj/shadowed"},
-		"project-only-skill": {Name: "project-only-skill", Instructions: "项目独有技能", RootDir: "/proj/only"},
+		"base-only-skill": {Name: "base-only-skill", Instructions: "基础独有技能", RootDir: "/base/only"},
 	}}
 
-	tool := NewSkillTool(base.GetSkill)
+	var resolverCalls []string
+	resolver := func(projectDir, name string) (*skill.Skill, error) {
+		resolverCalls = append(resolverCalls, projectDir+"|"+name)
+		if name == "proj-skill" {
+			return &skill.Skill{Name: name, Instructions: "动态技能指令", RootDir: projectDir + "/.agents/skills/" + name}, nil
+		}
+		return nil, skill.ErrSkillNotFound
+	}
 
-	t.Run("会话覆盖同名技能优先于基础注册表", func(t *testing.T) {
-		sess := &session.Session{}
-		sess.SetSkillOverlay(overlay)
-		ctx := WithToolContext(context.Background(), &ToolContext{Session: sess})
+	tool := NewSkillTool(base.GetSkill, resolver)
 
-		result, err := tool.Execute(ctx, map[string]any{"name": "shadowed-skill"})
+	t.Run("基础库未命中时按会话项目目录回退解析", func(t *testing.T) {
+		ctx := WithToolContext(context.Background(), &ToolContext{Session: newSessionWithProjectDir(t, "/tmp/proj-a")})
+
+		result, err := tool.Execute(ctx, map[string]any{"name": "proj-skill"})
 		if err != nil {
 			t.Fatalf("Execute 失败: %v", err)
 		}
 		m := result.(map[string]any)
-		if m["content"] != "项目覆盖版本" {
-			t.Fatalf("同名技能应取会话覆盖版本, 实际: %v", m["content"])
+		if !strings.Contains(m["content"].(string), "动态技能") {
+			t.Fatalf("应返回动态技能内容, 实际: %v", m["content"])
+		}
+		if len(resolverCalls) != 1 || resolverCalls[0] != "/tmp/proj-a|proj-skill" {
+			t.Fatalf("解析器调用记录不符: %v", resolverCalls)
 		}
 	})
 
-	t.Run("覆盖未命中的技能回退基础注册表", func(t *testing.T) {
-		sess := &session.Session{}
-		sess.SetSkillOverlay(overlay)
-		ctx := WithToolContext(context.Background(), &ToolContext{Session: sess})
+	t.Run("回退未命中返回未找到错误", func(t *testing.T) {
+		ctx := WithToolContext(context.Background(), &ToolContext{Session: newSessionWithProjectDir(t, "/tmp/proj-b")})
 
-		result, err := tool.Execute(ctx, map[string]any{"name": "base-only-skill"})
-		if err != nil {
-			t.Fatalf("Execute 失败: %v", err)
-		}
-		m := result.(map[string]any)
-		if m["content"] != "基础独有技能" {
-			t.Fatalf("应回退基础注册表, 实际: %v", m["content"])
+		if _, err := tool.Execute(ctx, map[string]any{"name": "never-exists-skill"}); err == nil {
+			t.Fatalf("基础库与回退均未命中时应返回未找到错误")
 		}
 	})
 
-	t.Run("项目独有技能仅经会话覆盖可检索", func(t *testing.T) {
-		sess := &session.Session{}
-		sess.SetSkillOverlay(overlay)
-		ctx := WithToolContext(context.Background(), &ToolContext{Session: sess})
+	t.Run("未注入解析器时动态技能不可检索", func(t *testing.T) {
+		bare := NewSkillTool(base.GetSkill, nil)
+		ctx := WithToolContext(context.Background(), &ToolContext{Session: newSessionWithProjectDir(t, "/tmp/proj-c")})
 
-		result, err := tool.Execute(ctx, map[string]any{"name": "project-only-skill"})
-		if err != nil {
-			t.Fatalf("Execute 失败: %v", err)
-		}
-		m := result.(map[string]any)
-		if !strings.Contains(m["content"].(string), "项目独有") {
-			t.Fatalf("应返回项目技能内容, 实际: %v", m["content"])
-		}
-	})
-
-	t.Run("未挂载覆盖时项目技能不可检索", func(t *testing.T) {
-		sess := &session.Session{}
-		ctx := WithToolContext(context.Background(), &ToolContext{Session: sess})
-
-		if _, err := tool.Execute(ctx, map[string]any{"name": "never-loaded-skill"}); err == nil {
-			t.Fatalf("未挂载覆盖时应返回未找到错误")
+		if _, err := bare.Execute(ctx, map[string]any{"name": "other-proj-skill"}); err == nil {
+			t.Fatalf("未注入解析器时应返回未找到错误")
 		}
 	})
 }

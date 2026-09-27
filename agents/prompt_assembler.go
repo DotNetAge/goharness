@@ -9,6 +9,7 @@ import (
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
+	"github.com/DotNetAge/goharness/tools"
 )
 
 // PromptAssembler 负责构造发送给 LLM 的系统提示词与消息序列。
@@ -20,6 +21,10 @@ import (
 // 注入的 baseBuilder 组装；goharness 不生成、不追加任何文案段。
 type PromptAssembler struct {
 	skillReg skill.SkillRegistry
+
+	// projectSkillResolver 为可选的动态技能回退解析器（SPI 收窄：实现由应用侧
+	// 提供，goharness 不解析 SKILL.md）。nil 表示不支持动态技能。
+	projectSkillResolver tools.ProjectSkillResolver
 
 	// baseBuilder 为应用侧注入的基础系统提示词构造器。
 	// 为 nil 或返回空字符串时跳过基础段（适用于 goharness 独立测试）。

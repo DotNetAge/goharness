@@ -283,9 +283,12 @@ func (rt *Runtime) registerDefaultTools() {
 		)
 		// Skill 工具仅在应用注入技能注册表（WithSkillRegistry）时注册；
 		// P4 SPI 收窄后 skillReg 无默认实现，为 nil 时跳过（避免 nil 解引用）。
+		// 动态技能回退解析器为可选增强（WithProjectSkillResolver）。
 		if rt.prompt.skillReg != nil {
 			bundled = append(bundled,
-				toolOf("Skill", func() *tools.SkillTool { return tools.NewSkillTool(rt.prompt.skillReg.GetSkill) }),
+				toolOf("Skill", func() *tools.SkillTool {
+					return tools.NewSkillTool(rt.prompt.skillReg.GetSkill, rt.prompt.projectSkillResolver)
+				}),
 			)
 		}
 		bundled = append(bundled,

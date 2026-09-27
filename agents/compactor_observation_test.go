@@ -88,9 +88,11 @@ func reportToolPairing(msgs []session.Message) (calls, toolMsgs, orphaned int) {
 // TestCompactionRequestReconstruction 离线观测：用真实失效数据重建压缩请求。
 // 断言请求消息数与生产日志 msg_count=47 对齐，并输出请求画像。
 func TestCompactionRequestReconstruction(t *testing.T) {
-	// 日志铁证对齐：压缩指令长度必须仍是 4166 字符
-	if len(compactionInstruction) != 4166 {
-		t.Errorf("compactionInstruction 长度 = %d，生产日志为 4166，指令文本已漂移", len(compactionInstruction))
+	// 日志铁证对齐：压缩指令长度必须仍是 4422 字符
+	// （2026-09-27 指令改版为"执行快照"语义：title=任务目标、summary=执行状态、
+	// content=有效决策路径与重要结果，基准由 4166 更新为 4422）
+	if len(compactionInstruction) != 4422 {
+		t.Errorf("compactionInstruction 长度 = %d，基准为 4422，指令文本已漂移", len(compactionInstruction))
 	}
 
 	history := loadFixtureMessages(t)

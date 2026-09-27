@@ -61,6 +61,14 @@ func WithSkillRegistry(reg skill.SkillRegistry) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.skillReg = reg }
 }
 
+// WithProjectSkillResolver 注入动态技能回退解析器（军规：工作目录内的技能
+// 绝不进入系统提示词，Agent 经 CLI 发现后按名加载）。实现由应用侧提供
+// （SPI 收窄），按会话项目目录解析动态技能；未注入时 Skill 工具仅检索
+// 基础注册表。
+func WithProjectSkillResolver(resolver tools.ProjectSkillResolver) RuntimeConfig {
+	return func(r *Runtime) { r.prompt.projectSkillResolver = resolver }
+}
+
 func WithMemory(mem memory.Memory) RuntimeConfig {
 	return func(r *Runtime) { r.mem = mem }
 }

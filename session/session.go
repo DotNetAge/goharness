@@ -45,7 +45,6 @@ import (
 
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
-	"github.com/DotNetAge/goharness/skill"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -259,12 +258,6 @@ type Session struct {
 	// 为 nil 时表示未启用沙箱，工具回退到各自的安全检查逻辑（向后兼容）。
 	// 通过 WithSandbox Option 注入。
 	sandbox *sandbox.Sandbox
-
-	// skillOverlay 是会话级技能覆盖注册表（项目级技能库的运行时挂载点，
-	// PR-PROMPTS 第三节晋升管线）。Skill 工具检索时优先查覆盖、未命中
-	// 再回退 Runtime 注册表，使项目技能"仅在该会话内可见"，不污染
-	// 同 Agent 的其它会话。为 nil 时表示未载入项目技能。
-	skillOverlay skill.SkillRegistry
 }
 
 // ID 返回此会话的唯一标识符。
@@ -279,21 +272,6 @@ func (s *Session) ProjectDir() string { return s.projectDir }
 // Sandbox 返回会话级逻辑沙箱实例。
 // 返回 nil 表示未启用沙箱，调用方应回退到各自的安全检查逻辑。
 func (s *Session) Sandbox() *sandbox.Sandbox { return s.sandbox }
-
-// SetSkillOverlay 设置会话级技能覆盖注册表（项目级技能的运行时挂载点）。
-// 仅影响当前会话实例（会话按轮次从存储重建时需由调用方重新挂载）。
-func (s *Session) SetSkillOverlay(reg skill.SkillRegistry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.skillOverlay = reg
-}
-
-// SkillOverlay 返回会话级技能覆盖注册表；未载入项目技能时返回 nil。
-func (s *Session) SkillOverlay() skill.SkillRegistry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.skillOverlay
-}
 
 // Sponsor 返回创建/发起此会话的智能体名称。
 // 对于用户发起的会话返回空字符串。

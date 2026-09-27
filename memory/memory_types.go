@@ -85,7 +85,7 @@ func DefaultRetrieveConfig() RetrieveConfig {
 
 // FormatMemoryRecords 将记忆片段格式化为人类可读的字符串，
 // 适合嵌入到 AI prompts 中。
-// 格式: - [时间] [标题] - [内容] 。标签:[tag1, tag2, tag3]
+// 格式: - [时间] [标题] - [摘要] - [内容] 。标签:[tag1, tag2, tag3]
 func FormatMemoryRecords(chunks []MemoryChunk) string {
 	if len(chunks) == 0 {
 		return ""
@@ -98,9 +98,13 @@ func FormatMemoryRecords(chunks []MemoryChunk) string {
 			sb.WriteString(c.Timestamp.Format("2006-01-02 15:04"))
 		}
 		sb.WriteString("] ")
-		// 标题：优先 Title（三段式导航标题），回退 Summary（旧数据兼容）
+		// 标题：
 		if c.Title != "" {
 			sb.WriteString(c.Title)
+			if c.Summary != "" {
+				sb.WriteString(" - ")
+				sb.WriteString(c.Summary)
+			}
 		}
 
 		// 内容

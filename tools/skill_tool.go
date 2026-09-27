@@ -13,6 +13,12 @@ import (
 // reactor 提供此函数以避免循环导入。
 type SkillLookupFunc func(name string) (*skill.Skill, error)
 
+// ProjectSkillResolver 按项目目录与名称解析动态技能（军规：工作目录内的
+// 技能绝不进入系统提示词，Agent 经 CLI 发现后按名加载）。由应用侧提供实现，
+// goharness 不负责 SKILL.md 解析（SPI 收窄：解析职责留在应用侧技能存储）。
+// 未命中返回 error。
+type ProjectSkillResolver func(projectDir, name string) (*skill.Skill, error)
+
 // skillDedupCache 记录已加载的技能名称，防止重复加载浪费 token。
 var skillDedupCache sync.Map
 
@@ -32,12 +38,14 @@ func checkSkillLoaded(name string) bool {
 // 改进：增加去重缓存，同一技能多次加载时返回简短提示避免 token 浪费。
 type SkillTool struct {
 	lookup SkillLookupFunc
+	// projectResolver 为可选的动态技能回退解析器（nil 表示不支持动态技能）。
+	projectResolver ProjectSkillResolver
 }
 
 // NewSkillTool 创建一个 SkillTool。
-// lookup 由 reactor 提供。
-func NewSkillTool(lookup SkillLookupFunc) *SkillTool {
-	return &SkillTool{lookup: lookup}
+// lookup 由 reactor 提供；projectResolver 为可选的动态技能回退解析器。
+func NewSkillTool(lookup SkillLookupFunc, projectResolver ProjectSkillResolver) *SkillTool {
+	return &SkillTool{lookup: lookup, projectResolver: projectResolver}
 }
 
 func (t *SkillTool) Info() *ToolInfo {
@@ -78,21 +86,20 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 		}, nil
 	}
 
-	// 会话级技能覆盖优先（项目级技能库，仅该会话可见），
-	// 未命中再回退 Runtime 注册表（全局库 + Agent 级覆盖）。
+	// 基础注册表未命中时，按会话项目目录回退解析动态技能
+	// （执行期解析不触碰系统提示词，不影响 KV 缓存前缀）。
 	var sk *skill.Skill
-	if tc := GetToolContext(ctx); tc.Session != nil {
-		if overlay := tc.Session.SkillOverlay(); overlay != nil {
-			// 覆盖未命中不视为最终失败，继续回退基础注册表
-			sk, _ = overlay.GetSkill(name)
+	var err error
+	if sk, err = t.lookup(name); err != nil && t.projectResolver != nil {
+		if tc := GetToolContext(ctx); tc.Session != nil {
+			if projectDir := tc.Session.ProjectDir(); projectDir != "" {
+				// 回退未命中同样视为未找到，由下方统一报错
+				sk, _ = t.projectResolver(projectDir, name)
+			}
 		}
 	}
 	if sk == nil {
-		var err error
-		sk, err = t.lookup(name)
-		if err != nil {
-			return nil, fmt.Errorf("%s", GuideNotFound("技能", name, "检查技能名称拼写，从可用能力列表中选取正确的技能名称后重新调用；若该技能确实不存在，应告知用户"))
-		}
+		return nil, fmt.Errorf("%s", GuideNotFound("技能", name, "检查技能名称拼写，从可用能力列表中选取正确的技能名称后重新调用；若该技能确实不存在，应告知用户"))
 	}
 
 	result := map[string]any{
