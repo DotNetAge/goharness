@@ -430,6 +430,13 @@ func (rt *Runtime) CancelAllSubAgents() int {
 	return rt.subAgents.cancelAllSponsored()
 }
 
+// RunningSubAgentSessions 返回本 Runtime 全部运行中子代理的会话 ID（去重）。
+// 供宿主查询会话运行态（跨客户端可见）：子代理执行循环独立于发起客户端，
+// 其它客户端接入后经宿主遍历全部 Runtime 收集，即可在会话列表上标注运行中。
+func (rt *Runtime) RunningSubAgentSessions() []string {
+	return rt.subAgents.runningSessions()
+}
+
 // DispatchAskAnswer 将用户对子代理提问的回答路由到挂起等待的子会话。
 // Runtime 按 agent 名缓存（宿主的 runtimeCache），提问回答仅携带目标子会话 ID、
 // 无法定位持有该会话的 Runtime 实例，宿主应经 ForEachRuntime 逐一尝试本方法——

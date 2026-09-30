@@ -397,6 +397,26 @@ func (m *subAgentManager) cancelAllSponsored() int {
 	return len(cancels)
 }
 
+// runningSessions 返回本 Runtime 全部运行中子代理的会话 ID（去重）。
+// 供宿主实现会话运行态查询（session.statuses）：登记中的子会话即运行中
+// （spawn 完成即清理，残留条目会被下一次强停/清理回收，此处按登记原样暴露）。
+func (m *subAgentManager) runningSessions() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	seen := make(map[string]struct{}, len(m.sponsored))
+	ids := make([]string, 0, len(m.sponsored))
+	for _, subs := range m.sponsored {
+		for id := range subs {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // Submit 受理子任务派发（实现 goagent/subagent.SubAgentDispatcher）。
 // 同步完成「校验 → 会话定位 → 控制平面登记 → 受理事件发射」，立即返回回执；
 // 子任务在后台 goroutine 中独立运行（runTask），结果经控制平面按跟踪句柄结算。
