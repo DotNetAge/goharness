@@ -11,10 +11,12 @@ import (
 //
 // 决策流程：
 //  1. 路径不存在（含 ENOENT / ENOTDIR / EACCES）→ Allow（让 Execute 走兜底报错）
-//  2. 命中设备文件路径 → Deny（功能保护，防进程挂起）
-//  3. 命中敏感文件 glob / 精确路径 / 敏感目录段 → Deny（硬性边界，不可覆盖）
-//  4. 在工作区内 → Allow
-//  5. 在工作区外 → AskUser（触发权限弹窗）
+//  2. 命中设备文件路径 → Deny（功能保护，防进程挂起，白名单不豁免）
+//  3. 命中宿主白名单（AllowedFilePaths / AllowedFileGlobs）→ 跳过步骤 4~6 的敏感检查
+//     （目录边界仍生效——白名单解"危险"标记，不解"越界"）
+//  4. 命中敏感文件 glob / 精确路径 / 敏感目录段 → Deny（硬性边界，授权不可覆盖）
+//  5. 在工作区内 → Allow
+//  6. 在工作区外 → AskUser（触发权限弹窗）
 //
 // 注意：Grant 阶段不做 EvalSymlinks（避免对不存在的路径失败），
 // 符号链接的真实路径解析在 EnforceFile 阶段做（防 TOCTOU）。
@@ -27,7 +29,7 @@ func (s *Sandbox) CheckFile(path string, projectDir string) FileDecision {
 		return FileDecision{Decision: DecisionAllow}
 	}
 
-	// 2. 硬性禁止：设备文件路径
+	// 2. 硬性禁止：设备文件路径（功能保护，白名单不豁免）
 	if s.isDevicePath(path, p) {
 		return FileDecision{
 			Decision: DecisionDeny,
@@ -35,33 +37,38 @@ func (s *Sandbox) CheckFile(path string, projectDir string) FileDecision {
 		}
 	}
 
-	// 3. 硬性禁止：敏感文件 glob 匹配
-	if s.isDeniedFile(path, p) {
+	// 3. 宿主白名单命中 → 跳过后续敏感文件检查（目录边界仍生效）
+	allowed := s.isAllowedFile(path, p)
+
+	// 4. 硬性禁止：敏感文件 glob 匹配（白名单豁免）
+	if !allowed && s.isDeniedFile(path, p) {
 		return FileDecision{
 			Decision: DecisionDeny,
 			Reason:   GuideSensitiveFile(path),
 		}
 	}
 
-	// 4. 硬性禁止：敏感目录段匹配
-	if s.isInDeniedDir(path, p) {
+	// 5. 硬性禁止：敏感目录段匹配（白名单豁免）
+	if !allowed && s.isInDeniedDir(path, p) {
 		return FileDecision{
 			Decision: DecisionDeny,
 			Reason:   GuideSensitiveFile(path),
 		}
 	}
 
-	// 5. 硬性禁止：精确路径匹配
-	for _, denied := range p.DeniedFilePaths {
-		if path == denied {
-			return FileDecision{
-				Decision: DecisionDeny,
-				Reason:   GuideSensitiveFile(path),
+	// 6. 硬性禁止：精确路径匹配（白名单豁免）
+	if !allowed {
+		for _, denied := range p.DeniedFilePaths {
+			if path == denied {
+				return FileDecision{
+					Decision: DecisionDeny,
+					Reason:   GuideSensitiveFile(path),
+				}
 			}
 		}
 	}
 
-	// 6. 目录边界检查
+	// 7. 目录边界检查（白名单不豁免位置维度）
 	if s.isOutsideWorkspace(path, projectDir, p) {
 		return FileDecision{
 			Decision: DecisionAskUser,
@@ -135,25 +142,42 @@ func (s *Sandbox) enforceFile(path string, projectDir string, extraAllowedDirs [
 		realPath = path
 	}
 
-	// 硬性禁止：设备文件路径（基于真实路径，防符号链接绕过）
+	// 硬性禁止：设备文件路径（基于真实路径，防符号链接绕过；白名单不豁免）
 	if s.isDevicePath(realPath, p) {
 		return &DenyError{Reason: GuideDeviceFile(realPath)}
 	}
 
-	// 硬性禁止：敏感文件（基于真实路径，防符号链接绕过）
-	if s.isDeniedFile(realPath, p) {
+	// 宿主白名单命中 → 跳过后续敏感文件检查（目录边界仍生效）
+	// 白名单精确路径与 realPath 同基准比较：path 已解析符号链接时同步归一化，
+	// 与下方 AllowedDirs 的处理方式一致（防 macOS /var → /private/var 前缀失配）。
+	allowedPolicy := p
+	if pathResolved && len(p.AllowedFilePaths) > 0 {
+		realAllowed := make([]string, len(p.AllowedFilePaths))
+		for i, ap := range p.AllowedFilePaths {
+			realAllowed[i] = resolveSymlinks(ap)
+		}
+		tmp := *p
+		tmp.AllowedFilePaths = realAllowed
+		allowedPolicy = &tmp
+	}
+	allowed := s.isAllowedFile(realPath, allowedPolicy)
+
+	// 硬性禁止：敏感文件（基于真实路径，防符号链接绕过；白名单豁免）
+	if !allowed && s.isDeniedFile(realPath, p) {
 		return s.denyFileError(realPath)
 	}
 
-	// 硬性禁止：敏感目录段
-	if s.isInDeniedDir(realPath, p) {
+	// 硬性禁止：敏感目录段（白名单豁免）
+	if !allowed && s.isInDeniedDir(realPath, p) {
 		return s.denyFileError(realPath)
 	}
 
-	// 硬性禁止：精确路径
-	for _, denied := range p.DeniedFilePaths {
-		if realPath == denied {
-			return s.denyFileError(realPath)
+	// 硬性禁止：精确路径（白名单豁免）
+	if !allowed {
+		for _, denied := range p.DeniedFilePaths {
+			if realPath == denied {
+				return s.denyFileError(realPath)
+			}
 		}
 	}
 
@@ -222,6 +246,26 @@ func (s *Sandbox) isDeniedFile(path string, p *SandboxPolicy) bool {
 	for _, glob := range p.DeniedFileGlobs {
 		// 使用简化的 glob 匹配：支持 * 通配符
 		if matchGlob(glob, base) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAllowedFile 检查路径是否命中宿主程序配置的文件豁免白名单
+// （AllowedFilePaths 精确匹配 / AllowedFileGlobs basename 通配）。
+// 命中即跳过敏感文件/目录检查；目录边界与设备文件黑名单不豁免。
+// 与 isDeniedFile 一致：大小写不敏感，glob 仅支持 * 通配。
+func (s *Sandbox) isAllowedFile(path string, p *SandboxPolicy) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, glob := range p.AllowedFileGlobs {
+		if matchGlob(glob, base) {
+			return true
+		}
+	}
+	cleanPath := filepath.Clean(path)
+	for _, allowed := range p.AllowedFilePaths {
+		if cleanPath == allowed {
 			return true
 		}
 	}

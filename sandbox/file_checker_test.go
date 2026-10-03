@@ -110,12 +110,130 @@ func TestCheckFile_DeniedPath_Denies(t *testing.T) {
 	require.NoError(t, os.WriteFile(sensitiveFile, []byte("secret"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFilePaths:    []string{sensitiveFile},
+		AllowedDirs:     []string{projectDir},
+		DeniedFilePaths: []string{sensitiveFile},
 	})
 
 	dec := sb.CheckFile(sensitiveFile, projectDir)
 	assert.Equal(t, DecisionDeny, dec.Decision)
+}
+
+// ===== 文件白名单（宿主程序豁免）测试 =====
+//
+// 设计原则：白名单仅旁路"敏感文件"三类硬拒绝，
+// 目录边界与设备文件黑名单不豁免（解"危险"不解"越界"）。
+
+// TestCheckFile_AllowedFilePath_BypassesSensitiveDeny 验证精确路径白名单
+// 可豁免被 DeniedFileGlobs 命中的文件（典型：.env.example 被误伤场景）。
+func TestCheckFile_AllowedFilePath_BypassesSensitiveDeny(t *testing.T) {
+	projectDir := t.TempDir()
+	envFile := filepath.Join(projectDir, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("SECRET=xxx"), 0644))
+
+	// 基线：无白名单时 .env 被硬拒
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
+	})
+	assert.Equal(t, DecisionDeny, sb.CheckFile(envFile, projectDir).Decision)
+
+	// 加白名单后放行
+	sb = newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{envFile},
+	})
+	dec := sb.CheckFile(envFile, projectDir)
+	assert.Equal(t, DecisionAllow, dec.Decision, "白名单精确路径应豁免敏感拒绝")
+}
+
+// TestCheckFile_AllowedFileGlob_Bypasses 验证 glob 白名单按 basename 通配豁免，
+// 且不影响同模式其它文件的拒绝。
+func TestCheckFile_AllowedFileGlob_Bypasses(t *testing.T) {
+	projectDir := t.TempDir()
+	example := filepath.Join(projectDir, "server.pem.example")
+	require.NoError(t, os.WriteFile(example, []byte("fake"), 0644))
+	real := filepath.Join(projectDir, "server.pem")
+	require.NoError(t, os.WriteFile(real, []byte("REAL"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedFileGlobs:  []string{"*.pem"},
+		AllowedFileGlobs: []string{"*.pem.example"},
+	})
+
+	assert.Equal(t, DecisionAllow, sb.CheckFile(example, projectDir).Decision,
+		"*.pem.example 应被 glob 白名单豁免")
+	assert.Equal(t, DecisionDeny, sb.CheckFile(real, projectDir).Decision,
+		"真实 .pem 仍应被拒绝")
+}
+
+// TestCheckFile_AllowedFile_StillOutsideWorkspace 验证白名单不豁免目录边界：
+// 白名单文件在工作区外时仍触发 AskUser（解"危险"不解"越界"）。
+func TestCheckFile_AllowedFile_StillOutsideWorkspace(t *testing.T) {
+	projectDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideEnv := filepath.Join(outsideDir, ".env")
+	require.NoError(t, os.WriteFile(outsideEnv, []byte("X=1"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{outsideEnv},
+	})
+
+	dec := sb.CheckFile(outsideEnv, projectDir)
+	assert.Equal(t, DecisionAskUser, dec.Decision,
+		"白名单不应豁免目录边界，越界仍需用户授权")
+}
+
+// TestCheckFile_AllowedFile_DevicePathStillDenies 验证设备文件黑名单
+// 优先于白名单（功能保护不可豁免，防进程挂起）。
+func TestCheckFile_AllowedFile_DevicePathStillDenies(t *testing.T) {
+	projectDir := t.TempDir()
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:       []string{projectDir},
+		AllowedFilePaths:  []string{"/dev/zero"},
+		DeniedDevicePaths: DefaultDeniedDevicePaths(),
+	})
+
+	dec := sb.CheckFile("/dev/zero", projectDir)
+	assert.Equal(t, DecisionDeny, dec.Decision, "设备文件不受白名单豁免")
+}
+
+// TestCheckFile_AllowedFile_InDeniedDir_Bypasses 验证白名单可豁免敏感目录段
+// （如 .config 下被宿主声明为可读的特定文件）。
+func TestCheckFile_AllowedFile_InDeniedDir_Bypasses(t *testing.T) {
+	projectDir := t.TempDir()
+	deniedDirFile := filepath.Join(projectDir, ".config", "app", "settings.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(deniedDirFile), 0755))
+	require.NoError(t, os.WriteFile(deniedDirFile, []byte("k: v"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedDirGlobs:   DefaultDeniedDirGlobs(),
+		AllowedFilePaths: []string{deniedDirFile},
+	})
+
+	dec := sb.CheckFile(deniedDirFile, projectDir)
+	assert.Equal(t, DecisionAllow, dec.Decision, "白名单应豁免敏感目录段拒绝")
+}
+
+// TestEnforceFile_AllowedFilePath 验证 Execute 阶段同样感知白名单。
+func TestEnforceFile_AllowedFilePath(t *testing.T) {
+	projectDir := t.TempDir()
+	envFile := filepath.Join(projectDir, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("SECRET=xxx"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{envFile},
+	})
+
+	assert.NoError(t, sb.EnforceFile(envFile, projectDir),
+		"Execute 阶段白名单应同样豁免")
 }
 
 // TestCheckFile_GlobMatch 验证 glob 模式匹配各类敏感文件名。

@@ -20,6 +20,19 @@ type SandboxPolicy struct {
 	// 空切片表示"无目录限制"（向后兼容旧行为，不推荐生产使用）。
 	AllowedDirs []string
 
+	// AllowedFilePaths 是宿主程序显式豁免的文件路径（绝对路径，精确匹配）。
+	// 命中此列表的文件跳过敏感文件检查（glob / 敏感目录段 / 精确黑名单），
+	// 但目录边界与设备文件黑名单不受影响——白名单解的是"危险"标记，不是"越界"。
+	// 这是宿主程序级静态配置：会话授权（PermissionAllowSession）只能扩展目录
+	// 边界（见 EnforceFileWithWhitelist），无法写入本列表。
+	// 典型用途：豁免被 DeniedFileGlobs 误伤的 .env.example、测试夹具密钥等。
+	AllowedFilePaths []string
+
+	// AllowedFileGlobs 是宿主程序显式豁免的文件名 glob 模式（仅匹配 basename）。
+	// 语义与 AllowedFilePaths 相同，仅匹配粒度不同（basename 通配）。
+	// 例："*.pem.example"、"known_hosts.example"。
+	AllowedFileGlobs []string
+
 	// DeniedFileGlobs 是禁止访问的文件名 glob 模式（仅匹配 basename）。
 	// 例："*.pem"、"*.key"、".env*"、"credentials*"
 	// 大小写不敏感（跨平台兼容）。
@@ -72,8 +85,8 @@ type SandboxPolicy struct {
 // Compile 校验并归一化策略配置，返回归一化后的策略。
 //
 // 归一化操作：
-//   - AllowedDirs：filepath.Clean，转绝对路径
-//   - DeniedFileGlobs：转小写
+//   - AllowedDirs / AllowedFilePaths：filepath.Clean，转绝对路径
+//   - AllowedFileGlobs / DeniedFileGlobs：转小写
 //   - DeniedFilePaths：filepath.Clean
 //   - AllowedCommands：转小写
 //   - NetworkCommands：转小写
@@ -87,10 +100,12 @@ func (p SandboxPolicy) Compile() (SandboxPolicy, error) {
 
 	// 归一化目录：Clean 并转绝对路径
 	compiled.AllowedDirs = normalizePaths(p.AllowedDirs)
+	compiled.AllowedFilePaths = normalizePaths(p.AllowedFilePaths)
 	compiled.DeniedFilePaths = normalizePaths(p.DeniedFilePaths)
 	compiled.DeniedDevicePaths = normalizePaths(p.DeniedDevicePaths)
 
 	// 归一化文件 glob：转小写
+	compiled.AllowedFileGlobs = normalizeGlobs(p.AllowedFileGlobs)
 	compiled.DeniedFileGlobs = normalizeGlobs(p.DeniedFileGlobs)
 	compiled.DeniedDirGlobs = normalizeGlobs(p.DeniedDirGlobs)
 
