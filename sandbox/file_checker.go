@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // CheckFile 在 Grant 阶段调用，决定文件操作是否需要询问用户。
@@ -38,7 +39,31 @@ func (s *Sandbox) CheckFile(path string, projectDir string) FileDecision {
 	}
 
 	// 3. 宿主白名单命中 → 跳过后续敏感文件检查（目录边界仍生效）
-	allowed := s.isAllowedFile(path, p)
+	// 白名单条目在此处统一归一化（与 enforceFile 一致）：通配条目前缀做
+	// 符号链接解析；且调用方传入的 path 可能已是解析后形式（如 macOS
+	// /private/tmp/...）——首次未命中时用解析后路径补试一次，保证
+	// Grant/Enforce 两阶段通配与精确匹配语义一致。
+	allowedPolicy := p
+	hasWhitelist := len(p.AllowedFilePaths) > 0
+	if hasWhitelist {
+		normAllowed := make([]string, len(p.AllowedFilePaths))
+		for i, ap := range p.AllowedFilePaths {
+			if strings.Contains(ap, "*") {
+				normAllowed[i] = resolveGlobPrefix(ap)
+				continue
+			}
+			normAllowed[i] = ap
+		}
+		tmp := *p
+		tmp.AllowedFilePaths = normAllowed
+		allowedPolicy = &tmp
+	}
+	allowed := s.isAllowedFile(path, allowedPolicy)
+	if !allowed && hasWhitelist {
+		// 原始路径未命中：用解析符号链接后的路径补试一次（resolveSymlinks
+		// 对不存在的路径返回原样，等价重试，无副作用）
+		allowed = s.isAllowedFile(resolveSymlinks(path), allowedPolicy)
+	}
 
 	// 4. 硬性禁止：敏感文件 glob 匹配（白名单豁免）
 	if !allowed && s.isDeniedFile(path, p) {
@@ -291,13 +316,20 @@ func (s *Sandbox) isAllowedFile(path string, p *SandboxPolicy) bool {
 // EvalSymlinks 会失败），拼接剩余模式后返回。
 // 背景：EnforceFile 阶段用 EvalSymlinks 后的真实路径比较，而 macOS 上
 // /tmp 是 /private/tmp 的符号链接——模式前缀不同步归一化会永远匹配不上。
-// 解析失败时返回原模式（由调用方兜底）。
+// 注意：EvalSymlinks 会 Clean 掉尾部分隔符，而前缀边界依赖它——"/var/.../001/"
+// 解析为 "/private/.../001" 后若不补回 "/"，模式 "001/*" 退化为 "001*"，
+// 兄弟目录（001-sibling）会被误放行。解析失败时返回原模式（由调用方兜底）。
 func resolveGlobPrefix(pattern string) string {
 	idx := strings.Index(pattern, "*")
 	if idx < 0 {
 		return resolveSymlinks(pattern)
 	}
-	return resolveSymlinks(pattern[:idx]) + pattern[idx:]
+	prefix := pattern[:idx]
+	resolved := resolveSymlinks(prefix)
+	if strings.HasSuffix(prefix, string(filepath.Separator)) && !strings.HasSuffix(resolved, string(filepath.Separator)) {
+		resolved += string(filepath.Separator)
+	}
+	return resolved + pattern[idx:]
 }
 
 // isInDeniedDir 检查路径中是否包含敏感目录段。
@@ -363,9 +395,10 @@ func (s *Sandbox) isOutsideWorkspace(path string, projectDir string, p *SandboxP
 }
 
 // globRegexCache 缓存 glob 模式编译后的正则，避免重复编译。
-// CheckFile/EnforceFile 在每次文件检查时都会调用 matchGlob，
-// 缓存能显著降低高频调用场景的 CPU 开销。
-var globRegexCache = make(map[string]*regexp.Regexp)
+// CheckFile/EnforceFile 在每次文件检查时都会调用 matchGlob，且 Sandbox
+// 为并发设计（多会话共享实例），必须用并发安全的缓存——裸 map 并发写
+// 会触发运行时 fatal（concurrent map writes，不可 recover）。
+var globRegexCache sync.Map
 
 // matchGlob 实现简化的 glob 匹配，仅支持 * 通配符。
 // 不引入 path/filepath.Match 是因为 filepath.Match 对 ? 和 [] 也有特殊语义，
@@ -373,8 +406,10 @@ var globRegexCache = make(map[string]*regexp.Regexp)
 //
 // 实现方式：把 * 转为正则 .* 并锚定首尾，编译结果缓存复用。
 func matchGlob(pattern, name string) bool {
-	re, ok := globRegexCache[pattern]
-	if !ok {
+	var re *regexp.Regexp
+	if v, ok := globRegexCache.Load(pattern); ok {
+		re = v.(*regexp.Regexp)
+	} else {
 		// 转义非 * 的正则元字符，然后把 * 替换为 .*
 		var buf strings.Builder
 		buf.WriteString("^")
@@ -394,8 +429,9 @@ func matchGlob(pattern, name string) bool {
 		if err != nil {
 			return false
 		}
-		globRegexCache[pattern] = compiled
-		re = compiled
+		// LoadOrStore 防并发重复写；竞争时复用先到者的编译结果
+		actual, _ := globRegexCache.LoadOrStore(pattern, compiled)
+		re = actual.(*regexp.Regexp)
 	}
 	return re.MatchString(name)
 }

@@ -19,16 +19,16 @@ type SkillLookupFunc func(name string) (*skill.Skill, error)
 // 未命中返回 error。
 type ProjectSkillResolver func(projectDir, name string) (*skill.Skill, error)
 
-// skillDedupCache 记录已加载技能的版本指纹（名称 → SkillVersion）。
-// 同名且内容未变时返回简短提示避免 token 浪费；内容变化（如进化副本
+// skillDedupCache 记录已加载技能的版本指纹（会话ID+名称 → SkillVersion）。
+// 同会话内同名且内容未变时返回简短提示避免 token 浪费；内容变化（如进化副本
 // 更新）后指纹不再匹配，自动重新完整加载。
 var skillDedupCache sync.Map
 
-// SkillVersion 返回技能的版本指纹（根目录+指令内容，内存比对零额外 IO）。
-// 用于进化感知判重：同名技能的进化副本更新后指纹变化，Skill 工具据此
-// 判定需要重新完整加载而非返回"已加载"提示。
+// SkillVersion 返回技能的版本指纹（根目录+指令内容+工具激活集，内存比对
+// 零额外 IO）。用于进化感知判重：同名技能的进化副本更新后指纹变化，Skill
+// 工具据此判定需要重新完整加载而非返回"已加载"提示。
 func SkillVersion(sk *skill.Skill) string {
-	return sk.RootDir + "\x00" + sk.Instructions
+	return sk.RootDir + "\x00" + sk.Instructions + "\x00" + sk.AllowedTools
 }
 
 // SkillTool 允许 LLM 按需加载技能的完整指令。
@@ -82,10 +82,14 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 	// 会话绑定项目目录时先按项目级解析（执行期解析不触碰系统提示词，
 	// 不影响 KV 缓存前缀）；未命中或未绑定项目时回退基础注册表。
 	var sk *skill.Skill
-	if t.projectResolver != nil {
-		if tc := GetToolContext(ctx); tc.Session != nil {
+	var sessionID string
+	if tc := GetToolContext(ctx); tc.Session != nil {
+		sessionID = tc.Session.ID()
+		if t.projectResolver != nil {
 			if projectDir := tc.Session.ProjectDir(); projectDir != "" {
-				// 项目级未命中视为未命中，由下方基础注册表继续解析
+				// 项目级未命中视为未命中，由下方基础注册表继续解析。
+				// 契约假设：resolver 实现应把所有失败归一为 ErrSkillNotFound
+				// （当前 mindx 的 ResolveProject 即如此），IO 类错误不应泄漏到此处。
 				sk, _ = t.projectResolver(projectDir, name)
 			}
 		}
@@ -99,7 +103,10 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 
 	// 版本判重：同指纹（同名且内容未变）返回简短提示；
 	// 指纹变化（进化副本更新）时重新完整加载。
-	if cached, loaded := skillDedupCache.Load(name); loaded && cached == SkillVersion(sk) {
+	// 缓存键带会话维度——dedup 的语义是"本对话内引用此前结果"，
+	// 跨会话的同名技能上下文互不可见，不共享判重状态。
+	cacheKey := sessionID + "\x00" + name
+	if cached, loaded := skillDedupCache.Load(cacheKey); loaded && cached == SkillVersion(sk) {
 		return map[string]any{
 			"skill_name": name,
 			"content":    fmt.Sprintf("技能 %q 已加载。本对话中之前 Skill 工具的结果仍然有效——请引用此前的结果。", name),
@@ -107,7 +114,7 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 			"_note":      "技能未变化。引用之前的结果。",
 		}, nil
 	}
-	skillDedupCache.Store(name, SkillVersion(sk))
+	skillDedupCache.Store(cacheKey, SkillVersion(sk))
 
 	result := map[string]any{
 		"skill_name": sk.Name,

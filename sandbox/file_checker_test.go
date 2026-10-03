@@ -19,8 +19,8 @@ func TestCheckFile_NonExistent_Allows(t *testing.T) {
 	nonExistent := filepath.Join(projectDir, "never_exists.txt")
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    DefaultDeniedFileGlobs(),
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
 	})
 
 	dec := sb.CheckFile(nonExistent, projectDir)
@@ -46,8 +46,8 @@ func TestCheckFile_ENOTDIR_Allows(t *testing.T) {
 	require.False(t, os.IsNotExist(statErr), "ENOTDIR 不应命中 IsNotExist")
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    DefaultDeniedFileGlobs(),
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
 	})
 
 	dec := sb.CheckFile(enotdirPath, projectDir)
@@ -62,8 +62,8 @@ func TestCheckFile_SensitiveFile_Denies(t *testing.T) {
 	require.NoError(t, os.WriteFile(envFile, []byte("SECRET=xxx"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    DefaultDeniedFileGlobs(),
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
 	})
 
 	dec := sb.CheckFile(envFile, projectDir)
@@ -79,8 +79,8 @@ func TestCheckFile_OutsideWorkspace_AsksUser(t *testing.T) {
 	require.NoError(t, os.WriteFile(outsideFile, []byte("hi"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    DefaultDeniedFileGlobs(),
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
 	})
 
 	dec := sb.CheckFile(outsideFile, projectDir)
@@ -95,8 +95,8 @@ func TestCheckFile_InsideWorkspace_Allows(t *testing.T) {
 	require.NoError(t, os.WriteFile(normalFile, []byte("package main"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    DefaultDeniedFileGlobs(),
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
 	})
 
 	dec := sb.CheckFile(normalFile, projectDir)
@@ -305,12 +305,34 @@ func TestEnforceFile_AllowedFilePath_Glob_SymlinkPrefix(t *testing.T) {
 		"通配模式前缀应随符号链接归一化后命中")
 }
 
+// TestCheckFile_AllowedFilePath_Glob_SymlinkedPath 验证 Grant 阶段通配的
+// 双形式匹配：白名单用真实路径书写（realDir/*），调用方传入符号链接形式
+// 路径（linkDir/x，如 macOS 上写 /private/tmp/* 而访问 /tmp/x），首次未命中
+// 后应补试解析路径命中，避免白名单静默失效。
+func TestCheckFile_AllowedFilePath_Glob_SymlinkedPath(t *testing.T) {
+	realDir := t.TempDir()
+	linkDir := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(realDir, linkDir))
+	envFile := filepath.Join(linkDir, ".env") // 符号链接形式路径
+	require.NoError(t, os.WriteFile(envFile, []byte("SECRET=xxx"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		// 两种形式目录都设为允许:排除越界干扰,只验证敏感豁免的双形式补试命中
+		AllowedDirs:      []string{realDir, linkDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{realDir + "/*"},
+	})
+
+	assert.Equal(t, DecisionAllow, sb.CheckFile(envFile, realDir).Decision,
+		"通配条目应对符号链接形式路径补试命中")
+}
+
 // TestCheckFile_GlobMatch 验证 glob 模式匹配各类敏感文件名。
 func TestCheckFile_GlobMatch(t *testing.T) {
 	projectDir := t.TempDir()
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    []string{".env*", "*.pem", "credentials*"},
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: []string{".env*", "*.pem", "credentials*"},
 	})
 
 	cases := []struct {
@@ -385,8 +407,8 @@ func TestEnforceFile_SymlinkBypassBlocked(t *testing.T) {
 	require.NoError(t, os.WriteFile(targetFile, []byte("safe"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFilePaths:    []string{"/etc/passwd"},
+		AllowedDirs:     []string{projectDir},
+		DeniedFilePaths: []string{"/etc/passwd"},
 	})
 
 	// 模拟 Grant 放行
@@ -408,7 +430,7 @@ func TestEnforceFile_NonExistent_NoError(t *testing.T) {
 	nonExistent := filepath.Join(projectDir, "never_exists.txt")
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
+		AllowedDirs: []string{projectDir},
 	})
 
 	err := sb.EnforceFile(nonExistent, projectDir)
@@ -423,7 +445,7 @@ func TestEnforceFile_OutsideWorkspace_Error(t *testing.T) {
 	require.NoError(t, os.WriteFile(outsideFile, []byte("hi"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
+		AllowedDirs: []string{projectDir},
 	})
 
 	err := sb.EnforceFile(outsideFile, projectDir)
@@ -438,8 +460,8 @@ func TestCheckFile_DevicePath_Denies(t *testing.T) {
 	projectDir := t.TempDir()
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedDevicePaths:  DefaultDeniedDevicePaths(),
+		AllowedDirs:       []string{projectDir},
+		DeniedDevicePaths: DefaultDeniedDevicePaths(),
 	})
 
 	// /dev/null 在大多数 Unix 系统上存在
@@ -461,8 +483,8 @@ func TestCheckFile_DeniedDir_Denies(t *testing.T) {
 	require.NoError(t, os.WriteFile(sshConfig, []byte("Host *"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedDirGlobs:     DefaultDeniedDirGlobs(),
+		AllowedDirs:    []string{projectDir},
+		DeniedDirGlobs: DefaultDeniedDirGlobs(),
 	})
 
 	dec := sb.CheckFile(sshConfig, projectDir)
@@ -477,8 +499,8 @@ func TestCheckFile_DeniedDir_NoMatch_Allows(t *testing.T) {
 	require.NoError(t, os.WriteFile(normalFile, []byte("package main"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedDirGlobs:     DefaultDeniedDirGlobs(),
+		AllowedDirs:    []string{projectDir},
+		DeniedDirGlobs: DefaultDeniedDirGlobs(),
 	})
 
 	dec := sb.CheckFile(normalFile, projectDir)
@@ -490,8 +512,8 @@ func TestEnforceFile_DevicePath_Error(t *testing.T) {
 	projectDir := t.TempDir()
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedDevicePaths:  DefaultDeniedDevicePaths(),
+		AllowedDirs:       []string{projectDir},
+		DeniedDevicePaths: DefaultDeniedDevicePaths(),
 	})
 
 	if _, err := os.Stat("/dev/null"); err == nil {
@@ -509,8 +531,8 @@ func TestEnforceFile_DeniedDir_Error(t *testing.T) {
 	require.NoError(t, os.WriteFile(credsFile, []byte("[default]"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedDirGlobs:     DefaultDeniedDirGlobs(),
+		AllowedDirs:    []string{projectDir},
+		DeniedDirGlobs: DefaultDeniedDirGlobs(),
 	})
 
 	err := sb.EnforceFile(credsFile, projectDir)
@@ -548,7 +570,7 @@ func TestIsInDeniedDir(t *testing.T) {
 		{"/home/user/.kube/config", true},
 		{"/project/src/main.go", false},
 		{"/project/.config/app/settings.toml", true}, // .config 在默认列表
-		{"/project/config/app.toml", false},           // config 不带点，不匹配
+		{"/project/config/app.toml", false},          // config 不带点，不匹配
 	}
 
 	for _, c := range cases {
@@ -571,7 +593,7 @@ func TestCheckFileAllowOrDeny_OutsideWorkspace_Denies(t *testing.T) {
 	require.NoError(t, os.WriteFile(outsideFile, []byte("hi"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
+		AllowedDirs: []string{projectDir},
 	})
 
 	dec := sb.CheckFileAllowOrDeny(outsideFile, projectDir)
@@ -586,7 +608,7 @@ func TestCheckFileAllowOrDeny_InsideWorkspace_Allows(t *testing.T) {
 	require.NoError(t, os.WriteFile(normalFile, []byte("package main"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
+		AllowedDirs: []string{projectDir},
 	})
 
 	dec := sb.CheckFileAllowOrDeny(normalFile, projectDir)
@@ -600,8 +622,8 @@ func TestCheckFileAllowOrDeny_SensitiveFile_Denies(t *testing.T) {
 	require.NoError(t, os.WriteFile(envFile, []byte("SECRET=xxx"), 0644))
 
 	sb := newTestSandbox(t, &SandboxPolicy{
-		AllowedDirs:        []string{projectDir},
-		DeniedFileGlobs:    DefaultDeniedFileGlobs(),
+		AllowedDirs:     []string{projectDir},
+		DeniedFileGlobs: DefaultDeniedFileGlobs(),
 	})
 
 	dec := sb.CheckFileAllowOrDeny(envFile, projectDir)
