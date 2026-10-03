@@ -20,9 +20,12 @@ type SandboxPolicy struct {
 	// 空切片表示"无目录限制"（向后兼容旧行为，不推荐生产使用）。
 	AllowedDirs []string
 
-	// AllowedFilePaths 是宿主程序显式豁免的文件路径（绝对路径，精确匹配）。
+	// AllowedFilePaths 是宿主程序显式豁免的文件路径（绝对路径）。
+	// 条目不含通配符时精确匹配；含 "*" 时按完整路径模式匹配（大小写敏感，
+	// 单个 * 跨任意路径层级，如 /tmp/* 放行 /tmp 下全部子树）。
 	// 命中此列表的文件跳过敏感文件检查（glob / 敏感目录段 / 精确黑名单），
-	// 但目录边界与设备文件黑名单不受影响——白名单解的是"危险"标记，不是"越界"。
+	// 但目录边界与设备文件黑名单不受影响——白名单解的是"危险"标记，不是"越界"
+	// （越界放行见 AllowedDirs，可经 policy.json 的 file.allowed_dirs 扩展）。
 	// 这是宿主程序级静态配置：会话授权（PermissionAllowSession）只能扩展目录
 	// 边界（见 EnforceFileWithWhitelist），无法写入本列表。
 	// 典型用途：豁免被 DeniedFileGlobs 误伤的 .env.example、测试夹具密钥等。

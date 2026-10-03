@@ -236,6 +236,75 @@ func TestEnforceFile_AllowedFilePath(t *testing.T) {
 		"Execute 阶段白名单应同样豁免")
 }
 
+// TestCheckFile_AllowedFilePath_Glob_Subtree 验证 allowed_paths 路径通配：
+// 含 "*" 的条目按完整路径模式匹配（单个 * 跨任意层级），放行整个子树的
+// 敏感检查；模式锚定（前缀相似的目录不命中）；不含通配符的条目行为不变。
+func TestCheckFile_AllowedFilePath_Glob_Subtree(t *testing.T) {
+	projectDir := t.TempDir()
+	// 用默认敏感名单中的精确文件名 id_rsa(单文件名命中 DeniedFileGlobs)
+	nested := filepath.Join(projectDir, "sub", "id_rsa")
+	require.NoError(t, os.MkdirAll(filepath.Dir(nested), 0755))
+	require.NoError(t, os.WriteFile(nested, []byte("KEY"), 0644))
+	// 前缀相似但不应命中的兄弟目录(同名敏感文件,仅路径前缀不同)
+	sibling := projectDir + "-sibling"
+	siblingFile := filepath.Join(sibling, "id_rsa")
+	require.NoError(t, os.MkdirAll(sibling, 0755))
+	require.NoError(t, os.WriteFile(siblingFile, []byte("KEY"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{projectDir + "/*"},
+	})
+
+	assert.Equal(t, DecisionAllow, sb.CheckFile(nested, projectDir).Decision,
+		"通配条目应放行子树内多层敏感文件")
+	assert.Equal(t, DecisionDeny, sb.CheckFile(siblingFile, projectDir).Decision,
+		"前缀相似的兄弟目录不应被通配命中")
+}
+
+// TestCheckFile_AllowedFilePath_Glob_StillOutsideWorkspace 验证通配命中
+// 同样不豁免目录边界（解"危险"不解"越界"，与精确路径语义一致）。
+func TestCheckFile_AllowedFilePath_Glob_StillOutsideWorkspace(t *testing.T) {
+	projectDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideEnv := filepath.Join(outsideDir, ".env")
+	require.NoError(t, os.WriteFile(outsideEnv, []byte("X=1"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		AllowedDirs:      []string{projectDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{outsideDir + "/*"},
+	})
+
+	dec := sb.CheckFile(outsideEnv, projectDir)
+	assert.Equal(t, DecisionAskUser, dec.Decision,
+		"通配白名单不应豁免目录边界，越界仍需用户授权")
+}
+
+// TestEnforceFile_AllowedFilePath_Glob_SymlinkPrefix 验证 Enforce 阶段
+// 通配模式的符号链接前缀归一化：白名单用符号链接路径书写（如 macOS 上
+// /tmp → /private/tmp），访问真实路径文件时模式前缀同步解析后仍应命中。
+func TestEnforceFile_AllowedFilePath_Glob_SymlinkPrefix(t *testing.T) {
+	realDir := t.TempDir()
+	linkDir := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(realDir, linkDir))
+	envFile := filepath.Join(realDir, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("SECRET=xxx"), 0644))
+
+	sb := newTestSandbox(t, &SandboxPolicy{
+		// realDir 设为允许目录：越界检查不拦，让敏感豁免成为唯一验证变量
+		AllowedDirs:      []string{realDir},
+		DeniedFileGlobs:  DefaultDeniedFileGlobs(),
+		AllowedFilePaths: []string{linkDir + "/*"},
+	})
+
+	// 访问路径为真实目录（realDir），白名单模式用符号链接路径（linkDir/*）：
+	// 前缀归一化后两侧同基准，应命中豁免（.env 无白名单时会被硬拒）
+	assert.NoError(t, sb.EnforceFile(envFile, realDir),
+		"通配模式前缀应随符号链接归一化后命中")
+}
+
 // TestCheckFile_GlobMatch 验证 glob 模式匹配各类敏感文件名。
 func TestCheckFile_GlobMatch(t *testing.T) {
 	projectDir := t.TempDir()

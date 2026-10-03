@@ -1,7 +1,7 @@
-github.com/DotNetAge/goagent v0.1.0 h1:/mewuJUZGLrCKvYSy6LRuy8fE1NwCeTcwwFSFC4rnwk=
-github.com/DotNetAge/goagent v0.1.0/go.mod h1:zIJ3jBRvOBMMvqHlX0L4zJwET3g6NUnM+KnFfufRvWw=
-github.com/DotNetAge/gochat v0.2.11 h1:DTp80SiEQhwF0u8LQNzQGSXJn2JjiG6M0rVZvcncTPE=
-github.com/DotNetAge/gochat v0.2.11/go.mod h1:w7m36rMZoDwmReJNTLUGHhok6DSqnIidg9wFKwYM1dM=
+github.com/DotNetAge/goagent v0.1.1 h1:jOzHMuMQMYVUUFSDFrpFfLEDRJW9HX+f2ANXiWazwSo=
+github.com/DotNetAge/goagent v0.1.1/go.mod h1:zWh8/raxk8xw8dgwB1zEHuawU6795Lnd5ghApjduXAc=
+github.com/DotNetAge/gochat v0.2.12 h1:fFvi91Td9byuHtMhZzHKSKuJh7gy8Xjylc41U0y8KDI=
+github.com/DotNetAge/gochat v0.2.12/go.mod h1:w7m36rMZoDwmReJNTLUGHhok6DSqnIidg9wFKwYM1dM=
 github.com/JohannesKaufmann/html-to-markdown v1.6.0 h1:04VXMiE50YYfCfLboJCLcgqF5x+rHJnb1ssNmqpLH/k=
 github.com/JohannesKaufmann/html-to-markdown v1.6.0/go.mod h1:NUI78lGg/a7vpEJTz/0uOcYMaibytE4BUOQS8k78yPQ=
 github.com/PuerkitoBio/goquery v1.9.2/go.mod h1:GHPCaP0ODyyxqcNoFGYlAprUFH81NuRPd0GX3Zu2Mvk=

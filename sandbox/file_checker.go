@@ -150,10 +150,15 @@ func (s *Sandbox) enforceFile(path string, projectDir string, extraAllowedDirs [
 	// 宿主白名单命中 → 跳过后续敏感文件检查（目录边界仍生效）
 	// 白名单精确路径与 realPath 同基准比较：path 已解析符号链接时同步归一化，
 	// 与下方 AllowedDirs 的处理方式一致（防 macOS /var → /private/var 前缀失配）。
+	// 含通配符的条目只归一化通配符之前的目录前缀（通配段不指向真实路径）。
 	allowedPolicy := p
 	if pathResolved && len(p.AllowedFilePaths) > 0 {
 		realAllowed := make([]string, len(p.AllowedFilePaths))
 		for i, ap := range p.AllowedFilePaths {
+			if strings.Contains(ap, "*") {
+				realAllowed[i] = resolveGlobPrefix(ap)
+				continue
+			}
 			realAllowed[i] = resolveSymlinks(ap)
 		}
 		tmp := *p
@@ -253,9 +258,11 @@ func (s *Sandbox) isDeniedFile(path string, p *SandboxPolicy) bool {
 }
 
 // isAllowedFile 检查路径是否命中宿主程序配置的文件豁免白名单
-// （AllowedFilePaths 精确匹配 / AllowedFileGlobs basename 通配）。
-// 命中即跳过敏感文件/目录检查；目录边界与设备文件黑名单不豁免。
-// 与 isDeniedFile 一致：大小写不敏感，glob 仅支持 * 通配。
+// （AllowedFilePaths 精确匹配或路径通配 / AllowedFileGlobs basename 通配）。
+// AllowedFilePaths 条目含 "*" 时按完整路径模式匹配（大小写敏感，单个 *
+// 跨任意路径层级，如 /tmp/* 放行 /tmp 下全部子树）；不含通配符的条目
+// 保持精确匹配。命中即跳过敏感文件/目录检查；目录边界与设备文件黑名单
+// 不豁免。与 isDeniedFile 一致：basename glob 大小写不敏感。
 func (s *Sandbox) isAllowedFile(path string, p *SandboxPolicy) bool {
 	base := strings.ToLower(filepath.Base(path))
 	for _, glob := range p.AllowedFileGlobs {
@@ -265,11 +272,32 @@ func (s *Sandbox) isAllowedFile(path string, p *SandboxPolicy) bool {
 	}
 	cleanPath := filepath.Clean(path)
 	for _, allowed := range p.AllowedFilePaths {
+		if strings.Contains(allowed, "*") {
+			// 路径通配条目：对完整路径做模式匹配（路径大小写敏感）
+			if matchGlob(allowed, cleanPath) {
+				return true
+			}
+			continue
+		}
 		if cleanPath == allowed {
 			return true
 		}
 	}
 	return false
+}
+
+// resolveGlobPrefix 对含通配符的路径模式做符号链接归一化：
+// 只解析第一个通配符之前的目录前缀（通配段本身不指向真实路径，
+// EvalSymlinks 会失败），拼接剩余模式后返回。
+// 背景：EnforceFile 阶段用 EvalSymlinks 后的真实路径比较，而 macOS 上
+// /tmp 是 /private/tmp 的符号链接——模式前缀不同步归一化会永远匹配不上。
+// 解析失败时返回原模式（由调用方兜底）。
+func resolveGlobPrefix(pattern string) string {
+	idx := strings.Index(pattern, "*")
+	if idx < 0 {
+		return resolveSymlinks(pattern)
+	}
+	return resolveSymlinks(pattern[:idx]) + pattern[idx:]
 }
 
 // isInDeniedDir 检查路径中是否包含敏感目录段。
