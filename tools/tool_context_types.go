@@ -21,11 +21,11 @@ var toolCtxKey = toolCtxKeyType{}
 // 将个别 session 字段提取到 ToolContext 会产生泄漏点，
 // 副本可能过期或与真实数据源不同步。
 type ToolContext struct {
-	EmitEvent   func(events.ReactEvent)
+	EmitEvent    func(events.ReactEvent)
 	SessionStore session.SessionStore
-	KVStore     store.KVStore
-	FileStore   store.FileStore
-	Logger      logging.Logger
+	KVStore      store.KVStore
+	FileStore    store.FileStore
+	Logger       logging.Logger
 
 	// Session 是会话级状态的权威来源。
 	// 工具通过其 getter 方法（ID、ProjectDir 等）访问会话属性，

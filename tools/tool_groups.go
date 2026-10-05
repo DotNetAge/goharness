@@ -16,10 +16,10 @@ var toolGroupMaps = map[string][]string{
 	"TaskUpdate": {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"},
 
 	// Team 组：基于共享 Team 数据模型的生命周期
-	"TeamCreate":    {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
-	"TeamDelete":    {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
-	"TeamList":      {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
-	"TeamGetTasks":  {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
+	"TeamCreate":   {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
+	"TeamDelete":   {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
+	"TeamList":     {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
+	"TeamGetTasks": {"TeamCreate", "TeamDelete", "TeamList", "TeamGetTasks"},
 
 	// Skill 组：Skill 加载指令 + RootDir，RunScript 在该目录下执行脚本
 	"Skill":     {"Skill", "RunScript"},

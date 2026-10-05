@@ -14,18 +14,18 @@ import (
 //
 // 图片不写入 DedupCache（图片去重收益低）。
 type ReadFileState struct {
-	FilePath  string   // 文件绝对路径
-	Offset    int      // 起始偏移
-	Limit     int      // 缓存行数
-	Content   string   // 缓存内容
-	LineCount int      // 实际行数
-	MtimeMs   int64    // 读取时的文件 mtime（毫秒）
-	SizeBytes int64    // 文件大小
+	FilePath  string // 文件绝对路径
+	Offset    int    // 起始偏移
+	Limit     int    // 缓存行数
+	Content   string // 缓存内容
+	LineCount int    // 实际行数
+	MtimeMs   int64  // 读取时的文件 mtime（毫秒）
+	SizeBytes int64  // 文件大小
 }
 
 const (
-	dedupMaxLines    = 500  // 每个缓存最多行数
-	dedupMaxBytes    = 50 * 1024 // 总缓存容量上限 50KB
+	dedupMaxLines = 500       // 每个缓存最多行数
+	dedupMaxBytes = 50 * 1024 // 总缓存容量上限 50KB
 )
 
 // readFileStates 是全局的 DedupCache

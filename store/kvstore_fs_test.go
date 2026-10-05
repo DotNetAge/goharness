@@ -532,5 +532,3 @@ func TestFileSystemFileStore_GetSessionPath(t *testing.T) {
 		t.Errorf("session path should end with session ID, got %s", sessionPath)
 	}
 }
-
-

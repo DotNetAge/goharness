@@ -58,9 +58,9 @@ func compressAndEncodeImage(content []byte, path string, maxSide int) ImageConte
 	img, _, err := image.Decode(bytes.NewReader(content))
 	if err != nil {
 		return ImageContent{
-			MediaType: "image/" + strings.TrimPrefix(filepath.Ext(path), "."),
+			MediaType:  "image/" + strings.TrimPrefix(filepath.Ext(path), "."),
 			Base64Data: base64Encode(content),
-			RawSize:   int64(len(content)),
+			RawSize:    int64(len(content)),
 		}
 	}
 
@@ -94,9 +94,9 @@ func compressAndEncodeImage(content []byte, path string, maxSide int) ImageConte
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: quality}); err != nil {
 		return ImageContent{
-			MediaType: "image/jpeg",
+			MediaType:  "image/jpeg",
 			Base64Data: base64Encode(content),
-			RawSize:   int64(len(content)),
+			RawSize:    int64(len(content)),
 		}
 	}
 

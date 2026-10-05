@@ -13,8 +13,8 @@ const PriorityFileModify = 42
 
 // fileModifyingTools 是需要追踪文件修改的工具名称集合。
 var fileModifyingTools = map[string]bool{
-	"Write":    true,
-	"Edit": true,
+	"Write": true,
+	"Edit":  true,
 }
 
 // TrackFunc 是文件修改追踪的函数签名，由 Session.TrackModify 满足。

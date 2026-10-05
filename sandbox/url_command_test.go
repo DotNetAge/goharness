@@ -109,7 +109,7 @@ func TestCheckURL_AllowSubnets_OverridesDeny(t *testing.T) {
 	// 允许 10.0.1.100/32（私有 IP，正常会被禁）
 	allowSubnet := parseCIDR("10.0.1.100/32")
 	sb := newTestSandbox(t, &SandboxPolicy{
-		NetworkDenySubnets:   DefaultDeniedSubnets(),
+		NetworkDenySubnets:  DefaultDeniedSubnets(),
 		NetworkAllowSubnets: []*net.IPNet{allowSubnet},
 	})
 
@@ -234,7 +234,7 @@ func TestCheckCommand_InWhitelist_Allows(t *testing.T) {
 func TestCheckCommand_NetworkCommand_ExtractsURL(t *testing.T) {
 	sb := newTestSandbox(t, &SandboxPolicy{
 		AllowedCommands: DefaultAllowedCommands(),
-		NetworkCommands:  DefaultNetworkCommands(),
+		NetworkCommands: DefaultNetworkCommands(),
 	})
 
 	dec := sb.CheckCommand("curl http://8.8.8.8/")
@@ -247,7 +247,7 @@ func TestCheckCommand_NetworkCommand_ExtractsURL(t *testing.T) {
 func TestCheckCommand_NetworkCommandNoURL_NoCheck(t *testing.T) {
 	sb := newTestSandbox(t, &SandboxPolicy{
 		AllowedCommands: DefaultAllowedCommands(),
-		NetworkCommands:  DefaultNetworkCommands(),
+		NetworkCommands: DefaultNetworkCommands(),
 	})
 
 	dec := sb.CheckCommand("curl --help")

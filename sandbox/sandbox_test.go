@@ -25,7 +25,7 @@ func newTestSandbox(t *testing.T, policy *SandboxPolicy) *Sandbox {
 // 这是测试辅助函数，也是宿主应用快速启用的便利方法。
 func DefaultPolicy() SandboxPolicy {
 	return SandboxPolicy{
-		DeniedFileGlobs:        DefaultDeniedFileGlobs(),
+		DeniedFileGlobs:       DefaultDeniedFileGlobs(),
 		DeniedDirGlobs:        DefaultDeniedDirGlobs(),
 		DeniedDevicePaths:     DefaultDeniedDevicePaths(),
 		NetworkDenySubnets:    DefaultDeniedSubnets(),
@@ -48,11 +48,11 @@ func TestDecision_String(t *testing.T) {
 
 func TestSandboxPolicy_Compile_NormalizesPaths(t *testing.T) {
 	p := SandboxPolicy{
-		AllowedDirs:      []string{"/project//sub/", "/project/../parent"},
-		DeniedFilePaths:  []string{"/etc//passwd"},
-		DeniedFileGlobs:  []string{".ENV", "*.PEM"},
-		AllowedCommands:  []string{"CURL", "WGet"},
-		NetworkCommands:  []string{"Curl"},
+		AllowedDirs:     []string{"/project//sub/", "/project/../parent"},
+		DeniedFilePaths: []string{"/etc//passwd"},
+		DeniedFileGlobs: []string{".ENV", "*.PEM"},
+		AllowedCommands: []string{"CURL", "WGet"},
+		NetworkCommands: []string{"Curl"},
 	}
 	compiled, err := p.Compile()
 	require.NoError(t, err)

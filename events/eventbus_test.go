@@ -4,7 +4,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
 )
 
 func TestEventBus_PublishSubscribe(t *testing.T) {

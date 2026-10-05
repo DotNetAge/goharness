@@ -39,10 +39,10 @@ func newSandboxCtx(t *testing.T, projectDir string, policy *sandbox.SandboxPolic
 	t.Helper()
 	if policy == nil {
 		p := sandbox.SandboxPolicy{
-			AllowedDirs:        []string{projectDir},
-			DeniedFileGlobs:    sandbox.DefaultDeniedFileGlobs(),
-			DeniedDirGlobs:     sandbox.DefaultDeniedDirGlobs(),
-			DeniedDevicePaths:  sandbox.DefaultDeniedDevicePaths(),
+			AllowedDirs:       []string{projectDir},
+			DeniedFileGlobs:   sandbox.DefaultDeniedFileGlobs(),
+			DeniedDirGlobs:    sandbox.DefaultDeniedDirGlobs(),
+			DeniedDevicePaths: sandbox.DefaultDeniedDevicePaths(),
 		}
 		policy = &p
 	}
@@ -179,7 +179,7 @@ func TestEdit_Sandbox_NonExistent_Allows(t *testing.T) {
 
 	edit := NewEditTool()
 	granted, _ := edit.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{
-		"file_path":   nonExistent,
+		"file_path":  nonExistent,
 		"old_string": "a",
 		"new_string": "b",
 	})
@@ -195,7 +195,7 @@ func TestEdit_Sandbox_Outside_AsksUser(t *testing.T) {
 
 	edit := NewEditTool()
 	granted, _ := edit.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{
-		"file_path":   outsideFile,
+		"file_path":  outsideFile,
 		"old_string": "hi",
 		"new_string": "hello",
 	})
@@ -210,7 +210,7 @@ func TestEdit_Sandbox_SensitiveFile_Denies(t *testing.T) {
 
 	edit := NewEditTool()
 	granted, reason := edit.Grant(newSandboxCtx(t, projectDir, nil), map[string]any{
-		"file_path":   envFile,
+		"file_path":  envFile,
 		"old_string": "SECRET",
 		"new_string": "TOKEN",
 	})
@@ -226,7 +226,7 @@ func TestEdit_Sandbox_Execute_EnforceSensitiveFile(t *testing.T) {
 
 	edit := NewEditTool()
 	_, err := edit.Execute(newSandboxCtx(t, projectDir, nil), map[string]any{
-		"file_path":   envFile,
+		"file_path":  envFile,
 		"old_string": "SECRET",
 		"new_string": "TOKEN",
 	})
@@ -476,7 +476,7 @@ func TestSandbox_Disabled_AllTools_RefuseExecution(t *testing.T) {
 	t.Run("Edit 拒绝执行", func(t *testing.T) {
 		edit := NewEditTool()
 		params := map[string]any{
-			"file_path":   filepath.Join(projectDir, "a.txt"),
+			"file_path":  filepath.Join(projectDir, "a.txt"),
 			"old_string": "hi",
 			"new_string": "hello",
 		}

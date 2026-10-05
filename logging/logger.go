@@ -71,7 +71,7 @@ func NewNopLogger() Logger {
 	return &NopLogger{}
 }
 
-func (n *NopLogger) Info(msg string, keyvals ...any)  {}
+func (n *NopLogger) Info(msg string, keyvals ...any)             {}
 func (n *NopLogger) Error(msg string, err error, keyvals ...any) {}
-func (n *NopLogger) Debug(msg string, keyvals ...any) {}
-func (n *NopLogger) Warn(msg string, keyvals ...any)  {}
+func (n *NopLogger) Debug(msg string, keyvals ...any)            {}
+func (n *NopLogger) Warn(msg string, keyvals ...any)             {}

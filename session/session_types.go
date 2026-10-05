@@ -73,9 +73,9 @@ type SlideHandler func(ctx context.Context, event SlideEvent)
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
-	TeamName       string    `json:"team_name,omitempty"`   // 会话绑定的团队名（空 = 个人会话）；创建时写入并随 meta 持久化，Load 时恢复
-	Sponsor        string    `json:"sponsor,omitempty"`     // 创建此会话的智能体（空 = 用户发起）
-	Title          string    `json:"title,omitempty"`       // 首条用户消息内容（用于会话列表显示）
+	TeamName       string    `json:"team_name,omitempty"` // 会话绑定的团队名（空 = 个人会话）；创建时写入并随 meta 持久化，Load 时恢复
+	Sponsor        string    `json:"sponsor,omitempty"`   // 创建此会话的智能体（空 = 用户发起）
+	Title          string    `json:"title,omitempty"`     // 首条用户消息内容（用于会话列表显示）
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`            // 上次 meta.json 保存时间
 	LastActivityAt time.Time `json:"last_activity_at"`      // 上次消息活动时间戳

@@ -14,10 +14,10 @@ type ToolCall struct {
 // Path 与 Base64Data 二选一：Path 非空时按文件路径引用（组装时才读文件转 base64），
 // 使持久化消息只存路径引用而不膨胀存储；Base64Data 用于内联场景（如工具结果图片）。
 type ImageBlock struct {
-	MediaType  string `json:"media_type" yaml:"media_type"`     // MIME 类型，如 image/png、image/jpeg
+	MediaType  string `json:"media_type" yaml:"media_type"`                       // MIME 类型，如 image/png、image/jpeg
 	Base64Data string `json:"base64_data,omitempty" yaml:"base64_data,omitempty"` // base64 编码的图片数据（与 Path 二选一）
 	Path       string `json:"path,omitempty" yaml:"path,omitempty"`               // 图片文件绝对路径（与 Base64Data 二选一）
-	AltText    string `json:"alt_text,omitempty" yaml:"alt_text,omitempty"` // 图片说明（如尺寸、来源）
+	AltText    string `json:"alt_text,omitempty" yaml:"alt_text,omitempty"`       // 图片说明（如尺寸、来源）
 }
 
 // Message 表示对话中的单条消息。
@@ -28,19 +28,19 @@ type ImageBlock struct {
 //   - tool_calls: 助手消息中的工具调用
 //   - tool_call_id: 工具结果消息的关联 ID
 type Message struct {
-	Role             string      `json:"role" yaml:"role"`
-	Content          string      `json:"content" yaml:"content"`
-	ReasoningContent string      `json:"reasoning_content,omitempty" yaml:"reasoning_content,omitempty"` // 思考流（DeepSeek-R1 等）
-	Images           []ImageBlock `json:"images,omitempty" yaml:"images,omitempty"`                     // 图片内容块（以 image_url 消息进入上下文）
-	Timestamp        int64       `json:"timestamp" yaml:"timestamp"`
-	ToolCallID       string      `json:"tool_call_id,omitempty" yaml:"tool_call_id,omitempty"` // 用于 role="tool" 消息
-	ToolCalls        []ToolCall  `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`     // 用于 role="assistant" 消息
+	Role             string       `json:"role" yaml:"role"`
+	Content          string       `json:"content" yaml:"content"`
+	ReasoningContent string       `json:"reasoning_content,omitempty" yaml:"reasoning_content,omitempty"` // 思考流（DeepSeek-R1 等）
+	Images           []ImageBlock `json:"images,omitempty" yaml:"images,omitempty"`                       // 图片内容块（以 image_url 消息进入上下文）
+	Timestamp        int64        `json:"timestamp" yaml:"timestamp"`
+	ToolCallID       string       `json:"tool_call_id,omitempty" yaml:"tool_call_id,omitempty"` // 用于 role="tool" 消息
+	ToolCalls        []ToolCall   `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`     // 用于 role="assistant" 消息
 	// FinishReason 记录本次 LLM 调用（assistant 消息）的终止原因，取 OpenAI 协议原值：
 	// "stop"（最终回答）| "tool_calls"（需继续循环）| "length" | "content_filter"。
 	// 这是协议内建的「答案边界」信号：前端恢复历史时据此精确区分过程 content 与最终答案，
 	// 无需依赖「最后一条无 tool_calls 的 assistant」这类位置启发式。
 	FinishReason string      `json:"finish_reason,omitempty" yaml:"finish_reason,omitempty"`
-	Usage        *TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"`       // token 消耗（仅助手消息）
+	Usage        *TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"` // token 消耗（仅助手消息）
 }
 
 // GetID 返回此消息的唯一标识符。

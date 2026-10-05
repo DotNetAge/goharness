@@ -22,12 +22,12 @@ import (
 //
 //   - granted == true  → 工具安全；运行时直接执行它。
 //   - granted == false → 工具需要用户批准。运行时发出
-//                        PermissionPending 事件，将该调用保存到
-//                        session.PendingPermission 中，并停止思考循环。
-//                        用户通过新的 Ask() 调用以"魔法词"（参见下文的
-//                        PermissionAllow / PermissionDeny）作出响应。
-//                        随后运行时要么执行工具（Allow），要么在继续循环前
-//                        追加一条"Permission Denied"工具结果（Deny）。
+//     PermissionPending 事件，将该调用保存到
+//     session.PendingPermission 中，并停止思考循环。
+//     用户通过新的 Ask() 调用以"魔法词"（参见下文的
+//     PermissionAllow / PermissionDeny）作出响应。
+//     随后运行时要么执行工具（Allow），要么在继续循环前
+//     追加一条"Permission Denied"工具结果（Deny）。
 //
 // # 魔法词与 AskUser 的区别
 //

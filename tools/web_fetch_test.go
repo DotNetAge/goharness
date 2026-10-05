@@ -274,7 +274,7 @@ func TestValidateURL_HTTPScheme(t *testing.T) {
 func TestValidateURL_InvalidSchemes(t *testing.T) {
 	schemes := []string{"ftp", "file", "javascript", "data", "mailto"}
 	for _, scheme := range schemes {
-		err := validateURL(context.Background(), scheme + "://example.com")
+		err := validateURL(context.Background(), scheme+"://example.com")
 		if err == nil {
 			t.Errorf("%s:// scheme should be rejected", scheme)
 		}

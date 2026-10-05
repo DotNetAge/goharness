@@ -22,7 +22,7 @@ const (
 // CompactStartData 携带完整（LLM）压缩开始前的状态。
 type CompactStartData struct {
 	SessionID     string `json:"session_id"`
-	WindowTokens  int64  `json:"window_tokens"`   // 压缩前的 token 总数
+	WindowTokens  int64  `json:"window_tokens"` // 压缩前的 token 总数
 	MaxWindowSize int64  `json:"max_window_size"`
 }
 
@@ -30,7 +30,7 @@ type CompactStartData struct {
 type CompactDoneData struct {
 	SessionID     string  `json:"session_id"`
 	MessagesSlid  int     `json:"messages_slid"`
-	WindowTokens  int64   `json:"window_tokens"`   // 压缩后的 token 数（游标滑动后为 0）
+	WindowTokens  int64   `json:"window_tokens"` // 压缩后的 token 数（游标滑动后为 0）
 	MaxWindowSize int64   `json:"max_window_size"`
-	Ratio         float64 `json:"ratio"`            // 压缩后 / 压缩前（窗口清空时为 0）
+	Ratio         float64 `json:"ratio"` // 压缩后 / 压缩前（窗口清空时为 0）
 }

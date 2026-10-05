@@ -49,7 +49,7 @@ func TestHookResult_IsTerminal(t *testing.T) {
 }
 
 type mockLoopHook struct {
-	priority      int
+	priority        int
 	beforeLLMCalled bool
 	afterLLMCalled  bool
 	abortCalled     bool
@@ -78,7 +78,7 @@ func (m *mockLoopHook) Abort(sessionID string, reason string) {
 }
 
 type mockToolHook struct {
-	priority    int
+	priority     int
 	beforeCalled bool
 	afterCalled  bool
 	abortCalled  bool
@@ -108,7 +108,7 @@ func (m *mockToolHook) Abort(reason string) {
 
 func TestMockLoopHook_Interface(t *testing.T) {
 	hook := &mockLoopHook{
-		priority:       42,
+		priority:        42,
 		beforeLLMResult: HookResult{},
 		afterLLMResult:  HookResult{},
 	}
@@ -184,7 +184,7 @@ func TestMockLoopHook_WithErrorResult(t *testing.T) {
 
 func TestMockToolHook_Interface(t *testing.T) {
 	hook := &mockToolHook{
-		priority:    43,
+		priority:     43,
 		beforeResult: HookResult{},
 		afterResult:  HookResult{},
 	}
@@ -328,7 +328,7 @@ func TestLLMResponse_StructFields(t *testing.T) {
 		ToolCalls: []ToolCallInvocation{
 			{ID: "call_1", Name: "search", Arguments: map[string]any{"query": "test"}},
 		},
-		TokenUsage: nil,
+		TokenUsage:  nil,
 		AbortReason: "",
 	}
 

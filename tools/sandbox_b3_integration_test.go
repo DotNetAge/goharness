@@ -99,7 +99,7 @@ func TestGrep_Sandbox_Disabled_RefusesExecution(t *testing.T) {
 func TestSearch_Sandbox_SSRF_Denied(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := newBashSandboxCtx(t, projectDir, nil)
-	client := newSearchStealthClient(logging.NewNopLogger(), 5 * time.Second)
+	client := newSearchStealthClient(logging.NewNopLogger(), 5*time.Second)
 
 	_, err := fetchBody(ctx, client, "http://127.0.0.1/test", nil)
 	require.Error(t, err, "沙箱启用时 fetchBody 应拒绝 127.0.0.1（SSRF 防护）")
@@ -111,7 +111,7 @@ func TestSearch_Sandbox_SSRF_Denied(t *testing.T) {
 func TestSearch_Sandbox_Disabled_Reject(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := newGrantCtx(t, projectDir) // 不注入沙箱
-	client := newSearchStealthClient(logging.NewNopLogger(), 1 * time.Second)
+	client := newSearchStealthClient(logging.NewNopLogger(), 1*time.Second)
 
 	_, err := fetchBody(ctx, client, "http://127.0.0.1/test", nil)
 	require.Error(t, err, "沙箱未注入时应拒绝执行")
@@ -127,7 +127,7 @@ func TestSearch_Sandbox_NetworkAllowSubnets_Allows(t *testing.T) {
 	ctx := newBashSandboxCtx(t, projectDir, func(p *sandbox.SandboxPolicy) {
 		p.NetworkAllowSubnets = mustParseCIDRList(t, []string{"127.0.0.0/8"})
 	})
-	client := newSearchStealthClient(logging.NewNopLogger(), 1 * time.Second)
+	client := newSearchStealthClient(logging.NewNopLogger(), 1*time.Second)
 
 	_, err := fetchBody(ctx, client, "http://127.0.0.1/test", nil)
 	require.Error(t, err, "拨号层应拦截私有地址（即便 CheckURL 放行）")
