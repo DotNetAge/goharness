@@ -50,12 +50,14 @@ import (
 
 // initSession 执行通用的会话初始化逻辑。
 // 提取出来避免 New() 和 Load() 重复代码。
-func initSession(id, agentName, sponsor, projectDir string, store SessionStore, logger logging.Logger, opts ...SessionConfig) *Session {
+// teamName 为会话绑定的团队名（空 = 个人会话），来自创建选项或会话元数据恢复。
+func initSession(id, agentName, sponsor, projectDir, teamName string, store SessionStore, logger logging.Logger, opts ...SessionConfig) *Session {
 	s := &Session{
 		id:         id,
 		agentName:  agentName,
 		sponsor:    sponsor,
 		projectDir: projectDir,
+		teamName:   teamName,
 		messages:   make([]Message, 0),
 		store:      store,
 		log:        logger,
@@ -101,7 +103,7 @@ func New(agentName, sponsor, projectDir string, store SessionStore, logger loggi
 	}
 	entropy := ulid.Monotonic(rand.Reader, 0)
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy)
-	return initSession(id.String(), agentName, sponsor, projectDir, store, logger, opts...), nil
+	return initSession(id.String(), agentName, sponsor, projectDir, "", store, logger, opts...), nil
 }
 
 // Load 使用持久化存储从现有会话 ID 重建 Session。
@@ -141,7 +143,9 @@ func Load(ctx context.Context, sessionID, agentName string, store SessionStore, 
 		agentName = info.AgentName
 	}
 
-	return initSession(sessionID, agentName, info.Sponsor, info.ProjectDir, store, logger, opts...), nil
+	// TeamName 从会话元数据恢复（创建时经 WithTeamNameOption 写入），
+	// 保证会话重载后 System Prompt 的团队段重建与原会话一致
+	return initSession(sessionID, agentName, info.Sponsor, info.ProjectDir, info.TeamName, store, logger, opts...), nil
 }
 
 // Session 管理对话的消息历史，具有自动压缩功能。
@@ -175,6 +179,11 @@ type Session struct {
 
 	// projectDir 是文件操作的工作目录
 	projectDir string
+
+	// teamName 是会话绑定的团队名（空 = 个人会话）。
+	// 会话级事实：创建时经 WithTeamNameOption 写入并随元数据持久化，
+	// Load 时恢复，保证会话重载后 System Prompt 的团队段与原会话一致。
+	teamName string
 
 	// modelContextResolver 返回当前会话使用的模型的上下文长度（ContextLength）。
 	// 每次需要窗口大小时动态调用，保证切换模型后立即生效。
@@ -265,6 +274,9 @@ func (s *Session) ID() string { return s.id }
 
 // AgentName 返回操作此会话的智能体名称。
 func (s *Session) AgentName() string { return s.agentName }
+
+// TeamName 返回会话绑定的团队名（空 = 个人会话）。
+func (s *Session) TeamName() string { return s.teamName }
 
 // ProjectDir 返回与此会话关联的工作目录。
 func (s *Session) ProjectDir() string { return s.projectDir }

@@ -31,6 +31,12 @@ func WithMemory(mem MemoryStore) SessionConfig {
 	return func(s *Session) { s.mem = mem }
 }
 
+// WithTeam 为会话实例设置绑定的团队名（空 = 个人会话）。
+// 供 New 路径直接指定；Load 路径的团队绑定从会话元数据自动恢复。
+func WithTeam(teamName string) SessionConfig {
+	return func(s *Session) { s.teamName = teamName }
+}
+
 // WithCompactor 注入压缩器（依赖倒置，由 agents 层实现）。
 //
 // Compactor 负责构造与主对话请求字段一致的 LLM 调用（system + tools + messages 前缀

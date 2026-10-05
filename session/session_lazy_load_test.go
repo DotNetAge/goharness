@@ -360,7 +360,7 @@ func TestLazyLoad_ProjectDirLoadedFromStore(t *testing.T) {
 	}
 
 	// 直接构造，projectDir 留空，模拟 Load() 场景
-	s := initSession("project-dir-test", "agent", "", "", store, logging.NewNopLogger())
+	s := initSession("project-dir-test", "agent", "", "", "", store, logging.NewNopLogger())
 
 	if s.ProjectDir() != "" {
 		t.Errorf("Before lazy-load: ProjectDir() = %q, want empty", s.ProjectDir())

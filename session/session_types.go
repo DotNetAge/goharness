@@ -75,8 +75,9 @@ type SlideHandler func(ctx context.Context, event SlideEvent)
 type SessionInfo struct {
 	SessionID      string    `json:"session_id"`
 	AgentName      string    `json:"agent_name,omitempty"`
-	Sponsor        string    `json:"sponsor,omitempty"` // 创建此会话的智能体（空 = 用户发起）
-	Title          string    `json:"title,omitempty"`   // 首条用户消息内容（用于会话列表显示）
+	TeamName       string    `json:"team_name,omitempty"`   // 会话绑定的团队名（空 = 个人会话）；创建时写入并随 meta 持久化，Load 时恢复
+	Sponsor        string    `json:"sponsor,omitempty"`     // 创建此会话的智能体（空 = 用户发起）
+	Title          string    `json:"title,omitempty"`       // 首条用户消息内容（用于会话列表显示）
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`            // 上次 meta.json 保存时间
 	LastActivityAt time.Time `json:"last_activity_at"`      // 上次消息活动时间戳
@@ -148,6 +149,16 @@ func WithProjectDirOption(dir string) SessionOption {
 func WithSponsorOption(sponsor string) SessionOption {
 	return func(s *SessionInfo) {
 		s.Sponsor = sponsor
+	}
+}
+
+// WithTeamNameOption 为新会话信息设置绑定的团队名。
+// TeamName 是会话级事实：创建时写入并随 meta 持久化，Load 时恢复，
+// 使会话重载后 System Prompt 的团队段重建与原会话一致。
+// 空值表示个人会话（不与任何团队绑定）。
+func WithTeamNameOption(teamName string) SessionOption {
+	return func(s *SessionInfo) {
+		s.TeamName = teamName
 	}
 }
 

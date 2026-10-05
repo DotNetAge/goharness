@@ -14,7 +14,7 @@ import (
 // newTestSession 创建具有指定 ID 的测试会话。
 // 用于需要控制 session ID 的测试场景（如 mock store 交互）。
 func newTestSession(id, agentName string, store SessionStore, opts ...SessionConfig) *Session {
-	return initSession(id, agentName, "", "/tmp/test", store, logging.NewNopLogger(), opts...)
+	return initSession(id, agentName, "", "/tmp/test", "", store, logging.NewNopLogger(), opts...)
 }
 
 // ── 构造函数测试 ─────────────────────────────────────────────────────────
