@@ -10,12 +10,11 @@ import (
 
 func newTestSessionWithModify() *Session {
 	return &Session{
-		id:           "test-session-modify",
-		agentName:    "test-agent",
-		messages:     make([]Message, 0),
-		store:        newMockStore(),
-		mem:          newInMemoryMemory(),
-		modifyFiles:  make([]string, 0),
+		id:          "test-session-modify",
+		agentName:   "test-agent",
+		messages:    make([]Message, 0),
+		store:       newMockStore(),
+		modifyFiles: make([]string, 0),
 	}
 }
 

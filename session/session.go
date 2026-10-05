@@ -205,11 +205,16 @@ type Session struct {
 
 	// compactor 执行上下文压缩的 LLM 调用（依赖倒置，由 agents 层注入）。
 	// 复用主对话的 system/tools/messages 前缀以命中 KV 缓存。
-	// 为 nil 时压缩跳过摘要生成（generateCompactionChunks 直接返回 nil）。
+	// 为 nil 时压缩视为失败（无法生成摘要，不允许 cursor 移动）。
 	compactor Compactor
 
-	// mem 存储上下文摘要以供后续检索
-	mem MemoryStore
+	// summarySink 接收压缩摘要原文（markdown）并持久化到外部存储（如 .agents/memory/ 文件）。
+	// 在 cursor 移动前同步调用：返回 error 则本次压缩视为失败，cursor 不移动。
+	// 为 nil 时压缩视为失败（摘要无处持久化，清窗口等于丢历史不留记忆）。
+	summarySink func(ctx context.Context, summary string) error
+
+	// compactionPrompt 外部覆盖的压缩指令（空 = 使用压缩器内置默认）。
+	compactionPrompt string
 
 	// lastCompactionFailAt 记录上次压缩失败的时间戳（unix nano，0 表示无失败）。
 	// 压缩失败后进入冷却期，避免 TryCompact 每轮重试导致死循环烧 token。

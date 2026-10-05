@@ -4,7 +4,6 @@ import (
 	"github.com/DotNetAge/goharness/config"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/memory"
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
@@ -67,10 +66,6 @@ func WithSkillRegistry(reg skill.SkillRegistry) RuntimeConfig {
 // 基础注册表。
 func WithProjectSkillResolver(resolver tools.ProjectSkillResolver) RuntimeConfig {
 	return func(r *Runtime) { r.prompt.projectSkillResolver = resolver }
-}
-
-func WithMemory(mem memory.Memory) RuntimeConfig {
-	return func(r *Runtime) { r.mem = mem }
 }
 
 func WithLogger(l logging.Logger) RuntimeConfig {

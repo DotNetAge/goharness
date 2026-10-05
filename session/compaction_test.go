@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-
-	"github.com/DotNetAge/goharness/memory"
 )
 
 // ── ForceCompact 测试 ─────────────────────────────────────────────────────
@@ -13,16 +11,16 @@ import (
 func TestForceCompact_EmptyWindow_Skips(t *testing.T) {
 	compactorCalled := false
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			compactorCalled = true
-			return nil, nil
+			return "", nil
 		},
 	}
 
 	s := newTestSession("fc-empty", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
 		WithCompactor(mockComp),
-		WithMemory(newInMemoryMemory()),
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }),
 	)
 
 	// 无消息，活跃窗口为空
@@ -36,16 +34,16 @@ func TestForceCompact_EmptyWindow_Skips(t *testing.T) {
 func TestForceCompact_BelowThreshold_Skips(t *testing.T) {
 	compactorCalled := false
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			compactorCalled = true
-			return nil, nil
+			return "", nil
 		},
 	}
 
 	s := newTestSession("fc-below", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
 		WithCompactor(mockComp),
-		WithMemory(newInMemoryMemory()),
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }),
 	)
 
 	// 少量内容，远低于 100K 阈值
@@ -61,9 +59,9 @@ func TestForceCompact_BelowThreshold_Skips(t *testing.T) {
 func TestForceCompact_AboveThreshold_Triggers(t *testing.T) {
 	compactorCalled := false
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			compactorCalled = true
-			return []memory.MemoryChunk{{Summary: "摘要", Content: "压缩内容"}}, nil
+			return "# 摘要\n\n## 执行状态\n\n压缩内容", nil
 		},
 	}
 
@@ -73,7 +71,7 @@ func TestForceCompact_AboveThreshold_Triggers(t *testing.T) {
 	s := newTestSession("fc-trigger", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
 		WithCompactor(mockComp),
-		WithMemory(newInMemoryMemory()),
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }),
 		WithCompactStartHandler(func(windowTokens, maxWindowSize int64) {
 			startCalled = true
 		}),
@@ -107,16 +105,16 @@ func TestForceCompact_AboveThreshold_Triggers(t *testing.T) {
 	}
 }
 
-func TestForceCompact_MemNil_SkipsCompactor(t *testing.T) {
+func TestForceCompact_SinkNil_SkipsCompactor(t *testing.T) {
 	compactorCalled := false
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			compactorCalled = true
-			return nil, nil
+			return "", nil
 		},
 	}
 
-	// 故意不 WithMemory —— mem 保持 nil
+	// 故意不 WithSummarySink —— summarySink 保持 nil
 	s := newTestSession("fc-memnil", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
 		WithCompactor(mockComp),
@@ -132,17 +130,17 @@ func TestForceCompact_MemNil_SkipsCompactor(t *testing.T) {
 	s.ForceCompact(context.Background())
 
 	if compactorCalled {
-		t.Error("mem 为 nil 时 ForceCompact 不应调用 compactor")
+		t.Error("summarySink 为 nil 时 ForceCompact 不应调用 compactor")
 	}
 }
 
 func TestForceCompact_CompactorNil_SkipsSummary(t *testing.T) {
-	// 未注入 compactor，但 mem 非 nil
+	// 未注入 compactor，但 summarySink 非 nil
 	// ForceCompact 超过 100K 时进入 doCompact，compactor==nil 跳过摘要生成，
-	// 视为压缩失败：cursor 不得移动（避免「压缩成功但零记忆落盘」的假成功）
+	// 视为压缩失败：cursor 不得移动（避免「清了窗口但零摘要落盘」的假成功）
 	s := newTestSession("fc-nocomp", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
-		WithMemory(newInMemoryMemory()),
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }),
 	)
 
 	s.Append(context.Background(), Message{
@@ -163,16 +161,16 @@ func TestForceCompact_CompactorNil_SkipsSummary(t *testing.T) {
 func TestForceCompact_CompactorError_RecordsCooldown(t *testing.T) {
 	callCount := 0
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			callCount++
-			return nil, errors.New("模拟 LLM 失败")
+			return "", errors.New("模拟 LLM 失败")
 		},
 	}
 
 	s := newTestSession("fc-err", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 200000 }),
 		WithCompactor(mockComp),
-		WithMemory(newInMemoryMemory()),
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }),
 	)
 
 	s.Append(context.Background(), Message{
@@ -190,6 +188,76 @@ func TestForceCompact_CompactorError_RecordsCooldown(t *testing.T) {
 
 	if failNano := s.lastCompactionFailAt.Load(); failNano <= 0 {
 		t.Error("ForceCompact 失败应记录冷却时间戳")
+	}
+}
+
+// ── SummarySink 语义测试 ─────────────────────────────────────────────────
+
+// TestForceCompact_SinkError_KeepsWindow 验证摘要交付失败时 cursor 不移动：
+// 防止「丢历史不留记忆」（摘要没落盘就清窗口）。
+func TestForceCompact_SinkError_KeepsWindow(t *testing.T) {
+	sinkErr := errors.New("模拟落盘失败")
+	mockComp := &mockCompactor{
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
+			return "# 摘要", nil
+		},
+	}
+
+	s := newTestSession("fc-sink-err", "agent", newMockStore(),
+		WithModelContextResolver(func() int64 { return 200000 }),
+		WithCompactor(mockComp),
+		WithSummarySink(func(ctx context.Context, summary string) error { return sinkErr }),
+	)
+
+	s.Append(context.Background(), Message{
+		Role:      "assistant",
+		Content:   "resp",
+		Timestamp: 1,
+		Usage:     &TokenUsage{CompletionTokens: 100001},
+	})
+
+	s.ForceCompact(context.Background())
+
+	// sink 失败 → 压缩失败 → cursor 不动，窗口保留，且记录冷却
+	if got := len(s.Current()); got != 1 {
+		t.Errorf("sink 失败时 cursor 不应移动，活跃窗口应保留原消息, got %d 条", got)
+	}
+	if failNano := s.lastCompactionFailAt.Load(); failNano <= 0 {
+		t.Error("sink 失败应记录冷却时间戳")
+	}
+}
+
+// TestForceCompact_SinkReceivesSummary 验证 sink 收到的正是 compactor 返回的原文。
+func TestForceCompact_SinkReceivesSummary(t *testing.T) {
+	want := "# 标题\n\n## 执行状态\n\n内容"
+	var got string
+
+	mockComp := &mockCompactor{
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
+			return want, nil
+		},
+	}
+
+	s := newTestSession("fc-sink-recv", "agent", newMockStore(),
+		WithModelContextResolver(func() int64 { return 200000 }),
+		WithCompactor(mockComp),
+		WithSummarySink(func(ctx context.Context, summary string) error {
+			got = summary
+			return nil
+		}),
+	)
+
+	s.Append(context.Background(), Message{
+		Role:      "assistant",
+		Content:   "resp",
+		Timestamp: 1,
+		Usage:     &TokenUsage{CompletionTokens: 100001},
+	})
+
+	s.ForceCompact(context.Background())
+
+	if got != want {
+		t.Errorf("sink 应收到压缩原文, got %q want %q", got, want)
 	}
 }
 
@@ -219,12 +287,31 @@ func TestSetCompactor(t *testing.T) {
 	}
 }
 
-func TestSetMemory(t *testing.T) {
-	s := newTestSession("set-memory", "agent", newMockStore())
-	mem := newInMemoryMemory()
-	s.SetMemory(mem)
-	if s.mem == nil {
-		t.Error("SetMemory 未设置 memory store")
+func TestSetSummarySink(t *testing.T) {
+	s := newTestSession("set-sink", "agent", newMockStore())
+	s.SetSummarySink(func(ctx context.Context, summary string) error { return nil })
+	if s.summarySink == nil {
+		t.Error("SetSummarySink 未设置回调")
+	}
+}
+
+func TestSetCompactionPrompt(t *testing.T) {
+	s := newTestSession("set-prompt", "agent", newMockStore())
+	if got := s.CompactionPrompt(); got != "" {
+		t.Errorf("未设置时 CompactionPrompt 应为空, got %q", got)
+	}
+	s.SetCompactionPrompt("自定义压缩指令")
+	if got := s.CompactionPrompt(); got != "自定义压缩指令" {
+		t.Errorf("SetCompactionPrompt 未生效, got %q", got)
+	}
+}
+
+func TestWithCompactionPrompt(t *testing.T) {
+	s := newTestSession("with-prompt", "agent", newMockStore(),
+		WithCompactionPrompt("选项注入的指令"),
+	)
+	if got := s.CompactionPrompt(); got != "选项注入的指令" {
+		t.Errorf("WithCompactionPrompt 未生效, got %q", got)
 	}
 }
 
@@ -377,33 +464,5 @@ func TestNeedsCompaction_AboveThreshold(t *testing.T) {
 	}
 	if !st.needsCompaction() {
 		t.Error("超过 80% 阈值时应需要压缩")
-	}
-}
-
-// ── persistCompactionChunks 测试 ─────────────────────────────────────────
-
-func TestPersistCompactionChunks_Empty(t *testing.T) {
-	s := newTestSession("persist-empty", "agent", newMockStore())
-	if err := s.persistCompactionChunks(context.Background(), nil); err != nil {
-		t.Errorf("空 chunks 应返回 nil, got %v", err)
-	}
-}
-
-func TestPersistCompactionChunks_MemNil(t *testing.T) {
-	s := newTestSession("persist-nil", "agent", newMockStore())
-	chunks := []memory.MemoryChunk{{Content: "x"}}
-	err := s.persistCompactionChunks(context.Background(), chunks)
-	if err == nil {
-		t.Error("mem 为 nil 时应返回错误")
-	}
-}
-
-func TestPersistCompactionChunks_Success(t *testing.T) {
-	s := newTestSession("persist-ok", "agent", newMockStore(),
-		WithMemory(newInMemoryMemory()),
-	)
-	chunks := []memory.MemoryChunk{{Content: "x", Summary: "s"}}
-	if err := s.persistCompactionChunks(context.Background(), chunks); err != nil {
-		t.Errorf("持久化应成功, got %v", err)
 	}
 }

@@ -1,6 +1,10 @@
 package session
 
-import "github.com/DotNetAge/goharness/sandbox"
+import (
+	"context"
+
+	"github.com/DotNetAge/goharness/sandbox"
+)
 
 // SessionConfig 是用于配置 Session 实例的函数式选项。
 // 此模式允许灵活、可读的配置，且在新增选项时不会引入破坏性变更。
@@ -25,10 +29,18 @@ func (s *Session) logError(msg string, err error, keyvals ...any) {
 	}
 }
 
-// WithMemory 配置用于存储压缩分块的记忆存储。
-// 如未设置，默认使用内存存储。
-func WithMemory(mem MemoryStore) SessionConfig {
-	return func(s *Session) { s.mem = mem }
+// WithSummarySink 注入压缩摘要的交付回调（依赖倒置：摘要存哪、存成什么格式由应用层决定）。
+//
+// 在 cursor 移动前同步调用，返回 error 则本次压缩视为失败（cursor 不移动，
+// 防止丢历史不留记忆）。未注入时压缩视为失败。
+func WithSummarySink(h func(ctx context.Context, summary string) error) SessionConfig {
+	return func(s *Session) { s.summarySink = h }
+}
+
+// WithCompactionPrompt 覆盖压缩指令（空 = 使用压缩器内置默认）。
+// 供应用层按 Agent 特点定制摘要重点（如代码会话侧重决策路径、客服会话侧重用户诉求）。
+func WithCompactionPrompt(prompt string) SessionConfig {
+	return func(s *Session) { s.compactionPrompt = prompt }
 }
 
 // WithTeam 为会话实例设置绑定的团队名（空 = 个人会话）。

@@ -9,7 +9,6 @@ import (
 
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/memory"
 	"github.com/DotNetAge/goharness/session"
 )
 
@@ -25,47 +24,37 @@ import (
 const compactionTimeout = 10 * time.Minute
 
 // compactionInstruction — 放在最后一条 user message，居于注意力峰值位置。
-// 采用 title/summary/content 三段式：字段名即字段职责，消除旧版 summary 字段名
-// 与"标题"职责的语义冲突，让 LLM 输出更有结构导向性。
-// 关键设计：用高信息密度的示例重建 LLM 的输出长度锚点，配合正向"必须保留"清单，
-// 抵消示例过短导致的过度简化倾向。
+// 要求 LLM 输出一篇 markdown 格式的压缩摘要文档：这是压缩的最终产物原文，
+// 经 Session 的 SummarySink 直接持久化为记忆文件，无任何中间解析层。
+// 关键设计：用高信息密度的分节结构重建 LLM 的输出长度锚点，配合正向"必须保留"清单，
+// 抵抗过度简化倾向。
 //
 // 末尾追加"不要调用任何工具"的显式禁令：因 ToolChoice 保持与主对话一致的 "auto"
 // （三家国内大模型文档都没明确说 ToolChoice 是否参与缓存前缀匹配，保守不动），
 // 靠指令文本禁止 LLM 在压缩阶段调工具。该文本位于末条 user message（新增的、
 // 不在缓存前缀里的部分），改动不影响缓存命中。
-const compactionInstruction = `将上面对话浓缩为 JSON 数组格式的结构化执行快照。每个任务一条，相关决策可合并为同一条。
+const compactionInstruction = `将上面对话浓缩为一篇 markdown 格式的执行快照文档，供后续会话恢复上下文。
 
-输出格式：
-[
-  {
-    "title": "任务目标（干什么，动词性短语，≤15字，用于检索召回）",
-    "summary": "执行状态（已干了什么 + 干得怎么样，一两句话，含完成度）",
-    "content": "有效决策的路径与重要结果，用 - 分条列举，保留决策、理由、关键实体、待办",
-    "tags": ["3-5个从内容提取的关键词，小写短横线分隔"],
-    "timestamp": "本任务最重要事件的 ISO 8601 时间（如 2026-07-02T14:30:45Z）"
-  }
-]
+输出格式（严格按以下分节，节名不可改）：
+# <本次工作的核心目标，动词性短语，≤20字>
 
-三段式字段职责（严格区分，字段名即职责，不可混淆）：
-- title：任务目标，动词性短语（干什么），不要写成完整句子
-  正确："迁移 Redis 单点到 Cluster" / 错误："讨论了 Redis 的迁移问题"
-- summary：执行状态行（已干了什么 + 干得怎么样），让读者一眼判断任务进展。包含完成度（已完成/进行中/阻塞/失败）+ 一句关键结果，不要写成决策或理由
-  正确："迁移已完成，Cluster 压测通过 50K QPS；lettuce 升级后无兼容问题"
-  错误："决定从 Redis 单点迁移到 Cluster，因单点无法支撑 50K QPS"（这是决策，不是状态）
-- content：有效决策的路径与重要结果，分条列举。title 和 summary 是 content 的索引与概括，content 是完整细节
+## 执行状态
+<一两句话：已干了什么 + 干得怎么样，含完成度（已完成/进行中/阻塞/失败）>
 
-content 字段要求（决定压缩质量的关键）：
-- 用 "- " 前缀分条，每条一个完整信息单元，用 \n 分隔
-- 每条必须是有信息增量的完整陈述，不要写"讨论了 X"这种无内容的话
-- 多个相关决策可合并到同一条 content，但不要跨主题合并
-- 长度不限，但每条都要有信息增量，不要为凑长度重复
-- 路径、标识符、配置项必须原样复制，不得缩写、省略、改写大小写
+## 关键决策与结果
+- <每条一个决策：选了什么、为什么、关键结果>
+- <多个相关决策可合并为一条，但不要跨主题合并>
+
+## 重要细节
+- <文件路径、函数名、配置项、版本号、报错信息与解法、约束规约，均原样保留>
+- <路径必须写完整绝对路径，禁止简化为文件名或相对路径>
+
+## 待办与未决
+- <待办事项、未决问题、阻塞点；无则写"无">
 
 必须保留：
 - 用户的核心意图和最终目标
 - 已确定的决策及其理由（为什么选 X 而非 Y）
-- 文件路径：必须原样复制完整绝对路径，禁止简化为文件名、禁止省略前缀、禁止改为相对路径（如 /Users/ray/.../semantic.go 不可写成 semantic.go 或 indexer/semantic.go）；函数名、API 名、配置项、版本号、数值参数同样原样保留
 - 报错信息及对应的解决方案
 - 明确的待办事项、未决问题、阻塞点
 - 重要的约束、规约、边界条件
@@ -77,42 +66,24 @@ content 字段要求（决定压缩质量的关键）：
 - 被否决且不会重用的方案细节
 - 重复出现的相同信息
 
-示例：
-[
-  {
-    "title": "迁移 Redis 单点到 Cluster",
-    "summary": "迁移已完成，Cluster 压测通过 50K QPS；lettuce 升级到 6.x 后无兼容问题。",
-    "content": "- 决策：单点无法支撑 50K QPS，迁移 Cluster 水平扩展\n- 关键路径：/etc/redis/redis-cluster.conf\n- 结果：50K QPS 压测通过\n- 待办：旧 lettuce 客户端（不支持 Cluster）从其他服务中逐步下线",
-    "tags": ["redis", "cluster-migration", "lettuce"],
-    "timestamp": "2026-07-02T14:30:45Z"
-  },
-  {
-    "title": "前端构建从 Webpack 切到 Vite",
-    "summary": "本地构建已切换并验证通过；CI 流水线脚本未同步，进行中。",
-    "content": "- 决策：Webpack 冷启动 90s，切 Vite 5 改善开发体验\n- 配置：vite.config.ts 保留原有 alias\n- 兼容性：需保留 @vitejs/plugin-vue 5.x\n- 待办：CI 流水线 build 脚本需同步调整",
-    "tags": ["vite", "webpack-migration", "frontend-build"],
-    "timestamp": "2026-07-03T09:15:00Z"
-  }
-]
-
 规则：
-- 只输出原始 JSON 数组，无其他文本
+- 只输出这篇 markdown 文档，无其他文本
 - 禁止对话体、问句、问候、情绪、表情符号
-- 单任务只输出一条；多任务拆成多条
-- title 是动词性目标短语（干什么），summary 是执行状态行（已干了什么+干得怎么样），content 是有效决策路径与重要结果的分条细节，三者不可混淆或互相替代
 - 矛盾讨论只保留最终方案及其理由，省略被否决方案的细节
-- 待决问题独立成条并以"待办："标注，不要省略
-- tags 从 content 提取
-- 无任何实质信息时返回 []
-- 不要调用任何工具，直接输出 JSON 数组，不要产生 tool_call`
+- 无任何实质信息时输出 "# 无实质内容\n\n## 执行状态\n\n本段对话无需要保留的信息。"
+- 不要调用任何工具，直接输出文档，不要产生 tool_call`
 
 // retryInstruction — 重试时使用的精简指令，同样放在最后一条 user message。
-// 即使精简也保留三段式语义（目标/执行状态/有效决策路径）与核心约束
+// 即使精简也保留分节语义（目标/执行状态/决策/细节/待办）与核心约束
 // （完成度/理由/路径/待办），避免重试时退化为过度简化。
 // 末尾同样追加工具调用禁令。
-const retryInstruction = `将以上全部对话按任务输出为 JSON 数组，每个任务一条。
-每条格式：{"title":"任务目标(≤15字动词短语)","summary":"执行状态(已干了什么+干得怎么样,含完成度:已完成/进行中/阻塞/失败)","content":"- 有效决策路径1\n- 决策的重要结果2(保留决策、理由、文件路径、待办)","tags":["标签"],"timestamp":"ISO 8601"}。
-只输出 JSON 数组，无其他文本。无实质信息时返回 []。
+const retryInstruction = `将以上全部对话浓缩为一篇 markdown 执行快照文档，按以下分节输出：
+# 核心目标（≤20字动词短语）
+## 执行状态（已干了什么+干得怎么样，含完成度）
+## 关键决策与结果（- 每条：选了什么、为什么、结果）
+## 重要细节（- 文件路径/配置/报错与解法，路径用完整绝对路径）
+## 待办与未决（- 无则写"无"）
+只输出该 markdown 文档，无其他文本。无实质信息时输出"# 无实质内容"。
 不要调用任何工具，不要产生 tool_call。`
 
 // compactor 实现 session.Compactor。
@@ -140,33 +111,46 @@ func NewCompactor(rt *Runtime) session.Compactor {
 	}
 }
 
-// Compact 执行一次压缩（含一次重试）。
+// Compact 执行一次压缩（含一次重试），返回压缩摘要原文（markdown）。
+//
+// 压缩指令来源：Session 的 CompactionPrompt() 覆盖优先（应用层按 Agent 特点定制
+// 摘要重点），为空时使用内置默认 compactionInstruction。
 //
 // 重试策略：两次调用共用同一 system/tools/messages 前缀构造，仅末尾 instruction 不同。
 // 第二次请求能命中第一次已落盘的前缀缓存——这是把重试放在 Compactor 层的额外收益。
+// 外部覆盖指令时重试沿用同一覆盖指令；仅内置指令时重试换用精简版 retryInstruction。
 //
 // 返回：
-//   - 成功：chunks（非空）
+//   - 成功：非空摘要原文
 //   - 失败：error（首次失败 + 重试也失败时返回合并错误）。
 //     空响应同样走失败路径触发重试：LLM 未返回 content 时无法区分
 //     「判定无实质信息」与「服务端异常」，宁可重试一次也不静默丢压缩。
-func (c *compactor) Compact(ctx context.Context, s *session.Session, messages []session.Message) ([]memory.MemoryChunk, error) {
+func (c *compactor) Compact(ctx context.Context, s *session.Session, messages []session.Message) (string, error) {
+	instruction := s.CompactionPrompt()
+	if instruction == "" {
+		instruction = compactionInstruction
+	}
+
 	// 首次尝试
-	chunks, err := c.compactionTurn(ctx, s, messages, compactionInstruction)
+	summary, err := c.compactionTurn(ctx, s, messages, instruction)
 	if err == nil {
-		return chunks, nil
+		return summary, nil
 	}
 	// ctx 已取消时不重试
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return nil, err
+		return "", err
 	}
 	// 重试：同一前缀，仅末尾 instruction 不同
-	c.logger.Warn("压缩首次失败，使用精简指令重试", "error", err, "session_id", s.ID())
-	chunks, retryErr := c.compactionTurn(ctx, s, messages, retryInstruction)
-	if retryErr != nil {
-		return nil, fmt.Errorf("compactor: %w (retry also failed: %v)", err, retryErr)
+	retry := instruction
+	if instruction == compactionInstruction {
+		retry = retryInstruction
 	}
-	return chunks, nil
+	c.logger.Warn("压缩首次失败，使用精简指令重试", "error", err, "session_id", s.ID())
+	summary, retryErr := c.compactionTurn(ctx, s, messages, retry)
+	if retryErr != nil {
+		return "", fmt.Errorf("compactor: %w (retry also failed: %v)", err, retryErr)
+	}
+	return summary, nil
 }
 
 // compactionTurn 执行一次实际的 LLM 压缩调用。
@@ -180,8 +164,8 @@ func (c *compactor) Compact(ctx context.Context, s *session.Session, messages []
 //   - ToolChoice:     "auto"（与主对话一致，靠指令文本禁止工具调用）
 //   - Timeout:        compactionTimeout（10min，压缩响应长）
 //
-// 返回 LLM 响应文本经 parseCompactionResponse 解析后的 MemoryChunk 列表。
-func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, messages []session.Message, instruction string) ([]memory.MemoryChunk, error) {
+// 返回 LLM 响应文本原文（markdown 摘要文档），由调用方经 SummarySink 持久化。
+func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, messages []session.Message, instruction string) (string, error) {
 	sid := s.ID()
 	agentName := s.AgentName()
 
@@ -227,7 +211,7 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 		Timeout:           compactionTimeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("compactor stream open: %w", err)
+		return "", fmt.Errorf("compactor stream open: %w", err)
 	}
 
 	// 6. 流式收集：content 为主，thinking/FinishReason/Usage 作为观测字段同步收集。
@@ -265,7 +249,7 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 	stream.Close()
 
 	if streamErr != nil {
-		return nil, fmt.Errorf("compactor stream read: %w", streamErr)
+		return "", fmt.Errorf("compactor stream read: %w", streamErr)
 	}
 
 	content := contentBuf.String()
@@ -292,23 +276,17 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 
 	if content == "" {
 		// 空响应必须返回错误触发 Compact 的重试机制（同前缀仅换末尾指令，命中前缀缓存）。
-		// 之前返回 nil,nil 会绕过重试直接判失败，且不留任何排障线索。
 		// 附带观测字段：finish_reason=length 指向输出预算被思考流耗尽；
 		// usage 为 nil 指向服务端静默断流。
-		return nil, fmt.Errorf("压缩响应为空（finish_reason=%q, thinking_chars=%d, tool_call_events=%d）",
+		return "", fmt.Errorf("压缩响应为空（finish_reason=%q, thinking_chars=%d, tool_call_events=%d）",
 			finishReason, thinkingChars, toolCallEvents)
 	}
 
-	// 7. 解析 LLM 返回的 JSON 文本为 MemoryChunk（纯解析，无 LLM 调用）
-	chunks, err := parseCompactionResponse(content)
-	if err != nil {
-		return nil, fmt.Errorf("compactor parse: %w", err)
-	}
-
+	// 7. 原文直接返回：压缩摘要无解析层，content 即最终产物，
+	//    由 Session 的 SummarySink 持久化为记忆文件。
 	c.logger.Debug("压缩完成",
 		"session_id", sid,
-		"content_len", len(content),
-		"chunks", len(chunks))
+		"content_len", len(content))
 
-	return chunks, nil
+	return content, nil
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/DotNetAge/goharness/memory"
 )
 
 // TokenUsage 记录单次 LLM 调用的 token 消耗。
@@ -98,10 +96,12 @@ type SessionInfo struct {
 //
 // 唯一允许的差异：messages 末尾追加一条 user 压缩指令。
 type Compactor interface {
-	// Compact 对 messages 执行一次压缩（含内部重试），返回记忆片。
+	// Compact 对 messages 执行一次压缩（含内部重试），返回压缩摘要原文。
 	// s 提供会话上下文（AgentName/SessionDir/ProjectDir/ModelContextLength 等），
 	// 供实现方构造与主对话一致的 system prompt。
-	Compact(ctx context.Context, s *Session, messages []Message) ([]memory.MemoryChunk, error)
+	// 返回的原文（markdown）由 Session 的 SummarySink 同步交付给外部持久化；
+	// 返回空字符串或 error 均视为本次压缩失败。
+	Compact(ctx context.Context, s *Session, messages []Message) (string, error)
 }
 
 type SessionStore interface {

@@ -3,7 +3,6 @@
 package goharness
 
 import (
-	"github.com/DotNetAge/goharness/memory"
 	"github.com/DotNetAge/goharness/skill"
 )
 
@@ -17,14 +16,3 @@ var ErrSkillExecution = skill.ErrSkillExecution
 
 // ErrSkillCompilation 当技能代码编译失败时返回。
 var ErrSkillCompilation = skill.ErrSkillCompilation
-
-// 记忆错误（此处别名用于向后兼容）
-
-// ErrMemoryNotFound 当请求的记忆记录不存在时返回。
-var ErrMemoryNotFound = memory.ErrMemoryNotFound
-
-// ErrMemoryStorage 当记忆存储操作失败时返回。
-var ErrMemoryStorage = memory.ErrMemoryStorage
-
-// ErrMemoryRetrieval 当记忆检索操作失败时返回。
-var ErrMemoryRetrieval = memory.ErrMemoryRetrieval

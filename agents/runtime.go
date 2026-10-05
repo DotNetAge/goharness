@@ -57,7 +57,6 @@ import (
 	"github.com/DotNetAge/goharness/hooks/action"
 	"github.com/DotNetAge/goharness/hooks/loop"
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/memory"
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/session"
 	"github.com/DotNetAge/goharness/skill"
@@ -108,7 +107,6 @@ type Runtime struct {
 	model config.ModelConfig
 
 	toolReg tools.ToolRegistry
-	mem     memory.Memory
 
 	providerReg config.ProviderRegistry
 
@@ -316,19 +314,9 @@ func (rt *Runtime) registerDefaultTools() {
 // 循环钩子（每轮按优先级顺序执行）：
 //   - LoopLoggerHook (45)：大语言模型调用日志
 //   - ConvergenceHook (49)：不可恢复错误检测 → 中止
-//   - MemoryThoughtHook (50)：RAG 上下文注入（设置 mem 时前置）
-//
-// 工具钩子（每次工具调用按优先级顺序执行）：
-//   - PermissionHook (41)：权限链评估 → 拒绝并中止
-//   - FileModifyHook (42)：Write / FileEdit 前备份文件（provider 可能为 nil）
 //   - ToolLoggerHook (46)：工具执行日志
 func (rt *Runtime) registerDefaultHooks() {
 	rt.loopHooks = append(rt.loopHooks, loop.Defaults(rt.logger)...)
-	if rt.mem != nil {
-		hook := loop.NewMemoryThoughtHook(rt.mem)
-		hook.Logger = rt.logger
-		rt.loopHooks = append([]hooks.LoopHook{hook}, rt.loopHooks...)
-	}
 
 	// 注册默认工具钩子
 	defaultHooks := action.Defaults(rt.logger, rt.fileModifyTracker)

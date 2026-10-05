@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/memory"
 )
 
 // newTestSession 创建具有指定 ID 的测试会话。
@@ -120,11 +119,9 @@ func TestSession_ConcurrentAccess(t *testing.T) {
 func TestSession_TryCompact(t *testing.T) {
 	compactorCalled := false
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			compactorCalled = true
-			return []memory.MemoryChunk{
-				{Summary: "summary of old messages", Content: "compacted content"},
-			}, nil
+			return "compacted content", nil
 		},
 	}
 
@@ -136,7 +133,7 @@ func TestSession_TryCompact(t *testing.T) {
 	s := newTestSession("session-window-size", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 100 }),
 		WithCompactor(mockComp),
-		WithMemory(newInMemoryMemory()), // 必须配置 mem，否则 persistCompactionChunks 会失败
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }), // 必须配置 sink，否则 doCompact 视为失败
 		WithCompactionHandler(handler),
 	)
 
@@ -161,18 +158,18 @@ func TestSession_TryCompact(t *testing.T) {
 	}
 }
 
-// TestSession_TryCompact_MemNil_SkipsCompactor 验证未配置记忆存储（mem==nil）时
-// doCompact 在入口即跳过，不调用 compactor —— 避免白烧 LLM token 且 cursor 永不移动的死循环。
-func TestSession_TryCompact_MemNil_SkipsCompactor(t *testing.T) {
+// TestSession_TryCompact_SinkNil_SkipsCompactor 验证未装配摘要交付回调（summarySink==nil）时
+// doCompact 在入口即视为失败并记入冷却，不调用 compactor —— 避免白烧 LLM token 的死循环。
+func TestSession_TryCompact_SinkNil_SkipsCompactor(t *testing.T) {
 	compactorCalled := false
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			compactorCalled = true
-			return nil, nil
+			return "", nil
 		},
 	}
 
-	// 故意不 WithMemory —— mem 保持 nil
+	// 故意不 WithSummarySink —— summarySink 保持 nil
 	s := newTestSession("session-mem-nil", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 100 }),
 		WithCompactor(mockComp),
@@ -203,16 +200,16 @@ func TestSession_TryCompact_MemNil_SkipsCompactor(t *testing.T) {
 func TestSession_TryCompact_CooldownAfterFailure(t *testing.T) {
 	callCount := 0
 	mockComp := &mockCompactor{
-		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
+		CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
 			callCount++
-			return nil, errors.New("模拟 LLM 失败")
+			return "", errors.New("模拟 LLM 失败")
 		},
 	}
 
 	s := newTestSession("session-cooldown", "agent", newMockStore(),
 		WithModelContextResolver(func() int64 { return 100 }),
 		WithCompactor(mockComp),
-		WithMemory(newInMemoryMemory()),
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }),
 	)
 
 	longContent := string(make([]byte, 400))
@@ -245,83 +242,16 @@ func TestSession_TryCompact_CooldownAfterFailure(t *testing.T) {
 }
 
 // mockCompactor 实现 Compactor 接口用于测试。
-// generateCompactionChunks 通过 s.compactor.Compact 调用。
+// generateSummary 通过 s.compactor.Compact 调用。
 type mockCompactor struct {
-	CompactFunc func(ctx context.Context, s *Session, messages []Message) ([]memory.MemoryChunk, error)
+	CompactFunc func(ctx context.Context, s *Session, messages []Message) (string, error)
 }
 
-func (m *mockCompactor) Compact(ctx context.Context, s *Session, messages []Message) ([]memory.MemoryChunk, error) {
+func (m *mockCompactor) Compact(ctx context.Context, s *Session, messages []Message) (string, error) {
 	if m.CompactFunc != nil {
 		return m.CompactFunc(ctx, s, messages)
 	}
-	return nil, nil
-}
-
-// ── 内存存储测试 ─────────────────────────────────────────────────────────
-
-func TestInMemoryMemory_StoreAndRetrieve(t *testing.T) {
-	store := newInMemoryMemory()
-	ctx := context.Background()
-
-	chunks := []memory.MemoryChunk{
-		{Summary: "title-1", Content: "content-1", Tags: []string{}},
-		{Summary: "title-2", Content: "content-2", Tags: []string{}},
-	}
-	err := store.StoreChunks(ctx, "session-1", chunks)
-	if err != nil {
-		t.Fatalf("StoreChunks() unexpected error: %v", err)
-	}
-
-	results, err := store.Retrieve(ctx, "", "session-1", 10)
-	if err != nil {
-		t.Fatalf("Retrieve() unexpected error: %v", err)
-	}
-
-	if len(results) != 2 {
-		t.Errorf("Retrieve() returned %d items, want 2", len(results))
-	}
-
-	if results[0].Content != "content-1" || results[1].Content != "content-2" {
-		t.Errorf("Retrieve() content mismatch: %v", results)
-	}
-}
-
-func TestInMemoryMemory_RetrieveLimit(t *testing.T) {
-	store := newInMemoryMemory()
-	ctx := context.Background()
-
-	chunks := make([]memory.MemoryChunk, 10)
-	for i := 0; i < 10; i++ {
-		chunks[i] = memory.MemoryChunk{
-			Summary: "title",
-			Content: "content",
-			Tags:    []string{},
-		}
-	}
-	store.StoreChunks(ctx, "session-limit", chunks)
-
-	results, err := store.Retrieve(ctx, "", "session-limit", 5)
-	if err != nil {
-		t.Fatalf("Retrieve() unexpected error: %v", err)
-	}
-
-	if len(results) != 5 {
-		t.Errorf("Retrieve() with limit=5 returned %d items, want 5", len(results))
-	}
-}
-
-func TestInMemoryMemory_NonExistentSession(t *testing.T) {
-	store := newInMemoryMemory()
-	ctx := context.Background()
-
-	results, err := store.Retrieve(ctx, "", "non-existent", 10)
-	if err != nil {
-		t.Fatalf("Retrieve() for non-existent session should not error, got: %v", err)
-	}
-
-	if results != nil {
-		t.Errorf("Retrieve() for non-existent session should return nil, got %v", results)
-	}
+	return "", nil
 }
 
 // ── 配置选项测试 ─────────────────────────────────────────────────────────
@@ -341,29 +271,20 @@ func TestSessionConfig_FunctionalOptions(t *testing.T) {
 		t.Errorf("nil resolver should return 0, got %v", s2.ModelContextLength())
 	}
 
-	mockMem := &mockMemoryStoreImpl{}
-	s3 := newTestSession("session-memory", "agent", newMockStore(),
-		WithMemory(mockMem),
+	var gotSummary string
+	s3 := newTestSession("session-sink", "agent", newMockStore(),
+		WithSummarySink(func(ctx context.Context, summary string) error {
+			gotSummary = summary
+			return nil
+		}),
 	)
 
-	if s3.mem == nil {
-		t.Error("WithMemory not applied correctly")
+	if s3.summarySink == nil {
+		t.Error("WithSummarySink not applied correctly")
 	}
-}
-
-type mockMemoryStoreImpl struct {
-	stored []memory.MemoryChunk
-}
-
-func (m *mockMemoryStoreImpl) StoreChunks(_ context.Context, _ string, chunks []memory.MemoryChunk) error {
-	m.stored = append(m.stored, chunks...)
-	return nil
-}
-
-func (m *mockMemoryStoreImpl) Retrieve(_ context.Context, _ string, _ string, _ int) ([]memory.MemoryChunk, error) {
-	out := make([]memory.MemoryChunk, len(m.stored))
-	copy(out, m.stored)
-	return out, nil
+	if err := s3.summarySink(context.Background(), "hello"); err != nil || gotSummary != "hello" {
+		t.Errorf("WithSummarySink 注入的回调行为异常: summary=%q err=%v", gotSummary, err)
+	}
 }
 
 // ── 性能测试 ─────────────────────────────────────────────────────────────

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/DotNetAge/goharness/logging"
-	"github.com/DotNetAge/goharness/memory"
 )
 
 // mockStore implements SessionStore for testing lazy-loading behavior.
@@ -387,10 +386,10 @@ func TestCursorBehavior_CurrentVsAll_WithCompaction(t *testing.T) {
 
 	s := newTestSession(sessionID, "agent", store,
 		WithModelContextResolver(func() int64 { return 100 }),
-		WithMemory(newInMemoryMemory()), // 必须配置 mem，否则 persistCompactionChunks 会失败
+		WithSummarySink(func(ctx context.Context, summary string) error { return nil }), // 必须配置 sink，否则 doCompact 视为失败
 		WithCompactor(&mockCompactor{
-			CompactFunc: func(ctx context.Context, s *Session, msgs []Message) ([]memory.MemoryChunk, error) {
-				return []memory.MemoryChunk{{Summary: "summary", Content: "compacted"}}, nil
+			CompactFunc: func(ctx context.Context, s *Session, msgs []Message) (string, error) {
+				return "compacted", nil
 			},
 		}),
 	)
