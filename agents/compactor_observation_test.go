@@ -88,12 +88,12 @@ func reportToolPairing(msgs []session.Message) (calls, toolMsgs, orphaned int) {
 // TestCompactionRequestReconstruction 离线观测：用真实失效数据重建压缩请求。
 // 断言请求消息数与生产日志 msg_count=47 对齐，并输出请求画像。
 func TestCompactionRequestReconstruction(t *testing.T) {
-	// 日志铁证对齐：压缩指令长度必须仍是 1698 字符
-	// （2026-10-06 记忆剥离重构：指令改版为 markdown 原文输出语义——分节为
-	// 执行状态/关键决策与结果/重要细节/待办与未决，产物经 SummarySink 直接落盘，
-	// 基准由 4422（JSON 三段式）更新为 1698）
-	if len(compactionInstruction) != 1698 {
-		t.Errorf("compactionInstruction 长度 = %d，基准为 1698，指令文本已漂移", len(compactionInstruction))
+	// 日志铁证对齐：压缩指令长度必须仍是 1918 字符
+	// （2026-10-06 双系统记忆理论对齐：恢复 JSON 数组多条目输出——每条独立成
+	// 记忆文件支撑聚类合并与按条遗忘；拆分原则与字段规范以"记忆质量决定技能
+	// 质量"为锚点，refs 结构化承载引文依赖；基准由 2280（markdown 单文档）更新为 1918）
+	if len(compactionInstruction) != 1918 {
+		t.Errorf("compactionInstruction 长度 = %d，基准为 1918，指令文本已漂移", len(compactionInstruction))
 	}
 
 	history := loadFixtureMessages(t)
