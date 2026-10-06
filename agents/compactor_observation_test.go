@@ -94,8 +94,8 @@ func TestCompactionRequestReconstruction(t *testing.T) {
 	// 增补 kind 类型字段（复盘分主线输入）、自包含约束与"禁止搬运工具原始
 	// 输出"省略规则（防记忆膨胀）；pitfall 条目强制失败上下文四要素
 	// （意图/动作/结果/期望，EvoSkill 缺口分类学的结构化原料）；基准由 2397 更新）
-	if len(compactionInstruction) != 2559 {
-		t.Errorf("compactionInstruction 长度 = %d，基准为 2559，指令文本已漂移", len(compactionInstruction))
+	if len(compactionInstruction) != 2738 {
+		t.Errorf("compactionInstruction 长度 = %d，基准为 2738，指令文本已漂移", len(compactionInstruction))
 	}
 
 	history := loadFixtureMessages(t)
