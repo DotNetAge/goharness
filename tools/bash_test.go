@@ -2,6 +2,7 @@ package tools
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -123,6 +124,58 @@ func TestExtractCommands_EdgeCases(t *testing.T) {
 	}
 }
 
+// TestBash_SubProcessEnvInjection 验证 Bash 工具的子进程环境注入：
+// 应用侧经 ToolContext.SubProcessEnv 提供的环境变量对子进程可见，
+// 同名键以注入值为准，注入器返回空时不改变默认继承行为。
+func TestBash_SubProcessEnvInjection(t *testing.T) {
+	bash := NewBashTool()
+
+	t.Run("注入变量对子进程可见", func(t *testing.T) {
+		ctx := newSandboxCtx(t, t.TempDir(), nil)
+		GetToolContext(ctx).SubProcessEnv = func() map[string]string {
+			return map[string]string{"SKILL_TEST_TOKEN": "abc123"}
+		}
+		result, err := bash.Execute(ctx, map[string]any{"command": "echo $SKILL_TEST_TOKEN"})
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		resultMap := unpackResultMap(t, result)
+		if stdout, _ := resultMap["stdout"].(string); !strings.Contains(stdout, "abc123") {
+			t.Errorf("注入变量应可见，stdout = %q", stdout)
+		}
+	})
+
+	t.Run("同名键以注入值为准", func(t *testing.T) {
+		t.Setenv("SKILL_TEST_OVERWRITE", "parent")
+		ctx := newSandboxCtx(t, t.TempDir(), nil)
+		GetToolContext(ctx).SubProcessEnv = func() map[string]string {
+			return map[string]string{"SKILL_TEST_OVERWRITE": "child"}
+		}
+		result, err := bash.Execute(ctx, map[string]any{"command": "echo $SKILL_TEST_OVERWRITE"})
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		resultMap := unpackResultMap(t, result)
+		if stdout, _ := resultMap["stdout"].(string); !strings.Contains(stdout, "child") {
+			t.Errorf("同名键应被注入值覆盖，stdout = %q", stdout)
+		}
+	})
+
+	t.Run("注入器返回空时保持父进程环境继承", func(t *testing.T) {
+		t.Setenv("SKILL_TEST_INHERIT", "yes")
+		ctx := newSandboxCtx(t, t.TempDir(), nil)
+		GetToolContext(ctx).SubProcessEnv = func() map[string]string { return nil }
+		result, err := bash.Execute(ctx, map[string]any{"command": "echo $SKILL_TEST_INHERIT"})
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		resultMap := unpackResultMap(t, result)
+		if stdout, _ := resultMap["stdout"].(string); !strings.Contains(stdout, "yes") {
+			t.Errorf("空注入不应改变继承行为，stdout = %q", stdout)
+		}
+	})
+}
+
 func TestBashGrant_SubshellNotBlocked(t *testing.T) {
 	// 回归测试：$() 和反引号是正常的 shell 变量捕获，不应被沙箱危险模式拦截。
 	// 命令安全决策统一由沙箱 CheckCommand 负责（工具自身不做授权检查）。
@@ -139,7 +192,6 @@ func TestBashGrant_SubshellNotBlocked(t *testing.T) {
 		}
 	}
 }
-
 func TestGenerateKeyVariants(t *testing.T) {
 	tests := []struct {
 		name string

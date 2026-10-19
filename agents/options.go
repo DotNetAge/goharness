@@ -127,3 +127,13 @@ func WithLLMClient(client LLMClient) RuntimeConfig {
 func WithSandbox(sb *sandbox.Sandbox) RuntimeConfig {
 	return func(r *Runtime) { r.sandbox = sb }
 }
+
+// WithSubProcessEnv 注入子进程环境变量解析器（应用侧 SPI 接缝）。
+//
+// 解析器在命令执行类工具（Bash）启动子进程时被调用，返回需要叠加到
+// 继承环境之上的环境变量（如技能凭据）。返回值属敏感数据，goharness
+// 只透传给子进程，严禁写入日志。未注入（nil）时子进程维持默认的
+// 父进程环境继承行为。
+func WithSubProcessEnv(fn func() map[string]string) RuntimeConfig {
+	return func(r *Runtime) { r.subProcessEnv = fn }
+}

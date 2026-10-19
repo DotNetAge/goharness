@@ -141,11 +141,12 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 
 	// 会话级工具上下文：经 RuntimeValue 注入，适配器执行时取回（15+ 工具零改动）
 	toolCtx := &tools.ToolContext{
-		EmitEvent:    emitRaw,
-		SessionStore: rt.sessionStore,
-		KVStore:      rt.kvStore,
-		Logger:       rt.logger,
-		Session:      b.session,
+		EmitEvent:     emitRaw,
+		SessionStore:  rt.sessionStore,
+		KVStore:       rt.kvStore,
+		Logger:        rt.logger,
+		Session:       b.session,
+		SubProcessEnv: rt.subProcessEnv,
 	}
 	if wl := b.session.Whitelist(); wl != nil {
 		toolCtx.SessionWhitelist = wl

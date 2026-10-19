@@ -164,6 +164,12 @@ type Runtime struct {
 	// 通过 WithSandbox 注入；为 nil 时所有工具回退到旧安全逻辑。
 	// 自动注入到 Runtime 创建的所有子 Agent 会话；主会话由调用方通过 rt.Sandbox() 获取并注入。
 	sandbox *sandbox.Sandbox
+
+	// subProcessEnv 是应用侧注入的子进程环境变量解析器（应用语义，
+	// 如技能凭据注入），经 ToolContext.SubProcessEnv 透传给命令执行类
+	// 工具。nil 时子进程维持默认的父进程环境继承行为。
+	// 通过 WithSubProcessEnv 配置。
+	subProcessEnv func() map[string]string
 }
 
 // RunResult 保存单次 Ask 调用的执行结果，

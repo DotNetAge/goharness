@@ -36,6 +36,13 @@ type ToolContext struct {
 	// PermissionRequired 工具的 Grant() 方法在提示用户前会检查此白名单。
 	// nil 表示无可用白名单。
 	SessionWhitelist *session.SessionWhitelist
+
+	// SubProcessEnv 返回需要叠加到子进程环境的环境变量（键值对）。
+	// 应用侧经 Runtime 选项（agents.WithSubProcessEnv）注入，Bash 等命令
+	// 执行类工具在启动子进程时将这些变量叠加到继承的进程环境之上
+	//（同名键以叠加值为准）。nil 或返回空 map 表示无注入，子进程
+	// 维持默认的父进程环境继承行为。返回值中的敏感凭据严禁写入日志。
+	SubProcessEnv func() map[string]string
 }
 
 // WithToolContext 将 ToolContext 存入给定 context。

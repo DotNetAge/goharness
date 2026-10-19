@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -241,6 +242,20 @@ func performBash(ctx context.Context, logger logging.Logger, sessionID string, p
 
 	// goharness 不运行于 Windows 环境，统一使用 sh -c 执行命令。
 	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", p.command)
+
+	// 子进程环境注入：默认继承守护进程进程环境（不显式设置 cmd.Env）。
+	// 应用侧注入了环境解析器（ToolContext.SubProcessEnv）且返回非空时，
+	// 将解析值叠加到 os.Environ() 之上（同名键后置覆盖，与 MCP buildCommand
+	// 的 append 语义一致）。解析值可能含技能凭据，只进子进程环境，严禁写日志。
+	if tc := GetToolContext(ctx); tc != nil && tc.SubProcessEnv != nil {
+		if extras := tc.SubProcessEnv(); len(extras) > 0 {
+			env := os.Environ()
+			for k, v := range extras {
+				env = append(env, k+"="+v)
+			}
+			cmd.Env = env
+		}
+	}
 
 	// 工作目录解析
 	if p.workingDir != "" {
