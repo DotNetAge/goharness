@@ -51,7 +51,10 @@ type eventBridge struct {
 	lastUsage  *session.TokenUsage // 最近一轮 LLM 调用 usage（回填 ToolExecEnd）
 	// callUsageByIter 登记本轮各次 LLM 调用的 usage（迭代号 → 用量）：一次
 	// ChatStreamCtx 是整轮 Think-Act 循环（多次调用），writeBackNewMessages 按
-	// 批内 assistant 消息序号对位取用，回写后整体作废（见 writeBackNewMessages）
+	// 批内 assistant 消息序号对位取用，回写后整体作废（见 writeBackNewMessages）。
+	// 对位恒成立的实证：goagent 主循环每迭代恰好一次 round（agent.go 主循环
+	// L303-344），LLM 调用失败即 break 整轮、无迭代内重试——迭代号与批内
+	// assistant 序号严格 1:1。
 	callUsageByIter map[int]*session.TokenUsage
 	stopped         goagent.StopReason
 	suspendKind     string // 最近一次挂起类别："permission" / "ask_user"
