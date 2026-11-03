@@ -369,9 +369,10 @@ func readZipFile(zr *zip.Reader, name string) ([]byte, error) {
 // ---------------------------------------------------------------------------
 
 type docxFile struct {
-	rels xmlRelationships
-	num  xmlNumbering
-	list map[string]int
+	rels   xmlRelationships
+	num    xmlNumbering
+	list   map[string]int
+	images int // 内嵌图片计数（blip/Fallback 占位时累加，转换完成后汇总提示）
 }
 
 type xmlRelationships struct {
@@ -569,7 +570,12 @@ func docxToMarkdown(r io.Reader) (*docResult, error) {
 		), err)
 	}
 
-	return &docResult{content: buf.String()}, nil
+	content := buf.String()
+	if zf.images > 0 {
+		content += fmt.Sprintf("\n本文档含 %d 处内嵌图片，文本转换未包含图片内容。\n", zf.images)
+	}
+
+	return &docResult{content: content}, nil
 }
 
 func (zf *docxFile) walk(node *xmlNode, w io.Writer) error {
@@ -665,7 +671,9 @@ func (zf *docxFile) walk(node *xmlNode, w io.Writer) error {
 				fmt.Fprint(w, strings.Repeat("  ", ind))
 				switch numFmt {
 				case "decimal":
-					key := fmt.Sprintf("%s:%d", numID, ind)
+					// 计数器按编号定义层级（numID:ilvl）归属，而非视觉缩进——
+					// 不同层级的 Ind.Left 可能巧合相同，按缩进共享计数器会让多级编号错乱
+					key := fmt.Sprintf("%s:%s", numID, ilvl)
 					cur, ok := zf.list[key]
 					if !ok {
 						zf.list[key] = start
@@ -802,7 +810,16 @@ func (zf *docxFile) walk(node *xmlNode, w io.Writer) error {
 		}
 		fmt.Fprintln(w)
 	case "blip":
+		// DrawingML 图片元素：文本通道没有图片出口（图片经 ImageHook 在工具结果
+		// 的 Images 通道提取，DOCX 转换路径不产出 Images），写入占位行诚实提示，
+		// 不再静默丢弃
+		zf.images++
+		fmt.Fprintln(w, "[图片]")
 	case "Fallback":
+		// mc:AlternateContent 回退分支内的图片（通常为 VML imagedata），同样占位；
+		// 不递归子节点，避免与 Choice 分支内的 blip 重复计数
+		zf.images++
+		fmt.Fprintln(w, "[图片]")
 	case "txbxContent":
 		var cbuf bytes.Buffer
 		for i := range node.Nodes {
@@ -910,11 +927,13 @@ func xlsxEscapeCell(text string) string {
 // ---------------------------------------------------------------------------
 
 // textToMarkdown 将提取的纯文本整理为更干净的 Markdown 格式。
+// 仅剔除行尾空白（含 PDF 提取残留的 CR），保留前导缩进——产物消费者是 LLM
+// 而非 Markdown 渲染器，前导缩进是保真信息（代码、嵌套结构）而非渲染风险。
 func textToMarkdown(text string) string {
 	lines := strings.Split(text, "\n")
 	var result strings.Builder
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		trimmed := strings.TrimRight(line, " \t\r")
 		if trimmed == "" {
 			result.WriteString("\n")
 		} else {

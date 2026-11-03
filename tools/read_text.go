@@ -65,7 +65,9 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 				s, ok := statInfo.(fs.FileInfo)
 				if ok {
 					currentMtimeMs := s.ModTime().UnixMilli()
-					if cached.MtimeMs == currentMtimeMs && cached.LineCount >= maxLines {
+					// 同键请求（同 offset 同 limit）在 mtime 未变时，重读输出必然逐字节
+					// 相同，直接命中；比较行数只会让短文件（linesRead < maxLines）永不命中
+					if cached.MtimeMs == currentMtimeMs {
 						return &ReadResult{
 							Data: &ReadData{
 								Success:    true,
@@ -105,8 +107,15 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 		lineNum++
 		// 行界：'\n' 之前是行内容；末行没有结尾换行符
 		lineEnd := len(data)
+		nextPos := lineEnd + 1
 		if idx := bytes.IndexByte(data[pos:], '\n'); idx >= 0 {
 			lineEnd = pos + idx
+			nextPos = lineEnd + 1
+		}
+		// CRLF 行尾的 '\r' 属于行界的一部分，从行内容中剔除（含末行无换行符的
+		// 情形）；游标推进用剔除前的 nextPos，保证落在 '\n' 之后而非 '\n' 本身
+		if lineEnd > pos && data[lineEnd-1] == '\r' {
+			lineEnd--
 		}
 		if lineNum >= startLine {
 			if lineNum > endLine {
@@ -120,7 +129,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 			content.WriteByte('\n')
 			linesRead++
 		}
-		pos = lineEnd + 1
+		pos = nextPos
 	}
 
 	// E2. 输出预算检查：超过预算直接返回错误，引导 LLM 用 offset/limit 缩小范围重试，
@@ -134,12 +143,8 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 	// B. 写入 DedupCache（仅文本路径启用）
 	if useStateCache {
 		state := &ReadFileState{
-			FilePath:  resolvedPath,
-			Offset:    startLine,
 			Limit:     linesRead,
-			Content:   content.String(),
 			LineCount: linesRead,
-			SizeBytes: sizeBytes,
 		}
 		if s, err := fs.Stat(store.OS, cleanPath); err == nil {
 			if fi, ok := s.(fs.FileInfo); ok {

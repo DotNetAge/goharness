@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -27,9 +28,18 @@ type StaleState struct {
 
 var staleStates sync.Map
 
+// maxStaleEntries 是 staleStates 的条目数上限。超限时整表清空：后果是部分文件
+// 下次 Edit 报"尚未读取"引导重读——失败方向安全；sync.Map 不支持 LRU，
+// 不为淘汰策略引入更复杂的结构。
+const maxStaleEntries = 256
+
+// staleStateCount 跟踪 staleStates 当前条目数，用于超限整表清空。
+var staleStateCount atomic.Int64
+
 // SetStale 在文件成功读取后记录状态。
 // 由 Read 工具的 Execute 末尾调用；Edit/Write 写入成功后也会调用，以保持"已读"状态，
 // 使同一文件的连续多次编辑无需反复 Read（借鉴 Claude FileEditTool 的 readFileState 设计）。
+// 条目数超过 maxStaleEntries 时整表清空，保证内存有界。
 //
 // 参数：
 //   - path: 已解析的绝对路径
@@ -44,6 +54,13 @@ func SetStale(path string, readAt time.Time, content []byte) {
 	mtimeMs := readAt.UnixMilli()
 	if info, err := os.Stat(path); err == nil {
 		mtimeMs = info.ModTime().UnixMilli()
+	}
+	if staleStateCount.Add(1) > maxStaleEntries {
+		staleStates.Range(func(key, _ any) bool {
+			staleStates.Delete(key)
+			return true
+		})
+		staleStateCount.Store(1)
 	}
 	staleStates.Store(path, &StaleState{
 		Path:        path,

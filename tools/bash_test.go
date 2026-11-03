@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestExtractCommands(t *testing.T) {
@@ -456,5 +457,84 @@ func TestGetParam(t *testing.T) {
 				t.Errorf("GetParam(%q) = %v (%T), want %v (%T)", tt.key, got, got, tt.wantVal, tt.wantVal)
 			}
 		})
+	}
+}
+
+// TestCappedWriter_UnderLimit 未超上限时透传全部字节。
+func TestCappedWriter_UnderLimit(t *testing.T) {
+	w := newCappedWriter(100)
+	if _, err := w.Write([]byte("hello world")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := w.String(); got != "hello world" {
+		t.Errorf("String() = %q, want %q", got, "hello world")
+	}
+}
+
+// TestCappedWriter_OverLimit 超限后丢弃后续字节，缓冲不超过上限。
+func TestCappedWriter_OverLimit(t *testing.T) {
+	w := newCappedWriter(100)
+	payload := strings.Repeat("a", 500)
+	if _, err := w.Write([]byte(payload)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := w.String(); len(got) != 100 {
+		t.Errorf("缓冲长度 = %d, want 100", len(got))
+	}
+	// 多次 Write 跨越上限的场景
+	w2 := newCappedWriter(10)
+	w2.Write([]byte("0123456789"))
+	w2.Write([]byte("abcdefghij"))
+	if got := w2.String(); got != "0123456789" {
+		t.Errorf("String() = %q, want %q", got, "0123456789")
+	}
+}
+
+// TestCappedWriter_MultibyteBoundary 截断落在多字节字符中间时回退到 rune 边界，
+// 缓冲内容始终是合法 UTF-8。
+func TestCappedWriter_MultibyteBoundary(t *testing.T) {
+	// "中" 为 3 字节，cap=10：3 个完整 "中"（9 字节）+ 第 4 个 "中" 的首字节，
+	// 应回退 1 字节保留 3 个完整 rune
+	w := newCappedWriter(10)
+	if _, err := w.Write([]byte(strings.Repeat("中", 10))); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := w.String()
+	if !utf8.ValidString(got) {
+		t.Errorf("缓冲内容应为合法 UTF-8，实际=%q", got)
+	}
+	if got != strings.Repeat("中", 3) {
+		t.Errorf("String() = %q, want %q", got, strings.Repeat("中", 3))
+	}
+
+	// 4 字节 emoji（F0 9F 98 80）cap=2：截断在首字节后，应整字回退为空
+	w2 := newCappedWriter(2)
+	w2.Write([]byte("\U0001F600\U0001F600"))
+	if got := w2.String(); !utf8.ValidString(got) {
+		t.Errorf("缓冲内容应为合法 UTF-8，实际=%q", got)
+	} else if got != "" {
+		t.Errorf("cap=2 不足以容纳任何 4 字节 rune，应为空，实际=%q", got)
+	}
+
+	// 完整多字节 rune 恰好顶满 cap 时不回退
+	w3 := newCappedWriter(3)
+	w3.Write([]byte("中"))
+	if got := w3.String(); got != "中" {
+		t.Errorf("完整 rune 顶满 cap 应完整保留，实际=%q", got)
+	}
+}
+
+// TestTruncateForLog_RuneBoundary truncateForLog 按 rune 截断，不切断多字节中文。
+func TestTruncateForLog_RuneBoundary(t *testing.T) {
+	s := strings.Repeat("中文命令", 10)
+	got := truncateForLog(s, 5)
+	if !utf8.ValidString(got) {
+		t.Errorf("截断结果应为合法 UTF-8，实际=%q", got)
+	}
+	if got != "中文命令中..." {
+		t.Errorf("truncateForLog = %q, want %q", got, "中文命令中...")
+	}
+	if truncateForLog("short", 10) != "short" {
+		t.Error("未超限应原样返回")
 	}
 }

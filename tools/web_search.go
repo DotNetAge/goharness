@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -80,19 +81,24 @@ func extractResultsWithGoquery(html, selector, urlAttr, base string, resolveURL 
 	return results
 }
 
-var adPatterns = []string{"广告", "推广", "赞助", "ad", "sponsored", "promoted"}
+// 中文广告词无词边界概念，用子串匹配即可；
+// 拉丁词用整词正则匹配——裸子串会把 "read"/"admin"/"load" 等含 ad
+// 子串的合法结果误杀。正则在包级编译一次，不在每次请求时重建。
+var adContainsPatterns = []string{"广告", "推广", "赞助"}
+
+var adWordPattern = regexp.MustCompile(`\b(?:ad|sponsored|promoted)\b`)
 
 func isResultQualityOK(title, snippet, rawURL string) bool {
 	if len(title) < 2 || len(rawURL) < 4 {
 		return false
 	}
 	lower := strings.ToLower(title + " " + snippet)
-	for _, p := range adPatterns {
+	for _, p := range adContainsPatterns {
 		if strings.Contains(lower, p) {
 			return false
 		}
 	}
-	return true
+	return !adWordPattern.MatchString(lower)
 }
 
 // --- WebSearch 工具（Claude 风格的适配器模式） ---
@@ -789,13 +795,6 @@ func (r SearchResult) MarshalJSON() ([]byte, error) {
 		URL:     r.URL,
 		Snippet: r.Snippet,
 	})
-}
-
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // getLogger 从 ToolContext 取系统注入的 Logger。

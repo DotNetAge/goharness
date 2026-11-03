@@ -577,3 +577,33 @@ func TestCheckAntiCrawl(t *testing.T) {
 		})
 	}
 }
+
+// TestIsResultQualityOK 广告过滤：拉丁广告词整词匹配（不误杀含 ad 子串的合法词），
+// 中文广告词子串匹配，广告位结果照常拦截。
+func TestIsResultQualityOK(t *testing.T) {
+	const okURL = "https://example.com/page"
+	cases := []struct {
+		name   string
+		title  string
+		substr string
+		want   bool
+	}{
+		{"含 ad 子串的合法词不误杀", "Administrator guide", "", true},
+		{"load 不误杀", "Download and load data", "", true},
+		{"adventure 不误杀", "Adventure travel tips", "", true},
+		{"update 不误杀", "Update changelog", "", true},
+		{"独立 ad 词拦截", "Ad: cheap flights", "", false},
+		{"sponsored 拦截", "Sponsored result", "", false},
+		{"promoted 拦截", "Best promoted deals", "", false},
+		{"snippet 中的广告词也拦截", "Flight deals", "this is an ad for airlines", false},
+		{"中文广告词拦截", "限时广告优惠", "", false},
+		{"中文推广词拦截", "内容推广服务", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isResultQualityOK(c.title, c.substr, okURL); got != c.want {
+				t.Errorf("isResultQualityOK(%q, %q) = %v, want %v", c.title, c.substr, got, c.want)
+			}
+		})
+	}
+}

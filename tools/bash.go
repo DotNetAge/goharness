@@ -24,6 +24,65 @@ const defaultBashTimeoutMs = 30000
 // 避免无节制的输出进入上下文。
 const maxBashOutputSize = 30000
 
+// bashCapOutputBytes 是子进程单路输出（stdout/stderr 各自计算）在执行期间保留的
+// 最大字节数。取 128KB 的依据：maxBashOutputSize=30000 runes，UTF-8 最坏 4 字节/rune
+// = 120KB，128KB 保证前 30000 runes 在任何输入下不被上限吞掉，truncateOutput 的
+// rune 截断行为不变。
+const bashCapOutputBytes = 128 * 1024
+
+// cappedWriter 是带字节上限的输出缓冲，防止高输出命令在执行期间撑爆内存
+//（如 yes、海量日志 cat）。达上限后丢弃后续字节，并在停写处回退至 UTF-8
+// rune 边界，保证缓冲内容始终是合法 UTF-8（截断可能落在多字节字符中间）。
+type cappedWriter struct {
+	buf []byte
+	max int
+}
+
+func newCappedWriter(max int) *cappedWriter {
+	return &cappedWriter{max: max}
+}
+
+// utf8SeqLen 返回以 b 为首字节的 UTF-8 序列期望长度（非法首字节按 1 处理）。
+func utf8SeqLen(b byte) int {
+	switch {
+	case b&0x80 == 0:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	}
+	return 1
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if len(c.buf) >= c.max {
+		return len(p), nil
+	}
+	remaining := c.max - len(c.buf)
+	if remaining >= len(p) {
+		c.buf = append(c.buf, p...)
+		return len(p), nil
+	}
+	c.buf = append(c.buf, p[:remaining]...)
+	// 回退截断点：若截断落在多字节字符内部，回退到该字符起点
+	start := len(c.buf)
+	for start > 0 && c.buf[start-1]&0xC0 == 0x80 {
+		start--
+	}
+	if start > 0 && c.buf[start-1]&0x80 != 0 && len(c.buf)-start < utf8SeqLen(c.buf[start-1])-1 {
+		start--
+	}
+	c.buf = c.buf[:start]
+	return len(p), nil
+}
+
+func (c *cappedWriter) String() string {
+	return string(c.buf)
+}
+
 // maxBashCommandLength 是 Bash 命令的最大字符数。
 // 正常命令（含复杂管道与脚本）极少超过 16K 字符；超过此长度的命令
 // 极大概率是通过 cat heredoc、echo 重定向等方式写入文件内容，
@@ -280,9 +339,10 @@ func performBash(ctx context.Context, logger logging.Logger, sessionID string, p
 		"working_dir", cmd.Dir,
 	)
 
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newCappedWriter(bashCapOutputBytes)
+	stderr := newCappedWriter(bashCapOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	startTime := time.Now()
 	err := cmd.Run()
@@ -599,18 +659,20 @@ func truncateOutput(s string, maxRunes int) (string, bool) {
 
 // truncateForLog 截断字符串用于安全日志记录。
 // 防止在日志中记录过长的命令（可能包含敏感信息）。
+// 按 rune 截断，避免切断多字节字符使日志产生非法 UTF-8。
 //
 // 参数：
 //   - s: 原始字符串
-//   - maxLen: 最大长度
+//   - maxLen: 最大字符数
 //
 // 返回：
 //   - string: 截断后的字符串（如果未超限则返回原字符串）
 func truncateForLog(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 // extractCommands 从 Shell 命令字符串中提取所有真实的命令名。

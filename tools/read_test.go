@@ -142,8 +142,6 @@ func TestDedupCacheKey(t *testing.T) {
 func TestReadFileState_StoreAndLoad(t *testing.T) {
 	key := dedupCacheKey("/tmp/test.txt", 1, 0)
 	state := &ReadFileState{
-		FilePath:  "/tmp/test.txt",
-		Offset:    1,
 		LineCount: 100,
 		MtimeMs:   1234567890,
 	}
@@ -152,12 +150,6 @@ func TestReadFileState_StoreAndLoad(t *testing.T) {
 	loaded, ok := getReadFileState(key)
 	if !ok {
 		t.Fatal("expected to find cached state")
-	}
-	if loaded.FilePath != "/tmp/test.txt" {
-		t.Errorf("FilePath = %q, want %q", loaded.FilePath, "/tmp/test.txt")
-	}
-	if loaded.Offset != 1 {
-		t.Errorf("Offset = %d, want 1", loaded.Offset)
 	}
 	if loaded.LineCount != 100 {
 		t.Errorf("LineCount = %d, want 100", loaded.LineCount)
@@ -177,16 +169,16 @@ func TestReadFileState_NotFound(t *testing.T) {
 func TestReadFileState_UniqueKeys(t *testing.T) {
 	key1 := dedupCacheKey("/tmp/a.txt", 1, 0)
 	key2 := dedupCacheKey("/tmp/b.txt", 1, 0)
-	setReadFileState(key1, &ReadFileState{FilePath: "/tmp/a.txt", Offset: 1})
-	setReadFileState(key2, &ReadFileState{FilePath: "/tmp/b.txt", Offset: 1})
+	setReadFileState(key1, &ReadFileState{MtimeMs: 111})
+	setReadFileState(key2, &ReadFileState{MtimeMs: 222})
 
 	s1, ok := getReadFileState(key1)
-	if !ok || s1.FilePath != "/tmp/a.txt" {
-		t.Error("key1 should be /tmp/a.txt")
+	if !ok || s1.MtimeMs != 111 {
+		t.Error("key1 should carry MtimeMs=111")
 	}
 	s2, ok := getReadFileState(key2)
-	if !ok || s2.FilePath != "/tmp/b.txt" {
-		t.Error("key2 should be /tmp/b.txt")
+	if !ok || s2.MtimeMs != 222 {
+		t.Error("key2 should carry MtimeMs=222")
 	}
 }
 
@@ -650,5 +642,122 @@ func TestRead_FileTooLarge(t *testing.T) {
 	rr := resultI.(*ReadResult)
 	if rr.Data.Suggestion != SuggestionFileTooLarge {
 		t.Errorf("expected Suggestion=%q, got %q", SuggestionFileTooLarge, rr.Data.Suggestion)
+	}
+}
+
+// TestRead_DedupCache_ShortFileDefaultLimitHits 短文件（行数 < 默认 limit）用默认参数
+// 重读应命中 DedupCache：命中条件只比较 mtime，不比较实际行数。
+func TestRead_DedupCache_ShortFileDefaultLimitHits(t *testing.T) {
+	read, dir := tempReadTool(t, nil)
+	file := filepath.Join(dir, "short_dedup.txt")
+	os.WriteFile(file, []byte("line1\nline2\nline3\n"), 0644)
+
+	for i := 0; i < 2; i++ {
+		resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+		if err != nil {
+			t.Fatalf("read #%d: %v", i+1, err)
+		}
+		rr := resultI.(*ReadResult)
+		if i == 1 && rr.Data.Suggestion != SuggestionContentUnchanged {
+			t.Errorf("短文件默认参数第二次读应命中 DedupCache，实际 Suggestion=%q", rr.Data.Suggestion)
+		}
+	}
+}
+
+// TestRead_DedupCache_MtimeChangedMisses 文件 mtime 变化后重读不应命中 DedupCache。
+func TestRead_DedupCache_MtimeChangedMisses(t *testing.T) {
+	read, dir := tempReadTool(t, nil)
+	file := filepath.Join(dir, "mtime_dedup.txt")
+	os.WriteFile(file, []byte("content v1\n"), 0644)
+
+	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	// 显式推进 mtime，避免同毫秒写入导致误命中
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(file, future, future); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	rr := resultI.(*ReadResult)
+	if rr.Data.Suggestion == SuggestionContentUnchanged {
+		t.Error("mtime 变化后不应命中 DedupCache")
+	}
+	if !strings.Contains(rr.Data.Content, "content v1") {
+		t.Error("mtime 变化后应返回实际文件内容")
+	}
+}
+
+// TestRead_CRLFLineEndings CRLF 文件的行内容不应残留 '\r'，行号与行数不受
+// '\r' 剔除影响（游标必须越过 '\n'，否则每行之后会插入假空行并吞掉末尾内容）。
+func TestRead_CRLFLineEndings(t *testing.T) {
+	read, dir := tempReadTool(t, nil)
+
+	file := filepath.Join(dir, "crlf.txt")
+	os.WriteFile(file, []byte("first line\r\nsecond line\r\n"), 0644)
+	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rr := resultI.(*ReadResult)
+	if want := "1\tfirst line\n2\tsecond line\n3\t\n"; rr.Data.Content != want {
+		t.Errorf("CRLF 内容 = %q, want %q", rr.Data.Content, want)
+	}
+
+	file2 := filepath.Join(dir, "crlf_nonewline.txt")
+	os.WriteFile(file2, []byte("a\r\nb\r\nc"), 0644)
+	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": file2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rr = resultI.(*ReadResult)
+	if want := "1\ta\n2\tb\n3\tc\n"; rr.Data.Content != want {
+		t.Errorf("末行无换行符的 CRLF 内容 = %q, want %q", rr.Data.Content, want)
+	}
+}
+
+// TestReadFileState_EntryCapFlush 整表清空策略：条目数超限后，先写入的旧条目被清、
+// 最新条目仍可写入。
+func TestReadFileState_EntryCapFlush(t *testing.T) {
+	// 从当前计数连续写入 dedupMaxEntries+1 个条目，无论起始计数如何，
+	// 超限 flush 必然发生：最早写入的条目被清空，最后写入的条目存活。
+	firstKey := dedupCacheKey("/tmp/cap_flush_first.txt", 1, 1)
+	setReadFileState(firstKey, &ReadFileState{MtimeMs: 1})
+	lastKey := ""
+	for i := 0; i <= dedupMaxEntries; i++ {
+		lastKey = dedupCacheKey(fmt.Sprintf("/tmp/cap_flush_%d.txt", i), 1, 1)
+		setReadFileState(lastKey, &ReadFileState{MtimeMs: int64(i)})
+	}
+	if _, ok := getReadFileState(firstKey); ok {
+		t.Error("超限 flush 后最早写入的条目应被清空")
+	}
+	if _, ok := getReadFileState(lastKey); !ok {
+		t.Error("超限 flush 后最新条目应可写入")
+	}
+}
+
+// TestNegativeCache_ExpiredEntriesSwept 写入新负缓存条目时，已过期的旧条目被物理删除。
+func TestNegativeCache_ExpiredEntriesSwept(t *testing.T) {
+	expiredPath := "/tmp/negcache_expired.txt"
+	// 直塞一个已过 TTL 的条目，模拟历史遗留
+	negativeCache.Store(expiredPath, NegativeCacheEntry{
+		Path:      expiredPath,
+		CreatedAt: time.Now().Add(-2 * negativeCacheTTL),
+	})
+
+	freshPath := "/tmp/negcache_fresh.txt"
+	setNegativeCache(freshPath)
+
+	if _, ok := negativeCache.Load(expiredPath); ok {
+		t.Error("过期条目应在下一次写入时被物理清扫")
+	}
+	if !checkNegativeCache(freshPath) {
+		t.Error("新写入的条目应可命中")
 	}
 }
