@@ -49,13 +49,13 @@ type eventBridge struct {
 	totalUsage session.TokenUsage
 	iterations int
 	lastUsage  *session.TokenUsage // 最近一轮 LLM 调用 usage（回填 ToolExecEnd）
-	// callUsageByIter 登记本轮各次 LLM 调用的 usage（迭代号 → 用量）：一次
+	// callUsageByIter 登记本轮各次 LLM 调用的 usage（迭代号 → 条目）：一次
 	// ChatStreamCtx 是整轮 Think-Act 循环（多次调用），writeBackNewMessages 按
 	// 批内 assistant 消息序号对位取用，回写后整体作废（见 writeBackNewMessages）。
 	// 对位恒成立的实证：goagent 主循环每迭代恰好一次 round（agent.go 主循环
 	// L303-344），LLM 调用失败即 break 整轮、无迭代内重试——迭代号与批内
 	// assistant 序号严格 1:1。
-	callUsageByIter map[int]*session.TokenUsage
+	callUsageByIter map[int]*bridgeCallUsage
 	stopped         goagent.StopReason
 	suspendKind     string // 最近一次挂起类别："permission" / "ask_user"
 	finalAnswer     string // EvFinalAnswer 捕获的最终答案（ChatStreamCtx 只返回 error）
@@ -185,14 +185,26 @@ func (br *eventBridge) Subscribe() (<-chan goagent.Event, func()) {
 // Close 实现 goagent.EventBus：桥接器无资源需要释放。
 func (br *eventBridge) Close() {}
 
+// bridgeCallUsage 登记一次 LLM 调用的用量：provider 返回 usage 时携带原值
+// （estimate=false）；未返回时 estimate=true，回写时按 DeepSeek 字符级公式
+// 对位估算补齐（消息、记账、广播三处同源，带 Estimated 标记区分）。
+type bridgeCallUsage struct {
+	usage    *session.TokenUsage
+	estimate bool
+}
+
 // recordUsage 处理 EvTokenUsage：迭代计数 + 累计记账 + 持久化 + TokenUsageRecorded 事件。
 func (br *eventBridge) recordUsage(ev *goagent.TokenUsageEvent) {
 	// 迭代计数不依赖 usage：每轮 LLM 调用必发 TokenUsage（0 基轮次），
 	// 直接回答场景 goagent 不发 LoopEnd，计数以此为准（对齐旧核 lastIteration = iter+1）。
-	// provider 未返回 usage 时仅跳过记账与持久化（旧核的内容长度估算逻辑属旧核专属，
-	// 阶段一降级，后续如需要可将估算下沉到 clientAdapter 层）。
+	// provider 未返回 usage 时登记估算占位（estimate=true），回写时在 writeBackNewMessages
+	// 内按对位消息补齐——彼时 completeMsgs 已含本轮全部消息，prompt/completion 均可估算。
 	br.iterations = max(br.iterations, ev.Iteration+1)
 	if ev.Usage == nil {
+		if br.callUsageByIter == nil {
+			br.callUsageByIter = make(map[int]*bridgeCallUsage)
+		}
+		br.callUsageByIter[ev.Iteration] = &bridgeCallUsage{estimate: true}
 		return
 	}
 	callUsage := session.TokenUsage{
@@ -212,10 +224,10 @@ func (br *eventBridge) recordUsage(ev *goagent.TokenUsageEvent) {
 	// （一次 ChatStreamCtx 是整轮 Think-Act 循环，批内可能有多条 assistant，
 	// 各归属各的调用），回写后整体作废
 	if br.callUsageByIter == nil {
-		br.callUsageByIter = make(map[int]*session.TokenUsage)
+		br.callUsageByIter = make(map[int]*bridgeCallUsage)
 	}
 	callUsageCopy := callUsage
-	br.callUsageByIter[ev.Iteration] = &callUsageCopy
+	br.callUsageByIter[ev.Iteration] = &bridgeCallUsage{usage: &callUsageCopy}
 
 	record := session.TokenUsageRecord{
 		ID:               session.NewRecordID(),
@@ -236,11 +248,65 @@ func (br *eventBridge) recordUsage(ev *goagent.TokenUsageEvent) {
 	} else {
 		br.emit(events.TokenUsageRecorded, record)
 	}
-	br.totalUsage.PromptTokens += callUsage.PromptTokens
-	br.totalUsage.CompletionTokens += callUsage.CompletionTokens
-	br.totalUsage.TotalTokens += callUsage.TotalTokens
-	br.totalUsage.CachedTokens += callUsage.CachedTokens
-	br.totalUsage.ReasoningTokens += callUsage.ReasoningTokens
+	br.accumulateTotal(&callUsage)
+}
+
+// estimateCallUsage 在 provider 未返回 usage 时按 DeepSeek 字符级公式估算一次
+// 调用的用量：prompt 取该调用响应之前的全量对话窗口（msgs[0:asstIdx]，系统提示
+// 与工具 schema 不在内，属已知的低估项），completion 取本条响应文本与思考流。
+// 结果带 Estimated 标记，与精确值可区分。
+func (br *eventBridge) estimateCallUsage(msgs []gochatcore.Message, asstIdx int) *session.TokenUsage {
+	var prompt, completion int64
+	for i := 0; i < asstIdx && i < len(msgs); i++ {
+		prompt += session.EstimateTokens(textOfBlocks(msgs[i].Content))
+	}
+	if asstIdx >= 0 && asstIdx < len(msgs) {
+		completion += session.EstimateTokens(textOfBlocks(msgs[asstIdx].Content))
+		completion += session.EstimateTokens(msgs[asstIdx].ReasoningContent)
+	}
+	return &session.TokenUsage{
+		Timestamp:        time.Now(),
+		PromptTokens:     int(prompt),
+		CompletionTokens: int(completion),
+		TotalTokens:      int(prompt + completion),
+		Estimated:        true,
+	}
+}
+
+// appendUsageRecord 把一条用量落账并广播 TokenUsageRecorded（估算补齐路径，
+// 与 recordUsage 精确路径同口径：同一 session/conversation/agent 身份，Estimated
+// 标记供对账区分）。
+func (br *eventBridge) appendUsageRecord(u *session.TokenUsage) {
+	record := session.TokenUsageRecord{
+		ID:               session.NewRecordID(),
+		SessionID:        br.sessionID,
+		ConversationID:   br.conversationID,
+		ModelName:        br.model.Name,
+		ProviderName:     br.model.Provider,
+		AgentName:        br.agentName,
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		CachedTokens:     u.CachedTokens,
+		ReasoningTokens:  u.ReasoningTokens,
+		TotalTokens:      u.TotalTokens,
+		Estimated:        true,
+		Timestamp:        time.Now(),
+	}
+	if err := br.rt.tokenUsageStore.Append(br.b.ctx, record); err != nil {
+		br.rt.logger.Error("添加估算词元使用记录失败", err, "session", br.sessionID)
+	} else {
+		br.emit(events.TokenUsageRecorded, record)
+	}
+}
+
+// accumulateTotal 累加单次调用用量到轮级合计（recordUsage 精确路径与估算补齐
+// 路径共用）。
+func (br *eventBridge) accumulateTotal(u *session.TokenUsage) {
+	br.totalUsage.PromptTokens += u.PromptTokens
+	br.totalUsage.CompletionTokens += u.CompletionTokens
+	br.totalUsage.TotalTokens += u.TotalTokens
+	br.totalUsage.CachedTokens += u.CachedTokens
+	br.totalUsage.ReasoningTokens += u.ReasoningTokens
 	br.totalUsage.Timestamp = time.Now()
 }
 
@@ -350,7 +416,8 @@ func (br *eventBridge) maxIterations() int {
 // 留空；FinishReason 的「答案边界」信号由桥接器在正常收尾时为最后一条
 // assistant 消息补 "stop"。Usage 经 EvTokenUsage 的迭代号登记（callUsageByIter）
 // 按批内 assistant 消息序号对位回填——第 k 条 assistant 即第 k 次调用的产出，
-// 该调用未返回 usage（provider 缺失）时对位为空，其余消息不受影响。
+// provider 未返回 usage 的调用对位估算补齐（estimateCallUsage，带 Estimated
+// 标记）并同口径落账广播。
 func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) {
 	msgs := br.completeMsgs
 	if len(msgs) <= baseLen {
@@ -376,9 +443,19 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			sm.Role = "assistant"
 			sm.Content = textOfBlocks(m.Content)
 			sm.ReasoningContent = m.ReasoningContent
-			if u := br.callUsageByIter[asstSeq]; u != nil {
+			if entry := br.callUsageByIter[asstSeq]; entry != nil {
+				u := entry.usage
+				if u == nil {
+					u = br.estimateCallUsage(msgs, i)
+				}
 				usageCopy := *u
 				sm.Usage = &usageCopy
+				if entry.estimate {
+					// 估算用量与精确值同口径落账广播：对账面板不缺账，
+					// Estimated 标记供区分
+					br.appendUsageRecord(&usageCopy)
+					br.accumulateTotal(&usageCopy)
+				}
 			}
 			asstSeq++
 			for _, tc := range m.ToolCalls {

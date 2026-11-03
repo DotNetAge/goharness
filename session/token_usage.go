@@ -27,6 +27,10 @@ type TokenUsageRecord struct {
 	ReasoningTokens  int `json:"reasoning_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 
+	// Estimated 标记本条记录为估算值（provider 未返回 usage 时按 DeepSeek
+	// 字符级公式补齐），对账时与精确值区分。
+	Estimated bool `json:"estimated,omitempty"`
+
 	// Timestamp 是 LLM API 调用完成的时间。
 	Timestamp time.Time `json:"timestamp"`
 }

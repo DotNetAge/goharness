@@ -23,6 +23,12 @@ func estimateTokens(content string) int64 {
 	return int64(t) + 1
 }
 
+// EstimateTokens 是 estimateTokens 的导出形式：基于 DeepSeek 官方公式的字符级
+// token 估算，供跨包（如 agents 桥接器的用量估算补齐）复用，保证全仓库口径一致。
+func EstimateTokens(content string) int64 {
+	return estimateTokens(content)
+}
+
 // estimateWindowTokens 估算给定消息序列的 token 数。
 //
 // 对于有 Usage 数据的助手消息，只计算 CompletionTokens（+ ReasoningTokens）。

@@ -22,6 +22,10 @@ type TokenUsage struct {
 	// ReasoningTokens 是输出中的思考/推理 token 数
 	// (completion_tokens_details.reasoning_tokens)。
 	ReasoningTokens int `json:"reasoning_tokens,omitempty" yaml:"reasoning_tokens"`
+
+	// Estimated 标记本条用量为估算值（provider 未返回 usage 时按 DeepSeek
+	// 字符级公式补齐），对账时与精确值区分。
+	Estimated bool `json:"estimated,omitempty" yaml:"estimated,omitempty"`
 }
 
 // ActualTokens 返回实际净 token 消耗（排除缓存命中）。
