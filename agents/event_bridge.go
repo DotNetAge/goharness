@@ -46,13 +46,17 @@ type eventBridge struct {
 	start          time.Time
 
 	// 运行期状态（单 goroutine 访问）
-	totalUsage   session.TokenUsage
-	iterations   int
-	lastUsage    *session.TokenUsage // 最近一轮 LLM 调用 usage（回填 ToolExecEnd）
-	stopped      goagent.StopReason
-	suspendKind  string // 最近一次挂起类别："permission" / "ask_user"
-	finalAnswer  string // EvFinalAnswer 捕获的最终答案（ChatStreamCtx 只返回 error）
-	completeMsgs []gochatcore.Message
+	totalUsage session.TokenUsage
+	iterations int
+	lastUsage  *session.TokenUsage // 最近一轮 LLM 调用 usage（回填 ToolExecEnd）
+	// callUsageByIter 登记本轮各次 LLM 调用的 usage（迭代号 → 用量）：一次
+	// ChatStreamCtx 是整轮 Think-Act 循环（多次调用），writeBackNewMessages 按
+	// 批内 assistant 消息序号对位取用，回写后整体作废（见 writeBackNewMessages）
+	callUsageByIter map[int]*session.TokenUsage
+	stopped         goagent.StopReason
+	suspendKind     string // 最近一次挂起类别："permission" / "ask_user"
+	finalAnswer     string // EvFinalAnswer 捕获的最终答案（ChatStreamCtx 只返回 error）
+	completeMsgs    []gochatcore.Message
 	// lastAskPending 登记子会话 ask_user 挂起的提问数据：提问卡片通知与挂起
 	// 等待统一由编排分支的 waitForAskUserDecision 负责，此处仅暂存避免重复发射
 	lastAskPending events.AskUserPendingData
@@ -201,6 +205,14 @@ func (br *eventBridge) recordUsage(ev *goagent.TokenUsageEvent) {
 		callUsage.ReasoningTokens = ev.Usage.CompletionTokensDetails.ReasoningTokens
 	}
 	br.lastUsage = &callUsage
+	// 按迭代号登记本次调用的 usage：回写时按批内 assistant 消息序号对位
+	// （一次 ChatStreamCtx 是整轮 Think-Act 循环，批内可能有多条 assistant，
+	// 各归属各的调用），回写后整体作废
+	if br.callUsageByIter == nil {
+		br.callUsageByIter = make(map[int]*session.TokenUsage)
+	}
+	callUsageCopy := callUsage
+	br.callUsageByIter[ev.Iteration] = &callUsageCopy
 
 	record := session.TokenUsageRecord{
 		ID:               session.NewRecordID(),
@@ -331,9 +343,11 @@ func (br *eventBridge) maxIterations() int {
 // 注入 History 的消息数（system 段 + 会话窗口转换），其后即本轮新增消息
 // （assistant / tool / 兜底注入的 user 消息）。
 //
-// 降级说明（阶段一）：assistant 消息的 FinishReason 与 Usage 不经 goagent
-// 内存消息传递，回写时留空；FinishReason 的「答案边界」信号由桥接器在
-// 正常收尾时为最后一条 assistant 消息补 "stop"。
+// 降级说明：assistant 消息的 FinishReason 不经 goagent 内存消息传递，回写时
+// 留空；FinishReason 的「答案边界」信号由桥接器在正常收尾时为最后一条
+// assistant 消息补 "stop"。Usage 经 EvTokenUsage 的迭代号登记（callUsageByIter）
+// 按批内 assistant 消息序号对位回填——第 k 条 assistant 即第 k 次调用的产出，
+// 该调用未返回 usage（provider 缺失）时对位为空，其余消息不受影响。
 func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) {
 	msgs := br.completeMsgs
 	if len(msgs) <= baseLen {
@@ -348,6 +362,9 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 	toolSeq := 0
 	// pendingImages 为当前 tool 消息对应的待插图片块（tool 消息落库后追加）。
 	var pendingImages imageEntry
+	// asstSeq 批内 assistant 消息序号：与 EvTokenUsage 的迭代号同源对位
+	// （Think-Act 循环第 k 次调用产出第 k 条 assistant）。
+	asstSeq := 0
 	for i := baseLen; i < len(msgs); i++ {
 		m := msgs[i]
 		sm := session.Message{Timestamp: time.Now().Unix()}
@@ -356,6 +373,11 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			sm.Role = "assistant"
 			sm.Content = textOfBlocks(m.Content)
 			sm.ReasoningContent = m.ReasoningContent
+			if u := br.callUsageByIter[asstSeq]; u != nil {
+				usageCopy := *u
+				sm.Usage = &usageCopy
+			}
+			asstSeq++
 			for _, tc := range m.ToolCalls {
 				id := tc.ID
 				if id == "" {
@@ -414,6 +436,9 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			pendingImages = imageEntry{}
 		}
 	}
+	// 本批已消费：迭代号与下一轮的批内 assistant 序号无跨轮连续性，整体作废
+	// （未回写的残余条目——如批内 assistant 少于调用数——直接丢弃，不串轮）
+	br.callUsageByIter = nil
 }
 
 // textOfBlocks 拼接消息的文本内容块（goagent 内存消息 → session 消息的文本提取）。
