@@ -123,6 +123,18 @@ type Runtime struct {
 	// 子 Agent 派生前校验用；nil 时跳过校验。
 	agentExists func(agentName string) bool
 
+	// titleFn 提炼子代理会话标题（应用侧注入，见 WithTitleFn）。
+	// 子任务受理后由 goharness 在后台 goroutine 中调用：实现方负责
+	// 「调 LLM 提炼 + 标题落库」并返回新标题，goharness 据返回值发射
+	// SubtaskTitleUpdated 事件刷新前端。nil 时受理快照标题即最终标题。
+	titleFn func(sessionID, task string) string
+
+	// harvestReporter 收割报告回灌回调（应用侧注入，见 WithHarvestReporter）。
+	// 后台收割全部落定/超限时由收割器调用：实现方（如 mindx daemon）以
+	// 「系统收割」消息把结果写进主会话上下文并程序化发起一轮执行（走主会话
+	// 串行队列）。nil 时报告仅记日志丢弃（收割结果不进上下文）。
+	harvestReporter func(tools.HarvestReport)
+
 	// kvStore 为需要会话级持久化的工具（TaskCreate / TaskGet / TaskUpdate / TaskList）
 	// 提供键值存储。若为 nil，这些工具返回“KVStore 不可用”。通过 WithKVStore 配置。
 	kvStore store.KVStore
@@ -278,7 +290,9 @@ func (rt *Runtime) registerDefaultTools() {
 	// 因为本地模型通常无法可靠地执行多 Agent 并行任务
 	if !rt.model.IsLocal {
 		bundled = append(bundled,
-			toolOf("CollectResults", tools.NewCollectResultsTool),
+			toolOf("CollectResults", func() *tools.CollectResultsTool {
+				return tools.NewCollectResultsTool(rt.subAgents)
+			}),
 			toolOf("TaskCreate", tools.NewTaskCreateTool),
 			toolOf("TaskList", tools.NewTaskListTool),
 			toolOf("TaskGet", tools.NewTaskGetTool),

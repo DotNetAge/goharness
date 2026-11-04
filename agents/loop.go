@@ -220,6 +220,9 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 	//（permissionCh / askCh 非 nil）的挂起不直接返回，而是阻塞等待后续跑。
 	var err error
 	for {
+		// 迭代边界增量回写：每次引擎运行开始重置回写水位与配对状态
+		//（跨运行的 completeMsgs 是重新装配的数组，旧水位无意义）
+		bridge.beginRun(baseLen)
 		err = ga.ChatStreamCtx(ctx, goagent.Callbacks{})
 
 		// 每轮回写：引擎内存对话的新增消息持久化到会话

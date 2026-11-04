@@ -30,6 +30,10 @@ const (
 	// SubtaskCompleted 表示子代理任务已完成（成功或失败）。
 	SubtaskCompleted ReactEventType = "subtask_completed"
 
+	// SubtaskTitleUpdated 表示子代理会话标题已在后台提炼完成并落库，
+	// 前端据此把子任务卡片/侧栏标题从受理快照刷新为提炼标题。
+	SubtaskTitleUpdated ReactEventType = "subtask_title_updated"
+
 	// FinalAnswer 表示 Reactor 已产生最终答案。
 	FinalAnswer ReactEventType = "final_answer"
 

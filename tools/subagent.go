@@ -24,9 +24,9 @@ func NewSubAgentTool(dispatcher subagent.SubAgentDispatcher) *SubAgentTool {
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
-		Description: "派发子任务给另一个 Agent 异步执行，立即返回受理回执（含跟踪句柄 task_id）。之后用 CollectResults 等待并收集结果。",
-		Prompt: `为一次性委派任务派发一个子代理。调用后立即返回受理回执（status=running，含跟踪句柄 task_id），子任务在后台独立运行。
-关键约束：此工具是异步的，但回合不能就此结束。在同一响应中并行派发全部所需的 SubAgent 后，你必须立即调用 CollectResults(task_ids...) 传入全部跟踪句柄，阻塞等待所有子任务落定并拿到结果后，再基于结果继续作答。严禁在子任务结果收集之前结束回合回答用户。
+		Description: "派发子任务给另一个 Agent 异步执行，立即返回受理回执（含跟踪句柄 task_id、子代理会话 session_id 与任务标题 title）。之后用 CollectResults 启动后台结果收割。",
+		Prompt: `为一次性委派任务派发一个子代理。调用后立即返回受理回执（含跟踪句柄 task_id、子代理会话 session_id 与任务标题 title），子任务在后台独立运行。
+派发后无需阻塞等待：在同一响应中并行派发全部所需的 SubAgent，然后调用 CollectResults(task_ids...) 启动结果收割——它立即返回并在后台自动收割，全部子任务落定后结果会自动汇报到本会话。请在回复中明确告知用户：子任务结果稍后会自动送达，期间可以继续其它工作或对话。
 同一响应中的多个 SubAgent 调用会并行执行。请根据角色命名代理（例如 "code_reviewer"）。任务描述应自包含——子代理无法看到你的对话上下文。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
@@ -88,17 +88,21 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 
 	// 会话来源软性说明：主 Agent 与子 Agent 的对话是连贯的——
 	// 未显式传 session_id 时，系统自动延续该子代理最近一次的空闲会话
-	// （被占用才新建）。明确告知 LLM「跟踪句柄已受理、去收集结果」。
+	// （被占用才新建）。回执带 session_id（长期锚点，落盘持久）与 title
+	//（受理快照，后台会提炼更准确的标题），LLM 据此即可向用户描述派发目标。
+	// 明确引导：调用 CollectResults 启动后台收割，结果自动汇报。
 	var notes string
 	if reqSessionID != "" {
-		notes = "已延续与 " + agentName + " 的既有对话。请用 CollectResults 等待跟踪句柄 " + receipt.TaskID + " 的结果。"
+		notes = "已延续与 " + agentName + " 的既有对话（子代理会话 " + receipt.SessionID + "）。请调用 CollectResults 启动结果收割（立即返回，结果落定后自动汇报），并在回复中告知用户可先继续其它工作。"
 	} else {
-		notes = "主从 Agent 对话连贯：系统已自动延续与 " + agentName + " 的对话上下文（优先复用其最近空闲会话，被占用则新建）。请用 CollectResults 等待跟踪句柄 " + receipt.TaskID + " 的结果。"
+		notes = "Agent 间对话连贯：系统已自动延续与 " + agentName + " 的对话上下文（优先复用其最近空闲会话，被占用则新建，子代理会话 " + receipt.SessionID + "）。请调用 CollectResults 启动结果收割（立即返回，结果落定后自动汇报），并在回复中告知用户可先继续其它工作。"
 	}
 	return map[string]any{
 		"status":     "running",
 		"agent_name": agentName,
 		"task_id":    receipt.TaskID,
+		"session_id": receipt.SessionID,
+		"title":      receipt.Title,
 		"notes":      notes,
 	}, nil
 }

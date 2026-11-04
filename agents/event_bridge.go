@@ -51,7 +51,7 @@ type eventBridge struct {
 	lastUsage  *session.TokenUsage // 最近一轮 LLM 调用 usage（回填 ToolExecEnd）
 	// callUsageByIter 登记本轮各次 LLM 调用的 usage（迭代号 → 条目）：一次
 	// ChatStreamCtx 是整轮 Think-Act 循环（多次调用），writeBackNewMessages 按
-	// 批内 assistant 消息序号对位取用，回写后整体作废（见 writeBackNewMessages）。
+	// 批内 assistant 消息序号对位取用，消费即删除（见 writeBackNewMessages）。
 	// 对位恒成立的实证：goagent 主循环每迭代恰好一次 round（agent.go 主循环
 	// L303-344），LLM 调用失败即 break 整轮、无迭代内重试——迭代号与批内
 	// assistant 序号严格 1:1。
@@ -60,6 +60,21 @@ type eventBridge struct {
 	suspendKind     string // 最近一次挂起类别："permission" / "ask_user"
 	finalAnswer     string // EvFinalAnswer 捕获的最终答案（ChatStreamCtx 只返回 error）
 	completeMsgs    []gochatcore.Message
+
+	// ── 迭代边界增量回写水位（回写挂迭代边界：挂死轮 + 宿主重启不蒸发
+	// 已产出的消息）──
+	// writeBase 是本轮装配基准（baseLen，beginRun 登记）；writeLen 是上次
+	// 回写消费到的 completeMsgs 长度。writeAsstSeq / writeToolSeq /
+	// writePendingCalls / writePendingImages 是跨增量回写延续的配对状态
+	//（用法对位、工具序号、tool_calls 配对、图片视觉消息），每个引擎运行
+	//（beginRun）重置。事件经桥接器同步分发（无队列），水位状态单 goroutine
+	// 访问，无需加锁。
+	writeBase          int
+	writeLen           int
+	writeAsstSeq       int
+	writeToolSeq       int
+	writePendingCalls  []string
+	writePendingImages imageEntry
 	// lastAskPending 登记子会话 ask_user 挂起的提问数据：提问卡片通知与挂起
 	// 等待统一由编排分支的 waitForAskUserDecision 负责，此处仅暂存避免重复发射
 	lastAskPending events.AskUserPendingData
@@ -167,9 +182,13 @@ func (br *eventBridge) Emit(ev goagent.Event) {
 				Suggestion:     "已达到最大思考轮次。任务可能需要更详细的指令或分步完成。你可以发送\"继续\"让 AI 基于当前进度继续，或者提供更具体的指导。",
 			})
 		}
-	case []gochatcore.Message: // EvComplete：捕获对话上下文供消息回写（不外发）
-		if ev.Type == goagent.EvComplete {
-			br.completeMsgs = d
+	case []gochatcore.Message: // EvComplete / EvMessagesSnapshot：对话上下文（不外发）
+		br.completeMsgs = d
+		if ev.Type == goagent.EvMessagesSnapshot {
+			// 迭代边界增量回写：工具产出的消息（如 SubAgent 派发回执）即时
+			// 落盘，挂死轮 + 宿主重启不再蒸发整轮记录。水位推进保证同一批
+			// 消息只回写一次；最终批仍由 loop.go 在 ChatStreamCtx 返回后回写。
+			br.writeBackNewMessages(br.b.session, br.writeBase)
 		}
 	}
 }
@@ -407,35 +426,43 @@ func (br *eventBridge) maxIterations() int {
 	return defaultMaxIterations
 }
 
+// beginRun 登记一次引擎运行（ChatStreamCtx 调用）的回写基准：baseLen 是
+// Run 装配注入 History 的消息数（system 段 + 会话窗口转换）。水位与配对
+// 状态全部重置——跨运行的 completeMsgs 是重新装配的数组，旧水位无意义；
+// callUsageByIter 同理作废（迭代号每轮从 0 起算）。
+func (br *eventBridge) beginRun(baseLen int) {
+	br.writeBase = baseLen
+	br.writeLen = baseLen
+	br.writeAsstSeq = 0
+	br.writeToolSeq = 0
+	br.writePendingCalls = nil
+	br.writePendingImages = imageEntry{}
+	br.callUsageByIter = nil
+}
+
 // writeBackNewMessages 将 goagent 内存对话中的新增消息回写会话。
-// msgs 是 goagent EvComplete 携带的完整对话上下文；baseLen 是 Run 装配时
-// 注入 History 的消息数（system 段 + 会话窗口转换），其后即本轮新增消息
-// （assistant / tool / 兜底注入的 user 消息）。
+// msgs 是 goagent EvComplete / EvMessagesSnapshot 携带的完整对话上下文；
+// 回写范围从上次消费水位（writeLen，不低于本轮装配基准 writeBase）到当前
+// 长度——迭代边界快照使回写按增量推进（挂死轮 + 宿主重启不蒸发已产出的
+// 消息），水位推进保证同一批消息只回写一次。
 //
 // 降级说明：assistant 消息的 FinishReason 不经 goagent 内存消息传递，回写时
 // 留空；FinishReason 的「答案边界」信号由桥接器在正常收尾时为最后一条
 // assistant 消息补 "stop"。Usage 经 EvTokenUsage 的迭代号登记（callUsageByIter）
 // 按批内 assistant 消息序号对位回填——第 k 条 assistant 即第 k 次调用的产出，
 // provider 未返回 usage 的调用对位估算补齐（estimateCallUsage，带 Estimated
-// 标记）并同口径落账广播。
+// 标记）并同口径落账广播；消费即删除，迭代边界增量回写只消费已写入的条目。
 func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) {
 	msgs := br.completeMsgs
-	if len(msgs) <= baseLen {
+	// 水位下限取装配基准：兜底防御（正常路径水位已由 beginRun 初始化）
+	base := br.writeLen
+	if base < baseLen {
+		base = baseLen
+	}
+	if len(msgs) <= base {
 		return
 	}
-	// 待配对队列：assistant 的 tool_calls 按序入队（空 ID 先分配合成 ID），
-	// 后续 tool 消息缺失 tool_call_id 时弹出队首回填，保证 assistant/tool 严格配对
-	// （与旧核 buildAssistantMessage 口径一致）。
-	var pendingCalls []string
-	// 工具结果序号：回写范围内每条 tool 消息递增，与 hookCoord 的工具执行
-	// 计数对齐，用于图片视觉消息的顺序配对（对齐旧核 persistToolResults）。
-	toolSeq := 0
-	// pendingImages 为当前 tool 消息对应的待插图片块（tool 消息落库后追加）。
-	var pendingImages imageEntry
-	// asstSeq 批内 assistant 消息序号：与 EvTokenUsage 的迭代号同源对位
-	// （Think-Act 循环第 k 次调用产出第 k 条 assistant）。
-	asstSeq := 0
-	for i := baseLen; i < len(msgs); i++ {
+	for i := base; i < len(msgs); i++ {
 		m := msgs[i]
 		sm := session.Message{Timestamp: time.Now().Unix()}
 		switch m.Role {
@@ -443,7 +470,7 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			sm.Role = "assistant"
 			sm.Content = textOfBlocks(m.Content)
 			sm.ReasoningContent = m.ReasoningContent
-			if entry := br.callUsageByIter[asstSeq]; entry != nil {
+			if entry := br.callUsageByIter[br.writeAsstSeq]; entry != nil {
 				u := entry.usage
 				if u == nil {
 					u = br.estimateCallUsage(msgs, i)
@@ -456,14 +483,15 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 					br.appendUsageRecord(&usageCopy)
 					br.accumulateTotal(&usageCopy)
 				}
+				delete(br.callUsageByIter, br.writeAsstSeq)
 			}
-			asstSeq++
+			br.writeAsstSeq++
 			for _, tc := range m.ToolCalls {
 				id := tc.ID
 				if id == "" {
 					id = "syn_" + session.NewRecordID()
 				}
-				pendingCalls = append(pendingCalls, id)
+				br.writePendingCalls = append(br.writePendingCalls, id)
 				sm.ToolCalls = append(sm.ToolCalls, session.ToolCall{
 					ID: id, Name: tc.Name, Arguments: tc.Arguments,
 				})
@@ -477,22 +505,22 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			sm.Content = textOfBlocks(m.Content)
 			if m.ToolCallID != "" {
 				sm.ToolCallID = m.ToolCallID
-			} else if len(pendingCalls) > 0 {
-				sm.ToolCallID = pendingCalls[0]
-				pendingCalls = pendingCalls[1:]
+			} else if len(br.writePendingCalls) > 0 {
+				sm.ToolCallID = br.writePendingCalls[0]
+				br.writePendingCalls = br.writePendingCalls[1:]
 			}
 			// 图片视觉消息待插块：ImageHook 转换的图片块以 user 角色消息追加，
 			// 紧随对应工具结果之后（对齐旧核 persistToolResults 的注入位置）。
 			// 此处仅取出，待 tool 消息落库后再 Append，保证消息顺序。
 			if br.coord != nil {
 				for _, entry := range br.coord.imageEntries {
-					if entry.toolSeq == toolSeq && len(entry.blocks) > 0 {
-						pendingImages = entry
+					if entry.toolSeq == br.writeToolSeq && len(entry.blocks) > 0 {
+						br.writePendingImages = entry
 						break
 					}
 				}
 			}
-			toolSeq++
+			br.writeToolSeq++
 		default:
 			sm.Role = string(m.Role)
 			sm.Content = textOfBlocks(m.Content)
@@ -502,23 +530,24 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			return
 		}
 		// tool 消息落库后追加图片视觉消息（紧随对应工具结果之后）
-		if sm.Role == "tool" && len(pendingImages.blocks) > 0 {
+		if sm.Role == "tool" && len(br.writePendingImages.blocks) > 0 {
 			if err := sess.Append(br.b.ctx, session.Message{
 				Role: "user",
-				Content: "以下是工具 " + pendingImages.toolName +
+				Content: "以下是工具 " + br.writePendingImages.toolName +
 					" 读取到的图片内容（视觉消息），请结合图片进行分析：",
-				Images:    pendingImages.blocks,
+				Images:    br.writePendingImages.blocks,
 				Timestamp: time.Now().Unix(),
 			}); err != nil {
 				br.rt.logger.Error("追加图片视觉消息失败", err, "session", br.sessionID)
 				return
 			}
-			pendingImages = imageEntry{}
+			br.writePendingImages = imageEntry{}
 		}
 	}
-	// 本批已消费：迭代号与下一轮的批内 assistant 序号无跨轮连续性，整体作废
-	// （未回写的残余条目——如批内 assistant 少于调用数——直接丢弃，不串轮）
-	br.callUsageByIter = nil
+	// 水位推进到当前长度：迭代边界增量回写的关键（同一批消息只回写一次）
+	br.writeLen = len(msgs)
+	// 未消费的 usage 条目保留（跨增量回写由 writeAsstSeq 对位）；
+	// 每轮 beginRun 整体作废，跨轮不串账。
 }
 
 // textOfBlocks 拼接消息的文本内容块（goagent 内存消息 → session 消息的文本提取）。

@@ -135,6 +135,14 @@ func (b *AskBuilder) OnSubtaskCompleted(fn func(data events.SubtaskResult)) *Ask
 	})
 }
 
+func (b *AskBuilder) OnSubtaskTitleUpdated(fn func(data events.SubtaskTitle)) *AskBuilder {
+	return b.on(events.SubtaskTitleUpdated, func(d any) {
+		if v, ok := d.(events.SubtaskTitle); ok {
+			fn(v)
+		}
+	})
+}
+
 func (b *AskBuilder) OnPermissionRequest(fn func(data events.PermissionRequestData)) *AskBuilder {
 	return b.on(events.PermissionRequest, func(d any) {
 		if v, ok := d.(events.PermissionRequestData); ok {

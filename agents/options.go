@@ -49,6 +49,29 @@ func WithAgentExists(checker func(agentName string) bool) RuntimeConfig {
 	return func(r *Runtime) { r.agentExists = checker }
 }
 
+// WithTitleFn 注入子代理会话标题提炼回调（照 agentExists 先例：goharness
+// 对标题提炼的实现零依赖，只约定契约）。
+//
+// 实现方（如 mindx daemon）负责：调 LLM 把任务描述提炼成简短标题 → 落库
+// 到 sessionID 对应会话 → 返回新标题。goharness 在子任务受理后的后台
+// goroutine 中调用，并按返回值发射 SubtaskTitleUpdated 事件刷新前端标题；
+// 返回空串或与受理快照相同时视为提炼失败/无变化，不发射事件。
+// 未注入时受理快照标题（任务文本截断）即最终标题。
+func WithTitleFn(fn func(sessionID, task string) string) RuntimeConfig {
+	return func(r *Runtime) { r.titleFn = fn }
+}
+
+// WithHarvestReporter 注入收割报告回灌回调（非阻塞 CollectResults 的收尾接缝）。
+//
+// 后台收割全部子任务落定或达到总上限（30 分钟）时，收割器以
+// tools.HarvestReport 调用本回调；实现方（如 mindx daemon）以「系统收割」
+// 消息把结果写进主会话上下文并程序化发起一轮执行（走主会话串行队列，
+// 与用户消息天然顺序化）。未注入时报告仅记日志丢弃——收割结果不进上下文，
+// LLM 无法获知子任务结局。
+func WithHarvestReporter(reporter func(tools.HarvestReport)) RuntimeConfig {
+	return func(r *Runtime) { r.harvestReporter = reporter }
+}
+
 func WithToolRegistry(reg tools.ToolRegistry) RuntimeConfig {
 	return func(r *Runtime) { r.toolReg = reg }
 }

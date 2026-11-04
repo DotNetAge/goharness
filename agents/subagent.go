@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -80,16 +81,30 @@ type perSessionState struct {
 //     无空闲候选才新建独立会话（分身/并行委派）；传 sessionID 时复用已登记实例或从 store 恢复。
 //   - 通过 Runtime.Ask 运行子智能体的独立思考循环（与父级上下文隔离）。
 //   - 以 per-session 互斥锁串行化同一会话的并发 Ask。
+//   - 承载后台收割器（collector.go）：实现 tools.HarvestStarter，按 taskID 登记
+//     会话锚点信息（taskInfos），周期轮询落定事实并经宿主汇报回调回灌主会话。
 //
 // 依赖经 rt 反向引用（子系统持有父编排器的引用是 Go 常见模式，相比传递多个回调更清晰）：
 //   - rt.Ask：运行子智能体思考循环
 //   - rt.agentExists：校验子智能体配置是否存在（应用侧回调）
+//   - rt.titleFn：提炼子代理会话标题（应用侧回调）
+//   - rt.harvestReporter：收割报告回灌主会话（应用侧回调）
 //   - rt.SessionConfigs()：为新建子会话注入 Compactor / Sandbox 等通用能力
 //   - rt.logger：日志
 type subAgentManager struct {
 	rt     *Runtime
 	mu     sync.RWMutex
 	states map[string]*perSessionState
+
+	// taskInfos 是收割目标登记表：taskID → 会话锚点与展示信息。
+	// Submit 受理时写入，进程生命周期内保留（跨多轮收割复用）；daemon
+	// 重启即丢失——跨重启恢复依赖 LLM 回执中的 session_id 提示。
+	taskInfos map[string]harvestTaskInfo
+
+	// activeHarvests 是收割去重登记表：主会话 ID → 收割进行中。
+	// 同一主会话至多一个收割 goroutine（重复 CollectResults 返回「进行中」
+	// 回执），收割结束（无论成败）解除登记。
+	activeHarvests map[string]bool
 
 	// sponsored 是「主会话停止 → 派生子代理级联强停」的登记表：
 	// 主会话 ID → (子会话 ID → 子执行循环 ctx 的取消函数)。
@@ -104,9 +119,11 @@ type subAgentManager struct {
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
 	return &subAgentManager{
-		rt:        rt,
-		states:    make(map[string]*perSessionState),
-		sponsored: make(map[string]map[string]context.CancelFunc),
+		rt:             rt,
+		states:         make(map[string]*perSessionState),
+		taskInfos:      make(map[string]harvestTaskInfo),
+		activeHarvests: make(map[string]bool),
+		sponsored:      make(map[string]map[string]context.CancelFunc),
 	}
 }
 
@@ -482,6 +499,11 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 	}
 	acceptedTaskID = taskID
 
+	// 受理即时标题：任务文本截断快照（不拖受理链路），随受理事件同步下发
+	// 前端（UI 立即渲染占位标题）。titleFn 注入时后台提炼更准确的标题
+	//（落库 + 事件刷新）；未注入时快照即最终标题。
+	title := snapshotTitle(req.Task)
+
 	// 受理事件：前端据此渲染「子任务运行中」状态（不受任务实例 Pending 态影响）。
 	if tc.EmitEvent != nil {
 		tc.EmitEvent(events.ReactEvent{
@@ -492,14 +514,26 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 				Description: req.Task,
 				SessionID:   sid,
 				TaskID:      taskID,
+				Title:       title,
 			},
 		})
 	}
+
+	if m.rt.titleFn != nil && title != "" {
+		go m.refineSubSessionTitle(sid, taskID, req.AgentName, req.Task, title, tc.EmitEvent)
+	}
+
+	// 收割目标登记：taskID → 会话锚点与展示信息（collector.go 后台收割
+	// 依据；进程生命周期内保留）。
+	m.mu.Lock()
+	m.taskInfos[taskID] = harvestTaskInfo{sessionID: sid, agentName: req.AgentName, title: title}
+	m.mu.Unlock()
 
 	m.rt.logger.Info("sub-agent task accepted",
 		"agent_name", req.AgentName,
 		"session_id", sid,
 		"task_id", taskID,
+		"title", title,
 	)
 
 	// 后台执行：goroutine 归宿主，ctx 剥离取消信号与截止时间（Execute 同步返回后
@@ -509,7 +543,7 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 	acceptedTaskID = ""
 	go m.runTask(context.WithoutCancel(ctx), taskID, req.AgentName, req.Task, st, tc)
 
-	return subagent.SubAgentReceipt{Accepted: true, TaskID: taskID}, nil
+	return subagent.SubAgentReceipt{Accepted: true, TaskID: taskID, SessionID: sid, Title: title}, nil
 }
 
 // runTask 在后台 goroutine 中运行子任务并结算控制平面条目。
@@ -703,6 +737,45 @@ func newTaskID() string {
 		return fmt.Sprintf("task-%d", time.Now().UnixNano())
 	}
 	return "task-" + hex.EncodeToString(b[:])
+}
+
+// snapshotTitle 用任务文本截断生成受理即时标题快照（长度上限与 mindx 标题
+// 提炼的双保险一致，rune 计截断）。不拖受理链路；titleFn 注入时后台提炼
+// 更准确的标题并经 SubtaskTitleUpdated 事件刷新。
+func snapshotTitle(task string) string {
+	title := strings.TrimSpace(task)
+	if runes := []rune(title); len(runes) > 40 {
+		title = string(runes[:40])
+	}
+	return title
+}
+
+// refineSubSessionTitle 后台提炼子代理会话标题：titleFn 由宿主（如 mindx
+// daemon）注入，负责「调 LLM 提炼 + RenameSession 落库」并返回新标题；
+// 提炼成功且与受理快照不同时发射 SubtaskTitleUpdated 事件刷新前端标题。
+// 失败（panic/空返回/与快照相同）静默——回执中的快照标题兜底，不重试、
+// 不阻塞受理与子任务执行链路。
+func (m *subAgentManager) refineSubSessionTitle(sessionID, taskID, agentName, task, fallback string, emit func(events.ReactEvent)) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.rt.logger.Error("子代理会话标题提炼 panic", fmt.Errorf("%v", r),
+				"session_id", sessionID, "task_id", taskID, "stack", string(debug.Stack()))
+		}
+	}()
+	title := m.rt.titleFn(sessionID, task)
+	if title == "" || title == fallback || emit == nil {
+		return
+	}
+	emit(events.ReactEvent{
+		AgentName: agentName,
+		Type:      events.SubtaskTitleUpdated,
+		Data: events.SubtaskTitle{
+			AgentName: agentName,
+			SessionID: sessionID,
+			TaskID:    taskID,
+			Title:     title,
+		},
+	})
 }
 
 // registerPermissionWait 登记子会话挂起等待主会话授权的状态。

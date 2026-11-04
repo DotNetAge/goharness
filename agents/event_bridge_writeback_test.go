@@ -65,8 +65,74 @@ func TestWriteBackNewMessagesAttachesUsagePerAssistant(t *testing.T) {
 	if msgs[2].Usage == nil || msgs[2].Usage.PromptTokens != 200 || msgs[2].Usage.CompletionTokens != 20 {
 		t.Errorf("第 1 条 assistant 应携带迭代 1 的 usage, got %+v", msgs[2].Usage)
 	}
-	if br.callUsageByIter != nil {
-		t.Error("回写后迭代用量表应整体作废")
+	if len(br.callUsageByIter) != 0 {
+		t.Errorf("回写后已消费的迭代用量条目应删除, got %v", br.callUsageByIter)
+	}
+}
+
+// TestWriteBackWatermarkIncremental 验证迭代边界增量回写：两次回写各消费
+// 自己的增量段，已写入消息不重复落库；水位推进到最后消费位置。
+func TestWriteBackWatermarkIncremental(t *testing.T) {
+	rt := newTestRuntime(t)
+	sess := newTestSession(t)
+	b := &AskBuilder{ctx: context.Background(), agentName: "test-agent", session: sess, runtime: rt}
+	br := newEventBridge(rt, b, func(events.ReactEventType, any) {}, "conv-watermark", time.Now(), nil)
+	br.beginRun(0)
+
+	// 第一次快照：迭代 0 结束——assistant(tool_calls) + tool 结果
+	br.completeMsgs = []gochatcore.Message{
+		{
+			Role:    gochatcore.RoleAssistant,
+			Content: []gochatcore.ContentBlock{{Type: gochatcore.ContentTypeText, Text: "先查一下"}},
+			ToolCalls: []gochatcore.ToolCall{{
+				ID: "call-1", Name: "dummy", Arguments: "{}",
+			}},
+		},
+		{
+			Role:       gochatcore.RoleTool,
+			ToolCallID: "call-1",
+			Content:    []gochatcore.ContentBlock{{Type: gochatcore.ContentTypeText, Text: "工具结果"}},
+		},
+	}
+	br.recordUsage(&goagent.TokenUsageEvent{
+		Iteration: 0,
+		Usage:     &gochatcore.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+	})
+	br.writeBackNewMessages(sess, 0)
+
+	msgs := sess.All()
+	if len(msgs) != 2 {
+		t.Fatalf("第一次增量回写消息数不符: got %d, want 2", len(msgs))
+	}
+	if msgs[0].Usage == nil || msgs[0].Usage.PromptTokens != 100 {
+		t.Errorf("第一次增量回写应对位迭代 0 usage, got %+v", msgs[0].Usage)
+	}
+
+	// 第二次快照：迭代 1 结束——最终答案（跨增量配对状态延续）
+	br.completeMsgs = append(br.completeMsgs, gochatcore.Message{
+		Role:    gochatcore.RoleAssistant,
+		Content: []gochatcore.ContentBlock{{Type: gochatcore.ContentTypeText, Text: "最终回答"}},
+	})
+	br.recordUsage(&goagent.TokenUsageEvent{
+		Iteration: 1,
+		Usage:     &gochatcore.Usage{PromptTokens: 200, CompletionTokens: 20, TotalTokens: 220},
+	})
+	br.writeBackNewMessages(sess, 0)
+
+	msgs = sess.All()
+	if len(msgs) != 3 {
+		t.Fatalf("第二次增量回写后消息数不符（不应重复回写）: got %d, want 3", len(msgs))
+	}
+	if msgs[2].Usage == nil || msgs[2].Usage.PromptTokens != 200 {
+		t.Errorf("第二条 assistant 应对位迭代 1 usage, got %+v", msgs[2].Usage)
+	}
+	if br.writeLen != 3 {
+		t.Errorf("回写水位应推进到 3, got %d", br.writeLen)
+	}
+	// 再次回写（同一快照）应为 no-op
+	br.writeBackNewMessages(sess, 0)
+	if len(sess.All()) != 3 {
+		t.Errorf("同水位重复回写不应重复落库, got %d 条", len(sess.All()))
 	}
 }
 
@@ -124,7 +190,7 @@ func TestWriteBackNewMessagesEstimatesMissingUsage(t *testing.T) {
 	if u1.TotalTokens != u1.PromptTokens+u1.CompletionTokens {
 		t.Errorf("估算 total 应为 prompt+completion: got %d", u1.TotalTokens)
 	}
-	if br.callUsageByIter != nil {
-		t.Error("回写后迭代用量表应整体作废")
+	if len(br.callUsageByIter) != 0 {
+		t.Errorf("回写后已消费的迭代用量条目应删除, got %v", br.callUsageByIter)
 	}
 }
