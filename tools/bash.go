@@ -301,6 +301,10 @@ func performBash(ctx context.Context, logger logging.Logger, sessionID string, p
 
 	// goharness 不运行于 Windows 环境，统一使用 sh -c 执行命令。
 	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", p.command)
+	// 超时击杀与等待防护：仅杀直接子进程时，孙进程可持有 stdout/stderr 管道
+	// 令 cmd.Wait 永久阻塞（Bash 工具挂死 → 子代理卡死 → 主会话队列被永久
+	// 占住）。configureBashProcess 按平台配置进程组击杀与等待延迟兜底。
+	configureBashProcess(cmd)
 
 	// 子进程环境注入：默认继承守护进程进程环境（不显式设置 cmd.Env）。
 	// 应用侧注入了环境解析器（ToolContext.SubProcessEnv）且返回非空时，

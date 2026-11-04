@@ -46,6 +46,13 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 	}
 }
 
+// collectWaitCap 是 CollectResults 对单个子任务的最长等待时间。
+// CollectResults 已剥离单次工具执行超时（withoutDeadline），若不设上限，
+// 一个挂死/永不落定的子任务会令主会话的串行队列被永久占住（大梁再也无法
+// 对话）。上限是安全阀而非正常路径：正常子任务远在此前落定；超限后返回
+// failed 引导性错误，主会话得以继续对话，可稍后重试收集或重新派发。
+const collectWaitCap = 30 * time.Minute
+
 // Execute 按跟踪句柄收集子任务结果。
 // 并发等待所有句柄落定（单个子任务的长时间执行或挂起不得阻塞其它子任务的
 // 结果收集），结果按入参顺序写入预分配槽位，保证返回顺序与 task_ids 一致。
@@ -116,6 +123,8 @@ func (t *CollectResultsTool) collectOne(ctx context.Context, manager *goagent.Ru
 		}
 	}
 
+	waitTimer := time.NewTimer(collectWaitCap)
+	defer waitTimer.Stop()
 	select {
 	case <-rt.Done():
 	case <-ctx.Done():
@@ -124,6 +133,15 @@ func (t *CollectResultsTool) collectOne(ctx context.Context, manager *goagent.Ru
 			"task_id": taskID,
 			"status":  "failed",
 			"error":   "已取消：等待子代理结果时被用户中断",
+		}
+	case <-waitTimer.C:
+		return map[string]string{
+			"task_id": taskID,
+			"status":  "failed",
+			"error": fmt.Sprintf("等待该子代理落定超过 %s 仍未结束，已放弃等待，其余子任务结果不受影响。"+
+				"该任务可能仍在后台执行或已挂死：可对全部句柄重新调用 CollectResults 重试收集（已落定任务会立即返回结果）；"+
+				"若确认任务已无意义，请重新派发 SubAgent 任务。",
+				collectWaitCap),
 		}
 	}
 
