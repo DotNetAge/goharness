@@ -560,7 +560,7 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 		return subagent.SubAgentReceipt{
 			Accepted: false,
 			Reason: fmt.Sprintf("该子代理会话已连续 %d 次因迭代次数达到上限而中断，继续派发同类任务只会重复失败，本次派发被拒绝。"+
-				"请把任务拆分为更小的子任务后重新派发；确需全新开始时，传入新的 session_id 新开会话。", streak),
+				"注意：同一任务描述的重派会被强制回到本会话并被再次拒绝；请把任务拆分为更小的子任务（改变任务描述）后重新派发，或告知用户该任务无法由子代理完成。", streak),
 		}, nil
 	}
 	askText := req.Task
