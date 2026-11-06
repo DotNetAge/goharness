@@ -73,18 +73,17 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:               "CollectResults",
 		MaxResultSizeChars: 50000,
-		Description:        "启动子代理结果的后台收割（非阻塞）：立即返回，全部子任务落定后结果自动汇报到本会话",
-		Prompt: `启动子代理结果的后台收割。调用后立即返回（status=harvesting），收割在后台按周期检查各子任务状态，全部落定后结果会以「系统收割」消息自动汇报到本会话，无需再次调用等待。
+		Description:        "启动子任务结果收割（立即返回），全部任务落定后结果自动送达本会话",
+		Prompt: `启动子任务结果收割，调用后立即返回（status=harvesting）；全部任务落定后结果自动送达本会话，无需再次调用等待。
 
-- task_ids：SubAgent 受理回执返回的跟踪句柄数组。
-- session_ids（可选）：对应的子代理会话 ID 数组（与 task_ids 一一对应）。daemon 重启后轮内句柄可能失效，传会话 ID 可按落盘事实恢复结果。
-
-重复调用：新派发的任务会被自动合并登记进本轮收割（不会重复收割已登记任务），因此收割进行中派发了新任务也请再次调用；仅当本次传入的任务全部已在登记中时返回进行中回执。收割总时长上限 30 分钟，到点会汇报当前状态（完成/仍在执行/等待你回答），不会静默丢失。`,
+- task_ids：SubAgent 受理回执返回的跟踪句柄。
+- session_ids（可选）：与 task_ids 一一对应的子代理会话 ID，用于跨重启恢复结果；不需要可整体省略。
+- 收割进行中又有新派发时请再次调用（新任务自动合并进收割）；仅重复传入已登记任务时返回进行中回执，属正常现象。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
-			{Name: "task_ids", Type: "array", Description: "要收割结果的子任务跟踪句柄数组。task_id 来自 SubAgent 受理回执。", Required: true},
-			{Name: "session_ids", Type: "array", Description: "可选：对应的子代理会话 ID 数组（与 task_ids 按顺序一一对应），用于跨重启按落盘事实恢复结果。", Required: false},
+			{Name: "task_ids", Type: "array", Description: "要收割结果的子任务跟踪句柄数组（来自 SubAgent 受理回执）。", Required: true},
+			{Name: "session_ids", Type: "array", Description: "可选：与 task_ids 一一对应的子代理会话 ID 数组，用于跨重启恢复结果。", Required: false},
 		},
 	}
 }
@@ -171,13 +170,12 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 
 	if err := t.harvester.StartHarvest(tc.Session.ID(), targets); err != nil {
 		if errors.Is(err, ErrHarvestAlreadyActive) {
-			// 去重：全部目标均已登记（无新增），重复调用不报错、不重复收割，
-			// 引导 LLM 等自动汇报。
+			// 去重：全部目标均已登记（无新增），重复调用不报错、不重复收割。
 			return map[string]any{
 				"status": "harvesting",
 				"count":  len(taskIDs),
 				"reused": true,
-				"notes":  "这些任务的收割均已在进行中，无需重复启动；全部子任务落定后结果会自动汇报到本会话。请在回复中告知用户：结果稍后自动送达，可先继续其它工作。",
+				"notes":  "这些任务的收割均已在进行中，全部落定后结果自动汇报到本会话。",
 			}, nil
 		}
 		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide("启动后台收割时失败", WithErrDetail("收割器启动失败", err), "稍后重新调用 CollectResults；若持续失败请告知用户检查 daemon 状态"), err)
@@ -191,6 +189,6 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 	return map[string]any{
 		"status": "harvesting",
 		"count":  len(taskIDs),
-		"notes":  "后台收割已登记，各子任务落定后结果会自动汇报。请在回复中明确告知用户：子任务结果会自动送达本会话，可以先继续其它工作或对话。",
+		"notes":  "后台收割已登记，各任务落定后结果自动汇报到本会话。请在回复中告知用户：结果稍后自动送达，可先继续其它工作或对话。",
 	}, nil
 }

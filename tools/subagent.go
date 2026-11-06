@@ -24,10 +24,12 @@ func NewSubAgentTool(dispatcher subagent.SubAgentDispatcher) *SubAgentTool {
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
-		Description: "派发子任务给另一个 Agent 异步执行，立即返回受理回执（含跟踪句柄 task_id、子代理会话 session_id 与任务标题 title）。之后用 CollectResults 启动后台结果收割。",
-		Prompt: `为一次性委派任务派发一个子代理。调用后立即返回受理回执（含跟踪句柄 task_id、子代理会话 session_id 与任务标题 title），子任务在后台独立运行。
-派发后无需阻塞等待：在同一响应中并行派发全部所需的 SubAgent，然后调用 CollectResults(task_ids...) 启动结果收割——它立即返回并在后台自动收割，全部子任务落定后结果会自动汇报到本会话。请在回复中明确告知用户：子任务结果稍后会自动送达，期间可以继续其它工作或对话。
-同一响应中的多个 SubAgent 调用会并行执行。请根据角色命名代理（例如 "code_reviewer"）。任务描述应自包含——子代理无法看到你的对话上下文。`,
+		Description: "派发子任务给具名子代理异步执行，立即返回受理回执（task_id / session_id / title），结果落定后自动送达本会话。",
+		Prompt: `派发子任务给具名子代理在后台独立执行，立即返回受理回执（跟踪句柄 task_id、子代理会话 session_id、任务标题 title），结果不随本次调用返回——落定后自动送达本会话。
+
+- 并行派发：需要多个子任务时在同一响应中全部派发，然后调用 CollectResults(task_ids...) 启动结果收割。
+- 任务描述自包含：子代理看不到你的对话上下文。
+- 复用对话：传入 session_id（或省略后系统自动延续该子代理最近的空闲会话）可延续与该子代理的既有对话；被占用时自动新建独立会话。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
 		Parameters: []Parameter{
@@ -86,17 +88,10 @@ func (t *SubAgentTool) Execute(ctx context.Context, params map[string]any) (any,
 		))
 	}
 
-	// 会话来源软性说明：主 Agent 与子 Agent 的对话是连贯的——
-	// 未显式传 session_id 时，系统自动延续该子代理最近一次的空闲会话
-	// （被占用才新建）。回执带 session_id（长期锚点，落盘持久）与 title
-	//（受理快照，后台会提炼更准确的标题），LLM 据此即可向用户描述派发目标。
-	// 明确引导：调用 CollectResults 启动后台收割，结果自动汇报。
-	var notes string
-	if reqSessionID != "" {
-		notes = "已延续与 " + agentName + " 的既有对话（子代理会话 " + receipt.SessionID + "）。请调用 CollectResults 启动结果收割（立即返回，结果落定后自动汇报），并在回复中告知用户可先继续其它工作。"
-	} else {
-		notes = "Agent 间对话连贯：系统已自动延续与 " + agentName + " 的对话上下文（优先复用其最近空闲会话，被占用则新建，子代理会话 " + receipt.SessionID + "）。请调用 CollectResults 启动结果收割（立即返回，结果落定后自动汇报），并在回复中告知用户可先继续其它工作。"
-	}
+	// 回执文本只保留 LLM 需要的最低限度：任务已在后台运行、结果稍后自动
+	// 送达、调用 CollectResults 启动收割。长篇机制说明（会话复用规则、
+	// 收割器内部行为）是每轮都进历史的噪声，不写入回执。
+	notes := "任务已在后台执行，结果稍后自动送达。请调用 CollectResults 启动结果收割（立即返回），并在回复中告知用户可先继续其它工作。"
 	return map[string]any{
 		"status":     "running",
 		"agent_name": agentName,
