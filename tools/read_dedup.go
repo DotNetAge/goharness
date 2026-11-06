@@ -8,13 +8,14 @@ import (
 
 // ReadFileState 缓存一次读取操作的状态。
 //
-// 缓存 key 是 (filePath, offset, limit) 三元组；命中条件：mtime 一致即命中——
-// 同键请求在文件未变化时重读输出必然逐字节相同，无需比较行数或窗口大小。
-// 不满足时 → 全量读取并更新缓存，不做增量合并。
+// 缓存 key 是 (sessionID, filePath, offset, limit) 四元组：按会话隔离，
+// 保证命中回执所引用的「此前读取的结果」确实存在于当前会话的历史中
+//（跨会话共享键会导致另一会话被引用不存在的上下文）。
 //
-// 注意：若未来启用 DynamicDefaultLines，写入键用的是动态计算的 maxLines
-//（buildTextResult 中动态默认行数在缓存写入前生效），而命中检查请求侧的键
-// 也随之变化，键语义需重新审视，避免写入与检查键错位。
+// 命中条件：mtime 一致即命中——同键请求（同 offset 同 limit）在文件未变化
+// 时重读输出必然逐字节相同（动态默认行数在缓存检查前已确定，请求侧与
+// 写入侧键一致），无需比较行数或窗口大小。不满足时 → 全量读取并更新缓存，
+// 不做增量合并。
 //
 // 图片不写入 DedupCache（图片去重收益低）。
 type ReadFileState struct {
@@ -24,8 +25,11 @@ type ReadFileState struct {
 }
 
 // dedupMaxEntries 是 DedupCache 的条目数上限。超限时整表清空：缓存是纯优化，
-// flush 安全；sync.Map 不支持 LRU，不为缓存优化引入更复杂的淘汰结构。
-const dedupMaxEntries = 256
+// 清空后下一次读取走全量路径即可恢复；sync.Map 不支持 LRU，
+// 不为缓存优化引入更复杂的淘汰结构。
+// 上限依据：按并发会话数 × 单会话读取键数估算（如 10 会话 × 200 键 = 2000），
+// 取 4096 留余量，避免多子代理并行读取时逼近上限触发整表清空使去重失效。
+const dedupMaxEntries = 4096
 
 // readFileStates 是全局的 DedupCache
 var readFileStates sync.Map
@@ -80,9 +84,10 @@ func invalidateNegativeCache(path string) {
 	negativeCache.Delete(path)
 }
 
-// dedupCacheKey 生成缓存 key：(filePath:offset:limit)
-func dedupCacheKey(filePath string, offset, limit int) string {
-	return filePath + ":" + itoa(offset) + ":" + itoa(limit)
+// dedupCacheKey 生成缓存 key：(sessionID:filePath:offset:limit)。
+// sessionID 为空时退化为无会话前缀键（无会话上下文的调用方）。
+func dedupCacheKey(sessionID, filePath string, offset, limit int) string {
+	return sessionID + "\x00" + filePath + "\x00" + itoa(offset) + "\x00" + itoa(limit)
 }
 
 // itoa 是一个简单的整数转字符串函数。
@@ -117,14 +122,19 @@ func getReadFileState(cacheKey string) (*ReadFileState, bool) {
 }
 
 // setReadFileState 设置缓存的读取状态。
+// 同键覆盖（重读后更新状态）不增加条目计数；仅新增键计数，
 // 条目数超过 dedupMaxEntries 时整表清空，保证内存有界。
 func setReadFileState(cacheKey string, state *ReadFileState) {
+	// LoadOrStore 键已存在时不更新值，覆盖路径需显式 Store 最新状态
+	if _, loaded := readFileStates.LoadOrStore(cacheKey, state); loaded {
+		readFileStates.Store(cacheKey, state)
+		return
+	}
 	if readStateCount.Add(1) > dedupMaxEntries {
 		readFileStates.Range(func(key, _ any) bool {
 			readFileStates.Delete(key)
 			return true
 		})
-		readStateCount.Store(1)
+		readStateCount.Store(0)
 	}
-	readFileStates.Store(cacheKey, state)
 }

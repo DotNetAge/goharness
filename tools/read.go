@@ -20,7 +20,8 @@ import (
 //   - 文件大小限制：防止读取过大的文件
 //   - 输出预算控制：根据输出字符数限制，超限返回错误并引导分页读取
 //   - 多格式支持：文本文件、图片、PDF、DOCX、XLSX、EPUB 等
-//   - 去重缓存：避免重复 I/O（见过度设计审计 #6：简化至全量 TTL 缓存）
+//   - 去重缓存：同会话同键且文件未变化时返回短回执，避免重复全文进入
+//     会话历史（键含 sessionID/path/offset/limit，条目数上限整表清空）
 //   - ENOENT 兜底：简化的 CWD 前缀建议（见过度设计审计 #7）
 //   - 图片读取：通过 FileReadingLimits.EnableImageReading 启用，内联处理（见过度设计审计 #8）
 //   - 动态默认行数：根据文件大小自动调整默认读取行数
@@ -230,21 +231,34 @@ func (r *Read) authorizeRead(ctx context.Context, path string) (resolvedPath str
 
 // performRead 执行文件读取核心逻辑：NegativeCache、stat 检查、权限验证、格式检测与内容读取。
 func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedPath string, scope PathScope) (any, error) {
-	// B. NegativeCache：快速拒绝
+	// 去除前导斜杠的相对路径（用于 fs.Stat），负缓存复核与后续 stat 检查共用
+	cleanPath := strings.TrimLeft(filepath.ToSlash(resolvedPath), "/")
+
+	// 会话 ID：去重键按会话隔离；无会话上下文（Session 为 nil）时退化为空前缀
+	sessionID := ""
+	if tc := GetToolContext(ctx); tc.Session != nil {
+		sessionID = tc.Session.ID()
+	}
+
+	// B. NegativeCache：快速拒绝。命中时先 stat 复核防假阴性——负缓存记录后
+	// 文件可能已被其他进程或会话创建，仍不存在才拒绝；已存在则清除负缓存，
+	// 走正常读取路径。
 	if checkNegativeCache(resolvedPath) {
-		return &ReadResult{
-			Data: &ReadData{
-				Success:    false,
-				Path:       resolvedPath,
-				Scope:      string(scope),
-				Note:       GuideReadFileNotFound(resolvedPath) + "\n（此前已确认）",
-				Suggestion: SuggestionFileNotFound,
-			},
-		}, nil
+		if _, statErr := fs.Stat(store.OS, cleanPath); errors.Is(statErr, fs.ErrNotExist) {
+			return &ReadResult{
+				Data: &ReadData{
+					Success:    false,
+					Path:       resolvedPath,
+					Scope:      string(scope),
+					Note:       GuideReadFileNotFound(resolvedPath) + "\n（此前已确认）",
+					Suggestion: SuggestionFileNotFound,
+				},
+			}, nil
+		}
+		invalidateNegativeCache(resolvedPath)
 	}
 
 	// Pre-read: stat 检查
-	cleanPath := strings.TrimLeft(filepath.ToSlash(resolvedPath), "/")
 	info, err := fs.Stat(store.OS, cleanPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -345,7 +359,7 @@ func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedP
 		// 支持 offset/limit 分页精读，超过输出字符预算时返回错误，
 		// 不为每种格式单独实现限制逻辑。禁用 DedupCache 与 filestate，
 		// 避免转换结果与文件原始状态混淆。
-		return r.buildTextResult(resolvedPath, cleanPath, []byte(doc.content), info.Size(), scope, params, false, &docMeta{
+		return r.buildTextResult(resolvedPath, cleanPath, sessionID, []byte(doc.content), info.Size(), scope, params, false, &docMeta{
 			format: format,
 			title:  doc.title,
 			author: doc.author,
@@ -384,7 +398,7 @@ func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedP
 	if err != nil {
 		return nil, fmt.Errorf("%s", GuideReadIO(resolvedPath, err))
 	}
-	return r.buildTextResult(resolvedPath, cleanPath, data, info.Size(), scope, params, true, nil)
+	return r.buildTextResult(resolvedPath, cleanPath, sessionID, data, info.Size(), scope, params, true, nil)
 }
 
 // Execute 编排 Read 工具执行流程：validate → authorize → perform。

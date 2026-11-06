@@ -34,6 +34,7 @@ type docMeta struct {
 // 参数：
 //   - resolvedPath: 已解析的绝对路径
 //   - cleanPath:    去除前导斜杠的相对路径（用于 fs.Stat）
+//   - sessionID:    当前会话 ID（去重键按会话隔离；空表示无会话上下文）
 //   - data:         原始内容（文本文件内容或文档转换的 Markdown）
 //   - sizeBytes:    源文件大小
 //   - scope:        读取范围
@@ -41,7 +42,7 @@ type docMeta struct {
 //   - useStateCache:是否启用 DedupCache 与 filestate 状态跟踪（纯文本启用；
 //     文档转换禁用，避免转换结果与文件原始状态混淆）
 //   - meta:         文档转换元数据（纯文本时为 nil）
-func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, sizeBytes int64, scope PathScope, params map[string]any, useStateCache bool, meta *docMeta) (*ReadResult, error) {
+func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, data []byte, sizeBytes int64, scope PathScope, params map[string]any, useStateCache bool, meta *docMeta) (*ReadResult, error) {
 	// 获取分页参数
 	startLine := 1
 	if rawOffset, found := GetParam(params, "offset"); found {
@@ -56,9 +57,19 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 		}
 	}
 
+	// A. 动态默认行数（当未指定 limit 且 DynamicDefaultLines 启用时）。
+	// 必须在 DedupCache 键构造之前确定：键含 maxLines，动态调整若发生在
+	// 键构造之后，未传 limit 的读取会以 DefaultLines 检查、以动态值写入，
+	// 键错位导致去重永不命中。
+	// bytes.Count 零分配统计行数（等价 len(strings.Split)，后者会对全文件做行切片分配）
+	if _, hasLimit := GetParam(params, "limit"); !hasLimit && r.limits.DynamicDefaultLines {
+		preTotalLines := bytes.Count(data, readLineSep) + 1
+		maxLines = dynamicDefaultLines(preTotalLines, r.limits.DefaultLines)
+	}
+
 	// B. DedupCache 检查（仅文本路径启用）
 	if useStateCache {
-		cacheKey := dedupCacheKey(resolvedPath, startLine, maxLines)
+		cacheKey := dedupCacheKey(sessionID, resolvedPath, startLine, maxLines)
 		if cached, ok := getReadFileState(cacheKey); ok {
 			statInfo, statErr := fs.Stat(store.OS, cleanPath)
 			if statErr == nil {
@@ -74,7 +85,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 								Path:       resolvedPath,
 								Scope:      string(scope),
 								SizeBytes:  sizeBytes,
-								Content:    "文件自上次读取后未发生变化。本对话中之前 Read 工具的结果仍然有效，请引用此前的结果。",
+								Content:    "文件自上次读取后未发生变化。此前读取的结果仍然有效，请直接引用，无需重复读取。",
 								Suggestion: SuggestionContentUnchanged,
 								Note:       "文件未变化。引用之前的结果。",
 							},
@@ -83,13 +94,6 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 				}
 			}
 		}
-	}
-
-	// E. 动态默认行数（当未指定 limit 且 DynamicDefaultLines 启用时）。
-	// bytes.Count 零分配统计行数（等价 len(strings.Split)，后者会对全文件做行切片分配）
-	if _, hasLimit := GetParam(params, "limit"); !hasLimit && r.limits.DynamicDefaultLines {
-		preTotalLines := bytes.Count(data, readLineSep) + 1
-		maxLines = dynamicDefaultLines(preTotalLines, r.limits.DefaultLines)
 	}
 
 	endLine := startLine + maxLines - 1
@@ -140,7 +144,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 			GuideReadOutputBudget(startLine, startLine+linesRead-1, outputChars, r.limits.MaxOutputChars, totalLines))
 	}
 
-	// B. 写入 DedupCache（仅文本路径启用）
+	// B. 写入 DedupCache（仅文本路径启用；键与命中检查一致，均含动态 maxLines）
 	if useStateCache {
 		state := &ReadFileState{
 			Limit:     linesRead,
@@ -151,7 +155,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath string, data []byte, size
 				state.MtimeMs = fi.ModTime().UnixMilli()
 			}
 		}
-		setReadFileState(dedupCacheKey(resolvedPath, startLine, maxLines), state)
+		setReadFileState(dedupCacheKey(sessionID, resolvedPath, startLine, maxLines), state)
 	}
 
 	// 构建结果

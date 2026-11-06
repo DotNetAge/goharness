@@ -121,26 +121,31 @@ func TestValidateReadPath_EmptyPath(t *testing.T) {
 
 func TestDedupCacheKey(t *testing.T) {
 	tests := []struct {
-		filePath string
-		offset   int
-		limit    int
-		expected string
+		sessionID string
+		filePath  string
+		offset    int
+		limit     int
+		expected  string
 	}{
-		{"/path/file.txt", 1, 0, "/path/file.txt:1:0"},
-		{"/path/file.txt", 100, 500, "/path/file.txt:100:500"},
-		{"/path/file.txt", 0, 0, "/path/file.txt:0:0"},
-		{"/path/file.txt", -1, 0, "/path/file.txt:-1:0"},
+		{"sess-a", "/path/file.txt", 1, 0, "sess-a\x00/path/file.txt\x001\x000"},
+		{"sess-a", "/path/file.txt", 100, 500, "sess-a\x00/path/file.txt\x00100\x00500"},
+		{"", "/path/file.txt", 0, 0, "\x00/path/file.txt\x000\x000"},
+		{"sess-b", "/path/file.txt", -1, 0, "sess-b\x00/path/file.txt\x00-1\x000"},
 	}
 	for _, tt := range tests {
-		got := dedupCacheKey(tt.filePath, tt.offset, tt.limit)
+		got := dedupCacheKey(tt.sessionID, tt.filePath, tt.offset, tt.limit)
 		if got != tt.expected {
-			t.Errorf("dedupCacheKey(%q, %d, %d) = %q, want %q", tt.filePath, tt.offset, tt.limit, got, tt.expected)
+			t.Errorf("dedupCacheKey(%q, %q, %d, %d) = %q, want %q", tt.sessionID, tt.filePath, tt.offset, tt.limit, got, tt.expected)
 		}
+	}
+	// 同一文件同参数在不同会话下键必须不同（去重按会话隔离）
+	if dedupCacheKey("sess-a", "/path/f.txt", 1, 0) == dedupCacheKey("sess-b", "/path/f.txt", 1, 0) {
+		t.Error("不同会话的同参数键不应相同")
 	}
 }
 
 func TestReadFileState_StoreAndLoad(t *testing.T) {
-	key := dedupCacheKey("/tmp/test.txt", 1, 0)
+	key := dedupCacheKey("sess-1", "/tmp/test.txt", 1, 0)
 	state := &ReadFileState{
 		LineCount: 100,
 		MtimeMs:   1234567890,
@@ -167,8 +172,8 @@ func TestReadFileState_NotFound(t *testing.T) {
 }
 
 func TestReadFileState_UniqueKeys(t *testing.T) {
-	key1 := dedupCacheKey("/tmp/a.txt", 1, 0)
-	key2 := dedupCacheKey("/tmp/b.txt", 1, 0)
+	key1 := dedupCacheKey("sess-1", "/tmp/a.txt", 1, 0)
+	key2 := dedupCacheKey("sess-1", "/tmp/b.txt", 1, 0)
 	setReadFileState(key1, &ReadFileState{MtimeMs: 111})
 	setReadFileState(key2, &ReadFileState{MtimeMs: 222})
 
@@ -556,8 +561,10 @@ func TestRead_DedupCache(t *testing.T) {
 	content := "hello world\nsecond line\nthird line\n"
 	os.WriteFile(file, []byte(content), 0644)
 
+	// 同一会话（同一 ctx）内两次读相同参数
+	ctx := testCtx(t)
 	// 第一次读
-	resultI1, err := read.Execute(testCtx(t), map[string]any{
+	resultI1, err := read.Execute(ctx, map[string]any{
 		"filePath": file,
 		"offset":   float64(1),
 		"limit":    float64(2),
@@ -567,7 +574,7 @@ func TestRead_DedupCache(t *testing.T) {
 	}
 
 	// 第二次读相同内容应命中 DedupCache → content_unchanged
-	resultI2, err := read.Execute(testCtx(t), map[string]any{
+	resultI2, err := read.Execute(ctx, map[string]any{
 		"filePath": file,
 		"offset":   float64(1),
 		"limit":    float64(2),
@@ -652,8 +659,9 @@ func TestRead_DedupCache_ShortFileDefaultLimitHits(t *testing.T) {
 	file := filepath.Join(dir, "short_dedup.txt")
 	os.WriteFile(file, []byte("line1\nline2\nline3\n"), 0644)
 
+	ctx := testCtx(t)
 	for i := 0; i < 2; i++ {
-		resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+		resultI, err := read.Execute(ctx, map[string]any{"filePath": file})
 		if err != nil {
 			t.Fatalf("read #%d: %v", i+1, err)
 		}
@@ -670,7 +678,8 @@ func TestRead_DedupCache_MtimeChangedMisses(t *testing.T) {
 	file := filepath.Join(dir, "mtime_dedup.txt")
 	os.WriteFile(file, []byte("content v1\n"), 0644)
 
-	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+	ctx := testCtx(t)
+	resultI, err := read.Execute(ctx, map[string]any{"filePath": file})
 	if err != nil {
 		t.Fatalf("first read: %v", err)
 	}
@@ -681,7 +690,7 @@ func TestRead_DedupCache_MtimeChangedMisses(t *testing.T) {
 		t.Fatalf("Chtimes: %v", err)
 	}
 
-	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": file})
+	resultI, err = read.Execute(ctx, map[string]any{"filePath": file})
 	if err != nil {
 		t.Fatalf("second read: %v", err)
 	}
@@ -691,6 +700,114 @@ func TestRead_DedupCache_MtimeChangedMisses(t *testing.T) {
 	}
 	if !strings.Contains(rr.Data.Content, "content v1") {
 		t.Error("mtime 变化后应返回实际文件内容")
+	}
+}
+
+// TestRead_DedupCache_SessionIsolated 去重键按会话隔离：另一会话读同一文件
+// 不得命中（命中回执引用的「此前读取的结果」必须存在于当前会话历史中）。
+func TestRead_DedupCache_SessionIsolated(t *testing.T) {
+	read, dir := tempReadTool(t, nil)
+	file := filepath.Join(dir, "session_isolated.txt")
+	os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0644)
+
+	// 会话 A 读取
+	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("session A read: %v", err)
+	}
+	rrA := resultI.(*ReadResult)
+	if rrA.Data.Suggestion == SuggestionContentUnchanged {
+		t.Fatal("会话 A 首次读取不应命中")
+	}
+
+	// 会话 B（新 ctx，新会话）读同一文件：应全量读取，不得命中会话 A 的缓存
+	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("session B read: %v", err)
+	}
+	rrB := resultI.(*ReadResult)
+	if rrB.Data.Suggestion == SuggestionContentUnchanged {
+		t.Error("跨会话读取不应命中 DedupCache（会话 B 历史中没有会话 A 的读取结果）")
+	}
+	if !strings.Contains(rrB.Data.Content, "alpha") {
+		t.Error("跨会话读取应返回实际文件内容")
+	}
+}
+
+// TestRead_NegativeCache_RevivedFile 负缓存命中时 stat 复核：文件随后被创建的，
+// 不得再返回「此前已确认」的假阴性，应清除负缓存并正常读取。
+func TestRead_NegativeCache_RevivedFile(t *testing.T) {
+	read, dir := tempReadTool(t, nil)
+	revived := filepath.Join(dir, "revived_test_path_12345.txt")
+
+	// 第一次读取：不存在 → 写入负缓存
+	resultI, err := read.Execute(testCtx(t), map[string]any{"filePath": revived})
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if rr := resultI.(*ReadResult); rr.Data.Suggestion != SuggestionFileNotFound {
+		t.Fatalf("first read: expected Suggestion=%q, got %q", SuggestionFileNotFound, rr.Data.Suggestion)
+	}
+	if !checkNegativeCache(revived) {
+		t.Fatal("expected path to be in negative cache")
+	}
+
+	// 文件随后被创建（如另一进程/会话写入）
+	os.WriteFile(revived, []byte("now exists\n"), 0644)
+
+	// 再次读取：不得命中负缓存假阴性，应返回实际内容
+	resultI, err = read.Execute(testCtx(t), map[string]any{"filePath": revived})
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	rr := resultI.(*ReadResult)
+	if rr.Data.Suggestion == SuggestionFileNotFound {
+		t.Error("文件已创建后不得返回假阴性的文件不存在结果")
+	}
+	if !strings.Contains(rr.Data.Content, "now exists") {
+		t.Errorf("文件已创建后应返回实际内容，实际=%q", rr.Data.Content)
+	}
+	// 负缓存应被清除
+	if checkNegativeCache(revived) {
+		t.Error("文件复活后负缓存条目应被清除")
+	}
+}
+
+// TestRead_DedupCache_DynamicDefaultKeyConsistent 启用 DynamicDefaultLines 后，
+// 未传 limit 的重复读取应命中：动态默认行数必须在缓存键构造之前确定，
+// 否则写入键（动态值）与检查键（DefaultLines）错位导致去重永不生效。
+func TestRead_DedupCache_DynamicDefaultKeyConsistent(t *testing.T) {
+	read, dir := tempReadTool(t, &FileReadingLimits{
+		MaxSizeBytes:        256 * 1024,
+		MaxOutputChars:      75000,
+		DefaultLines:        500,
+		DynamicDefaultLines: true,
+	})
+	// 3000 行文件：动态默认行数 = 3000/20+50 = 200 < DefaultLines 500
+	file := filepath.Join(dir, "dynamic_dedup.txt")
+	lines := make([]string, 3000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	os.WriteFile(file, []byte(strings.Join(lines, "\n")), 0644)
+
+	ctx := testCtx(t)
+	resultI, err := read.Execute(ctx, map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	rr1 := resultI.(*ReadResult)
+	if rr1.Data.Suggestion == SuggestionContentUnchanged {
+		t.Fatal("首次读取不应命中")
+	}
+
+	resultI, err = read.Execute(ctx, map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	rr2 := resultI.(*ReadResult)
+	if rr2.Data.Suggestion != SuggestionContentUnchanged {
+		t.Errorf("启用动态默认行数后，未传 limit 的重读应命中（键一致），实际 Suggestion=%q", rr2.Data.Suggestion)
 	}
 }
 
@@ -722,23 +839,49 @@ func TestRead_CRLFLineEndings(t *testing.T) {
 	}
 }
 
-// TestReadFileState_EntryCapFlush 整表清空策略：条目数超限后，先写入的旧条目被清、
-// 最新条目仍可写入。
+// TestReadFileState_OverwriteDoesNotGrowCount 同键覆盖（重读后更新状态）
+// 不应增加条目计数——旧实现每次 Add(1) 导致计数虚高、提前触发整表清空。
+func TestReadFileState_OverwriteDoesNotGrowCount(t *testing.T) {
+	key := dedupCacheKey("sess-overwrite", "/tmp/overwrite.txt", 1, 0)
+	setReadFileState(key, &ReadFileState{MtimeMs: 1})
+	before := readStateCount.Load()
+	setReadFileState(key, &ReadFileState{MtimeMs: 2})
+	after := readStateCount.Load()
+	if after != before {
+		t.Errorf("同键覆盖不应增加条目计数：before=%d after=%d", before, after)
+	}
+	// 覆盖后应读到最新状态
+	loaded, ok := getReadFileState(key)
+	if !ok || loaded.MtimeMs != 2 {
+		t.Errorf("覆盖后应读到 MtimeMs=2，实际 ok=%v mtime=%d", ok, func() int64 {
+			if loaded != nil {
+				return loaded.MtimeMs
+			}
+			return -1
+		}())
+	}
+}
+
+// TestReadFileState_EntryCapFlush 整表清空策略：条目数超限后整表被清空，
+// 清空后新条目可正常写入并读取。
 func TestReadFileState_EntryCapFlush(t *testing.T) {
 	// 从当前计数连续写入 dedupMaxEntries+1 个条目，无论起始计数如何，
-	// 超限 flush 必然发生：最早写入的条目被清空，最后写入的条目存活。
-	firstKey := dedupCacheKey("/tmp/cap_flush_first.txt", 1, 1)
+	// 超限 flush 必然发生：flush 前写入的条目被清空。
+	firstKey := dedupCacheKey("sess-cap", "/tmp/cap_flush_first.txt", 1, 1)
 	setReadFileState(firstKey, &ReadFileState{MtimeMs: 1})
-	lastKey := ""
 	for i := 0; i <= dedupMaxEntries; i++ {
-		lastKey = dedupCacheKey(fmt.Sprintf("/tmp/cap_flush_%d.txt", i), 1, 1)
-		setReadFileState(lastKey, &ReadFileState{MtimeMs: int64(i)})
+		key := dedupCacheKey("sess-cap", fmt.Sprintf("/tmp/cap_flush_%d.txt", i), 1, 1)
+		setReadFileState(key, &ReadFileState{MtimeMs: int64(i)})
 	}
 	if _, ok := getReadFileState(firstKey); ok {
-		t.Error("超限 flush 后最早写入的条目应被清空")
+		t.Error("超限 flush 后 flush 前写入的条目应被清空")
 	}
-	if _, ok := getReadFileState(lastKey); !ok {
-		t.Error("超限 flush 后最新条目应可写入")
+	// flush 后新条目应可写入并读取
+	afterKey := dedupCacheKey("sess-cap", "/tmp/cap_flush_after.txt", 1, 1)
+	setReadFileState(afterKey, &ReadFileState{MtimeMs: 999})
+	loaded, ok := getReadFileState(afterKey)
+	if !ok || loaded.MtimeMs != 999 {
+		t.Error("flush 后新条目应可写入并读取")
 	}
 }
 
