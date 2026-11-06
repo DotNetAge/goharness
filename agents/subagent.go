@@ -525,12 +525,23 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 		return subagent.SubAgentReceipt{}, fmt.Errorf("上下文未包含会话")
 	}
 
-	// 同任务重派收敛（防熔断绕过）：该任务曾因迭代超限失败时，无论 leader
-	// 显式传什么 session_id 还是不传（空闲复用/新建分身），都强制定向到
-	// 失败会话——续跑与熔断判定依赖失败会话上的 streak 历史，任何绕开它的
-	// 会话选择都会让重派从零重跑满迭代上限（「超限→新会话→再超限」无限循环）。
+	// 同任务重派收敛（防熔断绕过）：该任务曾因迭代超限失败时——
+	//   - leader 未传 session_id 或传的就是失败会话：定向到失败会话，
+	//     续跑/熔断判定（依赖失败会话上的 streak 历史）自然生效；
+	//   - leader 显式传了不同会话（含新会话）：明确绕道企图，拒绝受理并
+	//     说明——静默覆盖会破坏显式意图，放行则从零重跑满迭代上限；
+	//   - 任务文本被改写的重派不命中锚点，但未传 session_id 时空闲复用
+	//     优先命中失败会话，残余绕道仅剩「改写文本 + 显式新会话」组合。
 	// 失败会话已不存在（历史丢失）时 getOrCreate 的恢复失败按既有错误路径返回。
 	if anchorSess := m.lookupFailedTaskAnchor(tc.Session.ID(), req.Task); anchorSess != "" {
+		if req.SessionID != "" && req.SessionID != anchorSess {
+			m.rt.logger.Info("子代理重派绕道被拒", "requested_session", req.SessionID, "anchor_session", anchorSess)
+			return subagent.SubAgentReceipt{
+				Accepted: false,
+				Reason: fmt.Sprintf("该任务此前已因迭代次数达到上限而失败（子代理会话 %s），重派将回到该会话判定续跑或终止；"+
+					"传入其它会话无法绕过这一判定。下一步：拆分为更小的子任务（改变任务描述）后重新派发，或告知用户该任务无法由子代理完成。", anchorSess),
+			}, nil
+		}
 		req.SessionID = anchorSess
 		m.rt.logger.Info("子代理重派收敛到失败会话", "session_id", anchorSess)
 	}
