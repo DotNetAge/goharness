@@ -6,16 +6,21 @@ import (
 	"fmt"
 )
 
-// ErrHarvestAlreadyActive 表示同一主会话的后台收割已在进行中（去重信号）：
-// 收割启动器对重复调用返回此错误，工具层将其转为柔性回执而非失败。
+// ErrHarvestAlreadyActive 表示收割目标全部已在登记中（去重信号）：
+// 收割启动器对「无新增目标」的重复调用返回此错误，工具层将其转为柔性
+// 回执而非失败；有新增目标的调用会被按 task_id 合并登记并返回成功。
 var ErrHarvestAlreadyActive = errors.New("harvest already active")
 
 // HarvestTarget 是一个收割目标：轮内跟踪句柄 + 可选的子代理会话 ID 提示。
 // SessionID 是长期锚点（SubAgent 受理回执返回，LLM 上下文可见），仅在
 // 跨重启恢复（进程内句柄登记已丢失）时作为落盘事实查询的入口。
+// AgentName / Title 是展示信息：LLM 调用方不传（零值），收割启动器从
+// 受理登记表补全后随意图落盘，回灌报告据此呈现可读条目。
 type HarvestTarget struct {
 	TaskID    string `json:"task_id"`
 	SessionID string `json:"session_id,omitempty"`
+	AgentName string `json:"agent_name,omitempty"`
+	Title     string `json:"title,omitempty"`
 }
 
 // HarvestStatus 是单个收割目标的终态条目。
@@ -33,16 +38,17 @@ type HarvestStatus struct {
 }
 
 // HarvestReport 是收割汇报：全部目标落定或达到总上限时产生一次，
-// 经宿主注入的汇报回调回灌主会话（agents.WithHarvestReporter）。
+// 经宿主注入的收割轮询器回灌主会话（应用侧 WithHarvestIntentRecorder 接缝）。
 type HarvestReport struct {
 	MainSessionID string          `json:"main_session_id"`
 	Targets       []HarvestStatus `json:"targets"`
 }
 
 // HarvestStarter 是后台收割启动器（agents 层 subAgentManager 实现），
-// 由工具注册时注入 CollectResults。实现必须非阻塞：启动收割 goroutine
-// 后立即返回；全部目标落定或超限时经宿主汇报回调回灌主会话。
-// 同一主会话已有收割在跑时返回 ErrHarvestAlreadyActive。
+// 由工具注册时注入 CollectResults。实现必须非阻塞：只登记收割意图并
+// 立即返回；落定判定与结果回灌由应用侧轮询器执行。
+// 全部目标均已登记（无新增）时返回 ErrHarvestAlreadyActive；有新增目标的
+// 重复调用会被按 task_id 合并登记（收割在飞不丢任务）。
 type HarvestStarter interface {
 	StartHarvest(mainSessionID string, targets []HarvestTarget) error
 }
@@ -68,12 +74,12 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 		Name:               "CollectResults",
 		MaxResultSizeChars: 50000,
 		Description:        "启动子代理结果的后台收割（非阻塞）：立即返回，全部子任务落定后结果自动汇报到本会话",
-		Prompt: `启动子代理结果的后台收割。调用后立即返回（status=harvesting），收割器在后台按周期轮询各子任务状态，全部落定后结果会以「系统收割」消息自动汇报到本会话，无需再次调用等待。
+		Prompt: `启动子代理结果的后台收割。调用后立即返回（status=harvesting），收割在后台按周期检查各子任务状态，全部落定后结果会以「系统收割」消息自动汇报到本会话，无需再次调用等待。
 
 - task_ids：SubAgent 受理回执返回的跟踪句柄数组。
 - session_ids（可选）：对应的子代理会话 ID 数组（与 task_ids 一一对应）。daemon 重启后轮内句柄可能失效，传会话 ID 可按落盘事实恢复结果。
 
-重复调用：同一会话的收割已在进行时返回进行中回执，不会重复收割；收割结果自动汇报后无需重试。收割总时长上限 30 分钟，到点会汇报当前状态（完成/仍在执行/等待你回答），不会静默丢失。`,
+重复调用：新派发的任务会被自动合并登记进本轮收割（不会重复收割已登记任务），因此收割进行中派发了新任务也请再次调用；仅当本次传入的任务全部已在登记中时返回进行中回执。收割总时长上限 30 分钟，到点会汇报当前状态（完成/仍在执行/等待你回答），不会静默丢失。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
@@ -108,18 +114,25 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		return nil, fmt.Errorf("%s", GuideInvalidValue("CollectResults", "task_ids", rawIDsVal, "传入 SubAgent 受理回执返回的跟踪句柄（task_id 字符串数组），至少一个"))
 	}
 
-	// 可选的会话 ID 提示（与 task_ids 按顺序一一对应）：跨重启恢复入口。
-	var hintIDs []string
+	// 可选的会话 ID 提示：与 task_ids 按原始数组位置一一对应（空串占位
+	// 合法，等价于该任务无提示）。按原始数组长度校验对位关系——先过滤
+	// 空串再比数量会把含空占位的合法对位输入误判为参数错误（第三轮审计），
+	// 且空占位过滤后错位会张冠李戴。
+	rawHints := make([]string, 0, len(rawIDs))
 	if rawHintsVal, found := GetParam(params, "session_ids"); found {
-		if rawHints, ok := rawHintsVal.([]any); ok {
-			for _, raw := range rawHints {
-				if id, ok := raw.(string); ok && id != "" {
-					hintIDs = append(hintIDs, id)
-				}
-			}
-			if len(hintIDs) > 0 && len(hintIDs) != len(taskIDs) {
-				return nil, fmt.Errorf("%s", GuideInvalidValue("CollectResults", "session_ids", rawHintsVal,
-					"session_ids 与 task_ids 必须一一对应（数量一致、顺序相同）；不需要会话恢复时可整体省略"))
+		rawHintsAny, ok := rawHintsVal.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%s", GuideWrongParamType("CollectResults", "session_ids", "array", rawHintsVal))
+		}
+		if len(rawHintsAny) != len(rawIDs) {
+			return nil, fmt.Errorf("%s", GuideInvalidValue("CollectResults", "session_ids", rawHintsVal,
+				"session_ids 与 task_ids 必须一一对应（数量一致、顺序相同）；不需要会话恢复时可整体省略"))
+		}
+		for _, raw := range rawHintsAny {
+			if id, ok := raw.(string); ok {
+				rawHints = append(rawHints, id)
+			} else {
+				rawHints = append(rawHints, "")
 			}
 		}
 	}
@@ -132,23 +145,39 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		return nil, fmt.Errorf("%s", GuideMissingContext("CollectResults", "会话上下文"))
 	}
 
-	targets := make([]HarvestTarget, len(taskIDs))
-	for i, id := range taskIDs {
-		target := HarvestTarget{TaskID: id}
-		if i < len(hintIDs) {
-			target.SessionID = hintIDs[i]
+	// task_ids 与 session_ids 同一游标配对构建：空 task_id 占位两侧一起跳过，
+	// 保证提示与任务不错位。
+	type taskHint struct {
+		taskID    string
+		sessionID string
+	}
+	pairs := make([]taskHint, 0, len(rawIDs))
+	for i, raw := range rawIDs {
+		id, ok := raw.(string)
+		if !ok || id == "" {
+			continue
 		}
-		targets[i] = target
+		hint := ""
+		if i < len(rawHints) {
+			hint = rawHints[i]
+		}
+		pairs = append(pairs, taskHint{taskID: id, sessionID: hint})
+	}
+
+	targets := make([]HarvestTarget, len(pairs))
+	for i, p := range pairs {
+		targets[i] = HarvestTarget{TaskID: p.taskID, SessionID: p.sessionID}
 	}
 
 	if err := t.harvester.StartHarvest(tc.Session.ID(), targets); err != nil {
 		if errors.Is(err, ErrHarvestAlreadyActive) {
-			// 去重：收割已在跑，重复调用不报错、不重复收割，引导 LLM 等自动汇报。
+			// 去重：全部目标均已登记（无新增），重复调用不报错、不重复收割，
+			// 引导 LLM 等自动汇报。
 			return map[string]any{
-				"status":  "harvesting",
-				"count":   len(taskIDs),
-				"reused":  true,
-				"notes":   "该会话的后台收割已在进行中，无需重复启动；全部子任务落定后结果会自动汇报到本会话。请在回复中告知用户：结果稍后自动送达，可先继续其它工作。",
+				"status": "harvesting",
+				"count":  len(taskIDs),
+				"reused": true,
+				"notes":  "这些任务的收割均已在进行中，无需重复启动；全部子任务落定后结果会自动汇报到本会话。请在回复中告知用户：结果稍后自动送达，可先继续其它工作。",
 			}, nil
 		}
 		return nil, fmt.Errorf("%s（原始错误：%w）", BuildGuide("启动后台收割时失败", WithErrDetail("收割器启动失败", err), "稍后重新调用 CollectResults；若持续失败请告知用户检查 daemon 状态"), err)
@@ -160,9 +189,8 @@ func (t *CollectResultsTool) Execute(ctx context.Context, params map[string]any)
 		"count", len(taskIDs),
 	)
 	return map[string]any{
-		"status":             "harvesting",
-		"count":              len(taskIDs),
-		"report_in_seconds":  25,
-		"notes":              "后台收割已启动，约 25 秒后开始自动汇报。请在回复中明确告知用户：子任务结果会自动送达本会话，可以先继续其它工作或对话。",
+		"status": "harvesting",
+		"count":  len(taskIDs),
+		"notes":  "后台收割已登记，各子任务落定后结果会自动汇报。请在回复中明确告知用户：子任务结果会自动送达本会话，可以先继续其它工作或对话。",
 	}, nil
 }

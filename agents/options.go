@@ -61,15 +61,16 @@ func WithTitleFn(fn func(sessionID, task string) string) RuntimeConfig {
 	return func(r *Runtime) { r.titleFn = fn }
 }
 
-// WithHarvestReporter 注入收割报告回灌回调（非阻塞 CollectResults 的收尾接缝）。
+// WithHarvestIntentRecorder 注入收割意图落盘回调（持久化收割的受理接缝）。
 //
-// 后台收割全部子任务落定或达到总上限（30 分钟）时，收割器以
-// tools.HarvestReport 调用本回调；实现方（如 mindx daemon）以「系统收割」
-// 消息把结果写进主会话上下文并程序化发起一轮执行（走主会话串行队列，
-// 与用户消息天然顺序化）。未注入时报告仅记日志丢弃——收割结果不进上下文，
-// LLM 无法获知子任务结局。
-func WithHarvestReporter(reporter func(tools.HarvestReport)) RuntimeConfig {
-	return func(r *Runtime) { r.harvestReporter = reporter }
+// StartHarvest 经本回调把收割意图落盘（应用侧实现 tools.HarvestIntentRecorder
+// 契约，如 mindx 写入主会话目录的 session-harvest.json）后立即返回；落定
+// 判定、超时兜底与结果回灌全部由应用侧的无状态轮询器执行（复用其后台执行
+// 链回灌主会话）。同一主会话已有未完成意图时实现须返回
+// tools.ErrHarvestAlreadyActive。未注入时 CollectResults 返回引导性错误
+//——收割状态没有独立于进程生命周期的存在形式，收割语义即不成立。
+func WithHarvestIntentRecorder(record func(mainSessionID string, targets []tools.HarvestTarget) error) RuntimeConfig {
+	return func(r *Runtime) { r.harvestIntent = record }
 }
 
 func WithToolRegistry(reg tools.ToolRegistry) RuntimeConfig {

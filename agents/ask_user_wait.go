@@ -60,6 +60,12 @@ func (rt *Runtime) waitForAskUserDecision(
 	rt.subAgents.registerAskWait(b.session.ID(), b.askCh)
 	defer rt.subAgents.clearAskWait(b.session.ID(), b.askCh)
 
+	// 等待标记落盘：等待窗口内子会话目录无任何其他挂起痕迹（提问 sidecar
+	// 子会话冒泡路径不写），宿主轮询方（收割 blocked 判定）据此区分
+	// 「等待用户」与「执行中」。defer 保证 ctx 取消/回答/超时各路径都清除。
+	b.session.MarkWaitingUser("ask")
+	defer b.session.ClearWaitingUser()
+
 	timeout := time.NewTimer(askWaitTimeout)
 	defer timeout.Stop()
 

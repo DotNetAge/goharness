@@ -129,11 +129,10 @@ type Runtime struct {
 	// SubtaskTitleUpdated 事件刷新前端。nil 时受理快照标题即最终标题。
 	titleFn func(sessionID, task string) string
 
-	// harvestReporter 收割报告回灌回调（应用侧注入，见 WithHarvestReporter）。
-	// 后台收割全部落定/超限时由收割器调用：实现方（如 mindx daemon）以
-	// 「系统收割」消息把结果写进主会话上下文并程序化发起一轮执行（走主会话
-	// 串行队列）。nil 时报告仅记日志丢弃（收割结果不进上下文）。
-	harvestReporter func(tools.HarvestReport)
+	// harvestIntent 收割意图落盘回调（应用侧注入，见 WithHarvestIntentRecorder）。
+	// StartHarvest 经它把收割意图持久化（独立于进程生命周期），落定判定与
+	// 结果回灌由应用侧无状态轮询器执行。nil 时 CollectResults 返回引导性错误。
+	harvestIntent func(mainSessionID string, targets []tools.HarvestTarget) error
 
 	// kvStore 为需要会话级持久化的工具（TaskCreate / TaskGet / TaskUpdate / TaskList）
 	// 提供键值存储。若为 nil，这些工具返回“KVStore 不可用”。通过 WithKVStore 配置。

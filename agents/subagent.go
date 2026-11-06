@@ -81,14 +81,15 @@ type perSessionState struct {
 //     无空闲候选才新建独立会话（分身/并行委派）；传 sessionID 时复用已登记实例或从 store 恢复。
 //   - 通过 Runtime.Ask 运行子智能体的独立思考循环（与父级上下文隔离）。
 //   - 以 per-session 互斥锁串行化同一会话的并发 Ask。
-//   - 承载后台收割器（collector.go）：实现 tools.HarvestStarter，按 taskID 登记
-//     会话锚点信息（taskInfos），周期轮询落定事实并经宿主汇报回调回灌主会话。
+//   - 承载收割意图登记（collector.go）：实现 tools.HarvestStarter，按 taskID
+//     登记会话锚点信息（taskInfos），把收割意图经落盘器持久化后立即返回，
+//     落定判定与结果回灌由应用侧轮询器执行。
 //
 // 依赖经 rt 反向引用（子系统持有父编排器的引用是 Go 常见模式，相比传递多个回调更清晰）：
 //   - rt.Ask：运行子智能体思考循环
 //   - rt.agentExists：校验子智能体配置是否存在（应用侧回调）
 //   - rt.titleFn：提炼子代理会话标题（应用侧回调）
-//   - rt.harvestReporter：收割报告回灌主会话（应用侧回调）
+//   - rt.harvestIntent：收割意图落盘器（应用侧实现，持久化收割的受理接缝）
 //   - rt.SessionConfigs()：为新建子会话注入 Compactor / Sandbox 等通用能力
 //   - rt.logger：日志
 type subAgentManager struct {
@@ -100,11 +101,6 @@ type subAgentManager struct {
 	// Submit 受理时写入，进程生命周期内保留（跨多轮收割复用）；daemon
 	// 重启即丢失——跨重启恢复依赖 LLM 回执中的 session_id 提示。
 	taskInfos map[string]harvestTaskInfo
-
-	// activeHarvests 是收割去重登记表：主会话 ID → 收割进行中。
-	// 同一主会话至多一个收割 goroutine（重复 CollectResults 返回「进行中」
-	// 回执），收割结束（无论成败）解除登记。
-	activeHarvests map[string]bool
 
 	// sponsored 是「主会话停止 → 派生子代理级联强停」的登记表：
 	// 主会话 ID → (子会话 ID → 子执行循环 ctx 的取消函数)。
@@ -119,11 +115,10 @@ type subAgentManager struct {
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
 	return &subAgentManager{
-		rt:             rt,
-		states:         make(map[string]*perSessionState),
-		taskInfos:      make(map[string]harvestTaskInfo),
-		activeHarvests: make(map[string]bool),
-		sponsored:      make(map[string]map[string]context.CancelFunc),
+		rt:        rt,
+		states:    make(map[string]*perSessionState),
+		taskInfos: make(map[string]harvestTaskInfo),
+		sponsored: make(map[string]map[string]context.CancelFunc),
 	}
 }
 

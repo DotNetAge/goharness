@@ -295,6 +295,12 @@ func (rt *Runtime) waitForPermissionDecision(
 	rt.subAgents.registerPermissionWait(b.session.ID(), b.permissionCh)
 	defer rt.subAgents.clearPermissionWait(b.session.ID(), b.permissionCh)
 
+	// 等待标记落盘：pending 已被 TakePendingPermission 取走（sidecar 消失），
+	// 等待窗口内子会话目录无任何挂起痕迹，宿主轮询方（收割 blocked 判定）
+	// 据此区分「等待授权」与「执行中」。defer 保证各退出路径都清除。
+	b.session.MarkWaitingUser("permission")
+	defer b.session.ClearWaitingUser()
+
 	// 清除会话级待处理授权：pending 已由本函数接管（授权决策经 permissionCh 送达）。
 	// 不清理则子会话在授权后残留旧 pending——主会话路径由 resolvePermissionMagicWord
 	// 的 TakePendingPermission 清除，子会话冒泡路径必须同样清除，
