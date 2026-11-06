@@ -76,9 +76,7 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 		Description:        "启动子任务结果收割（立即返回），全部任务落定后结果自动送达本会话",
 		Prompt: `启动子任务结果收割，调用后立即返回（status=harvesting）；全部任务落定后结果自动送达本会话，无需再次调用等待。
 
-- task_ids：SubAgent 受理回执返回的跟踪句柄。
-- session_ids（可选）：与 task_ids 一一对应的子代理会话 ID，用于跨重启恢复结果；不需要可整体省略。
-- 收割进行中又有新派发时请再次调用（新任务自动合并进收割）；仅重复传入已登记任务时返回进行中回执，属正常现象。`,
+收割进行中又有新派发时请再次调用（新任务自动合并进收割）；仅重复传入已登记任务时返回进行中回执，属正常现象。`,
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
