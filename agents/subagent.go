@@ -68,6 +68,13 @@ type perSessionState struct {
 	// 显式 sessionID 复用不经此判定（本就是排队语义）；标志泄漏（spawn 在
 	// 认领后、接管前失败）的后果仅是该会话不再被空闲复用，不影响正确性。
 	spawning bool
+
+	// iterationFailStreak 是该子会话连续因迭代超限（max_iterations）失败的
+	// 次数：spawn 正常结束或以其他原因失败时清零，max_iterations 失败时递增。
+	// 供派发层做两件事——超限后的重派改注入续跑指令（不重发原任务全文），
+	// 以及连续超限达 subagentIterationFailLimit 时熔断拒绝（终止
+	// 「超限→重派→再超限」的无限重派循环）。读写经 m.mu 保护。
+	iterationFailStreak int
 }
 
 // subAgentManager 管理子智能体的会话登记与派发执行，是 Runtime 的一个内聚子系统，
@@ -486,6 +493,32 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 	}
 	sid := st.sess.ID()
 
+	// 连续超限熔断与续跑分流（读取与 runTask 结算写入均经 m.mu 保护；并发
+	// 窗口由 spawning 认领与 per-session 互斥收敛，残余竞态仅影响一轮判定）。
+	//   - streak 达熔断阈值：拒绝受理，终止「超限→重派→再超限」的无限重派——
+	//     每次重派都是完整迭代次数 × 全量历史重放，必须在此截断；
+	//   - streak > 0（上一轮因迭代超限中断）：重派不重发原任务全文，改注入
+	//     续跑指令——原任务已在该会话历史中，子代理从断点自动继续；
+	//   - streak == 0（首次派发 / 上一轮已完成）：按原任务文本派发。
+	m.mu.RLock()
+	streak := st.iterationFailStreak
+	m.mu.RUnlock()
+	if streak >= subagentIterationFailLimit {
+		// 熔断拒绝：getOrCreate 已置位 spawning 认领标志，拒绝路径无 runTask
+		// 的 defer 释放，必须显式复位，否则该会话永久失去空闲复用资格。
+		m.releaseSpawn(sid)
+		return subagent.SubAgentReceipt{
+			Accepted: false,
+			Reason: fmt.Sprintf("该子代理会话已连续 %d 次因迭代次数达到上限而中断，继续派发同类任务只会重复失败，本次派发被拒绝。"+
+				"请把任务拆分为更小的子任务后重新派发；确需全新开始时，传入新的 session_id 新开会话。", streak),
+		}, nil
+	}
+	askText := req.Task
+	if streak > 0 {
+		askText = subagentContinuationPrompt
+		m.rt.logger.Info("子代理会话迭代超限后续跑", "session_id", sid, "streak", streak)
+	}
+
 	// 受理即登记控制平面（Pending 态，UI 立即可见）；TaskID 作为跟踪句柄
 	// 写入回执，CollectResults 据此等待并读取结果。
 	taskID := newTaskID()
@@ -536,7 +569,7 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 	// ToolContext / 授权与提问 sink）。goroutine 一经启动即由 runTask 保证结算，
 	// 补偿窗口关闭。
 	acceptedTaskID = ""
-	go m.runTask(context.WithoutCancel(ctx), taskID, req.AgentName, req.Task, st, tc)
+	go m.runTask(context.WithoutCancel(ctx), taskID, req.AgentName, req.Task, askText, st, tc)
 
 	return subagent.SubAgentReceipt{Accepted: true, TaskID: taskID, SessionID: sid, Title: title}, nil
 }
@@ -546,7 +579,9 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 // 等待中的 CollectResults 随即被唤醒；同时发射 SubtaskCompleted 事件。
 // 本函数承载既有 spawn 的全部编排语义：subagentSem 并发上限、per-session
 // 互斥、认领释放、授权与提问冒泡通道、sponsored 强停登记。
-func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task string, st *perSessionState, tc *tools.ToolContext) {
+// task 是展示用任务原文（事件/标题）；askText 是实际注入子代理会话的问题
+// 文本——迭代超限后的重派为续跑指令而非任务原文。
+func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task, askText string, st *perSessionState, tc *tools.ToolContext) {
 	manager := goagent.DefaultRuntimeManager()
 	sess := st.sess
 	startedAt := time.Now()
@@ -608,7 +643,7 @@ func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task s
 		// 可据此判断空闲会话并复用（延续讨论上下文）。
 		m.touchSession(sess.ID())
 
-		builder := m.rt.Ask(agentName, task, sess)
+		builder := m.rt.Ask(agentName, askText, sess)
 		// 将子智能体的事件转发到父级 EventBus，
 		// 以便订阅父级的客户端能够看到所有智能体事件。
 		if pe, ok := ctx.Value(parentEmitKeyType{}).(func(events.ReactEvent)); ok {
@@ -687,6 +722,10 @@ func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task s
 	}
 	settled = true
 
+	// 连续超限失败计数：正常完成或其他原因失败清零（「连续」被中断），
+	// max_iterations 失败递增——供派发层做续跑分流与熔断（终止无限重派）。
+	m.recordIterationOutcome(st, termReason, failureReason)
+
 	elapsed := time.Since(startedAt)
 	if failureReason != "" {
 		m.rt.logger.Error("sub-agent task failed",
@@ -721,6 +760,22 @@ func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task s
 				TaskID:      taskID,
 			},
 		})
+	}
+}
+
+// recordIterationOutcome 结算子会话的连续超限失败计数：
+// 正常完成或其他原因失败清零（「连续」被中断），max_iterations 失败递增。
+// 供派发层做续跑分流（streak>0 注入续跑指令）与熔断（达阈值拒绝重派）。
+func (m *subAgentManager) recordIterationOutcome(st *perSessionState, termReason, failureReason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case failureReason == "":
+		st.iterationFailStreak = 0
+	case termReason == "max_iterations":
+		st.iterationFailStreak++
+	default:
+		st.iterationFailStreak = 0
 	}
 }
 
