@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"runtime/debug"
@@ -117,16 +118,55 @@ type subAgentManager struct {
 	// （Runtime.CancelSubAgents）。同一子会话同一时刻至多一个活跃 spawn
 	// （per-session 互斥锁保证），登记即覆盖旧句柄；spawn 结束或强停后清理。
 	sponsored map[string]map[string]context.CancelFunc
+
+	// failedTaskAnchors 是「因迭代超限失败的任务锚点」登记表：
+	// key = 主会话ID:hash(任务文本)，value = 失败时所在的子会话 ID。
+	// 同任务重派无论 leader 显式传什么 session_id（或不传），Submit 都会
+	// 强制收敛到失败会话——续跑/熔断判定（per-session streak）只在那个
+	// 会话上有历史，否则 leader 新开会话即可绕过熔断闸门，形成
+	// 「超限→新会话重派→再超限」的无限循环（每次全新满迭代上限）。
+	// 上限见 failedTaskAnchorLimit；m.mu 保护。
+	failedTaskAnchors map[string]string
 }
+
+// failedTaskAnchorLimit 是任务锚点登记表的条目上限，超限整表清空：
+// 锚点是防绕过闸门而非长期资产，新失败自然重建。
+const failedTaskAnchorLimit = 128
 
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
 	return &subAgentManager{
 		rt:        rt,
-		states:    make(map[string]*perSessionState),
-		taskInfos: make(map[string]harvestTaskInfo),
-		sponsored: make(map[string]map[string]context.CancelFunc),
+		states:           make(map[string]*perSessionState),
+		taskInfos:        make(map[string]harvestTaskInfo),
+		sponsored:        make(map[string]map[string]context.CancelFunc),
+		failedTaskAnchors: make(map[string]string),
 	}
+}
+
+// failedTaskAnchorKey 生成任务锚点键：主会话 ID + 任务文本摘要。
+// 同一主会话下同任务文本收敛到同一条锚点；跨主会话互不影响。
+func failedTaskAnchorKey(mainSessionID, task string) string {
+	sum := sha256.Sum256([]byte(task))
+	return mainSessionID + ":" + hex.EncodeToString(sum[:8])
+}
+
+// recordFailedTaskAnchor 登记迭代超限失败的任务锚点（失败会话 ID）。
+// 由 runTask 在 max_iterations 结算时调用；超限整表清空保证内存有界。
+func (m *subAgentManager) recordFailedTaskAnchor(mainSessionID, task, subSessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.failedTaskAnchors) >= failedTaskAnchorLimit {
+		m.failedTaskAnchors = make(map[string]string)
+	}
+	m.failedTaskAnchors[failedTaskAnchorKey(mainSessionID, task)] = subSessionID
+}
+
+// lookupFailedTaskAnchor 查询同任务的历史失败会话；无登记返回空串。
+func (m *subAgentManager) lookupFailedTaskAnchor(mainSessionID, task string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.failedTaskAnchors[failedTaskAnchorKey(mainSessionID, task)]
 }
 
 // getOrCreate 返回指定 sessionID 对应的子代理会话状态；不存在则创建/恢复。
@@ -485,6 +525,16 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 		return subagent.SubAgentReceipt{}, fmt.Errorf("上下文未包含会话")
 	}
 
+	// 同任务重派收敛（防熔断绕过）：该任务曾因迭代超限失败时，无论 leader
+	// 显式传什么 session_id 还是不传（空闲复用/新建分身），都强制定向到
+	// 失败会话——续跑与熔断判定依赖失败会话上的 streak 历史，任何绕开它的
+	// 会话选择都会让重派从零重跑满迭代上限（「超限→新会话→再超限」无限循环）。
+	// 失败会话已不存在（历史丢失）时 getOrCreate 的恢复失败按既有错误路径返回。
+	if anchorSess := m.lookupFailedTaskAnchor(tc.Session.ID(), req.Task); anchorSess != "" {
+		req.SessionID = anchorSess
+		m.rt.logger.Info("子代理重派收敛到失败会话", "session_id", anchorSess)
+	}
+
 	// 会话定位（同步阶段）：空闲复用 / 并行分身 / 显式复用的认领即在此完成，
 	// 子会话 ID 随受理事件发射，前端立即可见派发目标。
 	st, err := m.getOrCreate(ctx, req.AgentName, tc.Session.ProjectDir(), tc.Session.AgentName(), tc.Session.Store(), req.SessionID)
@@ -725,6 +775,11 @@ func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task, 
 	// 连续超限失败计数：正常完成或其他原因失败清零（「连续」被中断），
 	// max_iterations 失败递增——供派发层做续跑分流与熔断（终止无限重派）。
 	m.recordIterationOutcome(st, termReason, failureReason)
+	// 迭代超限失败时登记任务锚点：同任务后续重派强制收敛到本会话，
+	// 防止 leader 用新会话绕过熔断闸门（每次从零重跑满迭代上限）。
+	if termReason == "max_iterations" && failureReason != "" {
+		m.recordFailedTaskAnchor(tc.Session.ID(), task, st.sess.ID())
+	}
 
 	elapsed := time.Since(startedAt)
 	if failureReason != "" {
