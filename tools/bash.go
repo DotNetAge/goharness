@@ -120,12 +120,7 @@ func (t *BashTool) Info() *ToolInfo {
 		Description:        "在工作区环境中执行 POSIX shell 命令。在 Linux/proot 环境下，环境可扩展——可以安装软件包。在 macOS 上，命令通过 /bin/bash 原生运行。",
 		Prompt: `执行给定的 bash 命令并返回其输出。
 
-**重要**：以下任务请使用专用工具不要使用Bash命令：
-- 文件搜索：使用 Glob（不要用 find）
-- 内容搜索：使用 Grep（不要用 grep）
-- 读取文件：使用 Read（不要用 cat/head/tail）
-- 编辑文件：使用 Edit（不要用 sed/awk）
-- 写入文件：使用 Write（不要用 tee/cat）`,
+文件搜索、内容检索、文件读取与编辑改写请使用对应专用工具（Glob/Grep/Read/Edit/Write），Bash 只承担构建、测试、进程管理等真正的 shell 任务。`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: events.LevelHighRisk,
 		Parameters: []Parameter{
