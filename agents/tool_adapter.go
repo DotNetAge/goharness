@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/DotNetAge/goagent"
@@ -236,6 +237,12 @@ func (a *toolExecutorAdapter) Tools() []goagent.ToolCall {
 		}
 		out = append(out, newFuncToolAdapter(t))
 	}
+	// 双保险：即使将来替换 ToolRegistry 实现，也保证发给 LLM 的 tools 定义
+	// 顺序确定。tools 是 prefix cache 前缀的一部分，顺序抖动会让跨 Run 的
+	// 会话历史整段按未命中全价重算。
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name() < out[j].Name()
+	})
 	return out
 }
 

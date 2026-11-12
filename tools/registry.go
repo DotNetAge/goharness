@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -68,14 +69,23 @@ func (r *DefaultToolRegistry) Get(name string) (FuncTool, bool) {
 	return t, ok
 }
 
-// All 返回所有已注册工具的切片。
-// 工具的顺序不确定（map 迭代顺序）。
+// All 返回所有已注册工具的切片，按工具名排序，保证每次调用顺序稳定。
+//
+// 请求体里的 tools 定义属于 LLM prefix cache 前缀的一部分（system → tools →
+// messages）。若此处按 map 迭代顺序返回，每次新建 Run 重新装配工具适配器时
+// tools 数组顺序都会抖动，导致 provider 认不出上一 Run 的前缀，整段会话历史
+// 按未命中全价重算。排序只固定顺序，不改变工具的数量、内容与语义。
 func (r *DefaultToolRegistry) All() []FuncTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]FuncTool, 0, len(r.tools))
-	for _, t := range r.tools {
-		out = append(out, t)
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]FuncTool, 0, len(names))
+	for _, name := range names {
+		out = append(out, r.tools[name])
 	}
 	return out
 }
