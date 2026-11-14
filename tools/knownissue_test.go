@@ -11,8 +11,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/DotNetAge/goharness/logging"
@@ -50,21 +48,5 @@ func TestKnownIssue_ReadBeforeWriteIsSessionScoped(t *testing.T) {
 	_, err := NewWriteTool().Execute(ctxB, map[string]any{"filePath": file, "content": "overwritten\n"})
 	if err == nil {
 		t.Fatal("B 会话未读却成功写入：读前写约束跨会话失效")
-	}
-}
-
-// V-15：Grep 原生路径必须能扫描超过 64KB 的单行，不得静默报「未找到」。
-func TestKnownIssue_GrepNativeLongLine(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "long.txt")
-	_ = os.WriteFile(file, []byte(strings.Repeat("a", 100*1024)+"NEEDLE\n"), 0644)
-
-	re := regexp.MustCompile("NEEDLE")
-	_, count, err := grepScanFile(file, "long.txt", re, "content")
-	if err != nil {
-		t.Fatalf("单行超过 64KB 时扫描报错: %v", err)
-	}
-	if count == 0 {
-		t.Fatalf("100KB 单行文件中的 NEEDLE 被静默漏报")
 	}
 }

@@ -450,6 +450,13 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 
 	var results []string
 	totalMatchCount := 0
+	scanErrors := []string{}
+	truncated := false
+	// 单条结果保存上限：达到后只计数不再累积，避免宽泛模式把内存打满。
+	storeLimit := t.MaxOutputChars
+	if storeLimit <= 0 {
+		storeLimit = 30000
+	}
 
 	walkFn := func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -508,7 +515,11 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 			// 匹配行用 `path:line:text`、上下文行用 `path-line:text`（grep 惯例），
 			// 组间以 `--` 分隔，与 rg 的输出格式一致。
 			matchLines, err := grepCollectMatches(path, re)
-			if err != nil || len(matchLines) == 0 {
+			if err != nil {
+				scanErrors = append(scanErrors, relPath+": "+err.Error())
+				return nil
+			}
+			if len(matchLines) == 0 {
 				return nil
 			}
 			fileMatchCount = len(matchLines)
@@ -522,7 +533,15 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 				return nil
 			}
 		} else {
-			fileResults, fileMatchCount, _ = grepScanFile(path, relPath, re, p.outputMode)
+			var scanErr error
+			var fileTruncated bool
+			fileResults, fileMatchCount, fileTruncated, scanErr = grepScanFile(path, relPath, re, p.outputMode, storeLimit)
+			if scanErr != nil {
+				scanErrors = append(scanErrors, relPath+": "+scanErr.Error())
+			}
+			if fileTruncated {
+				truncated = true
+			}
 		}
 
 		if len(fileResults) == 0 {
@@ -538,7 +557,11 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 	}
 
 	if totalMatchCount == 0 {
-		return MetaString{Value: "未找到匹配项。", Meta: map[string]any{"hit_count": 0}}, nil
+		value := "未找到匹配项。"
+		if len(scanErrors) > 0 {
+			value += fmt.Sprintf("（另有 %d 个文件无法扫描：%s）", len(scanErrors), strings.Join(scanErrors, "; "))
+		}
+		return MetaString{Value: value, Meta: map[string]any{"hit_count": 0}}, nil
 	}
 
 	// 与 rg 路径一致的分页语义：hit_count 为分页前总输出行数
@@ -546,6 +569,12 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 	shown := t.pageLines(results, p)
 
 	resultStr := strings.Join(shown, "\n")
+	if truncated {
+		resultStr += fmt.Sprintf("\n... (单文件结果超过 %d 行保存上限，已只计数不再累积) ...", storeLimit)
+	}
+	if len(scanErrors) > 0 {
+		resultStr += fmt.Sprintf("\n... (另有 %d 个文件无法扫描：%s) ...", len(scanErrors), strings.Join(scanErrors, "; "))
+	}
 	if t.MaxOutputChars > 0 && len(resultStr) > t.MaxOutputChars {
 		runes := []rune(resultStr)
 		resultStr = string(runes[:t.MaxOutputChars]) +
@@ -557,14 +586,17 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 }
 
 // grepScanFile 无上下文扫描：按 output_mode 输出（content 行 / 文件路径 / 计数）。
-func grepScanFile(path, relPath string, re *regexp.Regexp, outputMode string) (results []string, matchCount int, err error) {
+func grepScanFile(path, relPath string, re *regexp.Regexp, outputMode string, maxResults int) (results []string, matchCount int, truncated bool, err error) {
 	file, openErr := os.Open(path)
 	if openErr != nil {
-		return nil, 0, openErr
+		return nil, 0, false, openErr
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	// 默认 64KB 行上限会把压缩后的 JS/JSON 单行文件当成「无匹配」；
+	// 放宽到 4MB，仍保留上限防单行无限膨胀。
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -575,20 +607,24 @@ func grepScanFile(path, relPath string, re *regexp.Regexp, outputMode string) (r
 		matchCount++
 		switch outputMode {
 		case "files_with_matches":
-			// 首个命中即记录路径并提前退出（无需继续扫描）
+			// 首个命中即记录路径（无需继续保存）
 			if matchCount == 1 {
 				results = append(results, relPath)
 			}
 		case "count":
 			// 仅计数，不输出行
 		default:
-			results = append(results, fmt.Sprintf("%s:%d:%s", relPath, lineNum, line))
+			if maxResults <= 0 || len(results) < maxResults {
+				results = append(results, fmt.Sprintf("%s:%d:%s", relPath, lineNum, line))
+			} else {
+				truncated = true
+			}
 		}
 	}
 	if outputMode == "count" && matchCount > 0 {
 		results = append(results, fmt.Sprintf("%s:%d", relPath, matchCount))
 	}
-	return results, matchCount, scanner.Err()
+	return results, matchCount, truncated, scanner.Err()
 }
 
 // grepCollectMatches 第一遍扫描：仅收集命中行号（升序）。
@@ -601,6 +637,7 @@ func grepCollectMatches(path string, re *regexp.Regexp) ([]int, error) {
 
 	var matchLines []int
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
