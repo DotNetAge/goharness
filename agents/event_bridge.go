@@ -462,14 +462,40 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 	if len(msgs) <= base {
 		return
 	}
+	// 图片视觉消息缓冲。
+	//
+	// 并行工具调用（如一次读两张图）时，若每条 tool 落库后立即追加图片 user
+	// 消息，会形成 tool → user(图1) → tool → user(图2) 的序列：assistant 声明的
+	// 多个 tool_calls 必须由「连续的」tool 消息逐一回应，中间插入 user 会被
+	// OpenAI 兼容接口以 400 拒绝（insufficient tool messages following
+	// tool_calls message）。这会让该会话后续的压缩/摘要全部失败。
+	// 因此先缓冲，待所有 tool 落库后再统一追加。
+	var pendingVision []session.Message
+	flushVision := func() {
+		for _, vm := range pendingVision {
+			// tool 消息已持久化、水位已推进；图片追加失败只记日志，
+			// 不能让 tool 消息在下次回写时重复。
+			if err := sess.Append(br.b.ctx, vm); err != nil {
+				br.rt.logger.Error("追加图片视觉消息失败", err, "session", br.sessionID)
+			}
+		}
+		pendingVision = nil
+	}
+
 	for i := base; i < len(msgs); i++ {
 		m := msgs[i]
 		sm := session.Message{Timestamp: time.Now().Unix()}
+
+		// 遇到非 tool 消息之前，先把缓冲的图片消息落库，保证 tool 响应连续。
+		if m.Role != gochatcore.RoleTool && len(pendingVision) > 0 {
+			flushVision()
+		}
 
 		// 逐条事务快照：Append 失败时回滚配对状态，避免重试时序号错位。
 		prevAsst, prevTool := br.writeAsstSeq, br.writeToolSeq
 		prevCalls := br.writePendingCalls
 		prevImages := br.writePendingImages
+		prevVision := pendingVision
 		usageKey := br.writeAsstSeq
 		usageEntry, hadUsageEntry := br.callUsageByIter[usageKey]
 		var estimateUsage *session.TokenUsage
@@ -538,6 +564,7 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			br.writeAsstSeq, br.writeToolSeq = prevAsst, prevTool
 			br.writePendingCalls = prevCalls
 			br.writePendingImages = prevImages
+			pendingVision = prevVision
 			if hadUsageEntry {
 				br.callUsageByIter[usageKey] = usageEntry
 			}
@@ -553,22 +580,21 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 		}
 		br.writeLen = i + 1
 
-		// tool 消息落库后追加图片视觉消息（紧随对应工具结果之后）。
-		// tool 消息已持久化、水位已推进；图片追加失败只记日志并继续，
-		// 不能因为图片失败让 tool 消息在下次回写时重复。
+		// 图片视觉消息入缓冲：等本轮所有 tool 落库后再统一追加
+		// （原因见循环上方 pendingVision 的注释）。
 		if sm.Role == "tool" && len(br.writePendingImages.blocks) > 0 {
-			if err := sess.Append(br.b.ctx, session.Message{
+			pendingVision = append(pendingVision, session.Message{
 				Role: "user",
 				Content: "以下是工具 " + br.writePendingImages.toolName +
 					" 读取到的图片内容（视觉消息），请结合图片进行分析：",
 				Images:    br.writePendingImages.blocks,
 				Timestamp: time.Now().Unix(),
-			}); err != nil {
-				br.rt.logger.Error("追加图片视觉消息失败", err, "session", br.sessionID)
-			}
+			})
 			br.writePendingImages = imageEntry{}
 		}
 	}
+	// 本批以 tool 结尾时，缓冲里可能还有未落库的图片消息。
+	flushVision()
 	// 未消费的 usage 条目保留（跨增量回写由 writeAsstSeq 对位）；
 	// 每轮 beginRun 整体作废，跨轮不串账。
 }
