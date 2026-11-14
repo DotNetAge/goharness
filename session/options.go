@@ -29,6 +29,12 @@ func (s *Session) logError(msg string, err error, keyvals ...any) {
 	}
 }
 
+func (s *Session) logWarn(msg string, keyvals ...any) {
+	if s.log != nil {
+		s.log.Warn(msg, keyvals...)
+	}
+}
+
 // WithSummarySink 注入压缩摘要的交付回调（依赖倒置：摘要存哪、存成什么格式由应用层决定）。
 //
 // 在 cursor 移动前同步调用，返回 error 则本次压缩视为失败（cursor 不移动，

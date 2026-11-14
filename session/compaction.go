@@ -242,7 +242,10 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) (stri
 //   - ctx: 上下文，用于控制超时和取消
 //   - state: 当前会话状态快照
 //   - operation: 操作名称（"TryCompact" 或 "ForceCompact"），用于日志
-func (s *Session) doCompact(ctx context.Context, state sessionState, operation string) {
+//
+// slideCursor 为 false 时只做「生成摘要 + 交付落盘」，不移动 cursor——
+// 即只沉淀记忆、不改动上下文窗口（ForceExtractMemory 走这条路径）。
+func (s *Session) doCompact(ctx context.Context, state sessionState, operation string, slideCursor bool) {
 	// 未装配摘要交付回调时视为压缩失败：摘要无处持久化，清窗口等于丢历史不留记忆。
 	// 记入冷却避免每轮重试白烧 token。ForceCompact（手动触发）不受冷却约束但同样记录。
 	if s.summarySink == nil {
@@ -252,8 +255,9 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 		return
 	}
 
-	// 触发 compact start handler
-	if s.compactStartHandler != nil {
+	// 触发 compact start handler。
+	// 仅滑动窗口时触发：只提取记忆不改变上下文，前端不该看到「压缩中」进度。
+	if slideCursor && s.compactStartHandler != nil {
 		s.compactStartHandler(state.windowTokens, s.ModelContextLength())
 	}
 
@@ -273,6 +277,21 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 			s.logInfo(operation+": 生成摘要为空，跳过压缩", "session_id", s.id)
 			compactionFailed = true
 		} else {
+			// 质量自检：摘要是否还带着原文的关键路径/编号/标识符。
+			// 压缩是静默失忆的高发点——漏了关键信息 agent 不会报错，
+			// 只会基于残缺记忆继续干活。这里把它变成可观测的数字。
+			q := EvaluateCompactionQuality(state.activeMessages, summary)
+			s.logInfo(operation+": 摘要质量自检", "session_id", s.id,
+				"anchors", q.TotalAnchors,
+				"kept", q.KeptAnchors,
+				"coverage", q.Coverage)
+			if q.TotalAnchors > 0 && q.Coverage < CompactionMinCoverage {
+				s.logWarn(operation+": 摘要信息保留率偏低，可能丢失关键路径或编号",
+					"session_id", s.id,
+					"coverage", q.Coverage,
+					"missing_samples", q.MissingSamples)
+			}
+
 			s.logInfo(operation+": 生成摘要成功，开始交付外部持久化", "session_id", s.id, "summary_bytes", len(summary))
 			if err := s.summarySink(ctx, summary); err != nil {
 				s.logError(operation+": 摘要交付失败（SummarySink），将不压缩", err, "session_id", s.id)
@@ -290,9 +309,14 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 	}
 
 	if !compactionFailed {
-		// 移动 cursor 到末尾（清空当前窗口，不删除历史消息）
-		slidCount = s.executeFullCompaction(ctx)
-		s.logInfo(operation+": 摘要持久化成功，游标移动到末尾", "session_id", s.id, "slid_count", slidCount)
+		if slideCursor {
+			// 移动 cursor 到末尾（清空当前窗口，不删除历史消息）
+			slidCount = s.executeFullCompaction(ctx)
+			s.logInfo(operation+": 摘要持久化成功，游标移动到末尾", "session_id", s.id, "slid_count", slidCount)
+		} else {
+			// 只沉淀记忆：活跃窗口保持原样，下一轮对话照旧携带全部上下文
+			s.logInfo(operation+": 摘要已落盘，活跃窗口保持不变（仅提取记忆）", "session_id", s.id)
+		}
 	} else {
 		s.logInfo(operation+": 摘要持久化失败，跳过游标移动", "session_id", s.id)
 	}
@@ -305,9 +329,10 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 		s.lastCompactionFailAt.Store(0)
 	}
 
-	// 触发 compact done handler
+	// 触发 compact done handler（仅真正滑动窗口时；只提取记忆不改变窗口，
+	// 广播 done 会让前端误以为上下文被清空）
 	afterTokens := s.CurrentWindowTokens()
-	if s.compactDoneHandler != nil {
+	if slideCursor && s.compactDoneHandler != nil {
 		s.compactDoneHandler(slidCount, afterTokens)
 	}
 
@@ -368,7 +393,7 @@ func (s *Session) TryCompact(ctx context.Context) {
 		"window_tokens", state.windowTokens,
 		"max_window_size", state.maxWindowSize)
 
-	s.doCompact(ctx, state, "TryCompact")
+	s.doCompact(ctx, state, "TryCompact", true)
 }
 
 // ForceCompact 执行与 TryCompact 相同的压缩逻辑（摘要 + cursor 移动），
@@ -400,7 +425,27 @@ func (s *Session) ForceCompact(ctx context.Context) {
 		"window_tokens", state.windowTokens,
 		"threshold", forceCompactThreshold)
 
-	s.doCompact(ctx, state, "ForceCompact")
+	s.doCompact(ctx, state, "ForceCompact", true)
+}
+
+// ForceExtractMemory 只把当前活跃窗口沉淀为记忆，不移动 cursor。
+//
+// 与 ForceCompact 的区别：后者是「生成摘要 + 清空窗口」的一体化操作，
+// 清窗口必然带来一次完整的前缀缓存失效，代价高昂；本方法只取其中收益的
+// 一半——把会话里的决策、踩坑、可复现路径沉淀成可检索的记忆资产，
+// 而上下文窗口原封不动，下一轮对话照旧携带完整历史。
+//
+// 触发条件只有一条：活跃窗口非空。不设 token 下限——低占用会话同样值得
+// 沉淀记忆，这是用户显式触发的动作，不存在「自动白烧」的风险。
+//
+// 失败语义与压缩一致：摘要未交付成功即记冷却，避免自动重试反复烧 token。
+func (s *Session) ForceExtractMemory(ctx context.Context) {
+	state := s.captureState()
+	if len(state.activeMessages) == 0 {
+		s.logInfo("ForceExtractMemory: 活跃窗口为空，跳过", "session_id", s.id)
+		return
+	}
+	s.doCompact(ctx, state, "ForceExtractMemory", false)
 }
 
 // SetCompactionHandler 更新在压缩事件后调用的回调函数。
