@@ -582,11 +582,23 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 存储优先：先持久化
+	// 存储优先：先持久化。
+	//
+	// 一次 Append 的期间参数是「一组必须同生共死的消息」（典型：一个
+	// assistant(tool_calls) + 它欠的全部 tool 响应）。优先走批量接口：
+	// 整组一次落盘或一条不落，磁盘上绝不会出现「有 tool_calls、无 tool 响应」
+	// 的非法序列——那是让整个会话被接口 400 拒绝、用户只能删除会话的成因。
+	// 未实现 BatchAppender 的存储回退逐条写入（仅兼容旧实现，存在部分写入窗口）。
 	if s.store != nil {
-		for _, msg := range filtered {
-			if err := s.store.Append(ctx, s.id, s.agentName, s.sponsor, msg); err != nil {
+		if batch, ok := s.store.(BatchAppender); ok {
+			if err := batch.AppendBatch(ctx, s.id, s.agentName, s.sponsor, filtered); err != nil {
 				return fmt.Errorf("持久化消息失败: %w", err)
+			}
+		} else {
+			for _, msg := range filtered {
+				if err := s.store.Append(ctx, s.id, s.agentName, s.sponsor, msg); err != nil {
+					return fmt.Errorf("持久化消息失败: %w", err)
+				}
 			}
 		}
 	}

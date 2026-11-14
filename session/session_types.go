@@ -108,6 +108,19 @@ type Compactor interface {
 	Compact(ctx context.Context, s *Session, messages []Message) (string, error)
 }
 
+// BatchAppender 是 SessionStore 的可选扩展：一次原子写入多条消息。
+//
+// 为什么需要它：assistant 消息声明的 tool_calls 必须由紧随其后的 tool 消息
+// 逐一回应（OpenAI 兼容接口的硬性校验）。若这组消息分多次写入，中途失败或
+// 进程中断就会在磁盘上留下「有 tool_calls、无 tool 响应」的非法序列，
+// 该会话之后的每一次请求都会被 400 拒绝——用户侧只能删除会话。
+//
+// 实现方必须保证：整组要么全部写入成功，要么一条都不写。
+// 未实现该接口的存储会回退到逐条 Append（存在部分写入窗口，仅供兼容）。
+type BatchAppender interface {
+	AppendBatch(ctx context.Context, sessionID, agentName, sponsor string, messages []Message) error
+}
+
 type SessionStore interface {
 	Append(ctx context.Context, sessionID string, agentName string, sponsor string, message Message) error
 	Get(ctx context.Context, sessionID string) ([]Message, error)
