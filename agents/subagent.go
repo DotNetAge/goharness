@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -132,6 +133,98 @@ type subAgentManager struct {
 // failedTaskAnchorLimit 是任务锚点登记表的条目上限，超限整表清空：
 // 锚点是防绕过闸门而非长期资产，新失败自然重建。
 const failedTaskAnchorLimit = 128
+
+// states / taskInfos 两个登记表的内存上限。
+//
+// 背景：这两张表此前既没有上限也没有 delete 路径——每派发一次子任务就插入
+// 一条，长跑 daemon 会随派发次数线性增长且永不释放。
+//
+// 为什么不做成「超限整表清空」（像 failedTaskAnchors 那样）：
+// states 里可能挂着正在运行的子会话和授权等待通道，整表清空会丢信号；
+// 因此改为按 LRU 逐条驱逐，且只驱逐确定空闲的条目。
+const (
+	subagentStateLimit    = 256
+	subagentTaskInfoLimit = 256
+)
+
+// pruneStatesLocked 按 LRU 驱逐空闲的子会话状态，直到回到上限内。
+// 调用方必须已持有 m.mu 写锁。
+//
+// 可驱逐的条件（三者同时满足，宁可留着也不误删）：
+//   - lastUsedAt 非零：曾被 spawn 真正认领使用过
+//   - 不在任何 sponsor 名下：没有正在跑的子执行循环
+//   - 没有挂起的授权/提问通道：删除会断掉主会话回送信号的路径
+//
+// 驱逐是安全的：Session 数据持久化在 store 里，下次 getOrCreate 会重新加载。
+// 代价只是丢掉内存中那份已加载副本与 lastUsedAt 复用偏好。
+func (m *subAgentManager) pruneStatesLocked() {
+	if len(m.states) <= subagentStateLimit {
+		return
+	}
+
+	active := make(map[string]struct{}, len(m.sponsored))
+	for _, subs := range m.sponsored {
+		for sid := range subs {
+			active[sid] = struct{}{}
+		}
+	}
+
+	type candidate struct {
+		sid string
+		at  time.Time
+	}
+	cands := make([]candidate, 0, len(m.states))
+	for sid, st := range m.states {
+		if st == nil || st.lastUsedAt.IsZero() {
+			continue
+		}
+		if _, busy := active[sid]; busy {
+			continue
+		}
+		if st.pendingCh != nil || st.pendingAskCh != nil {
+			continue
+		}
+		cands = append(cands, candidate{sid: sid, at: st.lastUsedAt})
+	}
+	if len(cands) == 0 {
+		return
+	}
+
+	sort.Slice(cands, func(i, j int) bool { return cands[i].at.Before(cands[j].at) })
+
+	excess := len(m.states) - subagentStateLimit
+	for i := 0; i < excess && i < len(cands); i++ {
+		delete(m.states, cands[i].sid)
+	}
+}
+
+// pruneTaskInfosLocked 按登记时间驱逐最旧的收割目标登记。
+// 调用方必须已持有 m.mu 写锁。
+//
+// 被驱逐的登记只影响「跨多轮收割」时内存里的会话锚点查找；收割结果回灌
+// 仍依赖 LLM 回执里的 session_id，因此不会丢任务，最坏退化为主会话需重述
+// 目标会话（这也是原先 daemon 重启后的既有行为）。
+func (m *subAgentManager) pruneTaskInfosLocked() {
+	if len(m.taskInfos) <= subagentTaskInfoLimit {
+		return
+	}
+
+	type candidate struct {
+		id string
+		at time.Time
+	}
+	cands := make([]candidate, 0, len(m.taskInfos))
+	for id, info := range m.taskInfos {
+		cands = append(cands, candidate{id: id, at: info.registeredAt})
+	}
+
+	sort.Slice(cands, func(i, j int) bool { return cands[i].at.Before(cands[j].at) })
+
+	excess := len(m.taskInfos) - subagentTaskInfoLimit
+	for i := 0; i < excess && i < len(cands); i++ {
+		delete(m.taskInfos, cands[i].id)
+	}
+}
 
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
@@ -370,6 +463,9 @@ func (m *subAgentManager) releaseSpawn(sessionID string) {
 	if st := m.states[sessionID]; st != nil {
 		st.spawning = false
 	}
+	// spawn 结束是天然的修剪时机：此时该会话刚脱离运行态，
+	// 正好可以把积压的空闲状态按 LRU 清回上限。
+	m.pruneStatesLocked()
 }
 
 // registerSponsored 登记运行中子代理的强停句柄：sponsorSessionID 为主会话 ID，
@@ -613,9 +709,15 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 	}
 
 	// 收割目标登记：taskID → 会话锚点与展示信息（collector.go 后台收割
-	// 依据；进程生命周期内保留）。
+	// 依据；进程生命周期内保留，超限按最久未登记优先驱逐）。
 	m.mu.Lock()
-	m.taskInfos[taskID] = harvestTaskInfo{sessionID: sid, agentName: req.AgentName, title: title}
+	m.taskInfos[taskID] = harvestTaskInfo{
+		sessionID:    sid,
+		agentName:    req.AgentName,
+		title:        title,
+		registeredAt: time.Now(),
+	}
+	m.pruneTaskInfosLocked()
 	m.mu.Unlock()
 
 	m.rt.logger.Info("sub-agent task accepted",

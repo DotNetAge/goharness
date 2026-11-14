@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/DotNetAge/goharness/tools"
 )
@@ -27,6 +28,9 @@ type harvestTaskInfo struct {
 	sessionID string
 	agentName string
 	title     string
+	// registeredAt 供 taskInfos 超限时按「最久未登记优先」驱逐。
+	// 此前该表无上限也无删除路径，长跑进程会随派发次数线性增长。
+	registeredAt time.Time
 }
 
 // StartHarvest 登记收割意图并立即返回（实现 tools.HarvestStarter）。
