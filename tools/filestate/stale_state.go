@@ -21,6 +21,7 @@ import (
 // 用于 Edit/Write 在写入前检测文件是否已被外部修改。
 type StaleState struct {
 	Path        string    // 已解析的绝对路径
+	SessionID   string    // 记录该次读取的会话（观测跨会话命中用）
 	ReadAt      time.Time // 读取时间（用于 mtime 比对的基准）
 	MtimeMs     int64     // 读取时的文件 mtime（毫秒）
 	ContentHash string    // 读取内容的 SHA256（用于 mtime 误报时的 content 双重校验）
@@ -49,7 +50,7 @@ var staleStateCount atomic.Int64
 // MtimeMs 优先取文件真实 mtime（通过 os.Stat），仅在 stat 失败时回退 readAt，
 // 与 Claude 用 getFileModificationTime 记录时间戳的语义一致，避免毫秒级误差
 // 导致后续 CheckStale 每次都触发 content hash 兜底计算。
-func SetStale(path string, readAt time.Time, content []byte) {
+func SetStale(sessionID, path string, readAt time.Time, content []byte) {
 	h := sha256.Sum256(content)
 	mtimeMs := readAt.UnixMilli()
 	if info, err := os.Stat(path); err == nil {
@@ -64,6 +65,7 @@ func SetStale(path string, readAt time.Time, content []byte) {
 	}
 	staleStates.Store(path, &StaleState{
 		Path:        path,
+		SessionID:   sessionID,
 		ReadAt:      readAt,
 		MtimeMs:     mtimeMs,
 		ContentHash: fmt.Sprintf("%x", h[:]),
@@ -101,7 +103,7 @@ func withErrDetail(cause string, err error) string {
 //   - nil: 文件新鲜，可以写入
 //   - ErrNotRead: 该路径从未被读取过
 //   - ErrStale: 文件已被外部修改
-func CheckStale(path string) error {
+func CheckStale(callerSessionID, path string) (err error, crossOwner string) {
 	raw, ok := staleStates.Load(path)
 	if !ok {
 		return &ToolError{
@@ -111,9 +113,15 @@ func CheckStale(path string) error {
 				"当前会话中没有 Read 工具读取该文件的记录，无法确认文件的最新内容",
 				"先用 Read 工具读取该文件的最新内容，再执行编辑或写入",
 			),
-		}
+		}, ""
 	}
 	ss := raw.(*StaleState)
+	// 观测：记录该路径最近一次读取属于哪个会话。行为暂不变更（仍允许写入），
+	// 只把跨会话命中通过返回值交给调用方记日志，供后续决定隔离语义。
+	owner := ""
+	if ss.SessionID != "" && ss.SessionID != callerSessionID {
+		owner = ss.SessionID
+	}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -124,12 +132,12 @@ func CheckStale(path string) error {
 				withErrDetail("无法获取该文件的状态", err),
 				"先自查：该文件是否仍存在、路径是否正确、是否有访问权限？确认后用 Read 工具重新读取，再执行编辑或写入",
 			),
-		}
+		}, ""
 	}
 
 	// mtime 一致 → 文件未修改
 	if info.ModTime().UnixMilli() == ss.MtimeMs {
-		return nil
+		return nil, owner
 	}
 
 	// mtime 变更 → 做 content hash 双重校验
@@ -143,14 +151,14 @@ func CheckStale(path string) error {
 				withErrDetail("该文件已被修改，且无法读取最新内容", readErr),
 				"先检查文件是否仍可访问（可能已被移动/删除或权限变化），修正后用 Read 工具重新读取，再继续编辑或写入",
 			),
-		}
+		}, ""
 	}
 	h := sha256.Sum256(content)
 	newHash := fmt.Sprintf("%x", h[:])
 	if newHash == ss.ContentHash {
 		// mtime 变了但内容没变 → 更新 mtime 记录
 		ss.MtimeMs = info.ModTime().UnixMilli()
-		return nil
+		return nil, owner
 	}
 
 	return &ToolError{
@@ -162,7 +170,7 @@ func CheckStale(path string) error {
 		),
 		Internal: fmt.Sprintf("mtime changed from %d to %d, content hash changed from %s to %s",
 			ss.MtimeMs, info.ModTime().UnixMilli(), ss.ContentHash, newHash),
-	}
+	}, ""
 }
 
 // DeleteStale 在写入成功后清除指定路径的 StaleState。

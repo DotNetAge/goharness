@@ -177,7 +177,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, cursor
 
 	// G. filestate: 记录读取状态（供 Edit/Write 做 staleness 检测，仅文本路径）
 	if useStateCache {
-		filestate.SetStale(resolvedPath, time.Now(), data)
+		filestate.SetStale(sessionID, resolvedPath, time.Now(), data)
 	}
 
 	dataBuilder := &ReadData{
