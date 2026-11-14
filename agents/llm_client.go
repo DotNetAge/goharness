@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -311,9 +312,32 @@ func (c *gochatLLMClient) authDebugContext() string {
 		u += "/v1"
 	}
 	u += "/chat/completions"
-	var auth string
+	var auth, source string
 	if c.apiKey != "" {
-		auth = "Bearer " + gochatcore.GetAPIKey(c.apiKey)
+		auth = "Bearer " + maskSecret(gochatcore.GetAPIKey(c.apiKey))
+		source = apiKeySource(c.apiKey)
 	}
-	return fmt.Sprintf("request_url=%s, authorization=%q", u, auth)
+	return fmt.Sprintf("request_url=%s, authorization=%q, key_source=%q", u, auth, source)
+}
+
+// apiKeySource 标识实际使用密钥的来源：配置值，或 GetAPIKey 命中的环境变量。
+// 只输出变量名，不输出变量值——401 排障时用于区分「配置没生效」与「环境变量覆盖」。
+func apiKeySource(key string) string {
+	envName := strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
+	if os.Getenv(envName) != "" {
+		return "env:" + envName
+	}
+	return "config"
+}
+
+// maskSecret 对密钥做可读脱敏：保留前 4 与后 4，长度不足则全部隐去。
+func maskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= 8 {
+		return "***"
+	}
+	return string(runes[:4]) + "***" + string(runes[len(runes)-4:])
 }

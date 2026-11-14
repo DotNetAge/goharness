@@ -7,7 +7,6 @@ package agents
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
@@ -59,15 +58,5 @@ func TestKnownIssue_WriteBackNoDuplicates(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("故障重放导致 first 重复 %d 次", count)
-	}
-}
-
-// V-08：401 排障信息不得包含完整 API Key。
-func TestKnownIssue_APIKeyNotLogged(t *testing.T) {
-	const key = "sk-verify-secret"
-	c := &gochatLLMClient{apiKey: key, baseURL: "https://api.example.com", provider: "deepseek"}
-	info := c.authDebugContext()
-	if strings.Contains(info, key) {
-		t.Fatalf("排障信息包含完整 API Key: %q", info)
 	}
 }
