@@ -128,6 +128,16 @@ type subAgentManager struct {
 	// 「超限→新会话重派→再超限」的无限循环（每次全新满迭代上限）。
 	// 上限见 failedTaskAnchorLimit；m.mu 保护。
 	failedTaskAnchors map[string]string
+
+	// shutdown 在宿主停机（CancelAllSubAgents）时关闭，用于唤醒阻塞在
+	// 并发槽位上的排队任务。
+	//
+	// 为什么需要独立信号：runTask 的 ctx 由 context.WithoutCancel 派生
+	// （子任务不随主轮次级联取消，见 Submit 的 go 语句），其 Done() 恒为 nil，
+	// 因此排队处无法靠 ctx 感知停机。没有这个信号，停机时排队 goroutine
+	// 会一直等到拿到槽位为止，拖住优雅退出。
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
 }
 
 // failedTaskAnchorLimit 是任务锚点登记表的条目上限，超限整表清空：
@@ -229,11 +239,12 @@ func (m *subAgentManager) pruneTaskInfosLocked() {
 // newSubAgentManager 创建子智能体管理器。rt 为所属 Runtime，用于获取编排能力。
 func newSubAgentManager(rt *Runtime) *subAgentManager {
 	return &subAgentManager{
-		rt:        rt,
-		states:           make(map[string]*perSessionState),
-		taskInfos:        make(map[string]harvestTaskInfo),
-		sponsored:        make(map[string]map[string]context.CancelFunc),
+		rt:                rt,
+		states:            make(map[string]*perSessionState),
+		taskInfos:         make(map[string]harvestTaskInfo),
+		sponsored:         make(map[string]map[string]context.CancelFunc),
 		failedTaskAnchors: make(map[string]string),
+		shutdown:          make(chan struct{}),
 	}
 }
 
@@ -546,6 +557,11 @@ func (m *subAgentManager) cancelAllSponsored() int {
 	}
 	m.mu.Unlock()
 
+	// 先放行排队中的任务（唤醒它们退出），再取消正在运行的执行循环。
+	// 顺序很重要：已拿到槽位的任务靠 sponsored cancel 退出；仍在排队的
+	// 任务不在 sponsored 登记里，只能靠这个信号。
+	m.shutdownOnce.Do(func() { close(m.shutdown) })
+
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -773,8 +789,27 @@ func (m *subAgentManager) runTask(ctx context.Context, taskID, agentName, task, 
 
 	// 并发上限：信号量在后台 goroutine 中获取，满载时任务保持 Pending
 	//（已受理未运行，控制平面立即可见），有槽位释放后自动开跑。
-	subagentSem <- struct{}{}
-	defer func() { <-subagentSem }()
+	//
+	// 抢槽必须可中断：本 goroutine 的 ctx 由 context.WithoutCancel 派生
+	//（子任务不随主轮次级联取消），ctx.Done() 恒为 nil，所以只能用停机
+	// 信号兜底。否则 daemon 停机时这些排队 goroutine 会一直等到拿到槽位，
+	// 拖住优雅退出。
+	select {
+	case subagentSem <- struct{}{}:
+		defer func() { <-subagentSem }()
+	case <-m.shutdown:
+		settled = true
+		manager.Fail(taskID, "daemon 停机：等待并发槽位时取消")
+		// 必须复位认领标志：否则该会话永久停在 spawning=true，
+		// 之后 findIdleSession 永远不会再复用它。
+		m.releaseSpawn(sess.ID())
+		m.rt.logger.Warn("子任务在等待并发槽位时因停机取消",
+			"task_id", taskID,
+			"session_id", sess.ID(),
+			"agent_name", agentName,
+		)
+		return
+	}
 
 	// 单轮执行闭包：返回答案、终止原因与错误；panic 统一转错误。
 	answer, termReason, execErr := func() (answer, termReason string, err error) {
