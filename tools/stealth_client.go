@@ -398,12 +398,12 @@ func hostAuthorized(ctx context.Context, host string) bool {
 // 复用 isPrivateIP，在 socket 级拦截私有/内部地址，防 DNS rebinding（比 CheckURL 预检更紧）。
 // 会话授权主机（ctx 注入）跳过网段拦截——预检放行而拨号层拦截会让授权形同虚设。
 func ssrfDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	if hostAuthorized(ctx, host) {
-		dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 		return dialer.DialContext(ctx, network, addr)
 	}
 	ips, err := net.LookupIP(host)
@@ -415,8 +415,27 @@ func ssrfDialContext(ctx context.Context, network, addr string) (net.Conn, error
 			return nil, fmt.Errorf("访问被拒绝：URL 解析为私有/内部地址 %s", ip)
 		}
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	return dialer.DialContext(ctx, network, addr)
+
+	// 关键：拨号目标必须是刚刚校验过的那批 IP 字面量，而不是原始 hostname。
+	// 若仍用 addr 拨号，net.Dialer 会自行再做一次 DNS 解析——攻击者只要让
+	// 第二次解析返回内网地址（DNS rebinding，TTL 设为 0 即可），上面的校验
+	// 就形同虚设。这里逐个别名尝试，保留 A/AAAA 多记录的回退能力。
+	//
+	// TLS 不受影响：本函数只负责建立 TCP 连接，TLS 握手与 SNI 由上层
+	// （标准库 http.Transport / tls-client）按请求 URL 的 host 设置，
+	// 与拨号目标是否为 IP 字面量无关。
+	var lastErr error
+	for _, ip := range ips {
+		conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("主机 %q 没有可拨号的地址", host)
+	}
+	return nil, lastErr
 }
 
 // --- tls-client 后端 ---
