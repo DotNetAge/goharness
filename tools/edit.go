@@ -13,6 +13,7 @@ import (
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/tools/diffutil"
 	"github.com/DotNetAge/goharness/tools/filestate"
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // EditTool 实现了文件编辑工具。
@@ -240,7 +241,7 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("创建父目录", dir, err), err)
 		}
-		if err := os.WriteFile(resolvedPath, []byte(newStr), 0644); err != nil {
+		if err := utils.WriteFileAtomic(resolvedPath, []byte(newStr), 0644); err != nil {
 			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 		}
 		// 写入后清除 StaleState 和 NegativeCache
@@ -338,7 +339,7 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 	}
 
 	// 写入文件
-	if err := os.WriteFile(resolvedPath, []byte(updatedContent), 0644); err != nil {
+	if err := utils.WriteFileAtomic(resolvedPath, []byte(updatedContent), 0644); err != nil {
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 	}
 

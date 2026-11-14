@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // SessionWhitelist 定义了会话级别的工具白名单。
@@ -128,7 +130,8 @@ func (s *Session) AddToWhitelist(toolName, entry string) error {
 		return fmt.Errorf("序列化会话白名单失败: %w", err)
 	}
 
-	if err := os.WriteFile(wp, data, 0644); err != nil {
+	// 原子写：半截 JSON 会让下次加载直接失败
+	if err := utils.WriteFileAtomic(wp, data, 0644); err != nil {
 		return fmt.Errorf("写入会话白名单 %s 失败: %w", wp, err)
 	}
 

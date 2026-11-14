@@ -13,6 +13,7 @@ import (
 	"github.com/DotNetAge/goharness/sandbox"
 	"github.com/DotNetAge/goharness/tools/diffutil"
 	"github.com/DotNetAge/goharness/tools/filestate"
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // Write 实现了文件写入工具。
@@ -289,8 +290,8 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("访问", resolvedPath, statErr), statErr)
 	}
 
-	// 执行写入
-	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
+	// 执行写入（原子替换：崩溃不会留下半截源码）
+	if err := utils.WriteFileAtomic(resolvedPath, []byte(content), 0644); err != nil {
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 	}
 

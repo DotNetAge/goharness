@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // FileModifyEvent 携带文件修改追踪事件的数据，用于通知外部监听者。
@@ -178,7 +180,8 @@ func (s *Session) Rollback(files ...string) ([]string, error) {
 			return rolledBack, fmt.Errorf("rollback: mkdir %q failed: %w", dir, err)
 		}
 
-		if err := os.WriteFile(fp, data, 0644); err != nil {
+		// 原子写：回滚恢复必须避免留下半截文件
+		if err := utils.WriteFileAtomic(fp, data, 0644); err != nil {
 			return rolledBack, fmt.Errorf("rollback: restore %q failed: %w", fp, err)
 		}
 
@@ -287,7 +290,7 @@ func (s *Session) backupFile(srcPath string) (string, error) {
 
 	backupPath := s.backupPathFor(srcPath)
 
-	if err := os.WriteFile(backupPath, data, 0644); err != nil {
+	if err := utils.WriteFileAtomic(backupPath, data, 0644); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 

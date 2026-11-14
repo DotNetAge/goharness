@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // kvEntry 表示一个带可选过期时间的键值条目。
@@ -73,7 +75,7 @@ func (s *FileSystemKVStore) Set(_ context.Context, sessionID, key string, value 
 		return fmt.Errorf("无法序列化 KV 条目: %w", err)
 	}
 
-	return os.WriteFile(s.keyPath(sessionID, key), data, 0644)
+	return utils.WriteFileAtomic(s.keyPath(sessionID, key), data, 0644)
 }
 
 // Get 从给定会话中获取键对应的值。

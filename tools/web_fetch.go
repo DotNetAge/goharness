@@ -17,6 +17,7 @@ import (
 
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/sandbox"
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // webFetchLargePageLines 是判定页面需要落盘的行数阈值。
@@ -313,7 +314,7 @@ func performWebFetch(ctx context.Context, t *WebFetchTool, logger logging.Logger
 	}
 
 	// 写文件（覆盖式，缓存过期后重新抓取直接覆盖）
-	if err := os.WriteFile(filePath, []byte(storedContent), 0644); err != nil {
+	if err := utils.WriteFileAtomic(filePath, []byte(storedContent), 0644); err != nil {
 		return "", fmt.Errorf("写入 WebFetch 缓存文件失败: %w", err)
 	}
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // pendingAskFileName 是存储在会话目录中的挂起提问 JSON 文件名。
@@ -63,7 +65,8 @@ func (s *Session) persistPendingAsk(p *PendingAskUser) {
 		s.log.Error("序列化挂起提问失败", err)
 		return
 	}
-	if err := os.WriteFile(pp, data, 0644); err != nil {
+	// 原子写：半截 JSON 会让下次加载直接失败
+	if err := utils.WriteFileAtomic(pp, data, 0644); err != nil {
 		s.log.Error("写入挂起提问文件失败", err, "path", pp)
 	}
 }

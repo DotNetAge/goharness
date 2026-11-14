@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // pendingPermissionFileName 是存储在会话目录中的待处理授权 JSON 文件名。
@@ -63,7 +65,8 @@ func (s *Session) persistPendingPermission(p *PendingPermission) {
 		s.log.Error("序列化待处理授权失败", err)
 		return
 	}
-	if err := os.WriteFile(pp, data, 0644); err != nil {
+	// 原子写：半截 JSON 会让下次加载直接失败
+	if err := utils.WriteFileAtomic(pp, data, 0644); err != nil {
 		s.log.Error("写入待处理授权文件失败", err, "path", pp)
 	}
 }

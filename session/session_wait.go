@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/DotNetAge/goharness/utils"
 )
 
 // waitMarkerFileName 是存储在会话目录中的「等待用户输入」标记文件名。
@@ -35,7 +37,7 @@ func (s *Session) waitMarkerPath() string {
 }
 
 // MarkWaitingUser 写入等待标记（等待入口调用）。落盘失败仅记日志
-//（尽力而为，不阻断挂起等待主流程）。
+// （尽力而为，不阻断挂起等待主流程）。
 func (s *Session) MarkWaitingUser(kind string) {
 	pp := s.waitMarkerPath()
 	if pp == "" {
@@ -46,7 +48,8 @@ func (s *Session) MarkWaitingUser(kind string) {
 		s.log.Error("序列化等待标记失败", err)
 		return
 	}
-	if err := os.WriteFile(pp, data, 0644); err != nil {
+	// 原子写：半截 JSON 会让下次加载直接失败
+	if err := utils.WriteFileAtomic(pp, data, 0644); err != nil {
 		s.log.Error("写入等待标记失败", err, "path", pp)
 	}
 }

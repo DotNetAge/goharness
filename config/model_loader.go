@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/DotNetAge/goharness/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -264,7 +265,8 @@ func (m *ModelRegistry) saveAll() error {
 		return fmt.Errorf("无法序列化模型配置: %w", err)
 	}
 
-	if err := os.WriteFile(m.settingFile, data, 0644); err != nil {
+	// 原子写：配置半截会直接导致下次启动解析失败
+	if err := utils.WriteFileAtomic(m.settingFile, data, 0644); err != nil {
 		return fmt.Errorf("无法写入模型配置文件: %w", err)
 	}
 	return nil
