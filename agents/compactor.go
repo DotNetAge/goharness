@@ -256,6 +256,13 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 		usageFields = append(usageFields,
 			"prompt_tokens", streamUsage.PromptTokens,
 			"completion_tokens", streamUsage.CompletionTokens)
+		// 缓存命中量是「压缩请求有没有保持前缀不变」的唯一直接证据：
+		// prompt 与主对话逐字节一致时，绝大部分 prompt 应由前缀缓存命中，
+		// 计费按缓存价打折。若该值长期为 0，说明请求形态被改动过
+		//（消息重排、strip、system/tools 漂移），压缩成本会成倍上升。
+		if d := streamUsage.PromptTokensDetails; d != nil {
+			usageFields = append(usageFields, "cached_tokens", d.CachedTokens)
+		}
 	} else {
 		// Usage 为 nil 本身就是异常信号：流未走完服务端用量回报即终止
 		usageFields = append(usageFields, "prompt_tokens", "nil", "completion_tokens", "nil")
