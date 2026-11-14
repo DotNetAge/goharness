@@ -563,6 +563,14 @@ func ExtractSessionID(ctx context.Context) string {
 	return ""
 }
 
+// toolSessionID 从 ToolContext 提取当前会话 ID；无会话上下文时返回空串。
+func toolSessionID(ctx context.Context) string {
+	if tc := GetToolContext(ctx); tc.Session != nil {
+		return tc.Session.ID()
+	}
+	return ""
+}
+
 // WithSessionID 返回一个携带给定会话 ID 的新 context.Context。
 // 之后可通过 ExtractSessionID 取回该会话 ID。
 //

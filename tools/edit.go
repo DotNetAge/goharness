@@ -208,7 +208,7 @@ func (t *EditTool) authorizeEdit(ctx context.Context, filePath string) (resolved
 
 // performEdit 执行文件编辑核心逻辑：存在性检查、ENOENT 处理、创建模式、
 // staleness 检测、容错匹配、替换、写入。
-func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p editParams) (*EditResult, error) {
+func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p editParams, sessionID string) (*EditResult, error) {
 	oldStr, newStr := p.oldStr, p.newStr
 	replaceAll, limit := p.replaceAll, p.limit
 
@@ -267,8 +267,10 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 	}
 
 	// C. Staleness 自动检测
-	if err := filestate.CheckStale(resolvedPath); err != nil {
-		return nil, err
+	if staleErr, owner := filestate.CheckStale(sessionID, resolvedPath); staleErr != nil {
+		return nil, staleErr
+	} else if owner != "" {
+		logger.Warn("读前写跨会话命中", "caller_session", sessionID, "owner_session", owner, "path", resolvedPath)
 	}
 
 	// 读取文件内容
@@ -342,7 +344,7 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 
 	// 写入后重新记录 StaleState（基于刚写入的内容），
 	// 使同一文件的连续多次编辑无需反复 Read（与 write.go 模式一致）
-	filestate.SetStale(resolvedPath, time.Now(), []byte(updatedContent))
+	filestate.SetStale(sessionID, resolvedPath, time.Now(), []byte(updatedContent))
 	invalidateNegativeCache(resolvedPath)
 
 	logger.Info("file edited",
@@ -400,7 +402,7 @@ func (t *EditTool) Execute(ctx context.Context, params map[string]any) (any, err
 	)
 
 	// 3. 执行编辑核心逻辑
-	return performEdit(logger, resolvedPath, scope, p)
+	return performEdit(logger, resolvedPath, scope, p, toolSessionID(ctx))
 }
 
 // findEditMatch 在文件内容中查找 old_string 的匹配。

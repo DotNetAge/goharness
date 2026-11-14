@@ -234,10 +234,13 @@ func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedP
 	// 去除前导斜杠的相对路径（用于 fs.Stat），负缓存复核与后续 stat 检查共用
 	cleanPath := strings.TrimLeft(filepath.ToSlash(resolvedPath), "/")
 
-	// 会话 ID：去重键按会话隔离；无会话上下文（Session 为 nil）时退化为空前缀
+	// 会话 ID 与窗口游标：去重键按会话隔离，并随压缩游标变化失效。
+	// 窗口起点前移意味着此前的读取结果已不在上下文中，不能继续复用。
 	sessionID := ""
+	cursor := 0
 	if tc := GetToolContext(ctx); tc.Session != nil {
 		sessionID = tc.Session.ID()
+		cursor = tc.Session.Cursor()
 	}
 
 	// B. NegativeCache：快速拒绝。命中时先 stat 复核防假阴性——负缓存记录后
@@ -359,7 +362,7 @@ func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedP
 		// 支持 offset/limit 分页精读，超过输出字符预算时返回错误，
 		// 不为每种格式单独实现限制逻辑。禁用 DedupCache 与 filestate，
 		// 避免转换结果与文件原始状态混淆。
-		return r.buildTextResult(resolvedPath, cleanPath, sessionID, []byte(doc.content), info.Size(), scope, params, false, &docMeta{
+		return r.buildTextResult(resolvedPath, cleanPath, sessionID, cursor, []byte(doc.content), info.Size(), scope, params, false, &docMeta{
 			format: format,
 			title:  doc.title,
 			author: doc.author,
@@ -398,7 +401,7 @@ func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedP
 	if err != nil {
 		return nil, fmt.Errorf("%s", GuideReadIO(resolvedPath, err))
 	}
-	return r.buildTextResult(resolvedPath, cleanPath, sessionID, data, info.Size(), scope, params, true, nil)
+	return r.buildTextResult(resolvedPath, cleanPath, sessionID, cursor, data, info.Size(), scope, params, true, nil)
 }
 
 // Execute 编排 Read 工具执行流程：validate → authorize → perform。

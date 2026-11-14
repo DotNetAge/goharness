@@ -564,7 +564,14 @@ func (s *Session) Append(ctx context.Context, msgs ...Message) error {
 
 	var filtered []Message
 	for _, m := range msgs {
-		if strings.TrimSpace(m.Content) != "" || len(m.ToolCalls) > 0 {
+		// 保留：有文本、有工具调用、带图片、或 tool 角色。
+		// 纯图片 user 消息（Content==""）与空内容 tool 结果都必须落库：
+		// 前者丢失等于用户发的截图消失，后者会破坏 tool_calls 与 tool 的配对。
+		// 仅「无文本、无工具调用、无图片」的 assistant/user 仍按空消息丢弃。
+		if strings.TrimSpace(m.Content) != "" ||
+			len(m.ToolCalls) > 0 ||
+			len(m.Images) > 0 ||
+			m.Role == "tool" {
 			filtered = append(filtered, m)
 		}
 	}

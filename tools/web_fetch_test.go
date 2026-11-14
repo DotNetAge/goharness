@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,15 @@ import (
 // ============================================================
 // WebFetchTool — Real HTTP Tests (Enhanced Version)
 // ============================================================
+
+// requireNetworkTest 让默认测试不依赖外网；CI/本地需要跑真实网络时设
+// GOHARNESS_NET_TESTS=1。
+func requireNetworkTest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GOHARNESS_NET_TESTS") != "1" {
+		t.Skip("skipping network test: set GOHARNESS_NET_TESTS=1 to enable")
+	}
+}
 
 func TestWebFetchTool_Info(t *testing.T) {
 	tool := NewWebFetchTool(logging.NewNopLogger())
@@ -33,9 +43,7 @@ func TestWebFetchTool_Info(t *testing.T) {
 }
 
 func TestWebFetchTool_Real_ExampleCom(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 15*time.Second)
 	defer cancel()
 
@@ -60,9 +68,7 @@ func TestWebFetchTool_Real_ExampleCom(t *testing.T) {
 }
 
 func TestWebFetchTool_Real_HttpbinHTML(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	if !httpbinIsReachable(t) {
 		t.Skip("httpbin.org is not reachable (may be rate-limited)")
 	}
@@ -100,9 +106,7 @@ func httpbinIsReachable(t *testing.T) bool {
 }
 
 func TestWebFetchTool_Real_StatusCode404(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 15*time.Second)
 	defer cancel()
 
@@ -116,9 +120,7 @@ func TestWebFetchTool_Real_StatusCode404(t *testing.T) {
 }
 
 func TestWebFetchTool_URLNormalization(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 15*time.Second)
 	defer cancel()
 

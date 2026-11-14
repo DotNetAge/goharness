@@ -1,3 +1,5 @@
+//go:build integration
+
 package tools
 
 import (
@@ -47,7 +49,7 @@ func TestIntegration_WebFetch_StatusCode200_StaticHTML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [200-StaticHTML]: Execute error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [200-StaticHTML]: len=%d bytes, contains_html=%v, contains_example_domain=%v",
 		len(s), strings.Contains(s, "<html") || strings.Contains(s, "<!DOCTYPE"),
 		strings.Contains(s, "Example Domain"))
@@ -65,7 +67,7 @@ func TestIntegration_WebFetch_StatusCode404(t *testing.T) {
 	result, err := tool.Execute(ctx, map[string]any{"url": "https://httpbin.org/status/404"})
 	t.Logf("[404]: result=(%v), error=(%v)", result != nil, err)
 	if err == nil && result != nil {
-		s := result.(string)
+		s := unpackResultString(t, result)
 		t.Logf("PASS [404]: server returned content despite 404 status, len=%d", len(s))
 	}
 }
@@ -93,7 +95,7 @@ func TestIntegration_WebFetch_RedirectChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Redirect-2]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Redirect-2]: followed redirects, len=%d bytes", len(s))
 }
 
@@ -107,7 +109,7 @@ func TestIntegration_WebFetch_LargePage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [LargePage]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [LargePage]: received %d bytes (should be truncated to ~50000)", len(s))
 	if len([]rune(s)) > 51000 {
 		t.Errorf("content should be truncated to ~50000 chars, got %d runes", len([]rune(s)))
@@ -125,7 +127,7 @@ func TestIntegration_WebFetch_EncodedURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [EncodedURL]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	if strings.Contains(s, "hello world") || strings.Contains(s, "value=test") || strings.Contains(s, "query") {
 		t.Logf("PASS [EncodedURL]: URL-encoded params correctly sent, len=%d", len(s))
 	} else {
@@ -143,7 +145,7 @@ func TestIntegration_WebFetch_UTF8Content(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [UTF8]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	hasCJK := strings.Contains(s, "\u4e2d\u6587") || strings.Contains(s, "中文") ||
 		strings.Contains(s, "\u65e5\u672c") || strings.Contains(s, "日本語")
 	t.Logf("PASS [UTF8]: len=%d, has_CJK_content=%v", len(s), hasCJK)
@@ -159,7 +161,7 @@ func TestIntegration_WebFetch_JSONResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [JSON]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [JSON]: len=%d, contains_slides=%v, contains_title=%v",
 		len(s), strings.Contains(s, "slides"), strings.Contains(s, "title"))
 }
@@ -174,7 +176,7 @@ func TestIntegration_WebFetch_HTMLWithScriptsAndStyles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [HTML-Rich]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	hasMobyDick := strings.Contains(s, "Moby-Dick") || strings.Contains(s, "Herman Melville")
 	t.Logf("PASS [HTML-Rich]: len=%d, has_moby_dick_content=%v", len(s), hasMobyDick)
 }
@@ -228,7 +230,7 @@ func TestIntegration_WebFetch_ExampleCom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Claude-Example]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	hasHeader := strings.Contains(s, "--- 网页获取：")
 	hasStatus := strings.Contains(s, "状态：")
 	hasContent := strings.Contains(s, "Example Domain")
@@ -252,7 +254,7 @@ func TestIntegration_WebFetch_HTMLToTextExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Claude-HTMLExtract]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	noScript := !strings.Contains(s, "alert(") && !strings.Contains(s, "javascript:")
 	noStyle := !strings.Contains(s, "display:none") && !strings.Contains(s, "{")
 	hasText := strings.Contains(s, "Moby-Dick") || strings.Contains(s, "Herman Melville")
@@ -282,7 +284,7 @@ func TestIntegration_WebFetch_URLAutoNormalization(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FAIL [Normalize-%s]: error = %v", v.name, err)
 			}
-			s := result.(string)
+			s := unpackResultString(t, result)
 			if !strings.Contains(s, "Example Domain") {
 				t.Errorf("FAIL [Normalize-%s]: URL normalization failed for %q", v.name, v.url)
 			} else {
@@ -302,7 +304,7 @@ func TestIntegration_WebFetch_ResponseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Metadata]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Metadata]: full_response_preview:\n%s\n[END PREVIEW, total %d chars]", s[:min(500, len(s))], len(s))
 }
 
@@ -317,7 +319,7 @@ func TestIntegration_WebFetch_BinaryLikeContent(t *testing.T) {
 		t.Logf("INFO [Binary]: binary content may fail: %v", err)
 		return
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Binary]: handled binary/png response, len=%d (may contain garbled text)", len(s))
 }
 
@@ -338,8 +340,8 @@ func TestIntegration_Search_GolangOfficial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Search-Golang]: error = %v", err)
 	}
-	s := result.(string)
-	hasHeader := strings.Contains(s, "Web search results")
+	s := unpackResultString(t, result)
+	hasHeader := strings.Contains(s, "搜索结果")
 	hasURL := strings.Contains(s, "http")
 	hasResult := strings.Contains(s, "golang") || strings.Contains(s, "Go") || strings.Contains(s, "go.dev")
 	t.Logf("PASS [Search-Golang]: header=%v has_url=%v relevant=%v, len=%d\nPreview: %.300s...",
@@ -361,7 +363,7 @@ func TestIntegration_Search_TechnicalQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Search-React]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	hasReact := strings.Contains(s, "React") || strings.Contains(s, "react") || strings.Contains(s, "hooks")
 	t.Logf("PASS [Search-React]: react_related=%v, len=%d\nPreview: %.400s...", hasReact, len(s), s)
 }
@@ -378,7 +380,7 @@ func TestIntegration_Search_NewsQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Search-News]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Search-News]: len=%d, preview: %.400s...", len(s), s)
 }
 
@@ -396,7 +398,7 @@ func TestIntegration_Search_DomainFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Search-DomainFilter]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Search-DomainFilter]: len=%d, preview: %.400s...", len(s), s)
 }
 
@@ -413,7 +415,7 @@ func TestIntegration_Search_MaxResultsLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Search-MaxResults]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	lineCount := strings.Count(s, "\n")
 	t.Logf("PASS [Search-MaxResults]: max_results=3, output_lines=%d, len=%d", lineCount, len(s))
 }
@@ -435,7 +437,7 @@ func TestIntegration_Search_SpecialCharacters(t *testing.T) {
 			t.Logf("SKIP [Search-SpecialChar-%d]: query=%q error=%v", i+1, q, err)
 			continue
 		}
-		s := result.(string)
+		s := unpackResultString(t, result)
 		t.Logf("PASS [Search-SpecialChar-%d]: query=%q → len=%d", i+1, q, len(s))
 	}
 }
@@ -462,7 +464,7 @@ func TestIntegration_Search_CacheHit(t *testing.T) {
 		t.Fatalf("FAIL [Search-Cache-2nd]: error = %v", err)
 	}
 
-	s1, s2 := r1.(string), r2.(string)
+	s1, s2 := unpackResultString(t, r1), unpackResultString(t, r2)
 	t.Logf("PASS [Search-Cache]: 1st=%.2fs(len=%d) | 2nd=%.2fs(len=%d) | identical=%v",
 		d1.Seconds(), len(s1), d2.Seconds(), len(s2), s1 == s2)
 	if d2 < d1 {
@@ -488,7 +490,7 @@ func TestIntegration_Workflow_SearchThenFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Workflow-Step1-Search]: error = %v", err)
 	}
-	searchStr := searchResult.(string)
+	searchStr := unpackResultString(t, searchResult)
 	t.Logf("STEP1 [Search]: completed in %.2fs, len=%d", time.Since(step1).Seconds(), len(searchStr))
 
 	step2 := time.Now()
@@ -499,7 +501,7 @@ func TestIntegration_Workflow_SearchThenFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Workflow-Step2-Fetch]: error = %v", err)
 	}
-	fetchStr := fetchResult.(string)
+	fetchStr := unpackResultString(t, fetchResult)
 	t.Logf("STEP2 [Fetch]: completed in %.2fs, len=%d", time.Since(step2).Seconds(), len(fetchStr))
 
 	totalTime := time.Since(step1)
@@ -533,7 +535,7 @@ func TestIntegration_Edge_VeryLongURL(t *testing.T) {
 		t.Logf("INFO [Edge-LongURL]: long URL may be rejected: %v", err)
 		return
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Edge-LongURL]: handled URL of length %d, response len=%d", len(u.String()), len(s))
 }
 
@@ -549,7 +551,7 @@ func TestIntegration_Edge_QueryWithSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAIL [Edge-Spaces]: error = %v", err)
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	t.Logf("PASS [Edge-Spaces]: query with extra spaces produced len=%d result", len(s))
 }
 
@@ -566,7 +568,7 @@ func TestIntegration_Edge_EmptySearchResult(t *testing.T) {
 		t.Logf("INFO [Edge-NoResults]: error on nonsense query: %v", err)
 		return
 	}
-	s := result.(string)
+	s := unpackResultString(t, result)
 	isNoResults := strings.Contains(strings.ToLower(s), "no result") ||
 		strings.Contains(strings.ToLower(s), "not found")
 	t.Logf("PASS [Edge-NoResults]: nonsense_query → len=%d, is_no_result_msg=%v", len(s), isNoResults)
@@ -590,7 +592,7 @@ func TestIntegration_Edge_UnicodeSearchQuery(t *testing.T) {
 			t.Logf("SKIP [Edge-Unicode-%d]: query=%q error=%v", i+1, q, err)
 			continue
 		}
-		s := result.(string)
+		s := unpackResultString(t, result)
 		t.Logf("PASS [Edge-Unicode-%d]: query=%q → len=%d", i+1, q, len(s))
 	}
 }

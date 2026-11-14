@@ -10,7 +10,7 @@ import (
 //
 // 缓存 key 是 (sessionID, filePath, offset, limit) 四元组：按会话隔离，
 // 保证命中回执所引用的「此前读取的结果」确实存在于当前会话的历史中
-//（跨会话共享键会导致另一会话被引用不存在的上下文）。
+// （跨会话共享键会导致另一会话被引用不存在的上下文）。
 //
 // 命中条件：mtime 一致即命中——同键请求（同 offset 同 limit）在文件未变化
 // 时重读输出必然逐字节相同（动态默认行数在缓存检查前已确定，请求侧与
@@ -84,10 +84,12 @@ func invalidateNegativeCache(path string) {
 	negativeCache.Delete(path)
 }
 
-// dedupCacheKey 生成缓存 key：(sessionID:filePath:offset:limit)。
+// dedupCacheKey 生成缓存 key：(sessionID:cursor:filePath:offset:limit)。
 // sessionID 为空时退化为无会话前缀键（无会话上下文的调用方）。
-func dedupCacheKey(sessionID, filePath string, offset, limit int) string {
-	return sessionID + "\x00" + filePath + "\x00" + itoa(offset) + "\x00" + itoa(limit)
+// cursor 是会话活跃窗口起点：压缩后 cursor 前移，旧读取结果已不在上下文，
+// 键必须随之变化，否则会向模型返回「此前结果仍有效」的过期回执。
+func dedupCacheKey(sessionID string, cursor int, filePath string, offset, limit int) string {
+	return sessionID + "\x00" + itoa(cursor) + "\x00" + filePath + "\x00" + itoa(offset) + "\x00" + itoa(limit)
 }
 
 // itoa 是一个简单的整数转字符串函数。

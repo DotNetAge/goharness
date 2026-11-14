@@ -42,7 +42,7 @@ type docMeta struct {
 //   - useStateCache:是否启用 DedupCache 与 filestate 状态跟踪（纯文本启用；
 //     文档转换禁用，避免转换结果与文件原始状态混淆）
 //   - meta:         文档转换元数据（纯文本时为 nil）
-func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, data []byte, sizeBytes int64, scope PathScope, params map[string]any, useStateCache bool, meta *docMeta) (*ReadResult, error) {
+func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, cursor int, data []byte, sizeBytes int64, scope PathScope, params map[string]any, useStateCache bool, meta *docMeta) (*ReadResult, error) {
 	// 获取分页参数
 	startLine := 1
 	if rawOffset, found := GetParam(params, "offset"); found {
@@ -69,7 +69,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, data [
 
 	// B. DedupCache 检查（仅文本路径启用）
 	if useStateCache {
-		cacheKey := dedupCacheKey(sessionID, resolvedPath, startLine, maxLines)
+		cacheKey := dedupCacheKey(sessionID, cursor, resolvedPath, startLine, maxLines)
 		if cached, ok := getReadFileState(cacheKey); ok {
 			statInfo, statErr := fs.Stat(store.OS, cleanPath)
 			if statErr == nil {
@@ -155,7 +155,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, data [
 				state.MtimeMs = fi.ModTime().UnixMilli()
 			}
 		}
-		setReadFileState(dedupCacheKey(sessionID, resolvedPath, startLine, maxLines), state)
+		setReadFileState(dedupCacheKey(sessionID, cursor, resolvedPath, startLine, maxLines), state)
 	}
 
 	// 构建结果
@@ -177,7 +177,7 @@ func (r *Read) buildTextResult(resolvedPath, cleanPath, sessionID string, data [
 
 	// G. filestate: 记录读取状态（供 Edit/Write 做 staleness 检测，仅文本路径）
 	if useStateCache {
-		filestate.SetStale(resolvedPath, time.Now(), data)
+		filestate.SetStale(sessionID, resolvedPath, time.Now(), data)
 	}
 
 	dataBuilder := &ReadData{

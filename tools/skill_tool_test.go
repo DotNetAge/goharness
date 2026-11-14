@@ -23,15 +23,10 @@ func (r *baseRegistry) GetSkill(name string) (*skill.Skill, error) {
 	return sk, nil
 }
 
-// nopStore / nopLogger 是测试用空实现（嵌入接口，Execute 仅读取会话
-// ProjectDir，不触发存储与日志调用）。
-type nopStore struct{ session.SessionStore }
-type nopLogger struct{ logging.Logger }
-
 // newSessionWithProjectDir 构造一个绑定指定项目目录的会话。
 func newSessionWithProjectDir(t *testing.T, projectDir string) *session.Session {
 	t.Helper()
-	sess, err := session.New("test-agent", "", projectDir, nopStore{}, nopLogger{})
+	sess, err := session.New("test-agent", "", projectDir, newMockSessionStore(), logging.NewNopLogger())
 	if err != nil {
 		t.Fatalf("创建测试会话失败: %v", err)
 	}

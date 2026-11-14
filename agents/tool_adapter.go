@@ -128,10 +128,19 @@ func (a *funcToolAdapter) Execute(ctx context.Context, args json.RawMessage) (st
 		return "", err
 	}
 
-	// 5. 结果序列化：string 直通，其余 json.Marshal，失败时 fmt 兜底
-	//    （与旧核 implToolExecutor.Execute 的序列化口径一致）。
-	if s, ok := result.(string); ok {
-		return s, nil
+	// 5. 结果序列化：string 与 MetaString 都直通文本，其余 json.Marshal，
+	//    失败时 fmt 兜底（与旧核 implToolExecutor.Execute 的序列化口径一致）。
+	//    MetaString 若走 json.Marshal 会带上外层引号与转义，必须在此解包。
+	switch v := result.(type) {
+	case string:
+		return v, nil
+	case tools.MetaString:
+		return v.Value, nil
+	case *tools.MetaString:
+		if v != nil {
+			return v.Value, nil
+		}
+		return "", nil
 	}
 	b, marshalErr := json.Marshal(result)
 	if marshalErr != nil {

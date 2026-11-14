@@ -1,6 +1,9 @@
 package tools
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"reflect"
+)
 
 // MetaProvider 是工具向事件侧暴露结构化统计的可选接口。
 //
@@ -51,6 +54,14 @@ func (m MetaMap) ResultMeta() map[string]any {
 // ExtractResultMeta 从工具返回值提取旁路元数据；未实现 MetaProvider 的
 // 返回值返回 nil。供 executor 在构造 ToolExecutionResult 时调用。
 func ExtractResultMeta(result any) map[string]any {
+	if result == nil {
+		return nil
+	}
+	// 类型化 nil 指针（如 (*MetaString)(nil)）同样满足 MetaProvider 断言，
+	// 直接调用值接收者方法会 panic。工具返回值来自插件，不能假设非 nil。
+	if rv := reflect.ValueOf(result); rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil
+	}
 	if mp, ok := result.(MetaProvider); ok {
 		return mp.ResultMeta()
 	}

@@ -183,7 +183,7 @@ func (w *Write) authorizeWrite(ctx context.Context, filePath string) (resolvedPa
 }
 
 // performWrite 执行文件写入核心逻辑：目录创建、模式判断、追加/覆盖/创建写入、后处理。
-func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p writeParams) (*WriteResult, error) {
+func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p writeParams, sessionID string) (*WriteResult, error) {
 	content := p.content
 
 	// 确保父目录存在
@@ -255,8 +255,12 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 		writeType = "overwrite"
 
 		// A. 读前写约束：filestate.CheckStale
-		if err := filestate.CheckStale(resolvedPath); err != nil {
-			return nil, err
+		if staleErr, owner := filestate.CheckStale(sessionID, resolvedPath); staleErr != nil {
+			return nil, staleErr
+		} else if owner != "" {
+			// 观测：本次写入命中了其他会话留下的读取状态。行为暂不变，
+			// 仅记录以便评估「严格按会话隔离」对主/子代理协作的影响。
+			logger.Warn("读前写跨会话命中", "caller_session", sessionID, "owner_session", owner, "path", resolvedPath)
 		}
 
 		// 读取原始内容（用于 diff）
@@ -294,7 +298,7 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 	filestate.DeleteStale(resolvedPath)
 
 	// 写入后记录新的 StaleState（供后续 overwrite 使用）
-	filestate.SetStale(resolvedPath, time.Now(), []byte(content))
+	filestate.SetStale(sessionID, resolvedPath, time.Now(), []byte(content))
 
 	// 清除 NegativeCache
 	invalidateNegativeCache(resolvedPath)
@@ -352,5 +356,5 @@ func (w *Write) Execute(ctx context.Context, params map[string]any) (any, error)
 		"content_len", len(p.content),
 	)
 
-	return performWrite(logger, resolvedPath, scope, p)
+	return performWrite(logger, resolvedPath, scope, p, toolSessionID(ctx))
 }

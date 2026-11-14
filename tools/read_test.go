@@ -122,30 +122,36 @@ func TestValidateReadPath_EmptyPath(t *testing.T) {
 func TestDedupCacheKey(t *testing.T) {
 	tests := []struct {
 		sessionID string
+		cursor    int
 		filePath  string
 		offset    int
 		limit     int
 		expected  string
 	}{
-		{"sess-a", "/path/file.txt", 1, 0, "sess-a\x00/path/file.txt\x001\x000"},
-		{"sess-a", "/path/file.txt", 100, 500, "sess-a\x00/path/file.txt\x00100\x00500"},
-		{"", "/path/file.txt", 0, 0, "\x00/path/file.txt\x000\x000"},
-		{"sess-b", "/path/file.txt", -1, 0, "sess-b\x00/path/file.txt\x00-1\x000"},
+		{"sess-a", 0, "/path/file.txt", 1, 0, "sess-a\x000\x00/path/file.txt\x001\x000"},
+		{"sess-a", 7, "/path/file.txt", 1, 0, "sess-a\x007\x00/path/file.txt\x001\x000"},
+		{"sess-a", 0, "/path/file.txt", 100, 500, "sess-a\x000\x00/path/file.txt\x00100\x00500"},
+		{"", 0, "/path/file.txt", 0, 0, "\x000\x00/path/file.txt\x000\x000"},
+		{"sess-b", 0, "/path/file.txt", -1, 0, "sess-b\x000\x00/path/file.txt\x00-1\x000"},
 	}
 	for _, tt := range tests {
-		got := dedupCacheKey(tt.sessionID, tt.filePath, tt.offset, tt.limit)
+		got := dedupCacheKey(tt.sessionID, tt.cursor, tt.filePath, tt.offset, tt.limit)
 		if got != tt.expected {
-			t.Errorf("dedupCacheKey(%q, %q, %d, %d) = %q, want %q", tt.sessionID, tt.filePath, tt.offset, tt.limit, got, tt.expected)
+			t.Errorf("dedupCacheKey(%q, %d, %q, %d, %d) = %q, want %q", tt.sessionID, tt.cursor, tt.filePath, tt.offset, tt.limit, got, tt.expected)
 		}
 	}
 	// 同一文件同参数在不同会话下键必须不同（去重按会话隔离）
-	if dedupCacheKey("sess-a", "/path/f.txt", 1, 0) == dedupCacheKey("sess-b", "/path/f.txt", 1, 0) {
+	if dedupCacheKey("sess-a", 0, "/path/f.txt", 1, 0) == dedupCacheKey("sess-b", 0, "/path/f.txt", 1, 0) {
 		t.Error("不同会话的同参数键不应相同")
+	}
+	// 同会话同参数在压缩前后键必须不同（游标变化即失效）
+	if dedupCacheKey("sess-a", 0, "/path/f.txt", 1, 0) == dedupCacheKey("sess-a", 9, "/path/f.txt", 1, 0) {
+		t.Error("游标变化后键不应相同")
 	}
 }
 
 func TestReadFileState_StoreAndLoad(t *testing.T) {
-	key := dedupCacheKey("sess-1", "/tmp/test.txt", 1, 0)
+	key := dedupCacheKey("sess-1", 0, "/tmp/test.txt", 1, 0)
 	state := &ReadFileState{
 		LineCount: 100,
 		MtimeMs:   1234567890,
@@ -172,8 +178,8 @@ func TestReadFileState_NotFound(t *testing.T) {
 }
 
 func TestReadFileState_UniqueKeys(t *testing.T) {
-	key1 := dedupCacheKey("sess-1", "/tmp/a.txt", 1, 0)
-	key2 := dedupCacheKey("sess-1", "/tmp/b.txt", 1, 0)
+	key1 := dedupCacheKey("sess-1", 0, "/tmp/a.txt", 1, 0)
+	key2 := dedupCacheKey("sess-1", 0, "/tmp/b.txt", 1, 0)
 	setReadFileState(key1, &ReadFileState{MtimeMs: 111})
 	setReadFileState(key2, &ReadFileState{MtimeMs: 222})
 
@@ -842,7 +848,7 @@ func TestRead_CRLFLineEndings(t *testing.T) {
 // TestReadFileState_OverwriteDoesNotGrowCount 同键覆盖（重读后更新状态）
 // 不应增加条目计数——旧实现每次 Add(1) 导致计数虚高、提前触发整表清空。
 func TestReadFileState_OverwriteDoesNotGrowCount(t *testing.T) {
-	key := dedupCacheKey("sess-overwrite", "/tmp/overwrite.txt", 1, 0)
+	key := dedupCacheKey("sess-overwrite", 0, "/tmp/overwrite.txt", 1, 0)
 	setReadFileState(key, &ReadFileState{MtimeMs: 1})
 	before := readStateCount.Load()
 	setReadFileState(key, &ReadFileState{MtimeMs: 2})
@@ -867,17 +873,17 @@ func TestReadFileState_OverwriteDoesNotGrowCount(t *testing.T) {
 func TestReadFileState_EntryCapFlush(t *testing.T) {
 	// 从当前计数连续写入 dedupMaxEntries+1 个条目，无论起始计数如何，
 	// 超限 flush 必然发生：flush 前写入的条目被清空。
-	firstKey := dedupCacheKey("sess-cap", "/tmp/cap_flush_first.txt", 1, 1)
+	firstKey := dedupCacheKey("sess-cap", 0, "/tmp/cap_flush_first.txt", 1, 1)
 	setReadFileState(firstKey, &ReadFileState{MtimeMs: 1})
 	for i := 0; i <= dedupMaxEntries; i++ {
-		key := dedupCacheKey("sess-cap", fmt.Sprintf("/tmp/cap_flush_%d.txt", i), 1, 1)
+		key := dedupCacheKey("sess-cap", 0, fmt.Sprintf("/tmp/cap_flush_%d.txt", i), 1, 1)
 		setReadFileState(key, &ReadFileState{MtimeMs: int64(i)})
 	}
 	if _, ok := getReadFileState(firstKey); ok {
 		t.Error("超限 flush 后 flush 前写入的条目应被清空")
 	}
 	// flush 后新条目应可写入并读取
-	afterKey := dedupCacheKey("sess-cap", "/tmp/cap_flush_after.txt", 1, 1)
+	afterKey := dedupCacheKey("sess-cap", 0, "/tmp/cap_flush_after.txt", 1, 1)
 	setReadFileState(afterKey, &ReadFileState{MtimeMs: 999})
 	loaded, ok := getReadFileState(afterKey)
 	if !ok || loaded.MtimeMs != 999 {

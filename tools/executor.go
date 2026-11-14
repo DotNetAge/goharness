@@ -96,6 +96,9 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	if e.cfg.session != nil {
 		toolCtx.SessionWhitelist = e.cfg.session.Whitelist()
 	}
+	// 补齐上游经 RuntimeValue 注入、但不在 executorConfig 中的字段。
+	// 关键项是 SubProcessEnv（技能凭据），丢失会让 Bash 凭据注入静默失效。
+	toolCtx.FillMissingFrom(GetToolContext(ctx))
 	execCtx := WithToolContext(ctx, toolCtx)
 
 	start := time.Now()
@@ -146,8 +149,20 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	// 供上层经 ToolExecEnd 事件透传给前端，LLM 上下文不受污染。
 	ter.Metadata = ExtractResultMeta(result)
 
-	str, ok := result.(string)
-	if !ok {
+	// 结果序列化：字符串与 MetaString 都直通 Value——MetaString 的 MarshalJSON
+	// 会把文本编码成「带引号的 JSON 字符串」，直接 json.Marshal 会让 LLM 看到
+	// `"..."` 与字面 `\n`（Grep/WebSearch 高频命中）。其余类型保持 JSON 序列化。
+	var str string
+	switch v := result.(type) {
+	case string:
+		str = v
+	case MetaString:
+		str = v.Value
+	case *MetaString:
+		if v != nil {
+			str = v.Value
+		}
+	default:
 		b, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
 			str = fmt.Sprintf("%v", result)

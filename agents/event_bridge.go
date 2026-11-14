@@ -465,12 +465,21 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 	for i := base; i < len(msgs); i++ {
 		m := msgs[i]
 		sm := session.Message{Timestamp: time.Now().Unix()}
+
+		// 逐条事务快照：Append 失败时回滚配对状态，避免重试时序号错位。
+		prevAsst, prevTool := br.writeAsstSeq, br.writeToolSeq
+		prevCalls := br.writePendingCalls
+		prevImages := br.writePendingImages
+		usageKey := br.writeAsstSeq
+		usageEntry, hadUsageEntry := br.callUsageByIter[usageKey]
+		var estimateUsage *session.TokenUsage
+
 		switch m.Role {
 		case gochatcore.RoleAssistant:
 			sm.Role = "assistant"
 			sm.Content = textOfBlocks(m.Content)
 			sm.ReasoningContent = m.ReasoningContent
-			if entry := br.callUsageByIter[br.writeAsstSeq]; entry != nil {
+			if entry := br.callUsageByIter[usageKey]; entry != nil {
 				u := entry.usage
 				if u == nil {
 					u = br.estimateCallUsage(msgs, i)
@@ -478,12 +487,10 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 				usageCopy := *u
 				sm.Usage = &usageCopy
 				if entry.estimate {
-					// 估算用量与精确值同口径落账广播：对账面板不缺账，
-					// Estimated 标记供区分
-					br.appendUsageRecord(&usageCopy)
-					br.accumulateTotal(&usageCopy)
+					// 估算用量的落账推迟到 Append 成功后，避免失败重试时重复记账。
+					estimateUsage = &usageCopy
 				}
-				delete(br.callUsageByIter, br.writeAsstSeq)
+				delete(br.callUsageByIter, usageKey)
 			}
 			br.writeAsstSeq++
 			for _, tc := range m.ToolCalls {
@@ -525,11 +532,30 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			sm.Role = string(m.Role)
 			sm.Content = textOfBlocks(m.Content)
 		}
+
 		if err := sess.Append(br.b.ctx, sm); err != nil {
+			// 回滚本条引入的所有状态：重试从同一条重新开始，不得重复写已成功的消息。
+			br.writeAsstSeq, br.writeToolSeq = prevAsst, prevTool
+			br.writePendingCalls = prevCalls
+			br.writePendingImages = prevImages
+			if hadUsageEntry {
+				br.callUsageByIter[usageKey] = usageEntry
+			}
+			br.writeLen = i
 			br.rt.logger.Error("回写消息失败", err, "session", br.sessionID, "role", sm.Role)
 			return
 		}
-		// tool 消息落库后追加图片视觉消息（紧随对应工具结果之后）
+
+		// Append 成功后才提交估算用量的记账与广播，失败重试不会重复落账。
+		if estimateUsage != nil {
+			br.appendUsageRecord(estimateUsage)
+			br.accumulateTotal(estimateUsage)
+		}
+		br.writeLen = i + 1
+
+		// tool 消息落库后追加图片视觉消息（紧随对应工具结果之后）。
+		// tool 消息已持久化、水位已推进；图片追加失败只记日志并继续，
+		// 不能因为图片失败让 tool 消息在下次回写时重复。
 		if sm.Role == "tool" && len(br.writePendingImages.blocks) > 0 {
 			if err := sess.Append(br.b.ctx, session.Message{
 				Role: "user",
@@ -539,13 +565,10 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 				Timestamp: time.Now().Unix(),
 			}); err != nil {
 				br.rt.logger.Error("追加图片视觉消息失败", err, "session", br.sessionID)
-				return
 			}
 			br.writePendingImages = imageEntry{}
 		}
 	}
-	// 水位推进到当前长度：迭代边界增量回写的关键（同一批消息只回写一次）
-	br.writeLen = len(msgs)
 	// 未消费的 usage 条目保留（跨增量回写由 writeAsstSeq 对位）；
 	// 每轮 beginRun 整体作废，跨轮不串账。
 }
