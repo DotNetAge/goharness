@@ -245,14 +245,17 @@ func (s *Session) generateSummary(ctx context.Context, messages []Message) (stri
 //
 // slideCursor 为 false 时只做「生成摘要 + 交付落盘」，不移动 cursor——
 // 即只沉淀记忆、不改动上下文窗口（ForceExtractMemory 走这条路径）。
-func (s *Session) doCompact(ctx context.Context, state sessionState, operation string, slideCursor bool) {
+//
+// 返回是否成功（摘要已生成并交付）。调用方可据此对上暴露失败，
+// 避免「什么都没做但看起来成功了」。
+func (s *Session) doCompact(ctx context.Context, state sessionState, operation string, slideCursor bool) bool {
 	// 未装配摘要交付回调时视为压缩失败：摘要无处持久化，清窗口等于丢历史不留记忆。
 	// 记入冷却避免每轮重试白烧 token。ForceCompact（手动触发）不受冷却约束但同样记录。
 	if s.summarySink == nil {
 		s.logError(operation+": 未装配摘要交付回调（SummarySink），视为压缩失败",
 			fmt.Errorf("summary sink 未装配"), "session_id", s.id)
 		s.lastCompactionFailAt.Store(time.Now().UnixNano())
-		return
+		return false
 	}
 
 	// 触发 compact start handler。
@@ -337,6 +340,7 @@ func (s *Session) doCompact(ctx context.Context, state sessionState, operation s
 	}
 
 	s.logInfo(operation+": done", "session_id", s.id, "after_tokens", afterTokens)
+	return !compactionFailed
 }
 
 // TryCompact 检查当前会话窗口的 Token 是否超限，若超限则对活跃窗口
@@ -439,13 +443,19 @@ func (s *Session) ForceCompact(ctx context.Context) {
 // 沉淀记忆，这是用户显式触发的动作，不存在「自动白烧」的风险。
 //
 // 失败语义与压缩一致：摘要未交付成功即记冷却，避免自动重试反复烧 token。
-func (s *Session) ForceExtractMemory(ctx context.Context) {
+//
+// 返回 error 是必须的：提取失败（如窗口内工具调用配对断裂导致 API 400）
+// 时不能静默返回 nil，否则调用方会误以为记忆已沉淀。
+func (s *Session) ForceExtractMemory(ctx context.Context) error {
 	state := s.captureState()
 	if len(state.activeMessages) == 0 {
 		s.logInfo("ForceExtractMemory: 活跃窗口为空，跳过", "session_id", s.id)
-		return
+		return nil
 	}
-	s.doCompact(ctx, state, "ForceExtractMemory", false)
+	if !s.doCompact(ctx, state, "ForceExtractMemory", false) {
+		return fmt.Errorf("记忆提取失败：摘要未生成或未交付，详见日志 session_id=%s", s.id)
+	}
+	return nil
 }
 
 // SetCompactionHandler 更新在压缩事件后调用的回调函数。
