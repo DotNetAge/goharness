@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
@@ -93,9 +94,11 @@ func TestWriteBack_AssistantAndToolCommitsAsOneGroup(t *testing.T) {
 	}
 }
 
-// 组不完整（工具结果缺失）时整组不落库：
-// 宁可丢一轮让用户重试，也不能留下会引发永久 400 的半组。
-func TestWriteBack_IncompleteGroupNotPersisted(t *testing.T) {
+// 组不完整（工具结果缺失）时，为缺失的调用补一条「执行失败」结果，
+// 让组完整后落盘——工具是 LLM 调的，用户不知道要重调什么，
+// 必须由 LLM 拿到失败结果后自行决定重试或换方案。
+// 补齐属于文末追加，不改动任何已落库的历史。
+func TestWriteBack_IncompleteGroupFilledWithFailure(t *testing.T) {
 	store := &groupRecordStore{fakeSessionStore: newFakeSessionStore()}
 	msgs := []gochatcore.Message{
 		{
@@ -119,15 +122,50 @@ func TestWriteBack_IncompleteGroupNotPersisted(t *testing.T) {
 	br, s := newGroupTestBridge(t, store, msgs)
 	br.writeBackNewMessages(s, 0)
 
-	if len(store.batches) != 0 {
-		t.Fatalf("不完整的组不应落库，实际提交 %d 次", len(store.batches))
+	if len(store.batches) != 1 {
+		t.Fatalf("补齐后应一次提交整组，实际提交 %d 次", len(store.batches))
 	}
-	if got := len(s.All()); got != 0 {
-		t.Fatalf("会话中不应新增任何消息，实际 %d 条", got)
+	// assistant + tool(call_1) + 补齐的 tool(call_2) = 3 条
+	if got := len(store.batches[0]); got != 3 {
+		t.Fatalf("补齐后整组应为 3 条，实际 %d 条", got)
 	}
-	if br.writeLen != 0 {
-		t.Errorf("writeLen 应停在组起点 0，实际 %d", br.writeLen)
+
+	all := s.All()
+	if len(all) != 3 {
+		t.Fatalf("落库条数不符：期望 3，实际 %d", len(all))
 	}
+	// 顺序必须是 assistant 后跟两条 tool，且 call_2 为失败结果
+	if all[0].Role != "assistant" || all[1].Role != "tool" || all[2].Role != "tool" {
+		t.Fatalf("落库顺序非法：%s,%s,%s", all[0].Role, all[1].Role, all[2].Role)
+	}
+	var filled *session.Message
+	for i := range all {
+		if all[i].ToolCallID == "call_2" {
+			filled = &all[i]
+		}
+	}
+	if filled == nil {
+		t.Fatal("缺失的 call_2 应被补齐")
+	}
+	if filled.Role != "tool" {
+		t.Errorf("补齐的消息必须是 tool 角色，实际 %q", filled.Role)
+	}
+	if !containsAny(filled.Content, "失败", "未返回结果") {
+		t.Errorf("补齐内容应表明执行失败，实际 %q", filled.Content)
+	}
+	// 组完整后应推进 writeLen，避免下次重复回写
+	if br.writeLen != len(msgs) {
+		t.Errorf("writeLen 应推进到 %d，实际 %d", len(msgs), br.writeLen)
+	}
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if len(s) >= len(sub) && strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // 无 tool_calls 的 assistant 是单条组，应立即落库（正常回答不能被缓冲住）。

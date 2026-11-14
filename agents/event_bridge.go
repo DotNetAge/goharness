@@ -628,16 +628,38 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			br.writePendingImages = imageEntry{}
 		}
 	}
-	// 本批结束时组仍不完整（工具结果缺失 / 流中断 / 进程即将退出）：
-	// 整组不落库，writeLen 停在组起点，下次回写从头补齐。
-	// 宁可这一轮丢失让用户重试，也不能在磁盘上留下会引发永久 400 的半组——
-	// 重跑一次工具的代价，与用户因 400 愤怒删除应用完全不可比。
-	if len(group) > 0 {
-		br.rt.logger.Warn("回写存在不完整的工具调用组，整组暂不落库",
+	// 本批结束时组仍不完整（工具结果缺失 / 流中断）：为缺失的调用补一条
+	// 「执行失败」的 tool 结果，让组变完整后再落盘。
+	//
+	// 为什么不是丢弃整组：工具永远是 LLM 调用的，用户既不知道发生了什么，
+	// 也不知道该重调什么。丢掉一轮等于把恢复责任推给用户。补一条失败结果，
+	// LLM 拿到后能自行判断重试或换方案——柔性失败优于静默丢数据。
+	//
+	// 合规性：这是**文末追加**，没有改动任何已落库的历史，符合「上下文只能
+	// 从文末插入」的约束。
+	if len(group) > 0 && len(groupPending) > 0 {
+		for callID := range groupPending {
+			group = append(group, session.Message{
+				Role:       "tool",
+				ToolCallID: callID,
+				Content: "该工具调用未返回结果（执行被中断或结果丢失），" +
+					"本次调用视为执行失败。请判断是否需要重试，或改用其他方式继续完成原任务。",
+				Timestamp: time.Now().Unix(),
+			})
+		}
+		br.rt.logger.Warn("回写补齐缺失的工具结果（标记为执行失败，交由 LLM 重试）",
 			"session", br.sessionID,
-			"group_size", len(group),
-			"missing_tool_calls", len(groupPending))
-		return // 不 flush 图片：它属于未提交的这个组
+			"filled_tool_calls", len(groupPending))
+		groupPending = nil
+	}
+	if len(group) > 0 {
+		if err := sess.Append(br.b.ctx, group...); err != nil {
+			br.rt.logger.Error("回写补齐后的消息组失败", err,
+				"session", br.sessionID, "group_size", len(group))
+			return
+		}
+		br.writeLen = len(msgs)
+		group = nil
 	}
 	// 本批以 tool 结尾时，缓冲里可能还有未落库的图片消息。
 	flushVision()
