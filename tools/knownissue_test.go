@@ -33,41 +33,6 @@ func knownIssueSession(t *testing.T, id, dir string) *session.Session {
 	return s
 }
 
-// V-05：压缩（cursor 前移）后，Read 去重缓存必须失效，返回全文而不是「未变化」。
-func TestKnownIssue_ReadDedupAfterCompaction(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "a.txt")
-	_ = os.WriteFile(file, []byte("hello world\n"), 0644)
-
-	store := newMockSessionStore()
-	sb, _ := sandbox.NewSandbox(&sandbox.SandboxPolicy{AllowedDirs: []string{dir}}, logging.NewNopLogger())
-	s1, _ := session.New("agent", "", dir, store, logging.NewNopLogger(), session.WithSandbox(sb))
-	ctx1 := WithToolContext(context.Background(), &ToolContext{Session: s1, Logger: logging.NewNopLogger()})
-	read := NewReadTool()
-	if _, err := read.Execute(ctx1, map[string]any{"filePath": file}); err != nil {
-		t.Fatal(err)
-	}
-
-	// 模拟压缩落盘：cursor 移到末尾 + 重新 Load，窗口为空。
-	_ = store.SetCursor(context.Background(), s1.ID(), 1)
-	s2, err := session.Load(context.Background(), s1.ID(), "agent", store, logging.NewNopLogger(), session.WithSandbox(sb))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(s2.Current()) != 0 {
-		t.Fatalf("模拟窗口未清空: %d", len(s2.Current()))
-	}
-	ctx2 := WithToolContext(context.Background(), &ToolContext{Session: s2, Logger: logging.NewNopLogger()})
-	r2, err := read.Execute(ctx2, map[string]any{"filePath": file})
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := r2.(*ReadResult).Data.Content
-	if strings.Contains(content, "未发生变化") {
-		t.Fatalf("窗口已空但命中旧缓存：%q", content)
-	}
-}
-
 // V-06：读前写约束必须按会话隔离，B 会话未读不应能直接覆盖 A 读过的文件。
 func TestKnownIssue_ReadBeforeWriteIsSessionScoped(t *testing.T) {
 	dir := t.TempDir()

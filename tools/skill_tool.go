@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -83,8 +84,10 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 	// 不影响 KV 缓存前缀）；未命中或未绑定项目时回退基础注册表。
 	var sk *skill.Skill
 	var sessionID string
+	cursor := 0
 	if tc := GetToolContext(ctx); tc.Session != nil {
 		sessionID = tc.Session.ID()
+		cursor = tc.Session.Cursor()
 		if t.projectResolver != nil {
 			if projectDir := tc.Session.ProjectDir(); projectDir != "" {
 				// 项目级未命中视为未命中，由下方基础注册表继续解析。
@@ -103,9 +106,9 @@ func (t *SkillTool) Execute(ctx context.Context, params map[string]any) (any, er
 
 	// 版本判重：同指纹（同名且内容未变）返回简短提示；
 	// 指纹变化（进化副本更新）时重新完整加载。
-	// 缓存键带会话维度——dedup 的语义是"本对话内引用此前结果"，
-	// 跨会话的同名技能上下文互不可见，不共享判重状态。
-	cacheKey := sessionID + "\x00" + name
+	// 缓存键带会话维度与窗口游标：跨会话上下文互不可见；压缩后旧技能指令
+	// 已不在窗口内，必须重新完整加载，不能返回「已加载，引用此前结果」。
+	cacheKey := sessionID + "\x00" + strconv.Itoa(cursor) + "\x00" + name
 	if cached, loaded := skillDedupCache.Load(cacheKey); loaded && cached == SkillVersion(sk) {
 		return map[string]any{
 			"skill_name": name,
