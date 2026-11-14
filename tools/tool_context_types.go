@@ -60,3 +60,37 @@ func GetToolContext(ctx context.Context) *ToolContext {
 	}
 	return tc
 }
+
+// FillMissingFrom 用 src 补齐当前 ToolContext 的空字段（当前值优先）。
+//
+// 用途：执行器按自身配置重建 ToolContext 时，上游经 RuntimeValue 注入的
+// 字段（尤其是 SubProcessEnv）不能丢。合并只补 nil 字段，显式配置仍然优先。
+func (tc *ToolContext) FillMissingFrom(src *ToolContext) {
+	if tc == nil || src == nil {
+		return
+	}
+	if tc.EmitEvent == nil {
+		tc.EmitEvent = src.EmitEvent
+	}
+	if tc.SessionStore == nil {
+		tc.SessionStore = src.SessionStore
+	}
+	if tc.KVStore == nil {
+		tc.KVStore = src.KVStore
+	}
+	if tc.FileStore == nil {
+		tc.FileStore = src.FileStore
+	}
+	if tc.Logger == nil {
+		tc.Logger = src.Logger
+	}
+	if tc.Session == nil {
+		tc.Session = src.Session
+	}
+	if tc.SessionWhitelist == nil {
+		tc.SessionWhitelist = src.SessionWhitelist
+	}
+	if tc.SubProcessEnv == nil {
+		tc.SubProcessEnv = src.SubProcessEnv
+	}
+}
