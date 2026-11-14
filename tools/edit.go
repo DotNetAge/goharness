@@ -245,7 +245,7 @@ func performEdit(logger logging.Logger, resolvedPath string, scope PathScope, p 
 			return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("写入", resolvedPath, err), err)
 		}
 		// 写入后清除 StaleState 和 NegativeCache
-		filestate.DeleteStale(resolvedPath)
+		filestate.DeleteStale(sessionID, resolvedPath)
 		invalidateNegativeCache(resolvedPath)
 		return &EditResult{
 			Success:      true,

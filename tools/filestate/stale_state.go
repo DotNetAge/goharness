@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,36 @@ type StaleState struct {
 }
 
 var staleStates sync.Map
+
+// staleKey 把会话与路径拼成复合键。
+//
+// 「读前写」约束必须按会话隔离：A 会话读过某文件，不代表 B 会话知道它现在
+// 的内容。旧实现以 path 作唯一键、后读覆盖先读，会让 B 直接把 A 的读取记录
+// 当成自己的——B 从未看过内容却被放行写入，恰恰是该约束要防的事。
+// 改为复合键后，同一文件可被多个会话各自持有读状态，互不覆盖。
+func staleKey(sessionID, path string) string {
+	return sessionID + "\x00" + path
+}
+
+// otherSessionOwner 在调用方尚未读取该文件时，找出是否由其他会话读过，
+// 仅用于给出更准确的引导文案（不改变放行/拒绝判定）。
+// 只在错误路径调用，条目上限 256，遍历成本可接受。
+func otherSessionOwner(callerSessionID, path string) string {
+	suffix := "\x00" + path
+	var owner string
+	staleStates.Range(func(key, _ any) bool {
+		ks, ok := key.(string)
+		if !ok || !strings.HasSuffix(ks, suffix) {
+			return true
+		}
+		if sid := strings.TrimSuffix(ks, suffix); sid != callerSessionID {
+			owner = sid
+			return false
+		}
+		return true
+	})
+	return owner
+}
 
 // maxStaleEntries 是 staleStates 的条目数上限。超限时整表清空：后果是部分文件
 // 下次 Edit 报"尚未读取"引导重读——失败方向安全；sync.Map 不支持 LRU，
@@ -63,7 +94,7 @@ func SetStale(sessionID, path string, readAt time.Time, content []byte) {
 		})
 		staleStateCount.Store(1)
 	}
-	staleStates.Store(path, &StaleState{
+	staleStates.Store(staleKey(sessionID, path), &StaleState{
 		Path:        path,
 		SessionID:   sessionID,
 		ReadAt:      readAt,
@@ -99,29 +130,33 @@ func withErrDetail(cause string, err error) string {
 
 // CheckStale 检测文件是否在读取后发生过修改。
 //
+// 按会话隔离：只有 callerSessionID 自己读过该文件，才认为"已读"。
+// 其他会话的读取记录不作为放行依据。
+//
 // 返回值：
 //   - nil: 文件新鲜，可以写入
-//   - ErrNotRead: 该路径从未被读取过
+//   - ErrNotRead: 当前会话从未读取过该路径（crossOwner 非空表示它被别的会话读过）
 //   - ErrStale: 文件已被外部修改
 func CheckStale(callerSessionID, path string) (err error, crossOwner string) {
-	raw, ok := staleStates.Load(path)
+	raw, ok := staleStates.Load(staleKey(callerSessionID, path))
 	if !ok {
+		owner := otherSessionOwner(callerSessionID, path)
+		cause := "当前会话中没有 Read 工具读取该文件的记录，无法确认文件的最新内容"
+		if owner != "" {
+			cause = fmt.Sprintf(
+				"该文件由会话 %s 读过，但当前会话自己没有读过——别的会话读过不等于当前会话知道文件现在的内容",
+				owner)
+		}
 		return &ToolError{
 			Code: ErrCodeActionable,
 			Message: buildGuide(
-				fmt.Sprintf("尝试编辑或写入文件 %q，但该文件尚未被读取过", path),
-				"当前会话中没有 Read 工具读取该文件的记录，无法确认文件的最新内容",
+				fmt.Sprintf("尝试编辑或写入文件 %q，但当前会话尚未读取过该文件", path),
+				cause,
 				"先用 Read 工具读取该文件的最新内容，再执行编辑或写入",
 			),
-		}, ""
+		}, owner
 	}
 	ss := raw.(*StaleState)
-	// 观测：记录该路径最近一次读取属于哪个会话。行为暂不变更（仍允许写入），
-	// 只把跨会话命中通过返回值交给调用方记日志，供后续决定隔离语义。
-	owner := ""
-	if ss.SessionID != "" && ss.SessionID != callerSessionID {
-		owner = ss.SessionID
-	}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -137,7 +172,7 @@ func CheckStale(callerSessionID, path string) (err error, crossOwner string) {
 
 	// mtime 一致 → 文件未修改
 	if info.ModTime().UnixMilli() == ss.MtimeMs {
-		return nil, owner
+		return nil, ""
 	}
 
 	// mtime 变更 → 做 content hash 双重校验
@@ -158,7 +193,7 @@ func CheckStale(callerSessionID, path string) (err error, crossOwner string) {
 	if newHash == ss.ContentHash {
 		// mtime 变了但内容没变 → 更新 mtime 记录
 		ss.MtimeMs = info.ModTime().UnixMilli()
-		return nil, owner
+		return nil, ""
 	}
 
 	return &ToolError{
@@ -173,10 +208,11 @@ func CheckStale(callerSessionID, path string) (err error, crossOwner string) {
 	}, ""
 }
 
-// DeleteStale 在写入成功后清除指定路径的 StaleState。
+// DeleteStale 在写入成功后清除指定会话对某路径的 StaleState。
 // 由 Edit/Write 的 Execute 末尾调用，确保后续操作是"未读"状态。
-func DeleteStale(path string) {
-	staleStates.Delete(path)
+// 按会话删除：只清调用方自己的记录，不误删其他会话的。
+func DeleteStale(sessionID, path string) {
+	staleStates.Delete(staleKey(sessionID, path))
 }
 
 // TTLBefore 将 StaleState 的生命周期限制为 TTL 秒。

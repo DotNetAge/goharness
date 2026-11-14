@@ -296,7 +296,7 @@ func performWrite(logger logging.Logger, resolvedPath string, scope PathScope, p
 	}
 
 	// 写入后清除 StaleState（保证后续操作重新读取）
-	filestate.DeleteStale(resolvedPath)
+	filestate.DeleteStale(sessionID, resolvedPath)
 
 	// 写入后记录新的 StaleState（供后续 overwrite 使用）
 	filestate.SetStale(sessionID, resolvedPath, time.Now(), []byte(content))
