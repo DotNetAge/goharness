@@ -471,6 +471,19 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 	// tool_calls message）。这会让该会话后续的压缩/摘要全部失败。
 	// 因此先缓冲，待所有 tool 落库后再统一追加。
 	var pendingVision []session.Message
+
+	// 成组提交缓冲。
+	//
+	// 不变式：一个 assistant(tool_calls) 与它欠的全部 tool 响应必须一次落盘。
+	// 若分次写入，中途失败或进程中断会在磁盘上留下「有 tool_calls、无 tool
+	// 响应」的非法序列，该会话之后的每一次请求都会被接口以 400 拒绝，
+	// 用户只能删除会话——这是绝对不能出现的状态。
+	//
+	// groupPending 记录本组还缺哪些 tool_call_id；为空表示组已完整可提交。
+	var group []session.Message
+	var groupPending map[string]struct{}
+	groupStart := -1 // 本组起始消息索引，提交失败时 writeLen 回退到此
+
 	flushVision := func() {
 		for _, vm := range pendingVision {
 			// tool 消息已持久化、水位已推进；图片追加失败只记日志，
@@ -559,26 +572,48 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			sm.Content = textOfBlocks(m.Content)
 		}
 
-		if err := sess.Append(br.b.ctx, sm); err != nil {
-			// 回滚本条引入的所有状态：重试从同一条重新开始，不得重复写已成功的消息。
-			br.writeAsstSeq, br.writeToolSeq = prevAsst, prevTool
-			br.writePendingCalls = prevCalls
-			br.writePendingImages = prevImages
-			pendingVision = prevVision
-			if hadUsageEntry {
-				br.callUsageByIter[usageKey] = usageEntry
+		// ── 成组提交 ──
+		// 先入组，等这一组的 tool 响应齐了再一次性落盘（见循环上方不变式）。
+		if groupStart < 0 {
+			groupStart = i
+		}
+		group = append(group, sm)
+		if sm.Role == "assistant" {
+			groupPending = make(map[string]struct{}, len(sm.ToolCalls))
+			for _, tc := range sm.ToolCalls {
+				groupPending[tc.ID] = struct{}{}
 			}
-			br.writeLen = i
-			br.rt.logger.Error("回写消息失败", err, "session", br.sessionID, "role", sm.Role)
-			return
+		}
+		if sm.Role == "tool" && sm.ToolCallID != "" && groupPending != nil {
+			delete(groupPending, sm.ToolCallID)
 		}
 
-		// Append 成功后才提交估算用量的记账与广播，失败重试不会重复落账。
-		if estimateUsage != nil {
-			br.appendUsageRecord(estimateUsage)
-			br.accumulateTotal(estimateUsage)
+		if len(groupPending) == 0 {
+			if err := sess.Append(br.b.ctx, group...); err != nil {
+				// 整组未落盘：回滚本条引入的所有状态，重试从组起点重新开始。
+				br.writeAsstSeq, br.writeToolSeq = prevAsst, prevTool
+				br.writePendingCalls = prevCalls
+				br.writePendingImages = prevImages
+				pendingVision = prevVision
+				if hadUsageEntry {
+					br.callUsageByIter[usageKey] = usageEntry
+				}
+				br.writeLen = groupStart
+				br.rt.logger.Error("回写消息组失败", err,
+					"session", br.sessionID, "group_size", len(group))
+				return
+			}
+			// 整组落盘成功后才记账：失败重试不会重复落账，
+			// 未落库的组也不该产生用量记录。
+			if estimateUsage != nil {
+				br.appendUsageRecord(estimateUsage)
+				br.accumulateTotal(estimateUsage)
+			}
+			br.writeLen = i + 1
+			group = nil
+			groupPending = nil
+			groupStart = -1
 		}
-		br.writeLen = i + 1
 
 		// 图片视觉消息入缓冲：等本轮所有 tool 落库后再统一追加
 		// （原因见循环上方 pendingVision 的注释）。
@@ -592,6 +627,17 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			})
 			br.writePendingImages = imageEntry{}
 		}
+	}
+	// 本批结束时组仍不完整（工具结果缺失 / 流中断 / 进程即将退出）：
+	// 整组不落库，writeLen 停在组起点，下次回写从头补齐。
+	// 宁可这一轮丢失让用户重试，也不能在磁盘上留下会引发永久 400 的半组——
+	// 重跑一次工具的代价，与用户因 400 愤怒删除应用完全不可比。
+	if len(group) > 0 {
+		br.rt.logger.Warn("回写存在不完整的工具调用组，整组暂不落库",
+			"session", br.sessionID,
+			"group_size", len(group),
+			"missing_tool_calls", len(groupPending))
+		return // 不 flush 图片：它属于未提交的这个组
 	}
 	// 本批以 tool 结尾时，缓冲里可能还有未落库的图片消息。
 	flushVision()
