@@ -454,6 +454,40 @@ func (rt *Runtime) CancelAllSubAgents() int {
 	return rt.subAgents.cancelAllSponsored()
 }
 
+// DetectSessionPairingBreak 检查会话当前窗口是否存在工具调用配对断裂。
+// 返回窗口内应截断到的索引，-1 表示配对完整。只读，不修改会话。
+//
+// 「配对断裂」指 assistant 声明的多个 tool_calls 没有被紧随其后的 tool 消息
+// 逐一回应（典型成因：并行工具调用返回图片时，图片 user 消息被插在 tool
+// 响应之间）。这类会话的任何整窗请求都会被 OpenAI 兼容接口以 400 拒绝。
+func (rt *Runtime) DetectSessionPairingBreak(sess *session.Session) int {
+	if sess == nil {
+		return -1
+	}
+	return findToolPairingBreak(sess.Current())
+}
+
+// RepairSessionPairing 检查并修复会话窗口的工具调用配对断裂。
+//
+// 修复方式与主对话每轮开始前的自动修复完全一致：截断到断裂点之前，
+// 并把被截区间内的 user 消息按原顺序回补（用户输入不丢），必要时追加
+// 一条说明消息让 LLM 重做该轮。因此本方法只丢弃坏轮次的 assistant/tool，
+// 不会吞掉用户提问。
+//
+// 返回：
+//   - repaired：是否执行了修复（窗口完整或修复失败时为 false）
+//   - removedToolCalls：随坏轮次回滚的 tool_call 数量
+//
+// 供宿主显式触发（如 CLI 修复存量损坏会话）；Runtime 主流程已在每轮开始
+// 自动调用同一函数，无需额外调用。
+func (rt *Runtime) RepairSessionPairing(ctx context.Context, sess *session.Session) (bool, int) {
+	if sess == nil {
+		return false, 0
+	}
+	repaired, removed := repairToolPairingBreak(ctx, sess, rt.logger)
+	return repaired, len(removed)
+}
+
 // RunningSubAgentSessions 返回本 Runtime 全部运行中子代理的会话 ID（去重）。
 // 供宿主查询会话运行态（跨客户端可见）：子代理执行循环独立于发起客户端，
 // 其它客户端接入后经宿主遍历全部 Runtime 收集，即可在会话列表上标注运行中。
