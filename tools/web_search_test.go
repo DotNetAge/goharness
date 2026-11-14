@@ -106,9 +106,7 @@ func TestWebSearchTool_TooShortQuery(t *testing.T) {
 }
 
 func TestWebSearchTool_CacheBehavior(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 
 	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
@@ -209,9 +207,7 @@ func TestSearchResult_JSONMarshal(t *testing.T) {
 
 // TestWebSearch_RealSogou 直接调用搜狗适配器，绕过 Execute 的缓存与多 token 逻辑。
 func TestWebSearch_RealSogou(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
@@ -231,9 +227,7 @@ func TestWebSearch_RealSogou(t *testing.T) {
 
 // TestWebSearch_RealWeixin 直接调用微信适配器。
 func TestWebSearch_RealWeixin(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
@@ -253,9 +247,7 @@ func TestWebSearch_RealWeixin(t *testing.T) {
 
 // TestWebSearch_RealFullExecute 走完整 Execute 流程（多 token 拆分 + 多引擎合并 + 去重）。
 func TestWebSearch_RealFullExecute(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 40*time.Second)
 	defer cancel()
 
@@ -272,9 +264,7 @@ func TestWebSearch_RealFullExecute(t *testing.T) {
 
 // TestWebSearch_RealBing 直接调用必应中国适配器。
 func TestWebSearch_RealBing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
@@ -294,9 +284,7 @@ func TestWebSearch_RealBing(t *testing.T) {
 
 // TestWebSearch_Real360 直接调用 360 搜索适配器，验证 data-mdurl 提取是否生效。
 func TestWebSearch_Real360(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
@@ -322,9 +310,7 @@ func TestWebSearch_Real360(t *testing.T) {
 
 // TestWebSearch_RealToutiao 直接调用头条搜索适配器，验证 /search/jump?url= 解析是否生效。
 func TestWebSearch_RealToutiao(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real network test in short mode")
-	}
+	requireNetworkTest(t)
 	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 
