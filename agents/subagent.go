@@ -523,18 +523,37 @@ func (m *subAgentManager) cancelSponsored(sponsorSessionID string) int {
 	if sponsorSessionID == "" {
 		return 0
 	}
-	m.mu.Lock()
-	subs, ok := m.sponsored[sponsorSessionID]
-	if !ok {
+
+	// 广度优先遍历整棵派生树，而不是只停直接子级。
+	//
+	// 原因：成员代理自己也会派工（孙代理登记在成员会话名下，不在主会话名下）。
+	// 用户在负责人会话点一次停止时，期望的是「整个团队任务停下」，只停一层会
+	// 漏掉第二层及更深的所有执行，只能逐个打开成员会话分别停止。
+	//
+	// 遍历与摘除在同一轮完成：每层先取出并从 m.sponsored 删除，再取消。
+	// 被取消的 spawn 会在 defer 里调用 unregisterSponsored，此处已删除，
+	// 属幂等操作，不会互相干扰。
+	var cancels []context.CancelFunc
+	visited := map[string]struct{}{sponsorSessionID: {}}
+	queue := []string{sponsorSessionID}
+
+	for len(queue) > 0 {
+		sponsor := queue[0]
+		queue = queue[1:]
+
+		m.mu.Lock()
+		subs := m.sponsored[sponsor]
+		delete(m.sponsored, sponsor)
 		m.mu.Unlock()
-		return 0
+
+		for subID, cancel := range subs {
+			cancels = append(cancels, cancel)
+			if _, seen := visited[subID]; !seen {
+				visited[subID] = struct{}{}
+				queue = append(queue, subID)
+			}
+		}
 	}
-	cancels := make([]context.CancelFunc, 0, len(subs))
-	for _, cancel := range subs {
-		cancels = append(cancels, cancel)
-	}
-	delete(m.sponsored, sponsorSessionID)
-	m.mu.Unlock()
 
 	for _, cancel := range cancels {
 		cancel()
