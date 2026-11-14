@@ -760,16 +760,20 @@ func (s *Session) Truncate(ctx context.Context, keepCount int) error {
 		return nil // 无需截断
 	}
 
-	s.messages = s.messages[:keepCount]
-	// cursor 不能超过截断点，否则会指向不存在的消息
-	if s.cursor > keepCount {
-		s.cursor = keepCount
-	}
-
+	// 存储优先：先落盘，成功后再改内存与 cursor。
+	// 反过来做的话，store 失败会留下「内存已截断、磁盘未截断」的不一致状态，
+	// 且调用方拿到错误后无从回滚——尾部消息已从切片上丢失。
+	// 与 Append / DeleteRound 的存储优先约定保持一致。
 	if s.store != nil {
 		if err := s.store.Truncate(ctx, s.id, keepCount); err != nil {
 			return fmt.Errorf("存储截断失败: %w", err)
 		}
+	}
+
+	s.messages = s.messages[:keepCount]
+	// cursor 不能超过截断点，否则会指向不存在的消息
+	if s.cursor > keepCount {
+		s.cursor = keepCount
 	}
 
 	return nil

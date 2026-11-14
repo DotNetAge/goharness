@@ -25,6 +25,10 @@ type mockStore struct {
 	// sessionDir 若非空，则 ResolveSessionDir 返回该路径。
 	// 用于 TryMicroCompact 等需要写入缓存文件的测试场景。
 	sessionDir string
+
+	// truncateErr 若非 nil，则 Truncate 返回该错误。
+	// 用于验证「存储优先」语义：存储失败时内存不得被改动。
+	truncateErr error
 }
 
 type appendRecord struct {
@@ -146,7 +150,7 @@ func (m *mockStore) GetModifyFiles(sessionID string) ([]string, error) {
 }
 
 func (m *mockStore) Truncate(_ context.Context, _ string, _ int) error {
-	return nil // mock: no-op for lazy load tests
+	return m.truncateErr
 }
 
 func (m *mockStore) UpdateMessages(_ context.Context, sessionID string, cursor int, messages []Message) error {
