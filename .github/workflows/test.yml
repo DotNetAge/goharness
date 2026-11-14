@@ -2,51 +2,50 @@ name: Go
 on:
   push: { branches: [ "main" ] }
   pull_request: { branches: [ "main" ] }
+  workflow_dispatch:
 
 # 全局设置：强制使用 Node.js 24 运行所有 JS 动作
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
-        go-version: [ "1.25.1" ]
+        # 与 go.mod 的 go 指令保持一致（1.26）
+        go-version: [ "1.26.x" ]
     steps:
       - uses: actions/checkout@v5
 
-      # 使用官方 Go 安装动作，已兼容 Node.js 24
       - name: Set up Go
         uses: actions/setup-go@v6.3.0
         with:
           go-version: ${{ matrix.go-version }}
-          cache: true  # 自动缓存 Go 模块，加速后续运行
+          cache: true
 
       - name: Verify Go version
         run: go version
 
-      # 现代依赖管理命令
       - name: Download and verify dependencies
         run: |
-          set -e  # 命令失败立即终止
+          set -euo pipefail
           go mod download
-          go mod verify  # 验证依赖完整性
+          go mod verify
 
-      # 合并测试命令，一次执行完成所有需求
+      # 只跑一次：-v 日志 + race + 覆盖率。pipefail 保证测试失败会让 job 失败。
       - name: Run tests (with coverage)
         run: |
-          set -e
-          # 一次执行：详细日志 + 数据竞争检测 + 覆盖率 + JSON结果
-          go test -v -race -coverprofile=coverage.out -covermode=atomic ./... \
-            2>&1 | tee >(go test -json ./... > TestResults-${{ matrix.go-version }}.json)
+          set -euo pipefail
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee test-output.txt
 
-      - name: Upload Go test results
+      - name: Upload test log
         uses: actions/upload-artifact@v4
         with:
-          name: Go-results-${{ matrix.go-version }}
-          path: TestResults-${{ matrix.go-version }}.json
-        if: always()  # 测试失败也上传结果
+          name: go-test-log-${{ matrix.go-version }}
+          path: test-output.txt
+        if: always()
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -55,15 +54,46 @@ jobs:
           file: ./coverage.out
           flags: go-${{ matrix.go-version }}
           verbose: true
-        if: success()  # 仅测试成功时上传覆盖率
+        if: success()
 
       - name: Check minimum coverage
         run: |
-          set -e
-          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | sed 's/%//')
+          set -euo pipefail
+          COVERAGE=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
           echo "Current coverage: ${COVERAGE}%"
-          if (( $(echo "$COVERAGE < 40.0" | bc -l) )); then
-            echo "ERROR: Coverage ${COVERAGE}% is below minimum threshold of 40%"
-            exit 1
-          fi
+          awk -v c="${COVERAGE}" 'BEGIN { if (c < 40.0) { printf "ERROR: Coverage %.1f%% is below minimum threshold of 40%%\n", c; exit 1 } }'
           echo "Coverage check passed!"
+
+  # 联网集成测试：默认不在 push/PR 跑（避免外部站点波动导致红），
+  # 需要时在 Actions 页面手动触发 workflow_dispatch。
+  integration:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.3.0
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Download dependencies
+        run: |
+          set -euo pipefail
+          go mod download
+
+      - name: Run integration tests
+        env:
+          GOHARNESS_NET_TESTS: "1"
+        run: |
+          set -euo pipefail
+          go test -tags=integration -v -count=1 ./... 2>&1 | tee integration-output.txt
+
+      - name: Upload integration log
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-integration-log
+          path: integration-output.txt
+        if: always()
