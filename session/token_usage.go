@@ -31,9 +31,24 @@ type TokenUsageRecord struct {
 	// 字符级公式补齐），对账时与精确值区分。
 	Estimated bool `json:"estimated,omitempty"`
 
+	// Kind 标识记录来源。空值表示主对话的正常调用；
+	// TokenUsageKindCompaction 表示上下文压缩时的那次摘要调用——
+	// 它的 prompt 通常接近整个活跃窗口（实测压 23 万窗口消耗 23.5 万
+	// prompt token），此前完全不入账，导致会话总成本被系统性低估。
+	Kind string `json:"kind,omitempty"`
+
 	// Timestamp 是 LLM API 调用完成的时间。
 	Timestamp time.Time `json:"timestamp"`
 }
+
+// TokenUsageKindCompaction 标记一条用量记录来自上下文压缩的摘要调用。
+// 按 Kind 过滤即可把压缩成本从总账单里单独拆出来看。
+const TokenUsageKindCompaction = "compaction"
+
+// TokenUsageKindMain 用于过滤时表达「只要主对话调用，排除压缩」。
+// 主对话记录本身的 Kind 字段仍为空串（保持既有数据不变），
+// 该常量只作为 TokenUsageFilter.Kind 的查询值使用。
+const TokenUsageKindMain = "main"
 
 // TokenUsageFilter 定义检索使用记录的查询维度。
 // 空/零值字段表示"任意"（该维度不做过滤）。
@@ -43,6 +58,7 @@ type TokenUsageFilter struct {
 	ModelName      string
 	ProviderName   string
 	AgentName      string
+	Kind           string
 	Since          time.Time
 	Until          time.Time
 }
@@ -110,6 +126,22 @@ func (s *InMemoryTokenUsageStore) Query(_ context.Context, filter TokenUsageFilt
 		}
 		if filter.AgentName != "" && r.AgentName != filter.AgentName {
 			continue
+		}
+		// Kind 的三种过滤语义：
+		//   空串              → 不过滤，返回全部（含压缩记录）
+		//   TokenUsageKindMain → 只要主对话（记录的 Kind 为空串）
+		//   其他值             → 精确匹配该 Kind
+		switch filter.Kind {
+		case "":
+			// 不过滤
+		case TokenUsageKindMain:
+			if r.Kind != "" {
+				continue
+			}
+		default:
+			if r.Kind != filter.Kind {
+				continue
+			}
 		}
 		if !filter.Since.IsZero() && r.Timestamp.Before(filter.Since) {
 			continue

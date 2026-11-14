@@ -266,6 +266,15 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 			"thinking_chars", thinkingChars,
 			"tool_call_events", toolCallEvents)...)
 
+	// 压缩这次调用的用量必须入账。它的 prompt 通常接近整个活跃窗口
+	// （实测压 23 万 token 的窗口消耗 23.5 万 prompt token），此前完全不计，
+	// 导致会话总成本被系统性低估。
+	// 放在 content 判空之前：即便响应为空、本次压缩最终按失败重试，
+	// 这批 token 也已经被服务端计费了。
+	if streamUsage != nil {
+		c.recordCompactionUsage(ctx, sid, agentName, streamUsage)
+	}
+
 	if content == "" {
 		// 空响应必须返回错误触发 Compact 的重试机制（同前缀仅换末尾指令，命中前缀缓存）。
 		// 附带观测字段：finish_reason=length 指向输出预算被思考流耗尽；
@@ -281,4 +290,49 @@ func (c *compactor) compactionTurn(ctx context.Context, s *session.Session, mess
 		"content_len", len(content))
 
 	return content, nil
+}
+
+// recordCompactionUsage 把压缩这一次 LLM 调用的 token 计入用量账本。
+//
+// 归属维度：SessionID / AgentName / Model 与主对话一致，便于按会话汇总；
+// ConversationID 留空——压缩不属于某一轮 conversation，硬填 sid 会让按
+// conversation 聚合时出现一个语义可疑的桶。要单独看压缩成本请按
+// TokenUsageFilter.Kind = TokenUsageKindCompaction 过滤。
+//
+// 记账失败只记日志、不影响压缩结果：用量统计是旁路，不能反过来阻断
+// 已经成功完成的压缩。
+func (c *compactor) recordCompactionUsage(ctx context.Context, sid, agentName string, u *gochatcore.Usage) {
+	if c.rt.tokenUsageStore == nil || u == nil {
+		return
+	}
+
+	total := u.TotalTokens
+	if total == 0 {
+		total = u.PromptTokens + u.CompletionTokens
+	}
+
+	record := session.TokenUsageRecord{
+		ID:               session.NewRecordID(),
+		SessionID:        sid,
+		ModelName:        c.rt.model.Name,
+		ProviderName:     c.rt.model.Provider,
+		AgentName:        agentName,
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      total,
+		Kind:             session.TokenUsageKindCompaction,
+		Timestamp:        time.Now(),
+	}
+	// 缓存命中与思考流用量藏在明细结构里，按主对话同一口径提取，
+	// 否则压缩成本里最容易被低估的那部分（命中缓存的 prompt）会丢。
+	if u.PromptTokensDetails != nil {
+		record.CachedTokens = u.PromptTokensDetails.CachedTokens
+	}
+	if u.CompletionTokensDetails != nil {
+		record.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+	}
+
+	if err := c.rt.tokenUsageStore.Append(ctx, record); err != nil {
+		c.logger.Error("添加压缩词元使用记录失败", err, "session", sid)
+	}
 }
