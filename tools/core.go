@@ -100,6 +100,17 @@ type ToolInfo struct {
 	// IsReadOnly 表示工具是否只读。
 	// 只读工具不会修改任何外部状态，安全性更高。
 	IsReadOnly bool `json:"is_read_only,omitempty" yaml:"is_read_only,omitempty"`
+
+	// TimeoutSec 是单次调用的最长执行时间（秒），由执行器统一施加为 ctx deadline。
+	//
+	// 语义：0 = 未声明，走执行器默认值（DefaultToolTimeout）；
+	// 负数 = 显式不限时（仅供确实需要长跑的工具，例如脚本执行）；
+	// 正数 = 该工具自己的上限。
+	//
+	// 为什么放在元信息里而不是改 Execute 签名：声明式约束对执行器可见即可施加，
+	// 23 个既有工具、测试 mock 与外来工具（MCP/插件）都不需要改实现就能受约束。
+	// 工具内部若已有更严的超时（如 Bash 30s），继续保留，两者取更早的那个。
+	TimeoutSec int `json:"timeout_sec,omitempty" yaml:"timeout_sec,omitempty"`
 }
 
 // Parameter 定义工具的单个参数信息。

@@ -83,6 +83,8 @@ func (t *WebFetchTool) Info() *ToolInfo {
 		Prompt:             `获取网页内容并转为 Markdown。`,
 		Tags:               []string{"web", "fetch", "url", "content", "http"},
 		IsReadOnly:         true,
+		// 单次请求超时由 stealth client 兜（默认 15s）；60s 容重定向与重试
+		TimeoutSec: 60,
 		Parameters: []Parameter{
 			{
 				Name:        "url",

@@ -32,6 +32,28 @@ func NewToolExecutor(registry ToolRegistry, opts ...ExecutorOption) ToolExecutor
 	return &implToolExecutor{cfg: cfg}
 }
 
+// DefaultToolTimeout 是未在 ToolInfo 声明 TimeoutSec 的工具的单次执行上限。
+//
+// 取值 5 分钟：够跑构建、装依赖、技能脚本这类正常长任务，又能堵住「无限」。
+// 需要更久的工具在 Info() 里显式声明更大值（或负数表示不限）。
+const DefaultToolTimeout = 5 * time.Minute
+
+// resolveToolTimeout 把工具元信息里的超时声明换算成实际 deadline；
+// 返回 0 表示不施加超时（工具显式声明为负数）。
+func resolveToolTimeout(info *ToolInfo) time.Duration {
+	if info == nil {
+		return DefaultToolTimeout
+	}
+	switch {
+	case info.TimeoutSec < 0:
+		return 0
+	case info.TimeoutSec > 0:
+		return time.Duration(info.TimeoutSec) * time.Second
+	default:
+		return DefaultToolTimeout
+	}
+}
+
 // implToolExecutor 是 ToolExecutor 接口的默认实现。
 // 它提供了完整的工具执行流程，包括：
 //   - 工具查找和验证
@@ -101,26 +123,90 @@ func (e *implToolExecutor) Execute(ctx context.Context, name string, params map[
 	toolCtx.FillMissingFrom(GetToolContext(ctx))
 	execCtx := WithToolContext(ctx, toolCtx)
 
+	// 工具级超时：按 ToolInfo 声明施加 deadline，未声明走默认值。
+	// 与取消是两件事——取消需要有人点停止，超时是没人管时的兜底；
+	// 施加点放在执行器，工具本身有没有 ctx 意识都跑不掉（外来 MCP 工具同样受约束）。
+	// 工具内部若已有更严的超时（Bash 30s / Grep 30s / WebFetch 15s），取更早的那个。
+	toolTimeout := resolveToolTimeout(toolInfo)
+	if toolTimeout > 0 {
+		var cancelTimeout context.CancelFunc
+		execCtx, cancelTimeout = context.WithTimeout(execCtx, toolTimeout)
+		defer cancelTimeout()
+	}
+
 	start := time.Now()
 
-	// 防止工具执行中的 panic 导致进程崩溃。
-	var (
+	// 工具在独立 goroutine 中执行，本方法按 ctx 生命周期等待：
+	// 用户点停止 / 断连会取消 ctx，此时立即放弃等待并返回，不再被单个工具拖住。
+	// 必要性：取消语义只到 ctx，工具是否响应取决于各自实现——Grep 的内置遍历
+	// 曾经既不查 ctx 也没有超时（未装 rg 的机器走该路径），一次宽泛搜索可在
+	// 大仓库里空转数分钟，导致整轮执行无法退出、会话一直报「运行中」。
+	// 放弃等待后工具 goroutine 仍在跑，直到自身返回（有 ctx 意识的工具会立刻
+	// 退出，没有的也会被各自超时兜住），不影响本轮执行收尾。
+	// 同时兼任 panic 隔离：工具 panic 只终止该 goroutine。
+	type toolOutcome struct {
 		result   any
 		err      error
 		panicVal any
-	)
-	func() {
+	}
+	outcomeCh := make(chan toolOutcome, 1)
+	go func() {
+		out := toolOutcome{}
 		defer func() {
 			if r := recover(); r != nil {
-				panicVal = r
+				out.panicVal = r
 			}
+			// 带缓冲且只写一次：本方法提前返回后也不会阻塞发送
+			outcomeCh <- out
 		}()
-		result, err = tool.Execute(execCtx, params)
+		out.result, out.err = tool.Execute(execCtx, params)
 	}()
-	if panicVal != nil {
-		err = fmt.Errorf("工具 %q 发生 panic: %v", name, panicVal)
+
+	var (
+		result  any
+		err     error
+		aborted bool
+		// abortReason 区分「用户点了停止」与「工具超时」：两者都走同一出口，
+		// 但给模型的说明不同——前者不该重试，后者该收窄范围或换策略
+		abortReason string
+	)
+	select {
+	case out := <-outcomeCh:
+		result, err = out.result, out.err
+		if out.panicVal != nil {
+			err = fmt.Errorf("工具 %q 发生 panic: %v", name, out.panicVal)
+		}
+	case <-execCtx.Done():
+		aborted = true
+		if ctx.Err() == nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			abortReason = "timeout"
+		} else {
+			abortReason = "cancelled"
+		}
 	}
 	duration := time.Since(start)
+
+	if aborted {
+		if e.cfg.logger != nil {
+			e.cfg.logger.Debug("[executor] 工具等待被中止",
+				"tool", name, "reason", abortReason, "duration_ms", duration.Milliseconds())
+		}
+		// 以执行结果错误的形式返回（不是严重错误）：这里的文字只用于说明
+		// 这次工具没有产出结果，本轮怎么收尾由上层决定。
+		if abortReason == "timeout" {
+			return &ToolExecutionResult{
+				ToolName: name,
+				Duration: duration,
+				Error: fmt.Errorf("%s 执行超过 %s 上限，本次已中止；需要更长耗时的任务请拆小或换用更合适的工具",
+					name, toolTimeout),
+			}, nil
+		}
+		return &ToolExecutionResult{
+			ToolName: name,
+			Duration: duration,
+			Error:    fmt.Errorf("用户停止了本次执行，%s 工具的结果已不再等待", name),
+		}, nil
+	}
 
 	if e.cfg.logger != nil {
 		if err != nil {

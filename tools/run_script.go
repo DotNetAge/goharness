@@ -467,6 +467,9 @@ func buildRunScriptInfo(platform Platform) *ToolInfo {
 		MaxResultSizeChars: 30000,
 		Tags:               []string{"script", "execute", "python", "shell", "skill"},
 		SecurityLevel:      events.LevelSensitive,
+		// 脚本是合法的长任务（构建、批量处理、装依赖），默认 5 分钟会误杀；
+		// 30 分钟既够正常长跑，又不至于让一次调用无限占用执行轮次。
+		TimeoutSec: 1800,
 		Parameters: []Parameter{
 			{
 				Name:        "command",

@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,7 +49,7 @@ func writeGlobTestTree(t *testing.T) string {
 // globFiles 调用 performGlob 并返回匹配的文件相对路径列表（'/' 分隔，mtime 降序）。
 func globFiles(t *testing.T, root, pattern string, headLimit int) []string {
 	t.Helper()
-	res, err := performGlob(root, globParams{pattern: pattern, headLimit: headLimit}, 200)
+	res, err := performGlob(context.Background(), root, globParams{pattern: pattern, headLimit: headLimit}, 200)
 	if err != nil {
 		t.Fatalf("performGlob(%q): %v", pattern, err)
 	}

@@ -123,6 +123,9 @@ func (t *BashTool) Info() *ToolInfo {
 文件搜索、内容检索、文件读取与编辑改写请使用对应专用工具（Glob/Grep/Read/Edit/Write），Bash 只承担构建、测试、进程管理等真正的 shell 任务。`,
 		Tags:          []string{"shell", "execute", "system", "command", "process"},
 		SecurityLevel: events.LevelHighRisk,
+		// 与自身 timeout 参数的硬上限（300s）一致：外层再兜一道，
+		// 防止有人把参数调到上限后仍被更靠外的默认值提前截断
+		TimeoutSec: 300,
 		Parameters: []Parameter{
 			{
 				Name:        "command",

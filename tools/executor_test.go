@@ -22,6 +22,8 @@ type mockExecutorTool struct {
 	execDelay     time.Duration
 	executeFunc   func(ctx context.Context, params map[string]any) (any, error)
 	maxResultSize int
+	// timeoutSec 对应 ToolInfo.TimeoutSec：0 走执行器默认，负数不限，正数该秒数
+	timeoutSec int
 }
 
 func (m *mockExecutorTool) Info() *ToolInfo {
@@ -29,6 +31,9 @@ func (m *mockExecutorTool) Info() *ToolInfo {
 		Name:          m.name,
 		Description:   fmt.Sprintf("Mock tool: %s", m.name),
 		SecurityLevel: events.LevelSafe,
+	}
+	if m.timeoutSec != 0 {
+		info.TimeoutSec = m.timeoutSec
 	}
 	if m.maxResultSize > 0 {
 		info.MaxResultSizeChars = m.maxResultSize
@@ -393,6 +398,124 @@ func TestToolExecutor_ContextCancellation(t *testing.T) {
 	}
 	if result.Error == nil {
 		t.Error("上下文取消时应有错误信息")
+	}
+}
+
+// TestToolExecutor_CancelIgnoresToolContext 验证执行器不依赖工具自身的 ctx 意识：
+// 工具完全不检查 ctx（模拟内置遍历类工具在大仓库里空转）时，停止指令仍应让
+// Execute 立刻返回，而不是被工具拖住直到它自己跑完。
+func TestToolExecutor_CancelIgnoresToolContext(t *testing.T) {
+	registry := NewDefaultToolRegistry()
+
+	stubborn := &mockExecutorTool{
+		name: "StubbornTool",
+		executeFunc: func(ctx context.Context, params map[string]any) (any, error) {
+			time.Sleep(3 * time.Second)
+			return "completed", nil
+		},
+	}
+	registry.Register(stubborn)
+
+	executor := NewToolExecutor(registry)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	result, err := executor.Execute(ctx, "StubbornTool", nil)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("取消时 Execute 不应返回 error: %v", err)
+	}
+	if result == nil || result.Error == nil {
+		t.Fatal("取消时应返回带错误说明的结果")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("取消后应立即返回，实际等待了 %v", elapsed)
+	}
+}
+
+// TestResolveToolTimeout 覆盖超时声明的三态换算。
+func TestResolveToolTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		info *ToolInfo
+		want time.Duration
+	}{
+		{"未声明走默认", &ToolInfo{Name: "x"}, DefaultToolTimeout},
+		{"Info 为 nil 走默认", nil, DefaultToolTimeout},
+		{"正数按秒换算", &ToolInfo{Name: "x", TimeoutSec: 42}, 42 * time.Second},
+		{"负数表示不限", &ToolInfo{Name: "x", TimeoutSec: -1}, 0},
+	}
+	for _, c := range cases {
+		if got := resolveToolTimeout(c.info); got != c.want {
+			t.Errorf("%s: resolveToolTimeout = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestToolExecutor_TimeoutFromToolInfo 验证执行器按 ToolInfo 声明施加 deadline：
+// 工具自己不设超时（只 sleep），超过声明时限后执行器必须放弃等待并给出超时说明，
+// 而且文案不能混成「用户停止」（两者的处置方式不同）。
+func TestToolExecutor_TimeoutFromToolInfo(t *testing.T) {
+	registry := NewDefaultToolRegistry()
+	slow := &mockExecutorTool{
+		name:       "SlowDeclaredTool",
+		timeoutSec: 1,
+		executeFunc: func(ctx context.Context, params map[string]any) (any, error) {
+			time.Sleep(3 * time.Second)
+			return "completed", nil
+		},
+	}
+	registry.Register(slow)
+
+	executor := NewToolExecutor(registry)
+	start := time.Now()
+	result, err := executor.Execute(context.Background(), "SlowDeclaredTool", nil)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("超时不应返回 error: %v", err)
+	}
+	if result == nil || result.Error == nil {
+		t.Fatal("超时应返回带说明的结果")
+	}
+	if !strings.Contains(result.Error.Error(), "上限") {
+		t.Fatalf("超时错误文案应说明上限，实际: %v", result.Error)
+	}
+	if strings.Contains(result.Error.Error(), "用户停止") {
+		t.Fatalf("超时不应混淆成用户停止: %v", result.Error)
+	}
+	if elapsed > 2500*time.Millisecond {
+		t.Fatalf("应在声明时限附近返回，实际 %v", elapsed)
+	}
+}
+
+// TestToolExecutor_DeclaredNoTimeout 验证声明为负数时不施加超时（长任务工具专用）。
+func TestToolExecutor_DeclaredNoTimeout(t *testing.T) {
+	registry := NewDefaultToolRegistry()
+	tool := &mockExecutorTool{
+		name:       "UnlimitedTool",
+		timeoutSec: -1,
+		execDelay:  1500 * time.Millisecond,
+		result:     "done",
+	}
+	registry.Register(tool)
+
+	executor := NewToolExecutor(registry)
+	result, err := executor.Execute(context.Background(), "UnlimitedTool", nil)
+	if err != nil {
+		t.Fatalf("不应返回 error: %v", err)
+	}
+	if result == nil || result.Error != nil {
+		t.Fatalf("声明不限时不应被截断: %+v", result)
+	}
+	if result.Result != "done" {
+		t.Fatalf("结果异常: %q", result.Result)
 	}
 }
 

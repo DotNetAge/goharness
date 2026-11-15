@@ -19,6 +19,10 @@ type fileEntry struct {
 	modTime time.Time
 }
 
+// globDefaultTimeout 与 Grep 的遍历时限对齐：全树遍历必须有上界，
+// 否则单次调用可以无限期占用执行轮次。
+const globDefaultTimeout = 30 * time.Second
+
 type GlobTool struct {
 	MaxResults int
 }
@@ -39,6 +43,8 @@ func (t *GlobTool) Info() *ToolInfo {
 		Prompt:        `按修改时间降序返回匹配文件。遍历自动跳过隐藏目录与 node_modules/dist 等重目录，比 find 更快、结果更聚焦。开放式的多轮 glob+grep 搜索请改用 SubAgent 工具。`,
 		Tags:          []string{"file", "search", "pattern", "filesystem", "discovery"},
 		SecurityLevel: events.LevelSafe,
+		// 自带 30s 遍历上限；60s 只作外层兜底，正常走不到
+		TimeoutSec: 60,
 		Parameters: []Parameter{
 			{
 				Name:        "pattern",
@@ -110,7 +116,14 @@ func authorizeGlob(ctx context.Context, searchPath string) (resolvedPath string,
 }
 
 // performGlob 执行文件模式匹配核心逻辑：存在性检查、遍历目录、模式匹配、排序、构建结果。
-func performGlob(resolvedPath string, p globParams, maxResults int) (any, error) {
+//
+// 遍历必须受 ctx 与超时约束：Glob 与 Grep 内置遍历是同一类操作（全树 WalkDir），
+// 在没有 ripgrep 兜底的目录结构里（node_modules 之外还有大量构建产物/语料），
+// 一次宽泛模式（`**/*`）可能扫几十万文件。此前这里既不查 ctx 也没有超时，
+// 用户点停止后工具仍在扫，整轮执行无法退出。
+func performGlob(ctx context.Context, resolvedPath string, p globParams, maxResults int) (any, error) {
+	scanCtx, scanCancel := context.WithTimeout(ctx, globDefaultTimeout)
+	defer scanCancel()
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("遍历", resolvedPath, err), err)
@@ -139,6 +152,11 @@ func performGlob(resolvedPath string, p globParams, maxResults int) (any, error)
 
 	var entries []fileEntry
 	walkErr := filepath.WalkDir(resolvedPath, func(path string, d fs.DirEntry, walkErr error) error {
+		// 逐层检查取消/超时：命中即刻结束遍历（SkipAll 让 WalkDir 正常返回，
+		// 由下方按中止语义报错——中止不是「没有匹配」）
+		if scanCtx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -173,6 +191,18 @@ func performGlob(resolvedPath string, p globParams, maxResults int) (any, error)
 	})
 	if walkErr != nil {
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("匹配文件模式", resolvedPath, walkErr), walkErr)
+	}
+
+	// 遍历被中止：中止的目录扫不完，"按修改时间取最新"也就不可信，不能当正常结果返回。
+	if scanCtx.Err() != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("搜索已停止：用户中断了本次执行，%q 没有扫描完成", p.pattern)
+		}
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("在 %q 下按模式 %q 匹配文件，用时超过 %s 仍未完成", resolvedPath, p.pattern, globDefaultTimeout),
+			"目标目录文件数量过多，一次全树遍历扫不完",
+			"先自查：能否用 path 把搜索根收窄到具体子目录？确认无误后应停止重试，基于已有信息作答或询问用户",
+		))
 	}
 
 	// 修改时间降序（最新优先，便于定位近期变更的文件）
@@ -218,7 +248,7 @@ func (t *GlobTool) Execute(ctx context.Context, params map[string]any) (any, err
 		return nil, err
 	}
 
-	return performGlob(resolvedPath, p, t.MaxResults)
+	return performGlob(ctx, resolvedPath, p, t.MaxResults)
 }
 
 // globSegPattern 为编译后的 glob 模式（按 "/" 分段）。

@@ -284,6 +284,8 @@ func (t *WebSearchTool) Info() *ToolInfo {
 - 多个关键词用逗号分隔（如 "Go 语言,Redis"），单个主题直接用自然语句
 - 重要：在搜索查询中使用正确的年份`,
 		IsReadOnly: true,
+		// 多引擎串行/重试，单引擎 15s：120s 覆盖"主引擎失败切备引擎"的正常路径
+		TimeoutSec: 120,
 		Parameters: []Parameter{
 			{
 				Name:        "query",

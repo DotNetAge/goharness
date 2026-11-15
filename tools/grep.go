@@ -51,6 +51,9 @@ func (t *GrepTool) Info() *ToolInfo {
 		Description:        "本地全文搜索",
 		Prompt:             `本地全文搜索`,
 		Tags:               []string{"file", "search", "content", "regex", "text"},
+		// 自带 30s（rg 与内置遍历两条路径都是）；这里给 60s 只作外层兜底，
+		// 正常情况走不到，防止未来改动把内部超时去掉后失去上界
+		TimeoutSec: 60,
 		Parameters: []Parameter{
 			{
 				Name:        "pattern",
@@ -433,6 +436,13 @@ func (t *GrepTool) runRg(ctx context.Context, p grepParams, searchDir string) (a
 }
 
 func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string) (any, error) {
+	// 与 rg 路径同一时限：内置遍历此前既无超时也不看 ctx，未装 rg 的机器上一旦
+	// 命中大目录（十万级文件）就会无限期扫描，用户点停止也停不下来（工具不返回
+	// 则整轮执行无法退出）。此处对齐 rg 的 30s 上限，并在遍历中逐层检查 ctx：
+	// 停止 / 断连 / 超时都在同一处中止，返回已扫到的结果。
+	scanCtx, scanCancel := context.WithTimeout(ctx, grepDefaultTimeout)
+	defer scanCancel()
+
 	// 与 rg 的 smart-case 语义对齐：模式不含大写字母时强制忽略大小写（统一两引擎行为），
 	// 修复前 native 路径无条件 "(?i)"，与 rg 路径同一 pattern 结果不同
 	prefix := ""
@@ -459,6 +469,11 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 	}
 
 	walkFn := func(path string, d fs.DirEntry, walkErr error) error {
+		// 逐层检查取消/超时：命中即刻结束遍历（SkipAll 让 WalkDir 正常返回，
+		// 已扫到的结果保留，由下方按中止语义补说明）
+		if scanCtx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -556,6 +571,20 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 		return nil, fmt.Errorf("%s（原始错误：%w）", GuideFileError("遍历", searchDir, err), err)
 	}
 
+	// 遍历被中止（用户停止 / 断连 / 超时）：没有结果就直接报错（中止不是「无匹配」，
+	// 不能让模型误判为搜完了），有结果则返回已扫到的部分并注明未扫完。
+	aborted := scanCtx.Err() != nil
+	if aborted && totalMatchCount == 0 {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("搜索已停止：用户中断了本次执行，%q 没有扫描完成", p.pattern)
+		}
+		return nil, fmt.Errorf("%s", BuildGuide(
+			fmt.Sprintf("在内置遍历下搜索 %q 用时超过 %s 仍未完成", p.pattern, grepDefaultTimeout),
+			"目标目录文件数量过多，内置遍历（未安装 ripgrep 时启用）扫描不完",
+			"先自查：能否用 path / include 把搜索范围收窄到具体子目录或文件类型？确认无误后应停止重试，基于已有信息作答或询问用户",
+		))
+	}
+
 	if totalMatchCount == 0 {
 		value := "未找到匹配项。"
 		if len(scanErrors) > 0 {
@@ -574,6 +603,9 @@ func (t *GrepTool) runNative(ctx context.Context, p grepParams, searchDir string
 	}
 	if len(scanErrors) > 0 {
 		resultStr += fmt.Sprintf("\n... (另有 %d 个文件无法扫描：%s) ...", len(scanErrors), strings.Join(scanErrors, "; "))
+	}
+	if aborted {
+		resultStr += "\n... (搜索被中止，以上仅为已扫描部分的结果，不代表全部匹配) ..."
 	}
 	if t.MaxOutputChars > 0 && len(resultStr) > t.MaxOutputChars {
 		runes := []rune(resultStr)
