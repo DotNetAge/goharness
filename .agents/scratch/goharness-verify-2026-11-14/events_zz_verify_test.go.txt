@@ -1,0 +1,105 @@
+package events
+
+import (
+	"testing"
+	"time"
+)
+
+// V6: 内部分发用 filter 做副作用且恒 false —— 事件不会进通道，8192 缓冲被绕过。
+func TestVerify_FilterDispatchBypassesChannel(t *testing.T) {
+	bus := NewEventBus()
+	var seen int
+	ch, cancel := bus.SubscribeFiltered(func(ReactEvent) bool {
+		seen++
+		return false
+	})
+	defer cancel()
+
+	for i := 0; i < 3; i++ {
+		bus.Emit(ReactEvent{Type: ContentDelta, Data: "x"})
+	}
+	if seen != 3 {
+		t.Fatalf("filter 未同步执行 seen=%d", seen)
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("意外收到通道事件: %v", ev.Type)
+	default:
+	}
+	t.Log("CONFIRMED: filter 同步执行 3 次，订阅通道收到 0 条（缓冲/丢弃策略不参与）")
+}
+
+// V7: filter 在总线读锁内执行 —— 回调内订阅（需要写锁）必然死锁。
+func TestVerify_FilterRunsUnderRLock_Deadlock(t *testing.T) {
+	bus := NewEventBus()
+	done := make(chan struct{})
+	bus.SubscribeFiltered(func(ReactEvent) bool {
+		bus.Subscribe() // 同 goroutine：持 RLock 再要 Lock
+		close(done)
+		return false
+	})
+
+	go bus.Emit(ReactEvent{Type: ContentDelta, Data: "x"})
+	select {
+	case <-done:
+		t.Fatalf("未死锁：filter 不在读锁内")
+	case <-time.After(500 * time.Millisecond):
+		t.Log("CONFIRMED: 回调内 Subscribe 500ms 未返回，filter 持读锁执行")
+	}
+}
+
+// V8: 关键事件在通道满时无超时阻塞。
+func TestVerify_CriticalEmitBlocksWhenFull(t *testing.T) {
+	bus := NewEventBus()
+	_, _ = bus.Subscribe() // 故意不 cancel，避免关闭通道干扰本用例
+	for i := 0; i < StreamChannelBufferSize; i++ {
+		bus.Emit(ReactEvent{Type: LoopEnd}) // 非关键，填满缓冲
+	}
+	done := make(chan struct{})
+	go func() {
+		bus.Emit(ReactEvent{Type: ContentDelta, Data: "x"})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatalf("关键事件未被阻塞")
+	case <-time.After(800 * time.Millisecond):
+		t.Log("CONFIRMED: 缓冲满后关键事件 800ms 未返回（无 ctx / 无超时）")
+	}
+}
+
+// V9: 并发 Emit 关键事件与退订（close）触发 send on closed channel。
+func TestVerify_EmitUnsubscribePanic(t *testing.T) {
+	bus := NewEventBus()
+	panicked := make(chan any, 1)
+	stop := make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				select {
+				case panicked <- r:
+				default:
+				}
+			}
+		}()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				bus.Emit(ReactEvent{Type: ContentDelta, Data: "x"})
+			}
+		}
+	}()
+	for i := 0; i < 200000; i++ {
+		_, cancel := bus.Subscribe()
+		cancel()
+		select {
+		case r := <-panicked:
+			t.Fatalf("CONFIRMED: 第 %d 次订阅/退订时 panic: %v", i, r)
+		default:
+		}
+	}
+	close(stop)
+	t.Log("NOT REPRODUCED in 200k iterations")
+}

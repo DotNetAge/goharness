@@ -2,6 +2,8 @@ module github.com/DotNetAge/goharness
 
 go 1.26
 
+toolchain go1.26.11
+
 require (
 	github.com/DotNetAge/goagent v0.1.2
 	github.com/DotNetAge/gochat v0.2.12

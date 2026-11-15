@@ -1,0 +1,229 @@
+package tools
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/sandbox"
+	"github.com/DotNetAge/goharness/session"
+)
+
+func newLocalHTMLServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+func verifySession(t *testing.T, id, projectDir string) *session.Session {
+	t.Helper()
+	sb, err := sandbox.NewSandbox(&sandbox.SandboxPolicy{AllowedDirs: []string{projectDir}}, logging.NewNopLogger())
+	if err != nil {
+		t.Fatalf("sandbox: %v", err)
+	}
+	s, err := session.New(id, "", projectDir, newMockSessionStore(), logging.NewNopLogger(), session.WithSandbox(sb))
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	return s
+}
+
+// V10: ToolExecutor 重建 ToolContext，丢弃上游注入的 SubProcessEnv。
+func TestVerify_ExecutorDropsSubProcessEnv(t *testing.T) {
+	reg := NewDefaultToolRegistry()
+	if err := reg.Register(&verifyEnvTool{}); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewToolExecutor(reg, WithLogger(logging.NewNopLogger()))
+	ctx := WithToolContext(context.Background(), &ToolContext{
+		Logger:        logging.NewNopLogger(),
+		SubProcessEnv: func() map[string]string { return map[string]string{"K": "V"} },
+	})
+	res, err := exec.Execute(ctx, "VerifyEnv", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Result != "NIL" {
+		t.Fatalf("未复现：Result=%q", res.Result)
+	}
+	t.Log("CONFIRMED: 执行器看到的 SubProcessEnv 为 nil")
+}
+
+type verifyEnvTool struct{}
+
+func (v *verifyEnvTool) Info() *ToolInfo { return &ToolInfo{Name: "VerifyEnv"} }
+func (v *verifyEnvTool) Execute(ctx context.Context, _ map[string]any) (any, error) {
+	if GetToolContext(ctx).SubProcessEnv == nil {
+		return "NIL", nil
+	}
+	return "PRESENT", nil
+}
+
+// V11: 压缩（cursor 前移）后，Read 去重缓存仍返回「未变化」。
+func TestVerify_ReadDedupSurvivesCursorReset(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := newMockSessionStore()
+	sb, _ := sandbox.NewSandbox(&sandbox.SandboxPolicy{AllowedDirs: []string{dir}}, logging.NewNopLogger())
+	s1, _ := session.New("a", "", dir, store, logging.NewNopLogger(), session.WithSandbox(sb))
+	sid := s1.ID()
+	ctx1 := WithToolContext(context.Background(), &ToolContext{Session: s1, Logger: logging.NewNopLogger()})
+	read := NewReadTool()
+	r1, err := read.Execute(ctx1, map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("第一次读取: %v", err)
+	}
+	if !strings.Contains(r1.(*ReadResult).Data.Content, "hello world") {
+		t.Fatalf("首次未返回内容: %q", r1.(*ReadResult).Data.Content)
+	}
+	t.Logf("debug: path=%q suggestion=%q", r1.(*ReadResult).Data.Path, r1.(*ReadResult).Data.Suggestion)
+	if st, ok := getReadFileState(dedupCacheKey(sid, r1.(*ReadResult).Data.Path, 1, 500)); ok {
+		t.Logf("debug: cache entry=%+v", *st)
+	} else {
+		t.Logf("debug: cache MISS after first read (sess=%q)", sid)
+	}
+
+	// 模拟压缩落盘后的状态：同一会话 ID、cursor 移到末尾、新 Load 实例窗口为空。
+	_ = store.SetCursor(context.Background(), sid, 1)
+	s2, err := session.Load(context.Background(), sid, "a", store, logging.NewNopLogger(), session.WithSandbox(sb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s2.Current()) != 0 {
+		t.Fatalf("模拟窗口未清空: %d", len(s2.Current()))
+	}
+	ctx2 := WithToolContext(context.Background(), &ToolContext{Session: s2, Logger: logging.NewNopLogger()})
+	r2, err := read.Execute(ctx2, map[string]any{"filePath": file})
+	if err != nil {
+		t.Fatalf("第二次读取: %v", err)
+	}
+	content := r2.(*ReadResult).Data.Content
+	t.Logf("debug: second suggestion=%q path=%q", r2.(*ReadResult).Data.Suggestion, r2.(*ReadResult).Data.Path)
+	if !strings.Contains(content, "未发生变化") {
+		t.Fatalf("未复现缓存命中: %q", content)
+	}
+	t.Logf("CONFIRMED: 窗口已空（%d 条），Read 仍返回「%s」", len(s2.Current()), content)
+}
+
+// V12: 读前写状态跨会话共享：A 会话读过，B 会话可直接写。
+func TestVerify_ReadBeforeWriteCrossSession(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "b.txt")
+	_ = os.WriteFile(file, []byte("origin\n"), 0644)
+
+	sA := verifySession(t, "sess-A", dir)
+	ctxA := WithToolContext(context.Background(), &ToolContext{Session: sA, Logger: logging.NewNopLogger()})
+	if _, err := NewReadTool().Execute(ctxA, map[string]any{"filePath": file}); err != nil {
+		t.Fatalf("A 读取失败: %v", err)
+	}
+
+	sB := verifySession(t, "sess-B", dir)
+	ctxB := WithToolContext(context.Background(), &ToolContext{Session: sB, Logger: logging.NewNopLogger()})
+	res, err := NewWriteTool().Execute(ctxB, map[string]any{"filePath": file, "content": "overwritten by B\n"})
+	if err != nil {
+		t.Fatalf("B 未读却写入被允许，本应成功以证明漏洞，实际 err=%v", err)
+	}
+	data, _ := os.ReadFile(file)
+	if !strings.Contains(string(data), "overwritten by B") {
+		t.Fatalf("写入未生效: %q", string(data))
+	}
+	t.Logf("CONFIRMED: 会话 B 从未读取该文件，仍成功覆盖（结果=%T）", res)
+}
+
+// V13: Grep 原生路径对超长行静默漏报。
+func TestVerify_GrepNativeLongLineSilentlyMissed(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "long.txt")
+	long := strings.Repeat("a", 100*1024) + "NEEDLE\n"
+	_ = os.WriteFile(file, []byte(long), 0644)
+
+	g := NewGrepTool()
+	s := verifySession(t, "grep-sess", dir)
+	ctx := WithToolContext(context.Background(), &ToolContext{Session: s, Logger: logging.NewNopLogger()})
+	res, err := g.Execute(ctx, map[string]any{"pattern": "NEEDLE", "path": dir})
+	if err != nil {
+		t.Fatalf("Execute err=%v", err)
+	}
+	ms, ok := res.(MetaString)
+	if !ok {
+		t.Fatalf("结果类型 %T", res)
+	}
+	if !strings.Contains(ms.Value, "未找到匹配项") {
+		t.Fatalf("预期静默漏报，实际=%q", ms.Value)
+	}
+	t.Log("CONFIRMED: 100KB 单行文件中的 NEEDLE 被报为「未找到匹配项」（Scanner 64KB 上限 + 错误被忽略）")
+}
+
+// V14: grepScanFile 无上限累积所有命中行。
+func TestVerify_GrepScanUnbounded(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "many.txt")
+	var b strings.Builder
+	for i := 0; i < 100000; i++ {
+		b.WriteString("hit line\n")
+	}
+	_ = os.WriteFile(file, []byte(b.String()), 0644)
+	re := regexp.MustCompile("hit")
+	res, count, err := grepScanFile(file, "many.txt", re, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 100000 || len(res) != 100000 {
+		t.Fatalf("count=%d len=%d", count, len(res))
+	}
+	t.Logf("CONFIRMED: 单文件返回 %d 行命中，函数内无任何上限（上限只在调用方末尾截断）", len(res))
+}
+
+// V18: MetaString 经 executor 序列化后是否被 JSON 引号/转义包裹。
+func TestVerify_MetaStringQuotedByExecutor(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "x.txt"), []byte("hello\nworld\n"), 0644)
+	reg := NewDefaultToolRegistry()
+	if err := reg.Register(NewGrepTool()); err != nil {
+		t.Fatal(err)
+	}
+	s := verifySession(t, "meta-sess", dir)
+	ctx := WithToolContext(context.Background(), &ToolContext{Session: s, Logger: logging.NewNopLogger()})
+	exec := NewToolExecutor(reg, WithLogger(logging.NewNopLogger()), WithSession(s))
+	res, err := exec.Execute(ctx, "Grep", map[string]any{"pattern": "hello", "path": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("debug: result=%q meta=%v", res.Result, res.Metadata)
+	if strings.HasPrefix(res.Result, "\"") || strings.Contains(res.Result, `\n`) {
+		t.Log("CONFIRMED: MetaString 被 JSON 序列化为带引号/转义的字符串")
+		return
+	}
+	t.Log("NOT REPRODUCED: 结果未被引号包裹")
+}
+func TestVerify_WebFetchFallbackSplitsRune(t *testing.T) {
+	body := "<html><body><p>" + strings.Repeat("中", 60000) + "</p>"
+	for i := 0; i < 600; i++ {
+		body += "<p>line" + strings.Repeat("x", i%5) + "</p>"
+	}
+	body += "</body></html>"
+	srv := newLocalHTMLServer(t, body)
+	defer srv.Close()
+
+	tool := NewWebFetchTool(logging.NewNopLogger()).(*WebFetchTool)
+	out, err := performWebFetch(context.Background(), tool, logging.NewNopLogger(), srv.URL, "", "")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if strings.ContainsRune(out, '\uFFFD') {
+		t.Log("CONFIRMED: 返回内容包含 U+FFFD（50000 字节处切断多字节字符）")
+		return
+	}
+	t.Logf("NOT REPRODUCED: 输出未含替换符（len=%d）", len(out))
+}

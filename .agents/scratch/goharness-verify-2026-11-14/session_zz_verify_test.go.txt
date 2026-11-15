@@ -1,0 +1,154 @@
+package session
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/DotNetAge/goharness/logging"
+)
+
+type verifyStore struct {
+	msgs      []Message
+	cursor    int
+	getErr    error
+	truncErr  error
+	appendErr error
+}
+
+func (v *verifyStore) Append(_ context.Context, _ string, _ string, _ string, m Message) error {
+	if v.appendErr != nil {
+		return v.appendErr
+	}
+	v.msgs = append(v.msgs, m)
+	return nil
+}
+func (v *verifyStore) Get(context.Context, string) ([]Message, error) {
+	if v.getErr != nil {
+		return nil, v.getErr
+	}
+	return append([]Message(nil), v.msgs...), nil
+}
+func (v *verifyStore) CurrentContext(context.Context, string, int64) ([]Message, error) {
+	return v.msgs, nil
+}
+func (v *verifyStore) Delete(context.Context, int64, string) error { return nil }
+func (v *verifyStore) Clear(context.Context, string) error         { return nil }
+func (v *verifyStore) SetSlideHandler(SlideHandler)                {}
+func (v *verifyStore) Close() error                                { return nil }
+func (v *verifyStore) ListSessions(context.Context) ([]SessionInfo, error) {
+	return nil, nil
+}
+func (v *verifyStore) Create(context.Context, string, ...SessionOption) (*SessionInfo, error) {
+	return &SessionInfo{}, nil
+}
+func (v *verifyStore) GetMeta(_ context.Context, id string) (*SessionInfo, error) {
+	return &SessionInfo{SessionID: id}, nil
+}
+func (v *verifyStore) ResolveSessionDir(string) (string, error)  { return "", nil }
+func (v *verifyStore) DeleteSession(context.Context, string) error { return nil }
+func (v *verifyStore) GetCursor(context.Context, string) (int, error) {
+	return v.cursor, nil
+}
+func (v *verifyStore) SetCursor(_ context.Context, _ string, c int) error {
+	v.cursor = c
+	return nil
+}
+func (v *verifyStore) SaveModifyFiles(string, []string) error      { return nil }
+func (v *verifyStore) GetModifyFiles(string) ([]string, error)     { return nil, nil }
+func (v *verifyStore) UpdateMessages(context.Context, string, int, []Message) error {
+	return nil
+}
+func (v *verifyStore) Truncate(_ context.Context, _ string, keep int) error {
+	if v.truncErr != nil {
+		return v.truncErr
+	}
+	if keep < len(v.msgs) {
+		v.msgs = v.msgs[:keep]
+	}
+	return nil
+}
+
+type verifyCompactor struct{ summary string }
+
+func (c *verifyCompactor) Compact(context.Context, *Session, []Message) (string, error) {
+	return c.summary, nil
+}
+
+// V1: Append 丢弃纯图片消息。
+func TestVerify_AppendDropsImageOnly(t *testing.T) {
+	st := &verifyStore{}
+	s, _ := New("a", "", "/tmp", st, logging.NewNopLogger())
+	err := s.Append(context.Background(), Message{
+		Role: "user", Images: []ImageBlock{{MediaType: "image/png", Base64Data: "AAAA"}},
+	})
+	if err != nil {
+		t.Fatalf("Append err=%v", err)
+	}
+	if got := len(s.All()); got != 0 {
+		t.Fatalf("预期丢弃：All=%d", got)
+	}
+	t.Log("CONFIRMED: 纯图片消息被静默丢弃，All()=0")
+}
+
+// V2: Append 丢弃空内容 tool 结果与纯思考 assistant。
+func TestVerify_AppendDropsEmptyToolAndThinking(t *testing.T) {
+	st := &verifyStore{}
+	s, _ := New("a", "", "/tmp", st, logging.NewNopLogger())
+	_ = s.Append(context.Background(), Message{Role: "tool", ToolCallID: "call_1", Content: ""})
+	_ = s.Append(context.Background(), Message{Role: "assistant", ReasoningContent: "think only"})
+	if got := len(s.All()); got != 0 {
+		t.Fatalf("预期两条都被丢弃：All=%d", got)
+	}
+	t.Log("CONFIRMED: 空 tool 结果与纯 thinking assistant 均被丢弃")
+}
+
+// V3: 压缩只移 cursor，不释放消息。
+func TestVerify_CompactionRetainsAllMessages(t *testing.T) {
+	st := &verifyStore{}
+	s, _ := New("a", "", "/tmp", st, logging.NewNopLogger(),
+		WithCompactor(&verifyCompactor{summary: "mem"}),
+		WithSummarySink(func(context.Context, string) error { return nil }))
+	_ = s.Append(context.Background(), Message{Role: "user", Content: "u1"})
+	_ = s.Append(context.Background(), Message{Role: "assistant", Content: "a1"})
+	_ = s.Append(context.Background(), Message{Role: "user", Content: "u2"})
+	before := len(s.All())
+	s.doCompact(context.Background(), s.captureState(), "verify")
+	if s.Cursor() != before {
+		t.Fatalf("cursor=%d want %d", s.Cursor(), before)
+	}
+	if got := len(s.All()); got != before {
+		t.Fatalf("消息被释放：All=%d want %d", got, before)
+	}
+	if len(s.Current()) != 0 {
+		t.Fatalf("窗口未清空")
+	}
+	t.Logf("CONFIRMED: 压缩后 cursor=%d，All 仍为 %d 条，窗口为空", s.Cursor(), before)
+}
+
+// V4: 加载失败被吞，会话静默变空。
+func TestVerify_LoadErrorSilentlyEmpty(t *testing.T) {
+	st := &verifyStore{getErr: errors.New("disk I/O error")}
+	s, _ := New("a", "", "/tmp", st, logging.NewNopLogger())
+	if got := len(s.Current()); got != 0 {
+		t.Fatalf("Current=%d", got)
+	}
+	t.Log("CONFIRMED: Get 返回 error 时 Current() 为空且无任何错误面")
+}
+
+// V5: Truncate 先改内存后写存储，存储失败后内存已截断。
+func TestVerify_TruncateMemoryBeforeStore(t *testing.T) {
+	st := &verifyStore{}
+	s, _ := New("a", "", "/tmp", st, logging.NewNopLogger())
+	_ = s.Append(context.Background(), Message{Role: "user", Content: "u1"})
+	_ = s.Append(context.Background(), Message{Role: "assistant", Content: "a1"})
+	st.truncErr = errors.New("store truncate failed")
+	err := s.Truncate(context.Background(), 1)
+	if err == nil {
+		t.Fatalf("预期返回错误")
+	}
+	if got := len(s.All()); got != 1 {
+		t.Fatalf("内存未按预期截断：All=%d", got)
+	}
+	t.Logf("CONFIRMED: 存储失败但内存已截断（All=%d），内存与存储分叉", 1)
+}

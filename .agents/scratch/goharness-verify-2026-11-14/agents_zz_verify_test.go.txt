@@ -1,0 +1,74 @@
+package agents
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	gochatcore "github.com/DotNetAge/gochat/core"
+	"github.com/DotNetAge/goharness/logging"
+	"github.com/DotNetAge/goharness/session"
+)
+
+type failOnceStore struct {
+	*fakeSessionStore
+	failAt   int
+	appended int
+}
+
+func (s *failOnceStore) Append(ctx context.Context, sid, agent, sponsor string, m session.Message) error {
+	s.appended++
+	if s.failAt > 0 && s.appended == s.failAt {
+		return errors.New("injected append failure")
+	}
+	return s.fakeSessionStore.Append(ctx, sid, agent, sponsor, m)
+}
+
+// V16: 回写中断后水位不推进，重试重复写已成功的消息。
+func TestVerify_WriteBackDuplicatesAfterPartialFailure(t *testing.T) {
+	store := &failOnceStore{fakeSessionStore: newFakeSessionStore(), failAt: 2}
+	s, err := session.New("a", "", "/tmp", store, logging.NewNopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := []gochatcore.Message{
+		{Role: gochatcore.RoleAssistant, Content: []gochatcore.ContentBlock{{Type: gochatcore.ContentTypeText, Text: "first"}}},
+		{Role: gochatcore.RoleAssistant, Content: []gochatcore.ContentBlock{{Type: gochatcore.ContentTypeText, Text: "second"}}},
+		{Role: gochatcore.RoleAssistant, Content: []gochatcore.ContentBlock{{Type: gochatcore.ContentTypeText, Text: "third"}}},
+	}
+	br := &eventBridge{
+		b:            &AskBuilder{session: s},
+		rt:           &Runtime{logger: logging.NewNopLogger(), tokenUsageStore: session.NewNoopTokenUsageStore()},
+		completeMsgs: msgs,
+	}
+	br.beginRun(0)
+	br.writeBackNewMessages(s, 0)
+	first := len(s.All())
+	if first != 1 {
+		t.Fatalf("首次回写应只成功 1 条，实际 %d", first)
+	}
+
+	store.failAt = 0 // 故障恢复
+	br.writeBackNewMessages(s, 0)
+	all := s.All()
+	counts := map[string]int{}
+	for _, m := range all {
+		counts[m.Content]++
+	}
+	if counts["first"] != 2 {
+		t.Fatalf("未复现重复：first 出现 %d 次，全部=%v", counts["first"], counts)
+	}
+	t.Logf("CONFIRMED: 故障恢复后重放，first 被写 2 次，总消息 %d 条，内容分布=%v", len(all), counts)
+}
+
+// V17: 401 排障信息包含 API Key 明文。
+func TestVerify_APIKeyInDebugLog(t *testing.T) {
+	c := &gochatLLMClient{apiKey: "sk-verify-secret", baseURL: "https://api.example.com", provider: "deepseek"}
+	info := c.authDebugContext()
+	if !strings.Contains(info, "sk-verify-secret") {
+		t.Logf("NOT REPRODUCED: %q", info)
+		return
+	}
+	t.Logf("CONFIRMED: authDebugContext 返回 %q", info)
+}
