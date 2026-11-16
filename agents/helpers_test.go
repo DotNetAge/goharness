@@ -146,6 +146,10 @@ func (s *fakeSessionStore) GetModifyFiles(sessionID string) ([]string, error) {
 	return s.modify[sessionID], nil
 }
 
+func (s *fakeSessionStore) SetParentSessionID(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
 func (s *fakeSessionStore) UpdateMessages(_ context.Context, _ string, _ int, _ []session.Message) error {
 	return nil
 }

@@ -153,6 +153,10 @@ func (m *mockStore) Truncate(_ context.Context, _ string, _ int) error {
 	return m.truncateErr
 }
 
+func (m *mockStore) SetParentSessionID(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
 func (m *mockStore) UpdateMessages(_ context.Context, sessionID string, cursor int, messages []Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

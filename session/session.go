@@ -145,7 +145,10 @@ func Load(ctx context.Context, sessionID, agentName string, store SessionStore, 
 
 	// TeamName 从会话元数据恢复（创建时经 WithTeamNameOption 写入），
 	// 保证会话重载后 System Prompt 的团队段重建与原会话一致
-	return initSession(sessionID, agentName, info.Sponsor, info.ProjectDir, info.TeamName, store, logger, opts...), nil
+	sess := initSession(sessionID, agentName, info.Sponsor, info.ProjectDir, info.TeamName, store, logger, opts...)
+	// ParentSessionID 同理从元数据恢复：会话树归属不因进程重启丢失
+	sess.parentSessionID = info.ParentSessionID
+	return sess, nil
 }
 
 // Session 管理对话的消息历史，具有自动压缩功能。
@@ -176,6 +179,11 @@ type Session struct {
 	// 空表示用户发起（智能体 ↔ 用户对话）。
 	// 非空表示智能体生成（来自另一个智能体的 SubAgent）。
 	sponsor string
+
+	// parentSessionID 标识派生此会话的父会话（空 = 非派生会话）。
+	// 与 sponsor 互补：sponsor 是智能体名，无法定位具体父会话；
+	// 会话被另一父会话复用时随之更新（由 subAgentManager 回写）。
+	parentSessionID string
 
 	// projectDir 是文件操作的工作目录
 	projectDir string
@@ -296,6 +304,22 @@ func (s *Session) Sponsor() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.sponsor
+}
+
+// ParentSessionID 返回派生此会话的父会话 ID（空 = 非派生会话）。
+func (s *Session) ParentSessionID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.parentSessionID
+}
+
+// SetParentSessionID 更新内存中的父会话归属。
+// 持久化由调用方经 SessionStore.SetParentSessionID 完成——两层分工避免
+// 会话对象在执行期引入存储依赖。
+func (s *Session) SetParentSessionID(parentSessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.parentSessionID = parentSessionID
 }
 
 // ModelContextLength 返回当前会话使用的模型的上下文窗口大小（以 token 为单位）。

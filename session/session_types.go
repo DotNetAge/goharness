@@ -75,20 +75,25 @@ type SlideHandler func(ctx context.Context, event SlideEvent)
 // SessionInfo 保存会话的元数据，用于 ListSessions 和 GetMeta。
 // 包含对工具执行和提示词生成至关重要的目录上下文。
 type SessionInfo struct {
-	SessionID      string    `json:"session_id"`
-	AgentName      string    `json:"agent_name,omitempty"`
-	TeamName       string    `json:"team_name,omitempty"` // 会话绑定的团队名（空 = 个人会话）；创建时写入并随 meta 持久化，Load 时恢复
-	Sponsor        string    `json:"sponsor,omitempty"`   // 创建此会话的智能体（空 = 用户发起）
-	Title          string    `json:"title,omitempty"`     // 首条用户消息内容（用于会话列表显示）
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`            // 上次 meta.json 保存时间
-	LastActivityAt time.Time `json:"last_activity_at"`      // 上次消息活动时间戳
-	ProjectDir     string    `json:"project_dir,omitempty"` // 会话创建时的工作目录
-	SessionDir     string    `json:"session_dir,omitempty"` // 会话沙箱目录（由 Store 管理）
-	MessageCount   int       `json:"message_count"`         // 会话中的总消息数
-	Cursor         int       `json:"cursor"`                // 压缩游标位置（0 = 未压缩）
-	Messages       []Message `json:"messages,omitempty"`
-	ModifyFiles    []string  `json:"modify_files,omitempty"` // 追踪的已修改文件路径
+	SessionID string `json:"session_id"`
+	AgentName string `json:"agent_name,omitempty"`
+	TeamName  string `json:"team_name,omitempty"` // 会话绑定的团队名（空 = 个人会话）；创建时写入并随 meta 持久化，Load 时恢复
+	Sponsor   string `json:"sponsor,omitempty"`   // 创建此会话的智能体（空 = 用户发起）
+	// ParentSessionID 派生此会话的父会话 ID（空 = 非派生会话）。
+	// 与 Sponsor 互补：Sponsor 记「哪个智能体发起」，本字段记「哪条会话派生」，
+	// 客户端据此建会话树；子会话同一时刻只归属一个父会话（被另一父会话复用时回写），
+	// 父会话删除时级联清理，避免出现无入口的悬挂会话。
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	Title           string    `json:"title,omitempty"` // 首条用户消息内容（用于会话列表显示）
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`            // 上次 meta.json 保存时间
+	LastActivityAt  time.Time `json:"last_activity_at"`      // 上次消息活动时间戳
+	ProjectDir      string    `json:"project_dir,omitempty"` // 会话创建时的工作目录
+	SessionDir      string    `json:"session_dir,omitempty"` // 会话沙箱目录（由 Store 管理）
+	MessageCount    int       `json:"message_count"`         // 会话中的总消息数
+	Cursor          int       `json:"cursor"`                // 压缩游标位置（0 = 未压缩）
+	Messages        []Message `json:"messages,omitempty"`
+	ModifyFiles     []string  `json:"modify_files,omitempty"` // 追踪的已修改文件路径
 }
 
 // Compactor 执行上下文压缩：构造 LLM 请求、流式调用、解析返回。
@@ -141,6 +146,10 @@ type SessionStore interface {
 	SaveModifyFiles(sessionID string, files []string) error
 	GetModifyFiles(sessionID string) ([]string, error)
 
+	// SetParentSessionID 回写会话的父会话归属。
+	// 子会话被另一父会话复用时，归属随实际使用者变更（客户端会话树据此挂载）。
+	SetParentSessionID(ctx context.Context, sessionID string, parentSessionID string) error
+
 	// UpdateMessages 持久化对现有消息的修改。
 	// 接收当前游标和完整消息列表。存储原子替换会话的现有消息。
 	UpdateMessages(ctx context.Context, sessionID string, cursor int, messages []Message) error
@@ -166,6 +175,15 @@ func WithProjectDirOption(dir string) SessionOption {
 func WithSponsorOption(sponsor string) SessionOption {
 	return func(s *SessionInfo) {
 		s.Sponsor = sponsor
+	}
+}
+
+// WithParentSessionOption 为会话标注派生它的父会话 ID。
+// 与 Sponsor 的分工：Sponsor 记发起智能体名（供授权/提问魔术词路由），
+// 本字段记派生来源会话 ID（供客户端建会话树与删除级联）。
+func WithParentSessionOption(parentSessionID string) SessionOption {
+	return func(s *SessionInfo) {
+		s.ParentSessionID = parentSessionID
 	}
 }
 

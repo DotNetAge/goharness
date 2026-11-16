@@ -105,6 +105,10 @@ func (m *mockSessionStore) GetModifyFiles(sessionID string) ([]string, error) {
 	return m.modifyFiles[sessionID], nil
 }
 
+func (m *mockSessionStore) SetParentSessionID(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
 func (m *mockSessionStore) UpdateMessages(_ context.Context, sessionID string, cursor int, messages []session.Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

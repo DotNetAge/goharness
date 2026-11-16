@@ -273,6 +273,31 @@ func (m *subAgentManager) lookupFailedTaskAnchor(mainSessionID, task string) str
 	return m.failedTaskAnchors[failedTaskAnchorKey(mainSessionID, task)]
 }
 
+// bindParentSession 登记子会话的父会话归属（新建与复用同路）。
+//
+// 与 sponsor 的分工：sponsor 是发起智能体名（供授权/提问魔术词路由），本归属是
+// 派发来源会话 ID（供客户端建会话树与删除级联）。复用池按 agent+目录+sponsor
+// 匹配，同一子会话可能先后服务不同父会话，因此每次派发都以当前父会话为准覆盖。
+//
+// 落库失败只记日志不阻断派发：归属降级为「本目录派生线程」聚合呈现，派发本身
+// 不受影响。
+func (m *subAgentManager) bindParentSession(ctx context.Context, sess *session.Session, parentSessionID string, store session.SessionStore) {
+	if sess == nil || store == nil || parentSessionID == "" {
+		return
+	}
+	if sess.ParentSessionID() == parentSessionID {
+		return
+	}
+	sess.SetParentSessionID(parentSessionID)
+	if err := store.SetParentSessionID(ctx, sess.ID(), parentSessionID); err != nil {
+		m.rt.logger.Warn("子会话父会话归属回写失败（会话树降级为派生线程聚合）",
+			"session_id", sess.ID(),
+			"parent_session_id", parentSessionID,
+			"error", err,
+		)
+	}
+}
+
 // getOrCreate 返回指定 sessionID 对应的子代理会话状态；不存在则创建/恢复。
 //
 // 定位规则（SessionID 唯一定位）：
@@ -684,6 +709,11 @@ func (m *subAgentManager) Submit(ctx context.Context, req subagent.SubAgentReque
 		return subagent.SubAgentReceipt{}, fmt.Errorf("获取子智能体会话失败: %q: %w", req.AgentName, err)
 	}
 	sid := st.sess.ID()
+
+	// 父会话归属登记（新建与复用同路）：客户端会话树按 parent_session_id 挂载。
+	// 复用池按 agent+目录+sponsor 匹配，同一子会话可能先后服务不同父会话，
+	// 故归属跟随当前父会话而非首次创建者。
+	m.bindParentSession(ctx, st.sess, tc.Session.ID(), tc.Session.Store())
 
 	// 连续超限熔断与续跑分流（读取与 runTask 结算写入均经 m.mu 保护；并发
 	// 窗口由 spawning 认领与 per-session 互斥收敛，残余竞态仅影响一轮判定）。
