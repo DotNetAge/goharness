@@ -240,10 +240,44 @@ func TestWriteBack_非挂起缺失仍补失败回执(t *testing.T) {
 	}
 
 	br, s := newGroupTestBridge(t, store, msgs)
+	// 模拟引擎已正常收尾（完成状态）：只有此时缺失的工具结果才按「丢失」补齐。
+	br.stopSeen = true
+	br.stopped = goagent.StopFinished
 	s.SetPendingAskUser(session.PendingAskUser{ToolCallID: "ask_1"}) // 与本次调用无关
 	br.writeBackNewMessages(s, 0)
 
 	if !s.HasToolResult("call_1") || !s.HasToolResult("ask_9") {
 		t.Fatalf("无挂起登记的缺失结果必须补齐，窗口: %+v", s.Current())
+	}
+}
+
+// TestWriteBack_挂起授权不补失败回执 与挂起提问同源的形态：待授权工具本轮
+// 没有结果，结果在用户授权后由 applyPermissionAction 写入。回写若补一条
+// 「执行失败」，授权结果再写进来就是同一 tool_call 的第二条应答 → 400。
+func TestWriteBack_挂起授权不补失败回执(t *testing.T) {
+	store := &groupRecordStore{fakeSessionStore: newFakeSessionStore()}
+	msgs := []gochatcore.Message{
+		{
+			Role: gochatcore.RoleAssistant,
+			Content: []gochatcore.ContentBlock{
+				{Type: gochatcore.ContentTypeText, Text: "需要执行命令"},
+			},
+			ToolCalls: []gochatcore.ToolCall{{ID: "call_1", Name: "Bash"}},
+		},
+	}
+
+	br, s := newGroupTestBridge(t, store, msgs)
+	s.SetPendingPermission(session.PendingPermission{ToolName: "Bash", ToolCallID: "call_1"})
+	br.writeBackNewMessages(s, 0)
+
+	got := s.Current()
+	if len(got) != 1 || got[0].Role != "assistant" {
+		t.Fatalf("挂起轮应只落盘 assistant 一条，实际: %+v", got)
+	}
+	if s.HasToolResult("call_1") {
+		t.Fatal("挂起授权不应补工具回执，否则授权结果会形成重复应答")
+	}
+	if s.PendingPermission() == nil {
+		t.Fatal("回写不得消费挂起授权登记")
 	}
 }

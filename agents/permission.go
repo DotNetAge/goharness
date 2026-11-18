@@ -575,6 +575,15 @@ func (rt *Runtime) executePendingAndAppend(
 		ResultMeta: eventResultMeta(tr.Metadata),
 	})
 
+	// 写入闸门：同一 tool_call 至多允许一条 tool 应答。历史里已有该 ID 的应答
+	// （旧版回写补齐写过「执行失败」假回执）时再写一条，接口会以 400 拒答整个
+	// 会话（"Messages with role 'tool' must be a response to a preceding message
+	// with 'tool_calls'"）。工具照常执行或拒绝，仅放弃这次重复写入。
+	if b.session.HasToolResult(pending.ToolCallID) {
+		rt.logger.Warn("挂起授权已有工具应答，跳过重复写入",
+			"session", b.session.ID(), "tool_call_id", pending.ToolCallID)
+		return
+	}
 	if err := b.session.Append(ctx, session.Message{
 		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 		ToolCallID: pending.ToolCallID,
@@ -645,6 +654,15 @@ func (rt *Runtime) appendDeniedResult(
 			"下一步我应该：考虑其它的执行路径或工具来完成此工作，而不是继续尝试该方式。",
 		pending.ToolName, reason,
 	)
+	// 写入闸门：同一 tool_call 至多允许一条 tool 应答。历史里已有该 ID 的应答
+	// （旧版回写补齐写过「执行失败」假回执）时再写一条，接口会以 400 拒答整个
+	// 会话（"Messages with role 'tool' must be a response to a preceding message
+	// with 'tool_calls'"）。工具照常执行或拒绝，仅放弃这次重复写入。
+	if b.session.HasToolResult(pending.ToolCallID) {
+		rt.logger.Warn("挂起授权已有工具应答，跳过重复写入",
+			"session", b.session.ID(), "tool_call_id", pending.ToolCallID)
+		return
+	}
 	if err := b.session.Append(ctx, session.Message{
 		Role: "tool", Content: content, Timestamp: time.Now().Unix(),
 		ToolCallID: pending.ToolCallID,

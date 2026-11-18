@@ -57,7 +57,11 @@ type eventBridge struct {
 	// assistant 序号严格 1:1。
 	callUsageByIter map[int]*bridgeCallUsage
 	stopped         goagent.StopReason
-	suspendKind     string // 最近一次挂起类别："permission" / "ask_user"
+	// stopSeen 标记本轮是否已收到 StopReason 事件：StopFinished 的零值是 0，
+	// 仅凭 stopped 无法区分「已正常收尾」与「还没收尾」，而回写补齐必须区分
+	// 二者——未收尾说明工具结果还没产生，不是丢失。
+	stopSeen    bool
+	suspendKind string // 最近一次挂起类别："permission" / "ask_user"
 	finalAnswer     string // EvFinalAnswer 捕获的最终答案（ChatStreamCtx 只返回 error）
 	completeMsgs    []gochatcore.Message
 
@@ -165,6 +169,7 @@ func (br *eventBridge) Emit(ev goagent.Event) {
 		br.handleSuspend(d)
 	case goagent.StopReason:
 		br.stopped = d
+		br.stopSeen = true
 		if d == goagent.StopFinished {
 			// 正常收尾补发 loop_end（旧核契约：termination_reason=completed
 			// 表示本轮已产出最终答案，前端据此置会话级收尾标记）。goagent
@@ -438,6 +443,7 @@ func (br *eventBridge) beginRun(baseLen int) {
 	br.writePendingCalls = nil
 	br.writePendingImages = imageEntry{}
 	br.callUsageByIter = nil
+	br.stopSeen = false
 }
 
 // writeBackNewMessages 将 goagent 内存对话中的新增消息回写会话。
@@ -638,23 +644,36 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 	// 合规性：这是**文末追加**，没有改动任何已落库的历史，符合「上下文只能
 	// 从文末插入」的约束。
 	if len(group) > 0 && len(groupPending) > 0 {
-		// 挂起提问的 tool_call 不补回执：主会话以 ask_user_pending 终止时，
-		// AskUser 的「结果」在协议上就是用户的回答，由下一轮入口写成该 ID 的
-		// tool 消息。此处若补一条「执行失败」，等于抢先占用应答位；用户回答
-		// 到达后再写第二条同 ID 的 tool 消息，接口即以
+		// 引擎还没收尾（迭代边界的中间快照）或以挂起结束时，缺失的 tool 结果
+		// 不是「丢失」而是「还没产生」：
+		//   - 中间快照之后还有工具要执行，结果属未来；
+		//   - AskUser 挂起的结果是用户的回答（下一轮入口写成 tool 消息）；
+		//   - 待授权工具挂起的结果在用户授权后由 applyPermissionAction 写入。
+		// 这两类情况一律不补回执：补了等于抢占应答位，后续真正的结果写进来
+		// 就是同一 tool_call 的第二条 tool 消息，接口以
 		// "Messages with role 'tool' must be a response to a preceding message
 		// with 'tool_calls'" 拒答，且该序列落在历史里，会话此后每次请求都 400。
-		// 因此这里让组以「assistant 无该 tool 应答」的合法等待态落盘，
-		// 配对由下一轮的用户回答收口（检测器对挂起孤儿有豁免）。
-		pendingAskID := ""
-		if p := br.b.session.PeekPendingAskUser(); p != nil {
-			pendingAskID = p.ToolCallID
+		// 组照常以「assistant 无该 tool 应答」的合法等待态落盘，配对由后续
+		// 批次或下一轮收口（检测器对挂起孤儿有豁免）。
+		//
+		// 只有引擎确实收尾（完成 / 超轮 / 出错）且结果仍缺失，才是真的丢了。
+		// StopToolLoop 不算收尾：它表示内核暂停思考去执行工具，结果属下一批；
+		// StopSuspended 表示挂起等外部输入，结果属用户回应之后。
+		resultsPending := !br.stopSeen ||
+			br.stopped == goagent.StopSuspended ||
+			br.stopped == goagent.StopToolLoop
+		stopLabel := "尚未收尾（迭代中途快照）"
+		if br.stopSeen {
+			stopLabel = br.stopped.String()
 		}
-		if pendingAskID != "" {
-			if _, holding := groupPending[pendingAskID]; holding {
-				delete(groupPending, pendingAskID)
-				br.rt.logger.Info("挂起提问的工具调用不补回执，等待用户回答后补全",
-					"session", br.sessionID, "tool_call_id", pendingAskID)
+		suspended := suspendedToolCallIDs(br.b.session)
+		for callID := range groupPending {
+			_, isSuspended := suspended[callID]
+			if resultsPending || isSuspended {
+				delete(groupPending, callID)
+				br.rt.logger.Info("工具结果尚未产生，不补回执（等待后续批次或用户回应）",
+					"session", br.sessionID, "tool_call_id", callID,
+					"终止原因", stopLabel)
 			}
 		}
 		if len(groupPending) > 0 {

@@ -865,7 +865,7 @@ func TestExecAskUserPending_回答不产生重复工具应答(t *testing.T) {
 	if toolResults != 1 {
 		t.Fatalf("call_1 应恰好有一条工具应答，实际 %d 条，窗口: %+v", toolResults, rolesOf(sess.Current()))
 	}
-	if cut := findToolPairingBreak(sess.Current(), ""); cut >= 0 {
+	if cut := findToolPairingBreak(sess.Current(), nil); cut >= 0 {
 		t.Fatalf("回答落盘后窗口不应存在配对断裂，cut=%d，窗口: %+v", cut, rolesOf(sess.Current()))
 	}
 }

@@ -468,11 +468,7 @@ func (rt *Runtime) DetectSessionPairingBreak(sess *session.Session) int {
 	if sess == nil {
 		return -1
 	}
-	pendingAskID := ""
-	if p := sess.PeekPendingAskUser(); p != nil {
-		pendingAskID = p.ToolCallID
-	}
-	return findToolPairingBreak(sess.Current(), pendingAskID)
+	return findToolPairingBreak(sess.Current(), suspendedToolCallIDs(sess))
 }
 
 // RunningSubAgentSessions 返回本 Runtime 全部运行中子代理的会话 ID（去重）。

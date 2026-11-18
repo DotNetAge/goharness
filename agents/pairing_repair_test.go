@@ -34,9 +34,9 @@ func TestFindToolPairingBreak(t *testing.T) {
 	cases := []struct {
 		name string
 		win  []session.Message
-		// pending 是当前挂起提问的 tool_call ID（空表示无挂起提问）。
-		pending string
-		want    int
+		// suspended 是挂起中的 tool_call ID 集合（nil 表示无挂起）。
+		suspended map[string]struct{}
+		want      int
 	}{
 		{
 			name: "空窗口无需修复",
@@ -118,8 +118,8 @@ func TestFindToolPairingBreak(t *testing.T) {
 				pairingMsg("user", "问题", ""),
 				pairingMsg("assistant", "请选择", "", pairingTC("S", "AskUser")),
 			},
-			pending: "S",
-			want:    -1, // 应答由用户回答在下一轮写成 tool 消息
+			suspended: map[string]struct{}{"S": {}},
+			want:      -1, // 应答由用户回答在下一轮写成 tool 消息
 		},
 		{
 			name: "挂起提问后已有其它消息：仍算断裂",
@@ -128,8 +128,8 @@ func TestFindToolPairingBreak(t *testing.T) {
 				pairingMsg("assistant", "请选择", "", pairingTC("S", "AskUser")),
 				pairingMsg("user", "用户回答", ""),
 			},
-			pending: "S",
-			want:    1, // 应答位被 user 消息顶掉，assistant 及其后需回滚回补
+			suspended: map[string]struct{}{"S": {}},
+			want:      1, // 应答位被 user 消息顶掉，assistant 及其后需回滚回补
 		},
 		{
 			name: "无挂起登记时末尾孤儿照旧判断裂",
@@ -145,14 +145,14 @@ func TestFindToolPairingBreak(t *testing.T) {
 				pairingMsg("user", "问题", ""),
 				pairingMsg("assistant", "", "", pairingTC("A", "Grep")),
 			},
-			pending: "S",
-			want:    1,
+			suspended: map[string]struct{}{"S": {}},
+			want:      1,
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := findToolPairingBreak(c.win, c.pending); got != c.want {
+			if got := findToolPairingBreak(c.win, c.suspended); got != c.want {
 				t.Fatalf("findToolPairingBreak() = %d, want %d", got, c.want)
 			}
 		})
@@ -403,5 +403,25 @@ func TestInvalidatePendingsAfterRepair(t *testing.T) {
 	}
 	if len(denied) != 1 {
 		t.Fatalf("无挂起授权时不应发射 PermissionDenied, got %v", denied)
+	}
+}
+
+// TestFindToolPairingBreak_待授权工具 验证待授权工具的等待态同样豁免：
+// 结果要等用户授权后由 applyPermissionAction 写入，不能当作断裂回滚。
+func TestFindToolPairingBreak_待授权工具(t *testing.T) {
+	waiting := []session.Message{
+		pairingMsg("user", "跑个命令", ""),
+		pairingMsg("assistant", "", "", pairingTC("B", "Bash")),
+	}
+	if got := findToolPairingBreak(waiting, map[string]struct{}{"B": {}}); got != -1 {
+		t.Fatalf("待授权等待态不应判断裂，got %d", got)
+	}
+	// 挂起项之外还有缺口时必须照旧判断裂。
+	mixed := []session.Message{
+		pairingMsg("user", "跑命令并读文件", ""),
+		pairingMsg("assistant", "", "", pairingTC("B", "Bash"), pairingTC("R", "Read")),
+	}
+	if got := findToolPairingBreak(mixed, map[string]struct{}{"B": {}}); got != 1 {
+		t.Fatalf("混有非挂起缺口时应判断裂，got %d", got)
 	}
 }

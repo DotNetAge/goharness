@@ -397,3 +397,31 @@ func TestResolvePermissionMagicWordReadAllowSession(t *testing.T) {
 	assert.Equal(t, "tool", msgs[0].Role)
 	assert.Contains(t, msgs[0].Content, "外部机密内容")
 }
+
+// TestAppendDeniedResult_已有应答不重复写 固化写入闸门：历史里已存在该
+// tool_call 的应答（旧版补齐写的假回执）时，授权拒绝结果不得再写第二条，
+// 否则整个会话被接口以 400 拒答。
+func TestAppendDeniedResult_已有应答不重复写(t *testing.T) {
+	rt := newTestRuntime(t)
+	sess := newTestSession(t)
+	ctx := context.Background()
+
+	existed := session.Message{Role: "tool", ToolCallID: "call_1", Content: "旧的失败回执", Timestamp: 1}
+	if err := sess.Append(ctx, existed); err != nil {
+		t.Fatalf("预置消息失败: %v", err)
+	}
+
+	b := &AskBuilder{session: sess}
+	pending := &session.PendingPermission{ToolName: "Bash", ToolCallID: "call_1", Reason: "测试"}
+	rt.appendDeniedResult(ctx, b, pending)
+
+	n := 0
+	for _, m := range sess.Current() {
+		if m.Role == "tool" && m.ToolCallID == "call_1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("call_1 应保持 1 条工具应答，实际 %d 条", n)
+	}
+}

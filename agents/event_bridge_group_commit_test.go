@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
+	"github.com/DotNetAge/goagent"
 	"github.com/DotNetAge/goharness/logging"
 	"github.com/DotNetAge/goharness/session"
 )
@@ -120,6 +121,9 @@ func TestWriteBack_IncompleteGroupFilledWithFailure(t *testing.T) {
 	}
 
 	br, s := newGroupTestBridge(t, store, msgs)
+	// 工具中断属于引擎已收尾（出错终止）后的结果丢失，只有这种情况才补回执。
+	br.stopSeen = true
+	br.stopped = goagent.StopError
 	br.writeBackNewMessages(s, 0)
 
 	if len(store.batches) != 1 {

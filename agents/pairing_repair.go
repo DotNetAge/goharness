@@ -30,6 +30,25 @@ func isToolPairingError(err error) bool {
 		strings.Contains(msg, "must be a response to a preceding message with")
 }
 
+// suspendedToolCallIDs 汇总会话当前挂起中的 tool_call ID。
+//
+// 两类挂起的共同点：本轮没有工具结果，且结果发生在未来——
+//   - AskUser 挂起：结果是用户的回答，由下一轮入口写成 tool 消息；
+//   - 待授权工具挂起：结果是用户授权后执行产出，由 applyPermissionAction 写入。
+//
+// 回写补齐与配对检测都要先认出它们：补齐必须跳过（否则抢占应答位），
+// 检测必须豁免（否则等待态被当作断裂回滚）。
+func suspendedToolCallIDs(s *session.Session) map[string]struct{} {
+	out := make(map[string]struct{}, 2)
+	if p := s.PeekPendingAskUser(); p != nil && p.ToolCallID != "" {
+		out[p.ToolCallID] = struct{}{}
+	}
+	if p := s.PendingPermission(); p != nil && p.ToolCallID != "" {
+		out[p.ToolCallID] = struct{}{}
+	}
+	return out
+}
+
 // findToolPairingBreak 正向扫描窗口，返回「工具调用配对断裂」时应截断到的窗口内索引。
 //
 // 配对规则（与 OpenAI 严格消息格式一致）：assistant 消息携带的 tool_calls 必须
@@ -46,11 +65,12 @@ func isToolPairingError(err error) bool {
 // 返回值是应截断到的窗口内索引（保留 window[:idx] 为完整合法对话），
 // -1 表示整个窗口内配对完整、无需修复。
 //
-// pendingAskID 是当前挂起提问的 tool_call ID（无挂起时为空）。主会话以
-// ask_user_pending 终止时，该 tool_call 的应答要等用户回答后由下一轮入口
-// 写成 tool 消息，因此「窗口末尾唯一未应答的正是 pendingAskID」是合法的
-// 等待态，不属于断裂——否则每轮入口都会把刚提出的问题连同用户输入一起回滚。
-func findToolPairingBreak(window []session.Message, pendingAskID string) int {
+// suspended 是「结果尚未产生、将由后续轮次写入」的 tool_call ID 集合，包含
+// 挂起提问与待授权工具两类。主会话以 ask_user_pending / permission_pending
+// 终止时，这些 tool_call 的应答要等用户沟通后由下一轮写入，因此「窗口末尾
+// 未应答的全是挂起项」属于合法等待态，不属于断裂——否则每轮入口都会把刚
+// 提出的问题或刚发出的授权请求连同用户输入一起回滚。
+func findToolPairingBreak(window []session.Message, suspended map[string]struct{}) int {
 	for i := 0; i < len(window); {
 		m := window[i]
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
@@ -67,9 +87,16 @@ func findToolPairingBreak(window []session.Message, pendingAskID string) int {
 				j++
 			}
 			if len(pending) > 0 {
-				// 挂起提问等待用户作答：只差这一个应答，且其后没有任何消息。
-				if pendingAskID != "" && j == len(window) {
-					if _, ok := pending[pendingAskID]; ok && len(pending) == 1 {
+				// 挂起等待用户回应：缺的全是挂起项，且其后没有任何消息。
+				if len(suspended) > 0 && j == len(window) {
+					all := true
+					for id := range pending {
+						if _, ok := suspended[id]; !ok {
+							all = false
+							break
+						}
+					}
+					if all {
 						return -1
 					}
 				}
@@ -101,11 +128,7 @@ func findToolPairingBreak(window []session.Message, pendingAskID string) int {
 //     已随坏轮次回滚，调用方据此判定挂起授权/挂起提问是否随之失效
 func repairToolPairingBreak(ctx context.Context, s *session.Session, logger logging.Logger) (bool, map[string]struct{}) {
 	window := s.Current()
-	pendingAskID := ""
-	if p := s.PeekPendingAskUser(); p != nil {
-		pendingAskID = p.ToolCallID
-	}
-	cut := findToolPairingBreak(window, pendingAskID)
+	cut := findToolPairingBreak(window, suspendedToolCallIDs(s))
 	if cut < 0 {
 		return false, nil
 	}
