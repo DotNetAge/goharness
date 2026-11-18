@@ -34,7 +34,9 @@ func TestFindToolPairingBreak(t *testing.T) {
 	cases := []struct {
 		name string
 		win  []session.Message
-		want int
+		// pending 是当前挂起提问的 tool_call ID（空表示无挂起提问）。
+		pending string
+		want    int
 	}{
 		{
 			name: "空窗口无需修复",
@@ -110,11 +112,47 @@ func TestFindToolPairingBreak(t *testing.T) {
 			},
 			want: 1, // asst(A,B) 缺 B，回退到 user 之后
 		},
+		{
+			name: "挂起提问等待回答：末尾孤儿不算断裂",
+			win: []session.Message{
+				pairingMsg("user", "问题", ""),
+				pairingMsg("assistant", "请选择", "", pairingTC("S", "AskUser")),
+			},
+			pending: "S",
+			want:    -1, // 应答由用户回答在下一轮写成 tool 消息
+		},
+		{
+			name: "挂起提问后已有其它消息：仍算断裂",
+			win: []session.Message{
+				pairingMsg("user", "问题", ""),
+				pairingMsg("assistant", "请选择", "", pairingTC("S", "AskUser")),
+				pairingMsg("user", "用户回答", ""),
+			},
+			pending: "S",
+			want:    1, // 应答位被 user 消息顶掉，assistant 及其后需回滚回补
+		},
+		{
+			name: "无挂起登记时末尾孤儿照旧判断裂",
+			win: []session.Message{
+				pairingMsg("user", "问题", ""),
+				pairingMsg("assistant", "请选择", "", pairingTC("S", "AskUser")),
+			},
+			want: 1,
+		},
+		{
+			name: "挂起编号不匹配时末尾孤儿判断裂",
+			win: []session.Message{
+				pairingMsg("user", "问题", ""),
+				pairingMsg("assistant", "", "", pairingTC("A", "Grep")),
+			},
+			pending: "S",
+			want:    1,
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := findToolPairingBreak(c.win); got != c.want {
+			if got := findToolPairingBreak(c.win, c.pending); got != c.want {
 				t.Fatalf("findToolPairingBreak() = %d, want %d", got, c.want)
 			}
 		})

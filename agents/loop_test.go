@@ -821,3 +821,67 @@ func TestEffectiveExcludeTools(t *testing.T) {
 		t.Error("子会话的普通工具不应被屏蔽")
 	}
 }
+
+// TestExecAskUserPending_回答不产生重复工具应答 复现并防止 v0.2.78 引入的回归：
+// 主会话 AskUser 挂起时若回写补齐「执行失败」假回执，用户回答再以同一
+// tool_call_id 写成 tool 消息，同一调用被应答两次，接口以 400 拒答整个会话
+//（"Messages with role 'tool' must be a response to a preceding message with
+// 'tool_calls'"）。回归要求：挂起轮不补回执，回答到达后恰好一条 tool 应答。
+func TestExecAskUserPending_回答不产生重复工具应答(t *testing.T) {
+	t.Parallel()
+	askUser := newFakeTool("AskUser", nil)
+	askUser.execute = func(_ context.Context, params map[string]any) (any, error) {
+		return "已提问", nil
+	}
+	rt := newTestRuntimeWithTools(t, []tools.FuncTool{askUser})
+	sess := newTestSession(t)
+
+	// 第一轮：LLM 调用 AskUser，本轮以 ask_user_pending 终止。
+	rt.llmClient = newMockLLMClient(toolCallStream("call_1", "AskUser", `{"question":"选哪个？"}`, "tool_calls"))
+	if _, err := rt.Ask("test-agent", "先问我", sess).Run(); err != nil {
+		t.Fatalf("第一轮期望无错误，得到: %v", err)
+	}
+
+	if p := sess.PeekPendingAskUser(); p == nil || p.ToolCallID != "call_1" {
+		t.Fatalf("期望登记挂起提问 call_1，得到: %+v", p)
+	}
+
+	// 第二轮：用户回答，LLM 正常收尾。
+	// 注：真实内核挂起时不产出工具结果（回写层也不补，见
+	// TestWriteBack_挂起提问不补失败回执）；此处 fake 工具会返回字符串，
+	// 恰好构成「历史里已有该调用应答」的场景，用于验证写入闸门——回答必须
+	// 降级为 user 消息，而不是写第二条同 ID 的 tool 应答。
+	rt.llmClient = newMockLLMClient(responseStream("好的，就按这个来", "stop"))
+	if _, err := rt.Ask("test-agent", "选 A", sess).Run(); err != nil {
+		t.Fatalf("第二轮期望无错误，得到: %v", err)
+	}
+
+	toolResults := 0
+	for _, m := range sess.Current() {
+		if m.Role == "tool" && m.ToolCallID == "call_1" {
+			toolResults++
+		}
+	}
+	if toolResults != 1 {
+		t.Fatalf("call_1 应恰好有一条工具应答，实际 %d 条，窗口: %+v", toolResults, rolesOf(sess.Current()))
+	}
+	if cut := findToolPairingBreak(sess.Current(), ""); cut >= 0 {
+		t.Fatalf("回答落盘后窗口不应存在配对断裂，cut=%d，窗口: %+v", cut, rolesOf(sess.Current()))
+	}
+}
+
+// rolesOf 把会话窗口压成「role:tool_call_id」便于断言失败时排查。
+func rolesOf(msgs []session.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		s := m.Role
+		if m.ToolCallID != "" {
+			s += ":" + m.ToolCallID
+		}
+		for _, tc := range m.ToolCalls {
+			s += "+" + tc.ID
+		}
+		out = append(out, s)
+	}
+	return out
+}

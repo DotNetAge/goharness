@@ -638,18 +638,39 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 	// 合规性：这是**文末追加**，没有改动任何已落库的历史，符合「上下文只能
 	// 从文末插入」的约束。
 	if len(group) > 0 && len(groupPending) > 0 {
-		for callID := range groupPending {
-			group = append(group, session.Message{
-				Role:       "tool",
-				ToolCallID: callID,
-				Content: "该工具调用未返回结果（执行被中断或结果丢失），" +
-					"本次调用视为执行失败。请判断是否需要重试，或改用其他方式继续完成原任务。",
-				Timestamp: time.Now().Unix(),
-			})
+		// 挂起提问的 tool_call 不补回执：主会话以 ask_user_pending 终止时，
+		// AskUser 的「结果」在协议上就是用户的回答，由下一轮入口写成该 ID 的
+		// tool 消息。此处若补一条「执行失败」，等于抢先占用应答位；用户回答
+		// 到达后再写第二条同 ID 的 tool 消息，接口即以
+		// "Messages with role 'tool' must be a response to a preceding message
+		// with 'tool_calls'" 拒答，且该序列落在历史里，会话此后每次请求都 400。
+		// 因此这里让组以「assistant 无该 tool 应答」的合法等待态落盘，
+		// 配对由下一轮的用户回答收口（检测器对挂起孤儿有豁免）。
+		pendingAskID := ""
+		if p := br.b.session.PeekPendingAskUser(); p != nil {
+			pendingAskID = p.ToolCallID
 		}
-		br.rt.logger.Warn("回写补齐缺失的工具结果（标记为执行失败，交由 LLM 重试）",
-			"session", br.sessionID,
-			"filled_tool_calls", len(groupPending))
+		if pendingAskID != "" {
+			if _, holding := groupPending[pendingAskID]; holding {
+				delete(groupPending, pendingAskID)
+				br.rt.logger.Info("挂起提问的工具调用不补回执，等待用户回答后补全",
+					"session", br.sessionID, "tool_call_id", pendingAskID)
+			}
+		}
+		if len(groupPending) > 0 {
+			for callID := range groupPending {
+				group = append(group, session.Message{
+					Role:       "tool",
+					ToolCallID: callID,
+					Content: "该工具调用未返回结果（执行被中断或结果丢失），" +
+						"本次调用视为执行失败。请判断是否需要重试，或改用其他方式继续完成原任务。",
+					Timestamp: time.Now().Unix(),
+				})
+			}
+			br.rt.logger.Warn("回写补齐缺失的工具结果（标记为执行失败，交由 LLM 重试）",
+				"session", br.sessionID,
+				"filled_tool_calls", len(groupPending))
+		}
 		groupPending = nil
 	}
 	if len(group) > 0 {

@@ -442,6 +442,31 @@ func (s *Session) Current() []Message {
 	return copyMessages(s.messages[s.cursor:])
 }
 
+// HasToolResult 报告活跃窗口内是否已存在指定 tool_call_id 的工具结果消息。
+//
+// 用途是写入闸门：OpenAI 严格契约要求每个 tool_call 至多被一条 tool 消息
+// 应答，多出来的那条会被接口以 400 拒答（"Messages with role 'tool' must be
+// a response to a preceding message with 'tool_calls'"），且该错误一旦写进
+// 历史，之后每一次请求都会带上它，会话即报废。
+//
+// 只看窗口（messages[cursor:]）而不看全部历史：游标之前的消息不再发送，
+// 不会触发接口校验。
+func (s *Session) HasToolResult(toolCallID string) bool {
+	if toolCallID == "" {
+		return false
+	}
+	s.ensureLoaded(context.Background())
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := len(s.messages) - 1; i >= s.cursor; i-- {
+		if s.messages[i].Role == "tool" && s.messages[i].ToolCallID == toolCallID {
+			return true
+		}
+	}
+	return false
+}
+
 // Cursor 返回活跃窗口的起始偏移量，即完整消息数组中当前窗口的起点索引。
 // 当前窗口定义为 messages[cursor:]。当需要把「基于窗口内容计算出的索引」
 // 转换为对完整消息数组的绝对索引时（如按窗口检测结果执行 Truncate），

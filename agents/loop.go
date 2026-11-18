@@ -92,7 +92,17 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 		ts := time.Now().Unix()
 		msg := session.Message{Role: "user", Content: b.question, Images: b.images, Timestamp: ts}
 		if pendingAsk := b.session.TakePendingAskUser(); pendingAsk != nil && pendingAsk.ToolCallID != "" {
-			msg = session.Message{Role: "tool", ToolCallID: pendingAsk.ToolCallID, Content: b.question, Timestamp: ts}
+			// 写入闸门：同一 tool_call 至多允许一条 tool 应答。历史里已经存在
+			// 该 ID 的应答时（旧版补齐逻辑写过「执行失败」假回执），回答再以
+			// tool 身份写入就会制造第二条，接口以 400 拒答整个会话；此时退回
+			// user 消息——LLM 只是少了一次「这是提问的回答」的结构提示，内容
+			// 仍然完整可见，代价远小于会话报废。
+			if b.session.HasToolResult(pendingAsk.ToolCallID) {
+				rt.logger.Warn("挂起提问已有工具应答，回答降级为 user 消息（避免重复应答）",
+					"session", sid, "tool_call_id", pendingAsk.ToolCallID)
+			} else {
+				msg = session.Message{Role: "tool", ToolCallID: pendingAsk.ToolCallID, Content: b.question, Timestamp: ts}
+			}
 		}
 		if err := b.session.Append(ctx, msg); err != nil {
 			rt.logger.Error("追加用户消息失败", err, "session", sid)

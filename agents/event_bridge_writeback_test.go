@@ -12,6 +12,7 @@ import (
 	"github.com/DotNetAge/goagent"
 	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/events"
+	"github.com/DotNetAge/goharness/session"
 )
 
 func TestWriteBackNewMessagesAttachesUsagePerAssistant(t *testing.T) {
@@ -192,5 +193,57 @@ func TestWriteBackNewMessagesEstimatesMissingUsage(t *testing.T) {
 	}
 	if len(br.callUsageByIter) != 0 {
 		t.Errorf("回写后已消费的迭代用量条目应删除, got %v", br.callUsageByIter)
+	}
+}
+
+// TestWriteBack_挂起提问不补失败回执 固化 v0.2.78 回归的根因修复：
+// 主会话 AskUser 挂起时该调用的「结果」是用户的回答，回写层若补一条
+// 「执行失败」假回执会占用应答位，回答到达后同一 tool_call_id 出现两条
+// tool 消息，接口以 400 拒答整个会话。要求：assistant 照常落盘，不补 tool。
+func TestWriteBack_挂起提问不补失败回执(t *testing.T) {
+	store := &groupRecordStore{fakeSessionStore: newFakeSessionStore()}
+	msgs := []gochatcore.Message{
+		{
+			Role: gochatcore.RoleAssistant,
+			Content: []gochatcore.ContentBlock{
+				{Type: gochatcore.ContentTypeText, Text: "选哪个方案？"},
+			},
+			ToolCalls: []gochatcore.ToolCall{{ID: "ask_1", Name: "AskUser"}},
+		},
+	}
+
+	br, s := newGroupTestBridge(t, store, msgs)
+	s.SetPendingAskUser(session.PendingAskUser{ToolCallID: "ask_1", Question: "选哪个方案？"})
+	br.writeBackNewMessages(s, 0)
+
+	got := s.Current()
+	if len(got) != 1 || got[0].Role != "assistant" {
+		t.Fatalf("挂起轮应只落盘 assistant 一条，实际: %+v", got)
+	}
+	if s.HasToolResult("ask_1") {
+		t.Fatal("挂起提问不应补工具回执，否则用户回答会形成重复应答")
+	}
+	if p := s.PeekPendingAskUser(); p == nil {
+		t.Fatal("回写不得消费挂起登记")
+	}
+}
+
+// TestWriteBack_非挂起缺失仍补失败回执 确认兜底行为未被上述例外改坏：
+// 真正丢失结果的工具调用仍补一条失败回执，让 LLM 自行重试。
+func TestWriteBack_非挂起缺失仍补失败回执(t *testing.T) {
+	store := &groupRecordStore{fakeSessionStore: newFakeSessionStore()}
+	msgs := []gochatcore.Message{
+		{
+			Role:      gochatcore.RoleAssistant,
+			ToolCalls: []gochatcore.ToolCall{{ID: "call_1", Name: "Bash"}, {ID: "ask_9", Name: "AskUser"}},
+		},
+	}
+
+	br, s := newGroupTestBridge(t, store, msgs)
+	s.SetPendingAskUser(session.PendingAskUser{ToolCallID: "ask_1"}) // 与本次调用无关
+	br.writeBackNewMessages(s, 0)
+
+	if !s.HasToolResult("call_1") || !s.HasToolResult("ask_9") {
+		t.Fatalf("无挂起登记的缺失结果必须补齐，窗口: %+v", s.Current())
 	}
 }

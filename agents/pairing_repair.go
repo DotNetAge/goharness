@@ -15,16 +15,19 @@ import (
 const toolPairingRepairNotice = "（系统提示）检测到上一轮的工具调用序列异常，已回滚该轮。请基于当前上下文重新规划并继续完成原任务。"
 
 // isToolPairingError 判断错误是否属于「工具调用配对不完整」类错误。
-// 这类错误来自 OpenAI 兼容接口的 400 响应：assistant 消息声明了 tool_calls，
-// 但后续缺少与之对应的 tool 消息。错误信息特征为
-// "insufficient tool messages following tool_calls message"。
+// 这类错误来自 OpenAI 兼容接口的 400 响应，两种典型文案：
+//   - 缺少 tool 消息："insufficient tool messages following tool_calls message" /
+//     "must be followed by tool messages"；
+//   - tool 消息无主（重复应答或前置 assistant 被回滚）：
+//     "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"。
 func isToolPairingError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "insufficient tool messages") ||
-		strings.Contains(msg, "must be followed by tool messages")
+		strings.Contains(msg, "must be followed by tool messages") ||
+		strings.Contains(msg, "must be a response to a preceding message with")
 }
 
 // findToolPairingBreak 正向扫描窗口，返回「工具调用配对断裂」时应截断到的窗口内索引。
@@ -42,7 +45,12 @@ func isToolPairingError(err error) bool {
 //
 // 返回值是应截断到的窗口内索引（保留 window[:idx] 为完整合法对话），
 // -1 表示整个窗口内配对完整、无需修复。
-func findToolPairingBreak(window []session.Message) int {
+//
+// pendingAskID 是当前挂起提问的 tool_call ID（无挂起时为空）。主会话以
+// ask_user_pending 终止时，该 tool_call 的应答要等用户回答后由下一轮入口
+// 写成 tool 消息，因此「窗口末尾唯一未应答的正是 pendingAskID」是合法的
+// 等待态，不属于断裂——否则每轮入口都会把刚提出的问题连同用户输入一起回滚。
+func findToolPairingBreak(window []session.Message, pendingAskID string) int {
 	for i := 0; i < len(window); {
 		m := window[i]
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
@@ -59,6 +67,12 @@ func findToolPairingBreak(window []session.Message) int {
 				j++
 			}
 			if len(pending) > 0 {
+				// 挂起提问等待用户作答：只差这一个应答，且其后没有任何消息。
+				if pendingAskID != "" && j == len(window) {
+					if _, ok := pending[pendingAskID]; ok && len(pending) == 1 {
+						return -1
+					}
+				}
 				// 断裂：tool_calls 未被紧邻的 tool 消息完全覆盖，回退到
 				// 该 assistant 之前最近的 user 消息之后。
 				cut := i
@@ -87,7 +101,11 @@ func findToolPairingBreak(window []session.Message) int {
 //     已随坏轮次回滚，调用方据此判定挂起授权/挂起提问是否随之失效
 func repairToolPairingBreak(ctx context.Context, s *session.Session, logger logging.Logger) (bool, map[string]struct{}) {
 	window := s.Current()
-	cut := findToolPairingBreak(window)
+	pendingAskID := ""
+	if p := s.PeekPendingAskUser(); p != nil {
+		pendingAskID = p.ToolCallID
+	}
+	cut := findToolPairingBreak(window, pendingAskID)
 	if cut < 0 {
 		return false, nil
 	}

@@ -109,6 +109,21 @@ func (s *Session) TakePendingAskUser() *PendingAskUser {
 	return p
 }
 
+// PeekPendingAskUser 只读查看挂起的提问（不清除登记），返回副本。
+// 与 TakePendingAskUser 的区别：回写路径需要判断「某个 tool_call 是否仍在
+// 等待用户作答」，判断本身不能消耗登记——消耗点只有一个，即下一轮入口把
+// 用户回答写成该 tool_call 的 tool 消息。
+func (s *Session) PeekPendingAskUser() *PendingAskUser {
+	s.ensureLoaded(context.Background())
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if s.pendingAskUser == nil {
+		return nil
+	}
+	p := *s.pendingAskUser
+	return &p
+}
+
 // HasPendingAskUser 报告会话当前是否存在等待回答的提问。
 func (s *Session) HasPendingAskUser() bool {
 	s.ensureLoaded(context.Background())
