@@ -6,7 +6,7 @@ toolchain go1.26.11
 
 require (
 	github.com/DotNetAge/goagent v0.1.3
-	github.com/DotNetAge/gochat v0.2.14
+	github.com/DotNetAge/gochat v0.2.15
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/bogdanfinn/fhttp v0.6.8
