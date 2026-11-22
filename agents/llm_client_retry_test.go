@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -232,5 +233,38 @@ func TestPaymentRequiredNotRetryable(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("402 不应重试，build 应只调用 1 次，实际 %d 次", calls)
+	}
+}
+
+// TestShouldAutoResume 验证 loop 层中途断流自动续跑的判定边界。
+func TestShouldAutoResume(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	deadlined, deadline := context.WithTimeout(context.Background(), time.Nanosecond)
+	deadline()
+	<-deadlined.Done()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil 不续跑", nil, false},
+		{"body closed 续跑", errors.New("http2: response body closed"), true},
+		{"connection reset 续跑", errors.New("read tcp: connection reset by peer"), true},
+		{"eof 续跑", errors.New("unexpected EOF"), true},
+		{"ctx 取消不续跑", canceled.Err(), false},
+		{"ctx 超时不续跑", deadlined.Err(), false},
+		{"400 客户端错误不续跑", apiErr(400, `{"error":{"message":"bad request"}}`), false},
+		{"402 欠费不续跑", apiErr(402, `{"error":{"message":"insufficient balance"}}`), false},
+		{"503 服务端错误兜底续跑", apiErr(503, `{"error":{"message":"unavailable"}}`), true},
+		{"未知普通错误不续跑", errors.New("something went wrong"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAutoResume(tt.err); got != tt.want {
+				t.Errorf("shouldAutoResume(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }

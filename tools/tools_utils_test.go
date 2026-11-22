@@ -130,3 +130,44 @@ func TestToFloat64(t *testing.T) {
 		})
 	}
 }
+
+func TestGetFilePath_AllAliases(t *testing.T) {
+	const want = "./src/main.go"
+	for _, key := range []string{"filePath", "file_path", "filepath", "path"} {
+		got, ok := GetFilePath(map[string]any{key: want})
+		if !ok || got != want {
+			t.Errorf("GetFilePath(%q) = %q, %v; want %q, true", key, got, ok, want)
+		}
+	}
+}
+
+func TestGetFilePath_MissingAndEmpty(t *testing.T) {
+	if _, ok := GetFilePath(map[string]any{}); ok {
+		t.Error("GetFilePath empty map should miss")
+	}
+	if _, ok := GetFilePath(map[string]any{"filePath": "   "}); ok {
+		t.Error("GetFilePath whitespace-only should miss")
+	}
+	if _, ok := GetFilePath(map[string]any{"file_path": 42}); ok {
+		t.Error("GetFilePath non-string should miss")
+	}
+}
+
+func TestValidateFilePath_AllAliases(t *testing.T) {
+	const want = "./src/main.go"
+	for _, key := range []string{"filePath", "file_path", "filepath", "path"} {
+		got, err := ValidateFilePath("Read", map[string]any{key: want})
+		if err != nil || got != want {
+			t.Errorf("ValidateFilePath(%q) = %q, %v; want %q, nil", key, got, err, want)
+		}
+	}
+}
+
+func TestValidateFilePath_Errors(t *testing.T) {
+	if _, err := ValidateFilePath("Read", map[string]any{}); err == nil {
+		t.Error("ValidateFilePath missing key should error")
+	}
+	if _, err := ValidateFilePath("Read", map[string]any{"filePath": 42}); err == nil {
+		t.Error("ValidateFilePath wrong type should error")
+	}
+}

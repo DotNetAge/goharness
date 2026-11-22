@@ -3,7 +3,9 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -17,6 +19,56 @@ import (
 // 授权挂起恢复 / 压缩请求构造）引用的循环辅助函数。
 // 旧核 executor.go 的循环骨架与专属辅助已随换核拆除，本文件承接其中
 // 与引擎无关、纯粹服务于循环语义的部分。
+
+// classifyStreamError 标注流式调用失败的错误类别，仅用于诊断日志区分
+// 「我方取消/超时」与「对端断流/body 关闭竞态」，不参与重试判定。
+func classifyStreamError(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "ctx_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "ctx_deadline"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "net_timeout"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "response body closed"):
+		return "body_closed"
+	case strings.Contains(lower, "connection reset") || strings.Contains(lower, "broken pipe"):
+		return "conn_reset"
+	case strings.Contains(lower, "eof"):
+		return "eof"
+	}
+	return "unknown"
+}
+
+// shouldAutoResume 判断本轮中途错误是否允许在 loop 层自动续跑。
+// 仅认可重试的网络/对端断流类；我方取消、超时、钩子错误、4xx 客户端错误不续跑。
+func shouldAutoResume(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	switch classifyStreamError(err) {
+	case "body_closed", "conn_reset", "eof", "net_timeout":
+		return true
+	}
+	// 兜底：gochat 判定的可重试网络/5xx（429/502/503/504 等）。
+	return gochatcore.IsRetryableError(err)
+}
+
+// autoResumeDelay 计算第 attempt 次（从 1 起）自动续跑前的退避时长。
+func autoResumeDelay(attempt int) time.Duration {
+	return gochatcore.ExponentialBackoff(attempt-1, autoResumeBackoffBase)
+}
 
 // llmCallTimeout 决定单次 LLM 调用的超时预算，优先级从高到低：
 //  1. 模型配置的 RequestTimeout（秒）：按模型显式配置，适配慢模型（思考/首 token 耗时远超默认值）；

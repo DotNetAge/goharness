@@ -72,49 +72,56 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 	// ── 3. 权限魔法词解析（挂起恢复路径：mindx 以魔法词重新 Ask 进入）──
 	// 挂起授权已在上轮保存到 session.PendingPermission；Allow 执行挂起工具、
 	// Deny 合成拒绝结果，工具结果消息追加后由下方 goagent 引擎接续思考。
-	magicHandled, magicRouted := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, rt.logger)
-	if magicHandled {
+	switch {
+	case b.reuseHistory:
+		// 续跑模式（失败重试）：不追加新 user 消息、不消费魔法词，直接以当前
+		// 会话窗口驱动循环；question 置空避免步骤 4 重复注入。
 		b.question = ""
-		if magicRouted {
-			// 纯路由到子会话：主会话没有新信息需要消化，直接结束本轮
-			b.resultTerminationReason = "magicword_consumed"
-			b.resultIterations = 0
-			b.resultDuration = time.Since(start)
-			return b.runResult(), nil
-		}
-	} else {
-		// 用户消息持久化 + UserMessageSaved 事件（产品级事件，前端实时回收本轮依赖）。
-		// 主会话挂起提问恢复：上一轮以 ask_user_pending 终止时登记了挂起提问，
-		// 用户的本条消息即回答（ask_user_pending 产品语义），以 AskUser 工具结果
-		// 消息补全协议（assistant.tool_calls 与 tool 消息严格配对，提问-回答
-		// 上下文对 LLM 完整可见）；缺失 ToolCallID 时（异常兜底）退回旧的
-		// user 消息注入方式。
-		ts := time.Now().Unix()
-		msg := session.Message{Role: "user", Content: b.question, Images: b.images, Timestamp: ts}
-		if pendingAsk := b.session.TakePendingAskUser(); pendingAsk != nil && pendingAsk.ToolCallID != "" {
-			// 写入闸门：同一 tool_call 至多允许一条 tool 应答。历史里已经存在
-			// 该 ID 的应答时（旧版补齐逻辑写过「执行失败」假回执），回答再以
-			// tool 身份写入就会制造第二条，接口以 400 拒答整个会话；此时退回
-			// user 消息——LLM 只是少了一次「这是提问的回答」的结构提示，内容
-			// 仍然完整可见，代价远小于会话报废。
-			if b.session.HasToolResult(pendingAsk.ToolCallID) {
-				rt.logger.Warn("挂起提问已有工具应答，回答降级为 user 消息（避免重复应答）",
-					"session", sid, "tool_call_id", pendingAsk.ToolCallID)
-			} else {
-				msg = session.Message{Role: "tool", ToolCallID: pendingAsk.ToolCallID, Content: b.question, Timestamp: ts}
-			}
-		}
-		if err := b.session.Append(ctx, msg); err != nil {
-			rt.logger.Error("追加用户消息失败", err, "session", sid)
-			emit(events.Error, fmt.Sprintf("追加用户消息失败: %v", err))
-			b.resultErr = fmt.Errorf("追加用户消息失败: %w", err)
-			b.resultTerminationReason = "error"
-			return b.runResult(), b.resultErr
-		}
-		emit(events.UserMessageSaved, events.UserMessageSavedData{Timestamp: ts})
-		if msg.Role == "tool" {
-			// 回答已作为 AskUser 工具结果注入会话，question 置空避免步骤 4 重复注入
+	default:
+		magicHandled, magicRouted := rt.resolvePermissionMagicWord(ctx, b, toolExec, emit, rt.logger)
+		if magicHandled {
 			b.question = ""
+			if magicRouted {
+				// 纯路由到子会话：主会话没有新信息需要消化，直接结束本轮
+				b.resultTerminationReason = "magicword_consumed"
+				b.resultIterations = 0
+				b.resultDuration = time.Since(start)
+				return b.runResult(), nil
+			}
+		} else {
+			// 用户消息持久化 + UserMessageSaved 事件（产品级事件，前端实时回收本轮依赖）。
+			// 主会话挂起提问恢复：上一轮以 ask_user_pending 终止时登记了挂起提问，
+			// 用户的本条消息即回答（ask_user_pending 产品语义），以 AskUser 工具结果
+			// 消息补全协议（assistant.tool_calls 与 tool 消息严格配对，提问-回答
+			// 上下文对 LLM 完整可见）；缺失 ToolCallID 时（异常兜底）退回旧的
+			// user 消息注入方式。
+			ts := time.Now().Unix()
+			msg := session.Message{Role: "user", Content: b.question, Images: b.images, Timestamp: ts}
+			if pendingAsk := b.session.TakePendingAskUser(); pendingAsk != nil && pendingAsk.ToolCallID != "" {
+				// 写入闸门：同一 tool_call 至多允许一条 tool 应答。历史里已经存在
+				// 该 ID 的应答时（旧版补齐逻辑写过「执行失败」假回执），回答再以
+				// tool 身份写入就会制造第二条，接口以 400 拒答整个会话；此时退回
+				// user 消息——LLM 只是少了一次「这是提问的回答」的结构提示，内容
+				// 仍然完整可见，代价远小于会话报废。
+				if b.session.HasToolResult(pendingAsk.ToolCallID) {
+					rt.logger.Warn("挂起提问已有工具应答，回答降级为 user 消息（避免重复应答）",
+						"session", sid, "tool_call_id", pendingAsk.ToolCallID)
+				} else {
+					msg = session.Message{Role: "tool", ToolCallID: pendingAsk.ToolCallID, Content: b.question, Timestamp: ts}
+				}
+			}
+			if err := b.session.Append(ctx, msg); err != nil {
+				rt.logger.Error("追加用户消息失败", err, "session", sid)
+				emit(events.Error, fmt.Sprintf("追加用户消息失败: %v", err))
+				b.resultErr = fmt.Errorf("追加用户消息失败: %w", err)
+				b.resultTerminationReason = "error"
+				return b.runResult(), b.resultErr
+			}
+			emit(events.UserMessageSaved, events.UserMessageSavedData{Timestamp: ts})
+			if msg.Role == "tool" {
+				// 回答已作为 AskUser 工具结果注入会话，question 置空避免步骤 4 重复注入
+				b.question = ""
+			}
 		}
 	}
 
@@ -229,6 +236,7 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 	// 结果注入会话后用新 runtimeID 对同一子会话再跑——因此子会话
 	//（permissionCh / askCh 非 nil）的挂起不直接返回，而是阻塞等待后续跑。
 	var err error
+	autoResumeRetries := 0
 	for {
 		// 迭代边界增量回写：每次引擎运行开始重置回写水位与配对状态
 		//（跨运行的 completeMsgs 是重新装配的数组，旧水位无意义）
@@ -237,6 +245,34 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 
 		// 每轮回写：引擎内存对话的新增消息持久化到会话
 		bridge.writeBackNewMessages(b.session, baseLen)
+
+		// 中途断流自动续跑：可重试的网络/对端断流错误，限次退避后从现有上下文
+		// 重建引擎续跑；不追加新用户消息、不删除历史，已执行的工具结果保持落盘。
+		// 断流那一轮的 assistant 消息未进入引擎内存（round 出错即返回空消息），
+		// 半截内容不落盘，重建后上下文干净，不会重复执行已完成的工具。
+		if err != nil && shouldAutoResume(err) && autoResumeRetries < maxAutoResumeAttempts && ctx.Err() == nil {
+			autoResumeRetries++
+			delay := autoResumeDelay(autoResumeRetries)
+			rt.logger.Warn("会话中途断流，自动续跑",
+				"session", sid, "attempt", autoResumeRetries, "max", maxAutoResumeAttempts,
+				"delay_ms", delay.Milliseconds(), "err_class", classifyStreamError(err), "err", err)
+			emit(events.LLMRetry, events.LLMRetryData{
+				SessionID:   sid,
+				Provider:    rt.model.Provider,
+				Model:       rt.model.Name,
+				Attempt:     autoResumeRetries,
+				MaxAttempts: maxAutoResumeAttempts,
+				RetryAfter:  delay,
+				Error:       err.Error(),
+				Phase:       events.LLMRetryPhaseRetry,
+			})
+			if waitErr := waitRetry(ctx, delay); waitErr != nil {
+				err = waitErr
+				break
+			}
+			resumePrepare()
+			continue
+		}
 
 		// 子会话挂起编排：permissionCh 非 nil（子会话）且本轮以 permission 挂起结束
 		if bridge.suspendKind == "permission" && b.permissionCh != nil {
@@ -272,6 +308,18 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 		}
 		// 主会话挂起（permission/ask_user）或正常结束：直接终止
 		break
+	}
+
+	// 自动续跑后本轮成功收尾：消除前端重试警告。
+	if autoResumeRetries > 0 && err == nil {
+		emit(events.LLMRetry, events.LLMRetryData{
+			SessionID:   sid,
+			Provider:    rt.model.Provider,
+			Model:       rt.model.Name,
+			Attempt:     autoResumeRetries,
+			MaxAttempts: maxAutoResumeAttempts,
+			Phase:       events.LLMRetryPhaseRecovered,
+		})
 	}
 
 	answer := bridge.finalAnswer
@@ -311,7 +359,21 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 		b.resultErr = fmt.Errorf("LLM调用超时: %w", err)
 		b.resultTerminationReason = "llm_timeout"
 	case err != nil:
-		rt.logger.Error("引擎运行失败", err, "session", sid)
+		// 诊断上下文落盘：区分我方取消/超时与对端断流/body 关闭竞态。
+		// ctx_err 记录调用方上下文是否已取消；err_class 为底层错误类别标注。
+		ctxErr := ""
+		if ctx.Err() != nil {
+			ctxErr = ctx.Err().Error()
+		}
+		rt.logger.Error("引擎运行失败", err,
+			"session", sid,
+			"provider", rt.model.Provider,
+			"model", rt.model.Name,
+			"iterations", bridge.iterations,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"ctx_err", ctxErr,
+			"err_class", classifyStreamError(err),
+		)
 		emit(events.Error, fmt.Sprintf("LLM调用失败: %v", err))
 		b.resultErr = err
 		b.resultTerminationReason = "llm_error"

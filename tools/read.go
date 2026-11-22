@@ -156,8 +156,7 @@ func (r *Read) appendReadWhitelists(ctx context.Context) []string {
 //
 // 会话未注入沙箱时直接放行，由 Execute 阶段拒绝执行（配置错误，授权无意义）。
 func (r *Read) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	raw, _ := GetParam(params, "filePath")
-	filePath, _ := raw.(string)
+	filePath, _ := GetFilePath(params)
 	if filePath == "" {
 		return true, ""
 	}
@@ -406,7 +405,7 @@ func (r *Read) performRead(ctx context.Context, params map[string]any, resolvedP
 
 // Execute 编排 Read 工具执行流程：validate → authorize → perform。
 func (r *Read) Execute(ctx context.Context, params map[string]any) (any, error) {
-	path, err := ValidateRequiredString("Read", params, "filePath")
+	path, err := ValidateFilePath("Read", params)
 	if err != nil {
 		return nil, err
 	}

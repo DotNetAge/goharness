@@ -96,8 +96,7 @@ func (t *EditTool) Info() *ToolInfo {
 
 // Grant 实现 tools.PermissionRequired 接口。
 func (t *EditTool) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	raw, _ := GetParam(params, "file_path")
-	filePath, _ := raw.(string)
+	filePath, _ := GetFilePath(params)
 	if filePath == "" {
 		return true, ""
 	}
@@ -154,7 +153,7 @@ type editParams struct {
 
 // validateEditParams 从参数映射提取并验证 Edit 工具参数。
 func validateEditParams(params map[string]any) (editParams, error) {
-	filePath, err := ValidateRequiredString("Edit", params, "file_path")
+	filePath, err := ValidateFilePath("Edit", params)
 	if err != nil {
 		return editParams{}, err
 	}

@@ -825,7 +825,7 @@ func TestEffectiveExcludeTools(t *testing.T) {
 // TestExecAskUserPending_回答不产生重复工具应答 复现并防止 v0.2.78 引入的回归：
 // 主会话 AskUser 挂起时若回写补齐「执行失败」假回执，用户回答再以同一
 // tool_call_id 写成 tool 消息，同一调用被应答两次，接口以 400 拒答整个会话
-//（"Messages with role 'tool' must be a response to a preceding message with
+// （"Messages with role 'tool' must be a response to a preceding message with
 // 'tool_calls'"）。回归要求：挂起轮不补回执，回答到达后恰好一条 tool 应答。
 func TestExecAskUserPending_回答不产生重复工具应答(t *testing.T) {
 	t.Parallel()
@@ -884,4 +884,145 @@ func rolesOf(msgs []session.Message) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// TestExecAutoResumeOnBodyClosed 验证中途 body_closed 断流后自动续跑：
+// 首次断流不终止本轮，退避后从现有上下文重发，第二次成功即正常收尾；
+// 断流轮的半截 assistant 不落盘，会话历史不残留半截消息。
+func TestExecAutoResumeOnBodyClosed(t *testing.T) {
+	t.Parallel()
+	oldBase := autoResumeBackoffBase
+	autoResumeBackoffBase = time.Millisecond
+	defer func() { autoResumeBackoffBase = oldBase }()
+
+	rt := newTestRuntimeWithTools(t, nil)
+	sess := newTestSession(t)
+
+	closedStream := mockStream([]gochatcore.StreamEvent{
+		{Type: gochatcore.EventError, Err: errors.New("http2: response body closed")},
+	})
+	llm := newMockLLMClient(closedStream, responseStream("续跑后的答案", "stop"))
+	rt.llmClient = llm
+
+	rec := &eventRecorder{}
+	result, err := rt.Ask("test-agent", "问题", sess).
+		OnEvent(rec.record).
+		Run()
+
+	if err != nil {
+		t.Fatalf("自动续跑后应成功，得到: %v", err)
+	}
+	if result.TerminationReason != "completed" {
+		t.Fatalf("期望 completed，得到: %s", result.TerminationReason)
+	}
+	if result.Answer != "续跑后的答案" {
+		t.Fatalf("期望续跑答案，得到: %s", result.Answer)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("应调用 LLM 2 次（首次断流 + 一次续跑），实际 %d 次", llm.calls)
+	}
+	if !rec.has(events.LLMRetry) {
+		t.Fatal("期望收到 LLMRetry 续跑通知")
+	}
+
+	msgs := sess.Current()
+	if len(msgs) != 2 {
+		t.Fatalf("期望会话仅 user+assistant 两条（半截不落盘），实际 %d 条", len(msgs))
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != "续跑后的答案" {
+		t.Fatalf("assistant 消息应为续跑答案，得到: %+v", msgs[1])
+	}
+}
+
+// TestExecAutoResumeExhausted 验证连续断流超过自动续跑上限后终止为 llm_error，
+// 不再无限重试。
+func TestExecAutoResumeExhausted(t *testing.T) {
+	t.Parallel()
+	oldBase := autoResumeBackoffBase
+	autoResumeBackoffBase = time.Millisecond
+	defer func() { autoResumeBackoffBase = oldBase }()
+
+	rt := newTestRuntimeWithTools(t, nil)
+	sess := newTestSession(t)
+
+	// 首次 + maxAutoResumeAttempts 次续跑全部断流（每次独立流，避免复用已关闭 channel）
+	streams := make([]*gochatcore.Stream, maxAutoResumeAttempts+1)
+	for i := range streams {
+		streams[i] = mockStream([]gochatcore.StreamEvent{
+			{Type: gochatcore.EventError, Err: errors.New("http2: response body closed")},
+		})
+	}
+	llm := newMockLLMClient(streams...)
+	rt.llmClient = llm
+
+	rec := &eventRecorder{}
+	result, err := rt.Ask("test-agent", "问题", sess).
+		OnEvent(rec.record).
+		Run()
+
+	if err == nil {
+		t.Fatal("续跑耗尽后应返回错误")
+	}
+	if result.TerminationReason != "llm_error" {
+		t.Fatalf("期望 llm_error，得到: %s", result.TerminationReason)
+	}
+	if llm.calls != maxAutoResumeAttempts+1 {
+		t.Fatalf("应调用 LLM %d 次，实际 %d 次", maxAutoResumeAttempts+1, llm.calls)
+	}
+}
+
+// TestAutoResume_PreservesCompletedToolCalls 验证核心不变量：
+// 自动续跑不得重复执行已完成的工具调用。
+// 构造：第1轮 LLM 返回工具调用 → 工具执行成功落盘 → 第2轮 LLM 断流 →
+// 续跑 → 第3轮正常收尾。断言工具只执行一次。
+func TestAutoResume_PreservesCompletedToolCalls(t *testing.T) {
+	oldBase := autoResumeBackoffBase
+	autoResumeBackoffBase = time.Millisecond
+	defer func() { autoResumeBackoffBase = oldBase }()
+
+	rt := newTestRuntimeWithTools(t, nil)
+	sess := newTestSession(t)
+
+	// 第1轮：返回工具调用
+	tcStream := mockStream([]gochatcore.StreamEvent{
+		{Type: gochatcore.EventToolCall, ToolCallDeltas: []gochatcore.ToolCallDelta{
+			{Index: 0, ID: "call_1", Name: "Bash", Arguments: `{"command":"echo hi"}`},
+		}},
+		{Type: gochatcore.EventDone, FinishReason: "tool_calls"},
+	})
+	// 第2轮：断流
+	closedStream := mockStream([]gochatcore.StreamEvent{
+		{Type: gochatcore.EventError, Err: errors.New("http2: response body closed")},
+	})
+	// 第3轮：正常收尾
+	finalStream := responseStream("完成", "stop")
+
+	llm := newMockLLMClient(tcStream, closedStream, finalStream)
+	rt.llmClient = llm
+
+	rec := &eventRecorder{}
+	_, err := rt.Ask("test-agent", "问题", sess).OnEvent(rec.record).Run()
+	if err != nil {
+		t.Fatalf("续跑后应成功: %v", err)
+	}
+
+	t.Logf("LLM 调用次数: %d", llm.calls)
+	if llm.calls != 3 {
+		t.Errorf("期望 3 次 LLM 调用（工具轮+断流轮+续跑轮），实际 %d", llm.calls)
+	}
+
+	// 核心断言：工具调用消息在会话中只出现一次
+	count := 0
+	for _, m := range sess.Current() {
+		if m.Role == "tool" {
+			count++
+		}
+	}
+	t.Logf("tool 消息数: %d", count)
+	if count > 1 {
+		t.Errorf("工具结果重复落盘 %d 次，续跑不应重复执行工具", count)
+	}
+	if !rec.has(events.LLMRetry) {
+		t.Error("应收到 LLMRetry 事件")
+	}
 }

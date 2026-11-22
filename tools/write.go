@@ -73,11 +73,10 @@ func NewWriteTool() *Write {
 // Grant 实现 tools.PermissionRequired 接口。
 // 与设计保持一致：硬拒绝（敏感文件 .env/.ssh）在 Execute 中处理，不在 Grant 中重复。
 //
-// 注意：参数名必须与 ToolInfo.Parameters 定义（"filePath"）及 Execute 取参保持一致。
-// 早期版本此处误用 "file_path" 导致 Grant 永远取不到路径，安全检查被绕过（沙箱启用时同样失效）。
+// 注意：Grant 与 Execute 必须共用 GetFilePath 取路径（四别名兜底），两侧不一致会导致
+// 一侧取到路径、另一侧取不到，安全检查被绕过（沙箱启用时同样失效）。
 func (w *Write) Grant(ctx context.Context, params map[string]any) (bool, string) {
-	raw, _ := GetParam(params, "filePath")
-	filePath, _ := raw.(string)
+	filePath, _ := GetFilePath(params)
 	if filePath == "" {
 		return true, ""
 	}
@@ -139,7 +138,7 @@ type writeParams struct {
 
 // validateWriteParams 从参数映射提取并验证 Write 工具参数。
 func validateWriteParams(params map[string]any) (writeParams, error) {
-	filePath, err := ValidateRequiredString("Write", params, "filePath")
+	filePath, err := ValidateFilePath("Write", params)
 	if err != nil {
 		return writeParams{}, err
 	}

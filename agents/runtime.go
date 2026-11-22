@@ -77,6 +77,10 @@ const (
 	// 而是在工具结果中追加一段引导话术，提示大模型更换工作方式。
 	duplicateErrorThreshold = 2
 
+	// maxAutoResumeAttempts 是本轮中途断流后的额外自动续跑次数（不含首次请求）。
+	// 仅对可重试的网络/对端断流错误生效；反复断流属真实故障，交回手动重试。
+	maxAutoResumeAttempts = 5
+
 	// duplicateErrorGuideTemplate 是重复错误引导话术的模板。
 	// %s 会被替换为工具名，%d 为连续相同错误的次数。
 	// 采用第一人称自我反思格式，引导模型停下来思考目的与替代方案，
@@ -105,6 +109,10 @@ const (
 		"2. 从中断点继续推进，优先完成剩余的关键步骤；\n" +
 		"3. 若剩余工作预计仍无法在本轮内完成，请把已有成果与剩余步骤整理成简要说明作为本轮答案返回，便于后续接力。"
 )
+
+// autoResumeBackoffBase 是自动续跑退避基数，按指数退避加抖动。
+// 声明为变量以便测试注入极短退避，避免用例真实等待数百毫秒。
+var autoResumeBackoffBase = 500 * time.Millisecond
 
 // Runtime 承载运行思考循环所需的基础设施和注册表。
 // 它替代旧的 Reactor：Runtime 与 Session 一起，在避免循环架构问题的同时复现 Reactor 的全部能力。

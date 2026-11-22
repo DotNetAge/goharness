@@ -48,6 +48,40 @@ func ValidateRequiredString(toolName string, params map[string]any, key string) 
 	return str, nil
 }
 
+// filePathParamKeys 文件路径参数的全部命名别名，按优先级匹配。
+// 模型在驼峰 filePath 与蛇形 file_path 之间不固定，读取/编辑/写入工具统一兜底；
+// Grant 与 Execute 必须共用本函数，避免一侧取到路径、另一侧取不到而绕过安全检查。
+var filePathParamKeys = []string{"filePath", "file_path", "filepath", "path"}
+
+// GetFilePath 从 params 提取文件路径，兼容 filePath / file_path / filepath / path 四种命名。
+// 命中但值为空串按未命中处理。
+func GetFilePath(params map[string]any) (string, bool) {
+	for _, k := range filePathParamKeys {
+		v, ok := params[k]
+		if !ok {
+			continue
+		}
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// ValidateFilePath 校验文件路径参数存在且为非空字符串（四别名兼容）。
+// 引导文案中的规范参数名按 filePath 给出。
+func ValidateFilePath(toolName string, params map[string]any) (string, error) {
+	if s, ok := GetFilePath(params); ok {
+		return s, nil
+	}
+	for _, k := range filePathParamKeys {
+		if v, ok := params[k]; ok {
+			return "", fmt.Errorf("%s", GuideWrongParamType(toolName, "filePath", "string", v))
+		}
+	}
+	return "", fmt.Errorf("%s", GuideMissingParam(toolName, "filePath"))
+}
+
 // ValidateFileSafety 通过路径锚定与 TOCTOU 防护来校验文件访问安全性。
 // 它通过 filepath.Clean 规范化路径、解析符号链接，并确保真实路径
 // 始终位于允许的工作区边界之内。

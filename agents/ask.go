@@ -19,6 +19,11 @@ type AskBuilder struct {
 	onEvent   map[events.ReactEventType][]func(data any)
 	resultErr error
 
+	// reuseHistory 为续跑模式：不向会话追加新的 user 消息，直接以当前会话
+	// 窗口驱动一次 ReAct 循环。用于失败重试——保留本轮已完成的工具调用与
+	// 结果，仅重发失败那次 LLM 请求，不改动既有上下文。
+	reuseHistory bool
+
 	// onAnyEvent 在执行循环发射每个 ReactEvent 时触发（先于类型特定处理器 onEvent）。
 	// daemon 用它跟踪跨子智能体转发事件中的 agent_name。
 	onAnyEvent []func(events.ReactEvent)
@@ -333,6 +338,13 @@ func (b *AskBuilder) WithImages(imgs []session.ImageBlock) *AskBuilder {
 	if len(imgs) > 0 {
 		b.images = append(b.images, imgs...)
 	}
+	return b
+}
+
+// ReuseHistory 开启续跑模式：不追加新的 user 消息，直接以当前会话窗口
+// 驱动一次循环。question 与 images 在该模式下不参与持久化。
+func (b *AskBuilder) ReuseHistory() *AskBuilder {
+	b.reuseHistory = true
 	return b
 }
 
