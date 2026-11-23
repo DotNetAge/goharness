@@ -486,6 +486,7 @@ func buildRunScriptInfo(platform Platform) *ToolInfo {
 			{
 				Name:        "args",
 				Type:        "array",
+				Items:       &ParameterItems{Type: "string", Description: "单个命令行参数"},
 				Description: "传递给脚本的额外参数。",
 				Required:    false,
 			},

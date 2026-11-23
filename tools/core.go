@@ -139,4 +139,19 @@ type Parameter struct {
 	// Enum 是允许的取值枚举列表。
 	// 如果设置，参数值必须是其中之一。
 	Enum []any `json:"enum" yaml:"enum"`
+
+	// Items 是数组参数的元素 schema（JSON Schema 的 items 关键字）。
+	// 仅在 Type 为 array 时生效；不设置时生成的 schema 不带 items。
+	// 之所以要显式建模：只声明 type=array 而不声明元素类型时，模型会自行
+	// 决定元素形状（常见是把字符串选项写成 {label, description} 对象），
+	// 工具侧再按 []string 解析就会静默丢数据。
+	Items *ParameterItems `json:"items,omitempty" yaml:"items,omitempty"`
+}
+
+// ParameterItems 描述数组参数的元素类型。
+// 对齐 JSON Schema 的 items 子 schema：type + description + enum。
+type ParameterItems struct {
+	Type        string `json:"type" yaml:"type"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Enum        []any  `json:"enum,omitempty" yaml:"enum,omitempty"`
 }

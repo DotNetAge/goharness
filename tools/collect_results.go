@@ -80,8 +80,8 @@ func (t *CollectResultsTool) Info() *ToolInfo {
 		Tags:         []string{"orchestration", "collect", "result"},
 		IsIdempotent: true,
 		Parameters: []Parameter{
-			{Name: "task_ids", Type: "array", Description: "要收割结果的子任务跟踪句柄数组（来自 SubAgent 受理回执）。", Required: true},
-			{Name: "session_ids", Type: "array", Description: "可选：与 task_ids 一一对应的子代理会话 ID 数组，用于跨重启恢复结果。", Required: false},
+			{Name: "task_ids", Type: "array", Items: &ParameterItems{Type: "string", Description: "子任务跟踪句柄"}, Description: "要收割结果的子任务跟踪句柄数组（来自 SubAgent 受理回执）。", Required: true},
+			{Name: "session_ids", Type: "array", Items: &ParameterItems{Type: "string", Description: "子代理会话 ID"}, Description: "可选：与 task_ids 一一对应的子代理会话 ID 数组，用于跨重启恢复结果。", Required: false},
 		},
 	}
 }

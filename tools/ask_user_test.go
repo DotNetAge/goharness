@@ -35,6 +35,28 @@ func TestAskUser_Info(t *testing.T) {
 	}
 }
 
+// TestAskUser_OptionsDeclareStringItems 验证 options 是字符串数组：
+// schema 必须带 items.type=string，否则模型会自由发挥成对象。
+func TestAskUser_OptionsDeclareStringItems(t *testing.T) {
+	info := NewAskUserTool().Info()
+	for _, p := range info.Parameters {
+		if p.Name != "options" {
+			continue
+		}
+		if p.Type != "array" {
+			t.Fatalf("options type = %q, want array", p.Type)
+		}
+		if p.Items == nil || p.Items.Type != "string" {
+			t.Fatalf("options items = %#v, want string schema", p.Items)
+		}
+		if !strings.Contains(p.Description, "字符串") {
+			t.Fatalf("options description should say 字符串: %q", p.Description)
+		}
+		return
+	}
+	t.Fatal("options parameter not found")
+}
+
 func TestAskUser_ExecuteWithoutAnswers(t *testing.T) {
 	tool := NewAskUserTool()
 

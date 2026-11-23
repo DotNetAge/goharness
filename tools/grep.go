@@ -84,6 +84,7 @@ func (t *GrepTool) Info() *ToolInfo {
 				Type:        "string",
 				Description: "输出格式：'content'（匹配行，可带上下文）、'files_with_matches'（仅文件路径）、'count'（每个文件的匹配计数）。默认值：'content'。",
 				Required:    false,
+				Enum:        []any{"content", "files_with_matches", "count"},
 			},
 			{
 				Name:        "ignore_case",

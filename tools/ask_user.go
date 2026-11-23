@@ -51,7 +51,8 @@ func NewAskUserTool() FuncTool {
 				{
 					Name:        "options",
 					Type:        "array",
-					Description: "可选的答案选项列表（2-4 项）。如果您推荐特定选项，请在其标签末尾添加\"（推荐）\"。开放式问题可省略。",
+					Items:       &ParameterItems{Type: "string", Description: "单个选项的文字标签"},
+					Description: "可选的文字答案选项（字符串）列表（2-4 项）。如果您推荐特定选项，请在其标签末尾添加\"（推荐）\"。开放式问题可省略。",
 					Required:    false,
 				},
 				{

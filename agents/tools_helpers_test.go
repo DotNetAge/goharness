@@ -146,10 +146,27 @@ func TestBuildAskUserPendingData(t *testing.T) {
 	assert.Equal(t, []string{"a", "b", "c"}, data.Questions[0].Options)
 }
 
+// TestBuildAskUserPendingDataObjectOptions 验证对象选项兼容：
+// 模型若传 {label, description}，不能静默丢掉。
+func TestBuildAskUserPendingDataObjectOptions(t *testing.T) {
+	args := map[string]any{
+		"question":     "choose one",
+		"multi_select": true,
+		"options": []any{
+			map[string]any{"label": "A", "description": "first"},
+			map[string]any{"text": "B"},
+		},
+	}
+	data := buildAskUserPendingData(args)
+	require.Len(t, data.Questions, 1)
+	assert.True(t, data.Questions[0].MultiSelect)
+	assert.Equal(t, []string{"A", "B"}, data.Questions[0].Options)
+}
+
 // TestBuildParamSchema 验证参数 schema 构造。
 func TestBuildParamSchema(t *testing.T) {
 	params := []tools.Parameter{
-		{Name: "name", Type: "string", Description: "name desc"},
+		{Name: "name", Type: "string", Description: "name desc", Required: true},
 		{Name: "count", Type: "integer", Description: "count desc"},
 		{Name: "status", Type: "string", Description: "status desc", Enum: []any{"a", "b"}},
 	}
@@ -157,11 +174,32 @@ func TestBuildParamSchema(t *testing.T) {
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal(raw, &schema))
 
+	assert.Equal(t, []any{"name"}, schema["required"])
 	props := schema["properties"].(map[string]any)
 	assert.Equal(t, "string", props["name"].(map[string]any)["type"])
 	assert.Equal(t, "integer", props["count"].(map[string]any)["type"])
 	assert.Equal(t, []any{"a", "b"}, props["status"].(map[string]any)["enum"])
 	assert.Equal(t, "object", schema["type"])
+}
+
+// TestBuildParamSchemaArrayItems 验证数组元素 schema 输出 items。
+func TestBuildParamSchemaArrayItems(t *testing.T) {
+	params := []tools.Parameter{
+		{
+			Name:        "options",
+			Type:        "array",
+			Description: "选项",
+			Items:       &tools.ParameterItems{Type: "string", Description: "单个选项"},
+		},
+	}
+	raw := buildParamSchema(params)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	prop := schema["properties"].(map[string]any)["options"].(map[string]any)
+	assert.Equal(t, "array", prop["type"])
+	items := prop["items"].(map[string]any)
+	assert.Equal(t, "string", items["type"])
+	assert.Equal(t, "单个选项", items["description"])
 }
 
 // TestBuildParamSchemaEmpty 验证空参数返回默认 schema。

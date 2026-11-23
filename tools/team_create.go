@@ -33,8 +33,8 @@ func (t *TeamCreateTool) Info() *ToolInfo {
 			{Name: "team_name", Type: "string", Description: "团队的简短唯一名称（kebab-case）。", Required: true},
 			{Name: "description", Type: "string", Description: "团队正在做什么。", Required: true},
 			{Name: "leader", Type: "string", Description: "团队负责人代理的名称。", Required: true},
-			{Name: "members", Type: "array", Description: "将成为团队成员的代理名称数组。", Required: true},
-			{Name: "tasks", Type: "array", Description: "为团队成员创建规划条目的任务描述数组。", Required: false},
+			{Name: "members", Type: "array", Items: &ParameterItems{Type: "string", Description: "代理名称"}, Description: "将成为团队成员的代理名称数组。", Required: true},
+			{Name: "tasks", Type: "array", Items: &ParameterItems{Type: "string", Description: "任务描述"}, Description: "为团队成员创建规划条目的任务描述数组。", Required: false},
 		},
 	}
 }

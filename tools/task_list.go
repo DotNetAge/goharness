@@ -31,7 +31,7 @@ func (t *TaskListTool) Info() *ToolInfo {
 - blocked_by：阻塞此任务的任务（如果有）`,
 		Tags: []string{"task", "list", "status", "planning"},
 		Parameters: []Parameter{
-			{Name: "status_filter", Type: "string", Description: "仅显示此状态的任务（pending、in_progress、completed、cancelled）。", Required: false},
+			{Name: "status_filter", Type: "string", Description: "仅显示此状态的任务（pending、in_progress、completed、cancelled）。", Required: false, Enum: []any{"pending", "in_progress", "completed", "cancelled"}},
 			{Name: "owner_filter", Type: "string", Description: "仅显示分配给此代理的任务。", Required: false},
 		},
 	}

@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	gochatcore "github.com/DotNetAge/gochat/core"
@@ -111,6 +112,9 @@ func findAskUserInvocation(invocs []hooks.ToolCallInvocation) *hooks.ToolCallInv
 func buildAskUserPendingData(args map[string]any) events.AskUserPendingData {
 	question, _ := args["question"].(string)
 	multi, _ := args["multiSelect"].(bool)
+	if v, ok := args["multi_select"].(bool); ok {
+		multi = v
+	}
 
 	q := events.AskUserQuestion{
 		Question:    question,
@@ -118,12 +122,31 @@ func buildAskUserPendingData(args map[string]any) events.AskUserPendingData {
 	}
 	if opts, ok := args["options"].([]any); ok {
 		for _, o := range opts {
-			if s, ok := o.(string); ok {
-				q.Options = append(q.Options, s)
+			if label := askUserOptionLabel(o); label != "" {
+				q.Options = append(q.Options, label)
 			}
 		}
 	}
 	return events.NewAskUserPendingData([]events.AskUserQuestion{q})
+}
+
+// askUserOptionLabel 归一化单个选项。schema 已声明元素为 string，但历史模型
+// 或未遵守 schema 的供应商仍会传 {label, description} 对象；这里兼容对象，
+// 避免把已经给出的选项静默丢弃。
+func askUserOptionLabel(o any) string {
+	switch v := o.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		for _, key := range []string{"label", "text", "value", "name"} {
+			if s, ok := v[key].(string); ok {
+				if label := strings.TrimSpace(s); label != "" {
+					return label
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // buildParamSchema 将 Parameter 切片转换为 LLM 工具定义所需的 JSON Schema 格式。
@@ -138,7 +161,11 @@ func buildParamSchema(params []tools.Parameter) json.RawMessage {
 		"properties": map[string]any{},
 	}
 	props := schema["properties"].(map[string]any)
+	var required []string
 	for _, p := range params {
+		if p.Required {
+			required = append(required, p.Name)
+		}
 		prop := map[string]any{
 			"type":        paramTypeToJSONType(p.Type),
 			"description": p.Description,
@@ -146,7 +173,20 @@ func buildParamSchema(params []tools.Parameter) json.RawMessage {
 		if len(p.Enum) > 0 {
 			prop["enum"] = p.Enum
 		}
+		if p.Items != nil && paramTypeToJSONType(p.Type) == "array" {
+			item := map[string]any{"type": paramTypeToJSONType(p.Items.Type)}
+			if p.Items.Description != "" {
+				item["description"] = p.Items.Description
+			}
+			if len(p.Items.Enum) > 0 {
+				item["enum"] = p.Items.Enum
+			}
+			prop["items"] = item
+		}
 		props[p.Name] = prop
+	}
+	if len(required) > 0 {
+		schema["required"] = required
 	}
 	b, err := json.Marshal(schema)
 	if err != nil {
