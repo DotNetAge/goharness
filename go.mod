@@ -5,8 +5,8 @@ go 1.26
 toolchain go1.26.11
 
 require (
-	github.com/DotNetAge/goagent v0.1.3
-	github.com/DotNetAge/gochat v0.2.18
+	github.com/DotNetAge/goagent v0.1.8
+	github.com/DotNetAge/gochat v0.2.20
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/bogdanfinn/fhttp v0.6.8
@@ -46,7 +46,3 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )
-
-replace github.com/DotNetAge/goagent => ../goagent
-
-replace github.com/DotNetAge/gochat => ../gochat
