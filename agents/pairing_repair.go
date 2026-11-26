@@ -103,7 +103,7 @@ func findToolPairingBreak(window []session.Message, suspended map[string]struct{
 				// 断裂：tool_calls 未被紧邻的 tool 消息完全覆盖，回退到
 				// 该 assistant 之前最近的 user 消息之后。
 				cut := i
-				for cut > 0 && window[cut-1].Role != "user" {
+				for cut > 0 && !window[cut-1].IsRoundAnchor() {
 					cut--
 				}
 				return cut
@@ -141,7 +141,9 @@ func repairToolPairingBreak(ctx context.Context, s *session.Session, logger logg
 		for _, tc := range m.ToolCalls {
 			removedTCs[tc.ID] = struct{}{}
 		}
-		if m.Role == "user" {
+		// 只回补真实用户提问：工具产出的视觉附件（user 角色但非提问）随坏轮次
+		// 一起丢弃，不搬到窗口末尾冒充用户的下一句话。
+		if m.IsRoundAnchor() {
 			keptUsers = append(keptUsers, m)
 		}
 	}

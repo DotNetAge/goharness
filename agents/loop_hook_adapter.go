@@ -70,6 +70,22 @@ func (c *hookCoord) recordToolResult(tr hooks.ToolResult) {
 	c.roundResults = append(c.roundResults, tr)
 }
 
+// carryOverImages 把上一次协调器里「登记了但还没注入上下文」的图片搬到新协调器。
+//
+// 挂起续跑会重建协调器（assemble），若图片尚未注入就被丢弃：Read 读图后紧接着
+// 挂起（例如同一次迭代里还并行发起了 AskUser），图既没进上下文也不会再出现。
+func (c *hookCoord) carryOverImages(from *hookCoord) {
+	if from == nil {
+		return
+	}
+	for _, e := range from.imageEntries {
+		if e.injected || len(e.blocks) == 0 {
+			continue
+		}
+		c.imageEntries = append(c.imageEntries, e)
+	}
+}
+
 // snapshotRoundResults 取走本轮结果累积并清空（AfterLLM 快照语义：
 // 调用后进入新一轮工具执行累积）。
 func (c *hookCoord) snapshotRoundResults() []hooks.ToolResult {

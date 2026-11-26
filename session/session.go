@@ -666,13 +666,13 @@ func (s *Session) getRoundRange(cursor int, active []Message) (roundEnd int, err
 	if cursor < 0 || cursor >= len(active) {
 		return 0, fmt.Errorf("session: cursor %d out of range [0, %d)", cursor, len(active))
 	}
-	if active[cursor].Role != "user" {
+	if !active[cursor].IsRoundAnchor() {
 		return 0, fmt.Errorf("session: cursor %d points to %q message, must point to user message",
 			cursor, active[cursor].Role)
 	}
 	roundEnd = cursor + 1
 	for roundEnd < len(active) {
-		if active[roundEnd].Role == "user" {
+		if active[roundEnd].IsRoundAnchor() {
 			break
 		}
 		roundEnd++
@@ -713,7 +713,14 @@ func (s *Session) GetRound(ctx context.Context, cursor int) ([]Message, error) {
 // user 消息时间戳在单会话内唯一，从后向前可稳定命中目标 user 消息。
 func findMessageIndexByTimestamp(msgs []Message, timestamp int64) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && msgs[i].Timestamp == timestamp {
+		if msgs[i].IsRoundAnchor() && msgs[i].Timestamp == timestamp {
+			return i
+		}
+	}
+	// 兜底：允许命中非 user 消息（调用方已自行确认锚点），但同样跳过视觉附件——
+	// 它是工具产出，定位到它只会让截断落在半截轮次里。
+	for i, m := range msgs {
+		if m.Timestamp == timestamp && m.Source != SourceToolVision {
 			return i
 		}
 	}

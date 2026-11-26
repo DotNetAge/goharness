@@ -138,7 +138,7 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 	windowHasQuestion := false
 	window := b.session.Current()
 	for _, m := range window {
-		if m.Role == "user" && m.Content == b.question {
+		if m.IsRoundAnchor() && m.Content == b.question {
 			windowHasQuestion = true
 			break
 		}
@@ -193,7 +193,9 @@ func (rt *Runtime) runWithGoAgent(b *AskBuilder) (*RunResult, error) {
 	// 每次装配同步重建钩子协调器并回填桥接器（续跑后工具序号/累积计数重新起算）。
 	// goagent 惯例：每轮运行新实例即新 runtimeID 语义，对齐控制平面文档。
 	assemble := func() *goagent.Agent {
+		prevCoord := coord
 		coord = newHookCoord()
+		coord.carryOverImages(prevCoord)
 		bridge.coord = coord
 		g := (&goagent.Agent{}).
 			History(msgs).

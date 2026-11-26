@@ -121,7 +121,7 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 
 	// 追加当前用户问题（如果历史末尾不是同一内容的问题）
 	if question != "" {
-		if len(window) == 0 || window[len(window)-1].Role != "user" || window[len(window)-1].Content != question {
+		if len(window) == 0 || !window[len(window)-1].IsRoundAnchor() || window[len(window)-1].Content != question {
 			msgs = append(msgs, gochatcore.NewUserMessage(question))
 		}
 	}

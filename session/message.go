@@ -59,6 +59,16 @@ const (
 	ToolVisionPrefix = "[工具产出的图像]"
 )
 
+// IsRoundAnchor 判定这条消息是否是一次「真实用户发言」，即轮次边界。
+//
+// 工具产的视觉附件在协议上以 user 角色传输（多模态内容必须挂在 user 消息上），
+// 但它是宿主生成的工具产出，不是用户提问。轮次切分、删除轮次、配对修复等
+// 所有「按 user 找轮边界」的地方都必须用本方法，不能用 Role == "user" 代判，
+// 否则会把视觉附件当成新一轮的起点，导致删轮截错位置。
+func (m Message) IsRoundAnchor() bool {
+	return m.Role == "user" && m.Source != SourceToolVision
+}
+
 // GetID 返回此消息的唯一标识符。
 // 注意：Timestamp 为 Unix 秒级时间戳，并发保存时可能与其他消息相同，
 // 定位消息时（如 DeleteRound）需结合 Role 判断，不能假定其全局唯一。
