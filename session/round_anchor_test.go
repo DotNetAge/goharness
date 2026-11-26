@@ -41,6 +41,30 @@ func TestGetRoundRangeIgnoresToolVisionAsBoundary(t *testing.T) {
 	}
 }
 
+// 挂起提问的降级回答（写入闸门把 AskUser 应答退回 user 消息）属于当前轮，
+// 不是新提问：否则刷新后会凭空多出一轮，用量与删轮定位都跟着错。
+func TestGetRoundRangeIgnoresAskAnswerAsBoundary(t *testing.T) {
+	active := []Message{
+		{Role: "user", Content: "帮我看看这个方案", Timestamp: 300},
+		{Role: "assistant", Content: "", Timestamp: 301, ToolCalls: []ToolCall{{ID: "a1", Name: "AskUser"}}},
+		{Role: "user", Content: "选项 A", Timestamp: 302, Source: SourceAskAnswer},
+		{Role: "assistant", Content: "好的，按 A 来", Timestamp: 303},
+		{Role: "user", Content: "再确认一下", Timestamp: 304},
+	}
+
+	s := &Session{}
+	roundEnd, err := s.getRoundRange(0, active)
+	if err != nil {
+		t.Fatalf("取轮范围失败: %v", err)
+	}
+	if roundEnd != 4 {
+		t.Fatalf("降级回答不能切轮：应止于 index 4，实际 %d", roundEnd)
+	}
+	if _, err := s.getRoundRange(2, active); err == nil {
+		t.Fatal("降级回答不应被当作轮次起点")
+	}
+}
+
 // 同一秒内视觉附件与真实提问时间戳相同：按时间戳定位轮次必须命中真实提问，
 // 不能命中视觉附件。
 func TestFindMessageIndexByTimestampSkipsToolVision(t *testing.T) {

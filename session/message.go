@@ -56,6 +56,10 @@ const (
 	SourceToolVision = "tool_vision"
 	// SourceTaskBoardNudge 标记宿主机追加的任务板提醒：对模型说的话，不是用户发言。
 	SourceTaskBoardNudge = "task_board_nudge"
+	// SourceAskAnswer 标记用户对挂起提问（AskUser）的回答。正常路径下回答以
+	// AskUser 的工具结果落库，本就不构成轮边界；只有写入闸门降级（重复应答、
+	// 缺 ToolCallID）时才落成 user 消息，靠这个标记继续维持「同一轮」语义。
+	SourceAskAnswer = "ask_answer"
 	// ToolVisionPrefix 是工具视觉附件消息的固定开头，只用于给模型和用户看的文案。
 	// 来源判定不走文本前缀（见 Message.Origin 与 event_bridge），避免用户自造同样
 	// 开头的一句话就被误认成工具产出。
@@ -74,7 +78,7 @@ func (m Message) IsRoundAnchor() bool {
 		return false
 	}
 	switch m.Source {
-	case SourceToolVision, SourceTaskBoardNudge:
+	case SourceToolVision, SourceTaskBoardNudge, SourceAskAnswer:
 		return false
 	}
 	return true
