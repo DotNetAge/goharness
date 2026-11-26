@@ -9,8 +9,8 @@ import (
 
 func TestDefaults_ReturnsExpectedHooks(t *testing.T) {
 	hooksList := Defaults(logging.NewNopLogger())
-	if len(hooksList) != 2 {
-		t.Fatalf("Defaults 应返回 2 个 hook, got %d", len(hooksList))
+	if len(hooksList) != 3 {
+		t.Fatalf("Defaults 应返回 3 个 hook, got %d", len(hooksList))
 	}
 
 	// 第一个应为 LoopLoggerHook
@@ -20,6 +20,10 @@ func TestDefaults_ReturnsExpectedHooks(t *testing.T) {
 	// 第二个应为 ConvergenceHook
 	if _, ok := hooksList[1].(*ConvergenceHook); !ok {
 		t.Errorf("第二个 hook 应为 *ConvergenceHook, got %T", hooksList[1])
+	}
+	// 第三个应为 TaskBoardNudge（任务板久不回写的兜底提醒）
+	if _, ok := hooksList[2].(*TaskBoardNudge); !ok {
+		t.Errorf("第三个 hook 应为 *TaskBoardNudge, got %T", hooksList[2])
 	}
 }
 
@@ -40,8 +44,8 @@ func TestDefaults_PriorityOrder(t *testing.T) {
 func TestDefaults_NilLogger(t *testing.T) {
 	// nil logger 不应 panic（LoopLoggerHook 会检查 Logger == nil）
 	hooksList := Defaults(nil)
-	if len(hooksList) != 2 {
-		t.Fatalf("nil logger 时仍应返回 2 个 hook, got %d", len(hooksList))
+	if len(hooksList) != 3 {
+		t.Fatalf("nil logger 时仍应返回 3 个 hook, got %d", len(hooksList))
 	}
 }
 
