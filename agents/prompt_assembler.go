@@ -79,7 +79,7 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 			// 携带图片的用户消息 → 组装为多模态消息（文本 + image_url 内容块）。
 			// 图片以 image_url 形式进入上下文，与文本内容分离。
 			if len(m.Images) > 0 {
-				msg := gochatcore.Message{Role: "user"}
+				msg := gochatcore.Message{Role: "user", Origin: m.Source}
 				if m.Content != "" {
 					msg.Content = append(msg.Content, gochatcore.ContentBlock{
 						Type: gochatcore.ContentTypeText, Text: m.Content,
@@ -99,7 +99,11 @@ func AssembleMessages(systemSections []gochatcore.Message, history []session.Mes
 				}
 				msgs = append(msgs, msg)
 			} else {
-				msgs = append(msgs, gochatcore.NewUserMessage(m.Content))
+				msg := gochatcore.NewUserMessage(m.Content)
+				// 历史里的宿主注入消息（读图附件、任务板提醒）要靠来源标记在
+				// 后续请求与投影里继续被认出，否则装载一次就退化成用户发言。
+				msg.Origin = m.Source
+				msgs = append(msgs, msg)
 			}
 		case "assistant":
 			msg := gochatcore.NewTextMessage("assistant", m.Content)

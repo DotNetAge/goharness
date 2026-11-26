@@ -45,7 +45,8 @@ type Message struct {
 	//   "" | "user"——用户/助手正常消息；
 	//   "tool_vision"——工具读取的图片以视觉附件形式注入，内容不是用户写的，
 	//                  前端应渲染成工具产出而不是用户气泡；
-	//   "task_board_nudge"——宿主机追加的任务板提醒。
+	//   "task_board_nudge"——宿主机追加的任务板提醒，只在请求与历史里生效，
+	//                  界面不渲染（它是对模型说的话，不是对用户说的话）。
 	Source string `json:"source,omitempty" yaml:"source,omitempty"`
 }
 
@@ -53,20 +54,30 @@ type Message struct {
 const (
 	// SourceToolVision 标记工具读取的图片附件：内容由宿主生成，不是用户写的。
 	SourceToolVision = "tool_vision"
-	// SourceTaskBoardNudge 标记宿主机追加的任务板提醒。
+	// SourceTaskBoardNudge 标记宿主机追加的任务板提醒：对模型说的话，不是用户发言。
 	SourceTaskBoardNudge = "task_board_nudge"
-	// ToolVisionPrefix 是工具视觉附件消息的固定开头，回写时据此识别来源。
+	// ToolVisionPrefix 是工具视觉附件消息的固定开头，只用于给模型和用户看的文案。
+	// 来源判定不走文本前缀（见 Message.Origin 与 event_bridge），避免用户自造同样
+	// 开头的一句话就被误认成工具产出。
 	ToolVisionPrefix = "[工具产出的图像]"
 )
 
 // IsRoundAnchor 判定这条消息是否是一次「真实用户发言」，即轮次边界。
 //
-// 工具产的视觉附件在协议上以 user 角色传输（多模态内容必须挂在 user 消息上），
-// 但它是宿主生成的工具产出，不是用户提问。轮次切分、删除轮次、配对修复等
-// 所有「按 user 找轮边界」的地方都必须用本方法，不能用 Role == "user" 代判，
-// 否则会把视觉附件当成新一轮的起点，导致删轮截错位置。
+// 宿主注入的消息在协议上都以 user 角色传输——多模态图片只能挂在 user 消息上，
+// 而 OpenAI 兼容层只允许 messages[0] 为 system，所以「提醒」也只能借 user 通道。
+// 它们带来源标记（SourceToolVision / SourceTaskBoardNudge），内容由宿主生成。
+// 轮次切分、删除轮次、配对修复、用量归组等所有「按 user 找轮边界」的地方都必须
+// 用本方法，不能用 Role == "user" 代判，否则会把注入消息当成新一轮的起点。
 func (m Message) IsRoundAnchor() bool {
-	return m.Role == "user" && m.Source != SourceToolVision
+	if m.Role != "user" {
+		return false
+	}
+	switch m.Source {
+	case SourceToolVision, SourceTaskBoardNudge:
+		return false
+	}
+	return true
 }
 
 // GetID 返回此消息的唯一标识符。

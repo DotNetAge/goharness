@@ -183,7 +183,13 @@ func (a *loopHookAdapter) takeVisionMessages() []gochatcore.Message {
 			continue
 		}
 		e.injected = true
-		out = append(out, gochatcore.Message{Role: "user", Content: blocks})
+		out = append(out, gochatcore.Message{
+			Role:    "user",
+			Content: blocks,
+			// 结构标记随消息一路带到回写：落库时不必再从正文里猜来源，
+			// 用户自己发一句以固定前缀开头的话也不会被误认成工具产出。
+			Origin: session.SourceToolVision,
+		})
 	}
 	return out
 }
@@ -253,9 +259,13 @@ func sessionMessageToGochat(m session.Message) (gochatcore.Message, bool) {
 		return msg, true
 	case "user":
 		if len(m.Images) == 0 {
-			return gochatcore.NewUserMessage(m.Content), true
+			msg := gochatcore.NewUserMessage(m.Content)
+			// 来源标记必须随消息进内核：回写落库时靠它区分宿主注入与用户发言，
+			// 丢掉它会让任务板提醒退化成一条「用户说的话」，前端当真轮次渲染。
+			msg.Origin = m.Source
+			return msg, true
 		}
-		msg := gochatcore.Message{Role: "user"}
+		msg := gochatcore.Message{Role: "user", Origin: m.Source}
 		if m.Content != "" {
 			msg.Content = append(msg.Content, gochatcore.ContentBlock{
 				Type: gochatcore.ContentTypeText, Text: m.Content,
@@ -291,9 +301,21 @@ func (a *loopHookAdapter) buildCallInput(input goagent.BeforeLLMInput) *hooks.Ca
 		case gochatcore.RoleSystem:
 			systemSections = append(systemSections, m)
 		case gochatcore.RoleUser:
-			text := m.TextContent()
-			history = append(history, session.Message{Role: "user", Content: text})
-			userMessage = text
+			// 宿主机注入的多模态附件同样是 user 角色：投影时必须带上来源与图片，
+			// 否则钩子看到的历史里附件会伪装成「用户发了一条 [工具产出的图像]…」，
+			// 且图片完全丢失。
+			sm := session.Message{
+				Role:    "user",
+				Content: m.TextContent(),
+				Source:  m.Origin,
+				Images:  imageBlocksOf(m.Content),
+			}
+			history = append(history, sm)
+			// UserMessage 只取真实用户发言；注入消息覆盖它会让钩子把宿主文案
+			// 当成用户本轮提问（日志预览、指令类钩子都会跟着错）。
+			if sm.IsRoundAnchor() {
+				userMessage = sm.Content
+			}
 		case gochatcore.RoleAssistant:
 			sm := session.Message{
 				Role:             "assistant",

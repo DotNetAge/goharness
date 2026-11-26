@@ -22,8 +22,17 @@ const defaultTaskBoardNudgeEvery = 8
 // 兜底注入一次提醒：只在「确实建过任务板」且「确实很久没回写」时才说一句。
 //
 // 判定完全基于会话历史（assistant 消息里的 ToolCalls），不依赖任务存储。提醒以
-// assistant 消息追加到对话尾部——它进的是本轮请求、也随回写落进会话历史，是
-// 真实上下文的一部分；因为只加在尾部，已有前缀与 KV 缓存前缀都不受影响。
+// user 角色 + 来源标记追加到对话尾部——它进的是本轮请求、也随回写落进会话历史，
+// 是真实上下文的一部分；因为只加在尾部，已有前缀与 KV 缓存前缀都不受影响。
+//
+// 为什么是 user 而不是 assistant / system（厂商文档实证）：
+//   - assistant 尾巴违反 OpenAI 兼容层的「最后一条必须是 user」约束，且会落入
+//     前缀续写（预填）语义；同时 assistant 消息在模型眼里是「我自己说过的话」，
+//     权威最低、容易被模仿重复。
+//   - system 只能出现在 messages[0]（阿里云百炼等 OpenAI 兼容层明确限制），
+//     放中间会被拒绝；DeepSeek 原生 API 虽支持中间 system，但不能作为通用默认。
+//   - user 是协议里唯一可在任意位置出现、且能携带多模态内容的通道。因此「不是
+//     用户发言」这件事只能靠来源标记表达，见 session.Message.IsRoundAnchor。
 type TaskBoardNudge struct {
 	// Every 为提醒间隔（次工具调用）；<=0 时取默认值。
 	Every int
@@ -63,12 +72,14 @@ func (h *TaskBoardNudge) BeforeLLM(sessionID string, iteration int, in *hooks.Ca
 	h.nudgedAt[sessionID] = since
 	h.mu.Unlock()
 
-	// 以 assistant 消息追加到对话尾部：本轮请求立刻带上，且随回写落进会话历史，
+	// 以 user 消息追加到对话尾部：本轮请求立刻带上，且随回写落进会话历史，
 	// 后续轮次不需要重新注入（钩子只负责「什么时候提醒」，不负责长期携带）。
-	// 追加只发生在尾部，已有前缀一字不动，KV 缓存前缀仍然命中。
+	// 追加只发生在尾部，已有前缀一字不动，KV 缓存前缀仍然命中。来源标记保证
+	// 它在轮次切分、删除轮次和界面渲染里都不会被当成用户提问。
 	return hooks.HookResult{AppendMessages: []session.Message{{
-		Role:      "assistant",
+		Role:      "user",
 		Content:   taskBoardNudgeText(since),
+		Source:    session.SourceTaskBoardNudge,
 		Timestamp: time.Now().Unix(),
 	}}}
 }

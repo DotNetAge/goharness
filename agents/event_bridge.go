@@ -539,9 +539,14 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			// 多模态消息落库：图片必须原样进历史，否则下一次装配拿不到图。
 			if imgs := imageBlocksOf(m.Content); len(imgs) > 0 {
 				sm.Images = imgs
-				if strings.HasPrefix(sm.Content, session.ToolVisionPrefix) {
-					sm.Source = session.SourceToolVision
-				}
+			}
+			// 来源以消息自带的 Origin 为准，不再靠正文前缀猜——用户自己发一句
+			// 以固定前缀开头的话，不会被打成工具产出而从界面上消失。
+			// 兜底：改动前已在内核里的视觉消息没有 Origin，仍按前缀识别一次。
+			if m.Origin != "" {
+				sm.Source = m.Origin
+			} else if len(sm.Images) > 0 && strings.HasPrefix(sm.Content, session.ToolVisionPrefix) {
+				sm.Source = session.SourceToolVision
 			}
 		}
 

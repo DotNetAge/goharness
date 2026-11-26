@@ -48,3 +48,5 @@ require (
 )
 
 replace github.com/DotNetAge/goagent => ../goagent
+
+replace github.com/DotNetAge/gochat => ../gochat

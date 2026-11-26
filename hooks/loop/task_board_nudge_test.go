@@ -76,8 +76,14 @@ func TestTaskBoardNudgeBeforeLLM(t *testing.T) {
 		if len(r.AppendMessages) != 1 {
 			t.Fatalf("应追加 1 条，得到 %d", len(r.AppendMessages))
 		}
-		if r.AppendMessages[0].Role != "assistant" {
-			t.Fatalf("提醒应为 assistant 消息，得到 %q", r.AppendMessages[0].Role)
+		if r.AppendMessages[0].Role != "user" {
+			t.Fatalf("提醒应为 user 消息（协议唯一可在任意位置插入的通道），得到 %q", r.AppendMessages[0].Role)
+		}
+		if r.AppendMessages[0].Source != session.SourceTaskBoardNudge {
+			t.Fatalf("提醒必须带来源标记，得到 %q", r.AppendMessages[0].Source)
+		}
+		if r.AppendMessages[0].IsRoundAnchor() {
+			t.Fatal("提醒不得被当作轮次边界")
 		}
 		if !strings.Contains(r.AppendMessages[0].Content, "任务板提醒") {
 			t.Fatalf("提醒正文异常: %q", r.AppendMessages[0].Content)
