@@ -310,6 +310,11 @@ func (a *loopHookAdapter) buildCallInput(input goagent.BeforeLLMInput) *hooks.Ca
 }
 
 // writeBackSystemSections 把钩子修改后的 system 消息内容写回内核消息序列对应位置。
+//
+// 只能「改写」已存在的 system 消息：写回按序号与内核里的 system 消息配对，
+// 钩子往 sections 末尾 append 的新段没有槽位，会被静默丢弃（第一版任务板提醒
+// 就是这么失效的）。丢弃一律留 WARN，避免再次出现「看起来注入了、其实没进请求」。
+// 需要追加新内容请用 HookResult.AppendMessages（真实消息追加到对话尾部）。
 func (a *loopHookAdapter) writeBackSystemSections(messages []gochatcore.Message, sections []gochatcore.Message) {
 	if len(sections) == 0 {
 		return
@@ -320,5 +325,10 @@ func (a *loopHookAdapter) writeBackSystemSections(messages []gochatcore.Message,
 			messages[i].Content = sections[si].Content
 			si++
 		}
+	}
+	if len(sections) > si && a.br != nil && a.br.rt != nil {
+		a.br.rt.logger.Warn("钩子追加的 system 段没有落点，已被丢弃",
+			"session", a.sid, "dropped", len(sections)-si,
+			"hint", "兜底注入请改用 HookResult.AppendMessages")
 	}
 }
