@@ -24,12 +24,17 @@ func NewSubAgentTool(dispatcher subagent.SubAgentDispatcher) *SubAgentTool {
 func (t *SubAgentTool) Info() *ToolInfo {
 	return &ToolInfo{
 		Name:        "SubAgent",
-		Description: "派发子任务给具名子代理异步执行，立即返回受理回执（task_id / session_id / title），结果落定后自动送达本会话。",
-		Prompt: `派发子任务给具名子代理在后台独立执行，立即返回受理回执（跟踪句柄 task_id、子代理会话 session_id、任务标题 title），结果不随本次调用返回——落定后自动送达本会话。
+		Description: "把子任务指派给具名子代理执行，立即返回受理回执（task_id / session_id / title）；结果必须由 CollectResults 收取并作为下一步推理依据。",
+		Prompt: `工作指派：把子任务指派给具名子代理在后台独立执行，立即返回受理回执（跟踪句柄 task_id、子代理会话 session_id、任务标题 title）。
 
-- 并行派发：需要多个子任务时在同一响应中全部派发，然后调用 CollectResults(task_ids...) 启动结果收割。
+- 必须配对验收：结果不随本次调用返回，必须调用 CollectResults(task_ids...) 收取，结果是你下一步推理的输入；未收取之前，视为任务尚未完成。
+- 并行派发：需要多个子任务时在同一响应中全部派发，然后一次性启动结果收割。
 - 任务描述自包含：子代理看不到你的对话上下文。
-- 复用对话：传入 session_id（或省略后系统自动延续该子代理最近的空闲会话）可延续与该子代理的既有对话；被占用时自动新建独立会话。`,
+- 复用对话：传入 session_id（或省略后系统自动延续该子代理最近的空闲会话）可延续与该子代理的既有对话；被占用时自动新建独立会话。
+
+不适用：
+- 只是把用户转给另一个智能体、你不需要结果 → 用转达。
+- 需要定时、周期或延后执行，或对方与你没有可指派的直属关系 → 用定时任务。`,
 		Tags:    []string{"orchestration", "subagent", "sub-agent"},
 		IsAsync: true,
 		Parameters: []Parameter{

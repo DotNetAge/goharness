@@ -35,6 +35,10 @@ type HookResult struct {
 	// SkipWithResult 设置后，将跳过工具执行并直接使用提供的结果。
 	// 由去重钩子使用，用于在不重新执行工具的情况下返回缓存结果。
 	SkipWithResult *ToolResult
+	// AppendMessages 由钩子追加到本轮对话尾部（立刻参与本次请求，并随回写落盘）。
+	// 用于宿主机兜底注入：任务板提醒、工具产出的视觉附件。因为只加在尾部，
+	// 已有前缀不变，KV 缓存前缀仍然有效。
+	AppendMessages []session.Message
 }
 
 // IsTerminal 当钩子结果表明应停止处理时（由于中止或错误）返回 true。

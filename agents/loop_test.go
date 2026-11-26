@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -715,7 +716,11 @@ func TestExecReadImageAppendsImageMessage(t *testing.T) {
 	msgs := sess.Current()
 	// 消息顺序：user, assistant(tc), tool, user(图片消息), assistant(answer)
 	if len(msgs) != 5 {
-		t.Fatalf("期望 5 条消息（含图片消息），得到: %d", len(msgs))
+		dump := ""
+		for i, m := range msgs {
+			dump += fmt.Sprintf("%d:%s(imgs=%d)\n", i, m.Role, len(m.Images))
+		}
+		t.Fatalf("期望 5 条消息（含图片消息），得到: %d\n%s", len(msgs), dump)
 	}
 	imgMsg := msgs[3]
 	if imgMsg.Role != "user" {

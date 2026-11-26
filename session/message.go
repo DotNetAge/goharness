@@ -41,7 +41,23 @@ type Message struct {
 	// 无需依赖「最后一条无 tool_calls 的 assistant」这类位置启发式。
 	FinishReason string      `json:"finish_reason,omitempty" yaml:"finish_reason,omitempty"`
 	Usage        *TokenUsage `json:"token_usage,omitempty" yaml:"token_usage,omitempty"` // token 消耗（仅助手消息）
+	// Source 标记这条消息的真实来源，供前端区分「谁在说话」：
+	//   "" | "user"——用户/助手正常消息；
+	//   "tool_vision"——工具读取的图片以视觉附件形式注入，内容不是用户写的，
+	//                  前端应渲染成工具产出而不是用户气泡；
+	//   "task_board_nudge"——宿主机追加的任务板提醒。
+	Source string `json:"source,omitempty" yaml:"source,omitempty"`
 }
+
+// 消息来源标记取值。空值表示用户与助手的正常发言。
+const (
+	// SourceToolVision 标记工具读取的图片附件：内容由宿主生成，不是用户写的。
+	SourceToolVision = "tool_vision"
+	// SourceTaskBoardNudge 标记宿主机追加的任务板提醒。
+	SourceTaskBoardNudge = "task_board_nudge"
+	// ToolVisionPrefix 是工具视觉附件消息的固定开头，回写时据此识别来源。
+	ToolVisionPrefix = "[工具产出的图像]"
+)
 
 // GetID 返回此消息的唯一标识符。
 // 注意：Timestamp 为 Unix 秒级时间戳，并发保存时可能与其他消息相同，

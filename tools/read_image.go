@@ -178,12 +178,15 @@ func base64Encode(data []byte) string {
 func fmtImageSummary(ic ImageContent, path string) string {
 	if ic.Width > 0 && ic.Height > 0 {
 		return fmt.Sprintf(
-			"[图片已读取并压缩：%s (%d×%d px, 原始 %d 字节, 压缩后 %d 字节)]",
+			"[图片已读取并压缩：%s (%d×%d px, 原始 %d 字节, 压缩后 %d 字节)] "+
+				"图像本体不作为文本返回，而是作为视觉附件放进紧随其后的一条消息；"+
+				"要判断画面内容，请看那条消息里的图，不要因为这里只有元数据而认为没读到图。",
 			path, ic.Width, ic.Height, ic.RawSize, ic.CompressedSize,
 		)
 	}
 	return fmt.Sprintf(
-		"[图片已读取：%s (原始 %d 字节)]",
+		"[图片已读取：%s (原始 %d 字节)] "+
+			"图像本体作为视觉附件放进紧随其后的一条消息，请以那条消息里的图为准。",
 		path, ic.RawSize,
 	)
 }

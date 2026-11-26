@@ -595,13 +595,15 @@ func (rt *Runtime) executePendingAndAppend(
 	}
 
 	// 图片消息：ImageHook 已把工具返回的图片转换为图片内容块。
-	// 与正常执行路径一致，图片以 image_url 消息（user 角色）进入上下文，
-	// 紧随对应的工具结果之后，而非混入工具结果的文本内容。
+	// 与正常执行路径一致，图片以 image_url 消息（user 角色，多模态协议要求）
+	// 进入上下文，紧随对应的工具结果之后。content 以固定前缀开头并打上来源
+	// 标记——这条消息不是用户写的，前端据此渲染成工具产出而不是用户气泡。
 	if len(tr.ImageBlocks) > 0 {
 		imgMsg := session.Message{
 			Role: "user", Timestamp: time.Now().Unix(),
-			Content: "以下是工具 " + pending.ToolName + " 读取到的图片内容（视觉消息），请结合图片进行分析：",
+			Content: session.ToolVisionPrefix + " 工具 " + pending.ToolName + " 读取到的图像如下，请据此判断画面内容。",
 			Images:  tr.ImageBlocks,
+			Source:  session.SourceToolVision,
 		}
 		if err := b.session.Append(ctx, imgMsg); err != nil {
 			logger.Error("追加授权工具图片消息失败", err, "session", b.session.ID(), "tool_call_id", pending.ToolCallID)

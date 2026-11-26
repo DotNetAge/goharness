@@ -62,8 +62,8 @@ func TestTaskBoardNudgeBeforeLLM(t *testing.T) {
 	t.Run("无任务板不提醒", func(t *testing.T) {
 		in := &hooks.CallInput{History: []session.Message{assistantWithCalls("Read", "Bash", "Grep")}}
 		r := nudge.BeforeLLM("s0", 1, in)
-		if r.IsTerminal() || len(in.SystemPromptSections) != 0 {
-			t.Fatalf("不应注入：%v %d", r, len(in.SystemPromptSections))
+		if r.IsTerminal() || len(r.AppendMessages) != 0 {
+			t.Fatalf("不应注入：%v %d", r, len(r.AppendMessages))
 		}
 	})
 
@@ -72,16 +72,15 @@ func TestTaskBoardNudgeBeforeLLM(t *testing.T) {
 			assistantWithCalls("TaskCreate"),
 			assistantWithCalls("Read", "Edit", "Bash"),
 		}}
-		nudge.BeforeLLM("s1", 1, in)
-		if len(in.SystemPromptSections) != 1 {
-			t.Fatalf("应注入 1 条，得到 %d", len(in.SystemPromptSections))
+		r := nudge.BeforeLLM("s1", 1, in)
+		if len(r.AppendMessages) != 1 {
+			t.Fatalf("应追加 1 条，得到 %d", len(r.AppendMessages))
 		}
-		var text strings.Builder
-		for _, blk := range in.SystemPromptSections[0].Content {
-			text.WriteString(blk.Text)
+		if r.AppendMessages[0].Role != "assistant" {
+			t.Fatalf("提醒应为 assistant 消息，得到 %q", r.AppendMessages[0].Role)
 		}
-		if !strings.Contains(text.String(), "任务板提醒") {
-			t.Fatalf("提醒正文异常: %q", text.String())
+		if !strings.Contains(r.AppendMessages[0].Content, "任务板提醒") {
+			t.Fatalf("提醒正文异常: %q", r.AppendMessages[0].Content)
 		}
 	})
 
@@ -93,9 +92,9 @@ func TestTaskBoardNudgeBeforeLLM(t *testing.T) {
 		in1 := &hooks.CallInput{History: history}
 		nudge.BeforeLLM("s2", 1, in1)
 		in2 := &hooks.CallInput{History: history}
-		nudge.BeforeLLM("s2", 2, in2)
-		if len(in2.SystemPromptSections) != 0 {
-			t.Fatalf("同档位不该再注入，得到 %d", len(in2.SystemPromptSections))
+		r2 := nudge.BeforeLLM("s2", 2, in2)
+		if len(r2.AppendMessages) != 0 {
+			t.Fatalf("同档位不该再注入，得到 %d", len(r2.AppendMessages))
 		}
 	})
 
@@ -105,9 +104,9 @@ func TestTaskBoardNudgeBeforeLLM(t *testing.T) {
 			assistantWithCalls("Read", "Edit", "Bash"), // 第 1 档：3
 			assistantWithCalls("Read", "Edit", "Bash"), // 第 2 档：6
 		}}
-		nudge.BeforeLLM("s3", 1, in)
-		if len(in.SystemPromptSections) != 1 {
-			t.Fatalf("应注入 1 条，得到 %d", len(in.SystemPromptSections))
+		r := nudge.BeforeLLM("s3", 1, in)
+		if len(r.AppendMessages) != 1 {
+			t.Fatalf("应追加 1 条，得到 %d", len(r.AppendMessages))
 		}
 	})
 }

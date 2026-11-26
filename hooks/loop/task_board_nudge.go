@@ -3,8 +3,8 @@ package loop
 import (
 	"fmt"
 	"sync"
+	"time"
 
-	gochatcore "github.com/DotNetAge/gochat/core"
 	"github.com/DotNetAge/goharness/hooks"
 	"github.com/DotNetAge/goharness/session"
 )
@@ -21,9 +21,9 @@ const defaultTaskBoardNudgeEvery = 8
 // 没有约束力（上下文一长就被挤到注意力边缘），这里改成在请求组装阶段由宿主机
 // 兜底注入一次提醒：只在「确实建过任务板」且「确实很久没回写」时才说一句。
 //
-// 判定完全基于会话历史（assistant 消息里的 ToolCalls），不依赖任务存储，也不
-// 影响持久化：提醒只追加到本次请求的 system 段末尾（动态段），不落历史，
-// 因此不污染 UI、不破坏 KV 缓存前缀。
+// 判定完全基于会话历史（assistant 消息里的 ToolCalls），不依赖任务存储。提醒以
+// assistant 消息追加到对话尾部——它进的是本轮请求、也随回写落进会话历史，是
+// 真实上下文的一部分；因为只加在尾部，已有前缀与 KV 缓存前缀都不受影响。
 type TaskBoardNudge struct {
 	// Every 为提醒间隔（次工具调用）；<=0 时取默认值。
 	Every int
@@ -63,10 +63,14 @@ func (h *TaskBoardNudge) BeforeLLM(sessionID string, iteration int, in *hooks.Ca
 	h.nudgedAt[sessionID] = since
 	h.mu.Unlock()
 
-	// 追加到动态段末尾：静态前缀不变，KV 缓存仍然命中。
-	in.SystemPromptSections = append(in.SystemPromptSections,
-		gochatcore.NewSystemMessage(taskBoardNudgeText(since)))
-	return hooks.HookResult{}
+	// 以 assistant 消息追加到对话尾部：本轮请求立刻带上，且随回写落进会话历史，
+	// 后续轮次不需要重新注入（钩子只负责「什么时候提醒」，不负责长期携带）。
+	// 追加只发生在尾部，已有前缀一字不动，KV 缓存前缀仍然命中。
+	return hooks.HookResult{AppendMessages: []session.Message{{
+		Role:      "assistant",
+		Content:   taskBoardNudgeText(since),
+		Timestamp: time.Now().Unix(),
+	}}}
 }
 
 // AfterLLM 不干预：提醒时机只由请求组装前的历史快照决定。

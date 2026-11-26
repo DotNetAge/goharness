@@ -45,6 +45,8 @@ type imageEntry struct {
 	toolSeq  int
 	toolName string
 	blocks   []session.ImageBlock
+	// injected 表示图片已作为多模态消息注入当轮请求；注入后回写不再重复生成。
+	injected bool
 }
 
 func newHookCoord() *hookCoord {
@@ -130,7 +132,44 @@ func (a *loopHookAdapter) BeforeLLM(ctx context.Context, input goagent.BeforeLLM
 	// 内核消息序列——gochatcore.Message 为值元素，写回 Content 切片头即更新
 	// goagent 内存消息（底层数组共享，后续轮次的 LLM 请求可见修改）。
 	a.writeBackSystemSections(input.Messages, callInput.SystemPromptSections)
-	return a.translate(hr, "")
+	out := a.translate(hr, "")
+	// 工具图片当轮注入：上一迭代工具执行时 ImageHook 登记了图片块，这里在下一次
+	// 请求之前把它作为多模态消息追加到尾部——不等本 Run 结束回写，模型本轮的
+	// 后续迭代就能看到图。追加的消息随后经回写落进会话历史（不再二次生成）。
+	out.AppendMessages = append(out.AppendMessages, a.takeVisionMessages()...)
+	return out
+}
+
+// takeVisionMessages 取走尚未注入的图片附件，转成尾部追加的多模态消息。
+func (a *loopHookAdapter) takeVisionMessages() []gochatcore.Message {
+	if a.coord == nil {
+		return nil
+	}
+	var out []gochatcore.Message
+	for i := range a.coord.imageEntries {
+		e := &a.coord.imageEntries[i]
+		if e.injected || len(e.blocks) == 0 {
+			continue
+		}
+		blocks := make([]gochatcore.ContentBlock, 0, len(e.blocks)+1)
+		blocks = append(blocks, gochatcore.ContentBlock{
+			Type: gochatcore.ContentTypeText,
+			Text: session.ToolVisionPrefix + " 工具 " + e.toolName + " 读取到的图像如下，请据此判断画面内容。",
+		})
+		for _, ib := range e.blocks {
+			if block, ok := resolveImageBlock(ib); ok {
+				blocks = append(blocks, block)
+			}
+		}
+		if len(blocks) == 1 {
+			// 全部图片都失效（文件缺失/空数据）：不注入空消息，也不标已注入，
+			// 交给回写路径的现有降级处理。
+			continue
+		}
+		e.injected = true
+		out = append(out, gochatcore.Message{Role: "user", Content: blocks})
+	}
+	return out
 }
 
 // AfterLLM 构造 LLMResponse（含上一轮工具结果快照与本轮 usage）→ 调用内部钩子 → 翻译结果。
@@ -174,7 +213,54 @@ func (a *loopHookAdapter) translate(hr hooks.HookResult, llmContent string) goag
 		a.coord.hookAbortAnswer = llmContent
 		return goagent.HookResult{Abort: true, AbortReason: hr.AbortReason}
 	}
-	return goagent.HookResult{}
+	var appendMsgs []gochatcore.Message
+	for _, m := range hr.AppendMessages {
+		if converted, ok := sessionMessageToGochat(m); ok {
+			appendMsgs = append(appendMsgs, converted)
+		}
+	}
+	return goagent.HookResult{AppendMessages: appendMsgs}
+}
+
+// sessionMessageToGochat 把钩子要追加的会话消息转成内核消息。
+// 只需要覆盖兜底注入会用的两种形态：纯文本（任意角色）与带图片的多模态 user 消息。
+func sessionMessageToGochat(m session.Message) (gochatcore.Message, bool) {
+	switch m.Role {
+	case "assistant":
+		msg := gochatcore.NewTextMessage("assistant", m.Content)
+		msg.ReasoningContent = m.ReasoningContent
+		for _, tc := range m.ToolCalls {
+			msg.ToolCalls = append(msg.ToolCalls, gochatcore.ToolCall{
+				ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
+			})
+		}
+		return msg, true
+	case "user":
+		if len(m.Images) == 0 {
+			return gochatcore.NewUserMessage(m.Content), true
+		}
+		msg := gochatcore.Message{Role: "user"}
+		if m.Content != "" {
+			msg.Content = append(msg.Content, gochatcore.ContentBlock{
+				Type: gochatcore.ContentTypeText, Text: m.Content,
+			})
+		}
+		for _, img := range m.Images {
+			block, ok := resolveImageBlock(img)
+			if !ok {
+				continue
+			}
+			msg.Content = append(msg.Content, block)
+		}
+		if len(msg.Content) == 0 {
+			return gochatcore.Message{}, false
+		}
+		return msg, true
+	case "system":
+		return gochatcore.NewSystemMessage(m.Content), true
+	default:
+		return gochatcore.Message{}, false
+	}
 }
 
 // buildCallInput 从 goagent 内核消息序列反向构造 goharness CallInput。
