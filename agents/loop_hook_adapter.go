@@ -105,7 +105,7 @@ func (c *hookCoord) hookTermination() bool {
 //   - goharness 显式传 sessionID/iteration + *CallInput（SystemPromptSections/
 //     UserMessage/History/Tools）；goagent 只有 goagent.BeforeLLMInput。
 //     适配器从内核消息序列反向构造 CallInput；
-//   - 注入型钩子（MemoryThoughtHook 修改 SystemPromptSections 追加记忆）：
+//   - 改写型钩子（修改已有 system 消息的 Content）：
 //     钩子返回后适配器把修改后的 system 消息内容写回 input.Messages 对应位置
 //     （共享底层数组，goagent 内核下一轮 LLM 调用可见）；
 //   - History 为文本/工具调用级别的反向投影（goagent 内存消息不含
@@ -144,7 +144,7 @@ func (a *loopHookAdapter) Priority() int { return a.inner.Priority() }
 func (a *loopHookAdapter) BeforeLLM(ctx context.Context, input goagent.BeforeLLMInput) goagent.HookResult {
 	callInput := a.buildCallInput(input)
 	hr := a.inner.BeforeLLM(a.sid, input.Iteration, callInput)
-	// 注入型钩子（如 MemoryThoughtHook）对 SystemPromptSections 的修改经此写回
+	// 改写型钩子对 SystemPromptSections 的修改经此写回
 	// 内核消息序列——gochatcore.Message 为值元素，写回 Content 切片头即更新
 	// goagent 内存消息（底层数组共享，后续轮次的 LLM 请求可见修改）。
 	a.writeBackSystemSections(input.Messages, callInput.SystemPromptSections)

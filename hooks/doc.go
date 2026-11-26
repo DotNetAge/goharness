@@ -16,7 +16,7 @@
 // # 三种干预（HookResult）
 //
 //   - 改写：修改 *CallInput / *ToolResult 指针，中途改动后续流程可见的内容
-//     （如 MemoryThoughtHook 向 SystemPromptSections 注入项目记忆，写回后
+//     （改写已存在 system 消息的 Content，写回后
 //     下一轮 LLM 请求可见）；
 //   - 短路：SkipWithResult 以提供的结果替换工具执行（去重钩子返回缓存）；
 //   - 打断：Abort + AbortReason 有序终止循环。
