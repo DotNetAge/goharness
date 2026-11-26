@@ -2,7 +2,6 @@ package agents
 
 import (
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/DotNetAge/goagent"
@@ -542,10 +541,12 @@ func (br *eventBridge) writeBackNewMessages(sess *session.Session, baseLen int) 
 			}
 			// 来源以消息自带的 Origin 为准，不再靠正文前缀猜——用户自己发一句
 			// 以固定前缀开头的话，不会被打成工具产出而从界面上消失。
-			// 兜底：改动前已在内核里的视觉消息没有 Origin，仍按前缀识别一次。
+			// 兜底：改动前已在内核里的旧版视觉消息没有 Origin，按旧格式判据识别。
 			if m.Origin != "" {
 				sm.Source = m.Origin
-			} else if len(sm.Images) > 0 && strings.HasPrefix(sm.Content, session.ToolVisionPrefix) {
+			} else if probe := (session.Message{
+				Role: string(m.Role), Content: sm.Content, Images: sm.Images,
+			}); probe.IsLegacyVisionInjection() {
 				sm.Source = session.SourceToolVision
 			}
 		}

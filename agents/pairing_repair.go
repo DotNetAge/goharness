@@ -162,6 +162,7 @@ func repairToolPairingBreak(ctx context.Context, s *session.Session, logger logg
 			Role:      "user",
 			Content:   m.Content,
 			Images:    m.Images,
+			Source:    m.Source,
 			Timestamp: m.Timestamp,
 		}); err != nil {
 			logger.Error("修复工具调用配对失败：回补用户消息出错", err, "session", s.ID())

@@ -65,6 +65,50 @@ func TestGetRoundRangeIgnoresAskAnswerAsBoundary(t *testing.T) {
 	}
 }
 
+// 改动前落盘的旧格式视觉注入（无来源标记、正文是旧文案、带图）同样不是用户发言：
+// 否则历史会话刷新后会多切一轮，撤销轮次还会截在轮中间。
+func TestGetRoundRangeIgnoresLegacyVisionInjection(t *testing.T) {
+	legacy := Message{
+		Role:      "user",
+		Content:   "以下是工具 Read 读取到的图片内容（视觉消息），请结合图片进行分析：",
+		Images:    []ImageBlock{{MediaType: "image/jpeg", Base64Data: "AAAA"}},
+		Timestamp: 400,
+	}
+	if legacy.IsRoundAnchor() {
+		t.Fatal("旧格式视觉注入不应被当作轮次边界")
+	}
+	if !legacy.IsLegacyVisionInjection() {
+		t.Fatal("旧格式视觉注入应被识别")
+	}
+
+	// 用户自己发的图（同样是 user + 带图，但正文是用户写的）不能被误判。
+	userImage := Message{
+		Role: "user", Content: "看看这个界面哪里不对", Timestamp: 401,
+		Images: []ImageBlock{{MediaType: "image/jpeg", Path: "/tmp/shot.jpg"}},
+	}
+	if !userImage.IsRoundAnchor() {
+		t.Fatal("用户自己发图仍是真实提问")
+	}
+	if userImage.IsLegacyVisionInjection() {
+		t.Fatal("用户发的图不应被识别成旧格式注入")
+	}
+
+	active := []Message{
+		{Role: "user", Content: "第一问", Timestamp: 399},
+		legacy,
+		{Role: "assistant", Content: "图里是登录页", Timestamp: 402},
+		{Role: "user", Content: "第二问", Timestamp: 403},
+	}
+	s := &Session{}
+	roundEnd, err := s.getRoundRange(0, active)
+	if err != nil {
+		t.Fatalf("取轮范围失败: %v", err)
+	}
+	if roundEnd != 3 {
+		t.Fatalf("旧格式注入不能切轮：应止于 index 3，实际 %d", roundEnd)
+	}
+}
+
 // 同一秒内视觉附件与真实提问时间戳相同：按时间戳定位轮次必须命中真实提问，
 // 不能命中视觉附件。
 func TestFindMessageIndexByTimestampSkipsToolVision(t *testing.T) {

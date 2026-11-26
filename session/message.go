@@ -1,5 +1,7 @@
 package session
 
+import "strings"
+
 // ToolCall 表示助手消息中的工具调用。
 // 与 gochat/core.ToolCall 镜像，保持线格式兼容。
 type ToolCall struct {
@@ -61,10 +63,34 @@ const (
 	// 缺 ToolCallID）时才落成 user 消息，靠这个标记继续维持「同一轮」语义。
 	SourceAskAnswer = "ask_answer"
 	// ToolVisionPrefix 是工具视觉附件消息的固定开头，只用于给模型和用户看的文案。
-	// 来源判定不走文本前缀（见 Message.Origin 与 event_bridge），避免用户自造同样
-	// 开头的一句话就被误认成工具产出。
+	// 来源判定优先走结构标记（Message.Origin / Source）；文本前缀只在识别
+	// 改动前已落盘的旧数据时作为兜底，见 Message.IsLegacyVisionInjection。
 	ToolVisionPrefix = "[工具产出的图像]"
+	// legacyVisionPrefix 是改动前旧版视觉注入文案的开头（"以下是工具 Read
+	// 读取到的图片内容（视觉消息）…"）。历史数据没有来源标记，只能按文案识别。
+	legacyVisionPrefix = "以下是工具"
+	// legacyVisionKeyword 与 legacyVisionPrefix 联合判定，降低误命中概率。
+	legacyVisionKeyword = "读取到的图片内容"
 )
+
+// IsLegacyVisionInjection 识别改动前落盘的旧格式视觉注入消息。
+//
+// 旧版把工具读到的图片写成一条 role=user 的「用户发言」，没有任何来源标记。
+// 这类历史数据如果按 Role=="user" 判轮，刷新后会多切一轮、撤销轮次会截错
+// 位置、界面上还会冒充用户气泡。判据要求同时满足：
+//   - user 角色、来源为空（新数据一定带 Source）；
+//   - 带图片附件（用户自己发的图也有图，但文案不会长这样）；
+//   - 正文是两版固定文案之一。
+func (m Message) IsLegacyVisionInjection() bool {
+	if m.Role != "user" || m.Source != "" || len(m.Images) == 0 {
+		return false
+	}
+	c := strings.TrimSpace(m.Content)
+	if strings.HasPrefix(c, ToolVisionPrefix) {
+		return true
+	}
+	return strings.HasPrefix(c, legacyVisionPrefix) && strings.Contains(c, legacyVisionKeyword)
+}
 
 // IsRoundAnchor 判定这条消息是否是一次「真实用户发言」，即轮次边界。
 //
@@ -79,6 +105,9 @@ func (m Message) IsRoundAnchor() bool {
 	}
 	switch m.Source {
 	case SourceToolVision, SourceTaskBoardNudge, SourceAskAnswer:
+		return false
+	}
+	if m.IsLegacyVisionInjection() {
 		return false
 	}
 	return true
